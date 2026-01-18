@@ -2,6 +2,9 @@ const { Plugin, Setting, openTab, openMobileFileById } = require("siyuan");
 
 const PLUGIN_ID = "siyuan-plugin-docktomato";
 const TOMATO_SCRIPT_PATH = `/data/plugins/${PLUGIN_ID}/tomato.js`;
+const PLUGIN_STORAGE_DIR = "/data/storage/petal/siyuan-plugin-docktomato";
+const LEGACY_STORAGE_DIR = "/data/storage";
+const LEGACY_AUDIO_DIR = "/data/storage/tomato-audio";
 
 const fetchText = async (url, data) => {
     const res = await fetch(url, {
@@ -23,6 +26,31 @@ const loadTomatoScript = async () => {
         console.error("[tomato] load script failed", e);
         return false;
     }
+};
+
+const removeFile = async (path, isDir) => {
+    try {
+        const formData = new FormData();
+        formData.append("path", path);
+        if (isDir === true) formData.append("isDir", "true");
+        if (isDir === false) formData.append("isDir", "false");
+        const res = await fetch("/api/file/removeFile", { method: "POST", body: formData });
+        const result = await res.json().catch(() => null);
+        if (result?.code === 0) return true;
+    } catch (e) {}
+
+    try {
+        const res = await fetch("/api/file/removeFile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path }),
+        });
+        const result = await res.json().catch(() => null);
+        if (result?.code === 0) return true;
+        if (result?.data?.code === 0) return true;
+    } catch (e) {}
+
+    return false;
 };
 
 module.exports = class TomatoTimerPlugin extends Plugin {
@@ -83,5 +111,28 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             try { delete globalThis.__tomatoOpenTab; } catch (e) {}
             try { delete globalThis.__tomatoOpenMobileFileById; } catch (e) {}
         }
+    }
+
+    uninstall() {
+        const keepHistoryOnly = async () => {
+            const deleteTargets = [
+                `${LEGACY_STORAGE_DIR}/tomato-settings.json`,
+                `${LEGACY_STORAGE_DIR}/tomato-focus-settings.json`,
+                `${LEGACY_STORAGE_DIR}/tomato-sync.json`,
+                `${PLUGIN_STORAGE_DIR}/tomato-settings.json`,
+                `${PLUGIN_STORAGE_DIR}/tomato-focus-settings.json`,
+                `${PLUGIN_STORAGE_DIR}/tomato-sync.json`,
+            ];
+            for (const p of deleteTargets) {
+                await removeFile(p, false);
+            }
+
+            await removeFile(LEGACY_AUDIO_DIR, true);
+            await removeFile(`${PLUGIN_STORAGE_DIR}/tomato-audio`, true);
+        };
+
+        keepHistoryOnly().catch((e) => {
+            console.error(`[tomato] uninstall cleanup failed`, e);
+        });
     }
 };
