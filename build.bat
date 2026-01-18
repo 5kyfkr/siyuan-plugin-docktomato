@@ -5,7 +5,6 @@ setlocal enabledelayedexpansion
 
 set OUTPUT=package.zip
 set PLUGIN_DIR=.
-set PLUGIN_NAME=
 
 if not exist "%PLUGIN_DIR%" (
     echo ERROR: plugin directory not found '%PLUGIN_DIR%' >&2
@@ -20,23 +19,13 @@ set TEMP_DIR=%TEMP%\plugin_build_%RANDOM%
 if exist "%TEMP_DIR%" rd /s /q "%TEMP_DIR%"
 mkdir "%TEMP_DIR%"
 
-REM Read plugin name from plugin.json (force UTF-8 to avoid mojibake)
-for /f "usebackq delims=" %%i in (`powershell -nologo -noprofile -executionpolicy bypass -command "(Get-Content -Raw -Encoding UTF8 -LiteralPath 'plugin.json' | ConvertFrom-Json).name"`) do set "PLUGIN_NAME=%%i"
-if "%PLUGIN_NAME%"=="" (
-    echo ERROR: failed to read plugin.json name >&2
-    rd /s /q "%TEMP_DIR%"
-    exit /b 1
-)
-set TEMP_PLUGIN_DIR=%TEMP_DIR%\%PLUGIN_NAME%
-mkdir "%TEMP_PLUGIN_DIR%"
-
 REM Delete old output first (avoid copying it into temp dir)
 if exist "%ORIGINAL_DIR%\%OUTPUT%" del /q "%ORIGINAL_DIR%\%OUTPUT%"
 
 echo Copy plugin files to temp dir...
 
 REM Copy content with excludes
-robocopy "%PLUGIN_DIR%" "%TEMP_PLUGIN_DIR%" /E /R:1 /W:1 ^
+robocopy "%PLUGIN_DIR%" "%TEMP_DIR%" /E /R:1 /W:1 ^
  /XD ".git" ".github" ".vscode" "node_modules" ".history" ".idea" ^
  /XF ".gitignore" ".DS_Store" ".hotreload" "build.bat" "build.ps1" "build.sh" "%OUTPUT%"
 set RC=%errorlevel%

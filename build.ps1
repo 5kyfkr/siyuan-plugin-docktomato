@@ -8,11 +8,9 @@ if ([string]::IsNullOrWhiteSpace($pluginName)) { throw 'plugin.json name missing
 
 $tempDir = Join-Path $env:TEMP ('plugin_build_' + [System.Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempDir | Out-Null
-$tempPluginDir = Join-Path $tempDir $pluginName
-New-Item -ItemType Directory -Path $tempPluginDir | Out-Null
 
 try {
-    Copy-Item -Path (Join-Path $pluginDir '*') -Destination $tempPluginDir -Recurse -Force
+    Copy-Item -Path (Join-Path $pluginDir '*') -Destination $tempDir -Recurse -Force
 
     $removePaths = @(
         '.git',
@@ -31,7 +29,7 @@ try {
     )
 
     foreach ($p in $removePaths) {
-        $full = Join-Path $tempPluginDir $p
+        $full = Join-Path $tempDir $p
         if (Test-Path -LiteralPath $full) {
             Remove-Item -LiteralPath $full -Recurse -Force
         }
