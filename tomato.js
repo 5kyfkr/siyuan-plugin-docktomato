@@ -50,16 +50,33 @@
     // ========== 配置项 ==========
     const DEFAULT_TOMATO_DURATIONS = [5, 15, 30, 60, 120];
     const DEFAULT_BREAK_DURATIONS = [5, 10, 15, 30];
-    const HISTORY_FILE_PATH = '/data/storage/tomato-history.json';
-    const SETTINGS_FILE_PATH = '/data/storage/tomato-settings.json';
-    const FOCUS_TIME_SETTINGS_PATH = '/data/storage/tomato-focus-settings.json';
+
+    const PLUGIN_STORAGE_PARENT_DIR = '/data/storage/petal';
+    const PLUGIN_STORAGE_DIR = '/data/storage/petal/siyuan-plugin-docktomato';
+    const LEGACY_HISTORY_FILE_PATH = '/data/storage/tomato-history.json';
+    const LEGACY_SETTINGS_FILE_PATH = '/data/storage/tomato-settings.json';
+    const LEGACY_FOCUS_TIME_SETTINGS_PATH = '/data/storage/tomato-focus-settings.json';
+    const LEGACY_SYNC_FILE_PATH = '/data/storage/tomato-sync.json';
+    const LEGACY_AUDIO_STORAGE_PATH = '/data/storage/tomato-audio/';
+
+    const NEW_HISTORY_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-history.json`;
+    const NEW_SETTINGS_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-settings.json`;
+    const NEW_FOCUS_TIME_SETTINGS_PATH = `${PLUGIN_STORAGE_DIR}/tomato-focus-settings.json`;
+    const NEW_SYNC_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-sync.json`;
+    const NEW_AUDIO_STORAGE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-audio/`;
+
+    let HISTORY_FILE_PATH = NEW_HISTORY_FILE_PATH;
+    let SETTINGS_FILE_PATH = NEW_SETTINGS_FILE_PATH;
+    let FOCUS_TIME_SETTINGS_PATH = NEW_FOCUS_TIME_SETTINGS_PATH;
+    let SYNC_FILE_PATH = NEW_SYNC_FILE_PATH;
+
+    let AUDIO_STORAGE_PATH = NEW_AUDIO_STORAGE_PATH;
     const DEFAULT_DEBUG_MODE = false;
     const DEFAULT_ENABLE_MOBILE_SUPPORT = true;
     const MOBILE_FLOAT_BAR_LAZY_SHOW = true;  // 移动端悬浮条懒加载开关，false悬浮条常驻，设为 true 则悬浮条仅在开始计时后显示（从任务块或数据库块计时时）
     
     // ========== 多端同步配置 ==========
     const DEFAULT_SYNC_ENABLED = true;
-    const SYNC_FILE_PATH = '/data/storage/tomato-sync.json';  // 同步状态文件路径
     const SYNC_POLL_INTERVAL = 10000;  // 轮询同步间隔（毫秒），10秒
     const SYNC_DEVICE_ID = 'device_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);  // 本设备唯一标识
     
@@ -69,6 +86,200 @@
         SYNC_POLL_INTERVAL_BG: 60000, // 后台轮询频率 (ms)
         MAX_STOPWATCH_SECONDS: 8 * 3600, // 正计时最大时长 (8小时)
     };
+
+    function __tomatoNormalizeDirPath(path) {
+        const p = String(path || '').trim();
+        if (!p) return '';
+        return p.endsWith('/') ? p.slice(0, -1) : p;
+    }
+
+    async function __tomatoMkdir(path) {
+        const normalized = __tomatoNormalizeDirPath(path);
+        if (!normalized) return false;
+        const candidates = [normalized, `${normalized}/`];
+        for (const candidate of candidates) {
+            try {
+                const r = await postJSON('/api/file/mkdir', { path: candidate });
+                if (r?.ok && (r?.data == null || r?.data?.code === 0)) return true;
+                if (r?.data?.code === 0) return true;
+                const msg = String(r?.data?.msg || '').toLowerCase();
+                if (r?.ok && (msg.includes('exist') || msg.includes('exists'))) return true;
+            } catch (e) {}
+            try {
+                const formData = new FormData();
+                formData.append('path', candidate);
+                const response = await fetch('/api/file/mkdir', { method: 'POST', body: formData });
+                const result = await response.json().catch(() => null);
+                if (response.ok && (result == null || result?.code === 0)) return true;
+                if (result?.code === 0) return true;
+                const msg = String(result?.msg || '').toLowerCase();
+                if (response.ok && (msg.includes('exist') || msg.includes('exists'))) return true;
+            } catch (e) {}
+        }
+        return false;
+    }
+
+    async function __tomatoEnsureDir(path) {
+        const normalized = __tomatoNormalizeDirPath(path);
+        if (!normalized.startsWith('/')) return false;
+        const parts = normalized.split('/').filter(Boolean);
+        if (parts.length < 2) return false;
+        let ok = true;
+        for (let i = 2; i <= parts.length; i++) {
+            const seg = `/${parts.slice(0, i).join('/')}`;
+            const created = await __tomatoMkdir(seg);
+            ok = ok && (created || true);
+        }
+        return ok;
+    }
+
+    async function __tomatoReadDir(path) {
+        try {
+            const r = await postJSON('/api/file/readDir', { path });
+            if (r?.data?.code !== 0) return [];
+            const payload = r.data?.data;
+            if (Array.isArray(payload)) return payload;
+            if (Array.isArray(payload?.files)) return payload.files;
+            if (Array.isArray(payload?.items)) return payload.items;
+            if (Array.isArray(payload?.children)) return payload.children;
+            return [];
+        } catch (e) {
+            return [];
+        }
+    }
+
+    async function __tomatoRenamePath(path, newPath) {
+        try {
+            const r = await postJSON('/api/file/renameFile', { path, newPath });
+            if (r?.data?.code === 0) return true;
+        } catch (e) {}
+        return false;
+    }
+
+    async function __tomatoGetFileText(path) {
+        try {
+            const response = await fetch('/api/file/getFile', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path }),
+            });
+            if (!response.ok) return { exists: false, text: '' };
+            const text = await response.text();
+            try {
+                const obj = safeJsonParse(text);
+                if (obj && typeof obj === 'object' && typeof obj.code === 'number' && typeof obj.msg === 'string' && ('data' in obj) && obj.code !== 0) {
+                    return { exists: false, text: '' };
+                }
+            } catch (e) {}
+            return { exists: true, text: text ?? '' };
+        } catch (e) {
+            return { exists: false, text: '' };
+        }
+    }
+
+    async function __tomatoSelectStoragePaths() {
+        const tryParseJson = (text) => {
+            try { return JSON.parse(String(text ?? '')); } catch (e) { return null; }
+        };
+
+        const hasMeaningfulSettings = (text) => {
+            const obj = tryParseJson(text);
+            if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+            const keys = Object.keys(obj);
+            if (keys.length === 0) return false;
+            const likelyTomatoSettings = ('main' in obj) || ('appearance' in obj) || ('sync' in obj) || ('audioSettings' in obj);
+            return likelyTomatoSettings;
+        };
+
+        const hasMeaningfulHistory = (text) => {
+            const arr = tryParseJson(text);
+            if (!Array.isArray(arr)) return false;
+            return arr.length > 0;
+        };
+
+        const hasMeaningfulFocusSettings = (text) => {
+            const obj = tryParseJson(text);
+            if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+            if (Array.isArray(obj.groups) && obj.groups.length > 0) return true;
+            const keys = Object.keys(obj);
+            if (keys.length === 0) return false;
+            return ('enabled' in obj) || ('groups' in obj) || ('dailyFocusTargetMinutes' in obj);
+        };
+
+        const hasMeaningfulSync = (text) => {
+            const obj = tryParseJson(text);
+            if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+            if (typeof obj.sequenceId === 'number') return true;
+            return false;
+        };
+
+        const pick = async (legacyPath, newPath, validator) => {
+            const legacy = await __tomatoGetFileText(legacyPath);
+            if (legacy.exists && validator(legacy.text)) return legacyPath;
+            return newPath;
+        };
+
+        SETTINGS_FILE_PATH = await pick(LEGACY_SETTINGS_FILE_PATH, NEW_SETTINGS_FILE_PATH, hasMeaningfulSettings);
+        HISTORY_FILE_PATH = await pick(LEGACY_HISTORY_FILE_PATH, NEW_HISTORY_FILE_PATH, hasMeaningfulHistory);
+        FOCUS_TIME_SETTINGS_PATH = await pick(LEGACY_FOCUS_TIME_SETTINGS_PATH, NEW_FOCUS_TIME_SETTINGS_PATH, hasMeaningfulFocusSettings);
+        SYNC_FILE_PATH = await pick(LEGACY_SYNC_FILE_PATH, NEW_SYNC_FILE_PATH, hasMeaningfulSync);
+
+        try {
+            const legacyAudioEntries = await __tomatoReadDir(__tomatoNormalizeDirPath(LEGACY_AUDIO_STORAGE_PATH));
+            AUDIO_STORAGE_PATH = (legacyAudioEntries && legacyAudioEntries.length > 0) ? LEGACY_AUDIO_STORAGE_PATH : NEW_AUDIO_STORAGE_PATH;
+        } catch (e) {
+            AUDIO_STORAGE_PATH = NEW_AUDIO_STORAGE_PATH;
+        }
+    }
+
+    async function __tomatoPutFileText(path, text, contentType = 'application/json') {
+        const formData = new FormData();
+        formData.append('path', path);
+        formData.append('isDir', 'false');
+        formData.append('file', new Blob([text ?? ''], { type: contentType }));
+        const response = await fetch('/api/file/putFile', { method: 'POST', body: formData });
+        const result = await response.json().catch(() => null);
+        return result?.code === 0;
+    }
+
+    async function __tomatoRemoveFile(path, isDir = null) {
+        try {
+            const formData = new FormData();
+            formData.append('path', path);
+            if (isDir === true) formData.append('isDir', 'true');
+            if (isDir === false) formData.append('isDir', 'false');
+            const response = await fetch('/api/file/removeFile', { method: 'POST', body: formData });
+            const result = await response.json().catch(() => null);
+            if (result?.code === 0) return true;
+            const fallback = await postJSON('/api/file/removeFile', { path });
+            return fallback?.data?.code === 0;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async function ensureTomatoStorageMigration() {
+        await __tomatoEnsureDir(PLUGIN_STORAGE_PARENT_DIR);
+        await __tomatoEnsureDir(PLUGIN_STORAGE_DIR);
+        await __tomatoSelectStoragePaths();
+
+        try { await __tomatoEnsureDir(AUDIO_STORAGE_PATH); } catch (e) {}
+    }
+
+    async function cleanupTomatoFilesOnUninstall() {
+        const deleteTargets = [
+            FOCUS_TIME_SETTINGS_PATH,
+            SYNC_FILE_PATH,
+            LEGACY_FOCUS_TIME_SETTINGS_PATH,
+            LEGACY_SYNC_FILE_PATH,
+        ];
+
+        for (const path of deleteTargets) {
+            const exists = await __tomatoGetFileText(path);
+            if (!exists.exists) continue;
+            await __tomatoRemoveFile(path);
+        }
+    }
     
     // ========== 番茄钟同步状态数据结构 ==========
     // 使用绝对时间模型，支持跨设备同步
@@ -138,12 +349,11 @@
         async loadFromCloud() {
             try {
                 Logger.info('🔄 SyncManager: 尝试从云端加载状态，路径:', SYNC_FILE_PATH);
-                const response = await fetch('/api/file/getFile', {
+                let response = await fetch('/api/file/getFile', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ path: SYNC_FILE_PATH }),
                 });
-                
                 Logger.info('🔄 SyncManager: 云端响应状态:', response.status, response.ok);
                 
                 if (response.ok) {
@@ -182,6 +392,7 @@
             
             try {
                 Logger.info('🔄 SyncManager: 保存状态到云端，sequenceId:', targetState.sequenceId, ', status:', targetState.status);
+                try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
                 const formData = new FormData();
                 formData.append('path', SYNC_FILE_PATH);
                 formData.append('isDir', 'false');
@@ -683,8 +894,7 @@
     const TIME_PERIOD_ORDER = ['night', 'morning', 'afternoon', 'evening'];
     
     // ========== 音频配置 ==========
-    // 提示音文件路径配置（存储在 /data/storage/tomato-audio/ 目录下）
-    const AUDIO_STORAGE_PATH = '/data/storage/tomato-audio/';
+    // 提示音文件路径配置（存储在 /data/storage/petal/siyuan-plugin-docktomato/tomato-audio/ 目录下）
     
     // ========== 音频配置对象（从文件加载）
     let audioSettings = null;
@@ -1306,7 +1516,7 @@
         },
         // 音频配置
         audioSettings: {
-            workEndSound: '',      // 工作结束提示音文件名（放在 /data/storage/tomato-audio/ 下）
+            workEndSound: '',      // 工作结束提示音文件名（放在 /data/storage/petal/siyuan-plugin-docktomato/tomato-audio/ 下）
             breakEndSound: '',     // 休息结束提示音文件名
             volume: 0.8,           // 提示音音量 (0-1)
             enabled: true          // 是否启用提示音
@@ -1608,7 +1818,13 @@
                 }
             }
         } catch (e) {
-            Logger.info('使用默认设置');
+            try {
+                const raw = localStorage.getItem('tomato-user-settings');
+                if (raw && raw.trim()) {
+                    const settings = JSON.parse(raw);
+                    userSettings = { ...userSettings, ...settings };
+                }
+            } catch (localError) {}
         }
         try { ensureUserSettings(); } catch (e) {}
         try { Logger.setDebugEnabled(isDebugMode()); } catch (e) {}
@@ -1617,15 +1833,12 @@
 
     async function saveUserSettings() {
         try {
-            const formData = new FormData();
-            formData.append("path", SETTINGS_FILE_PATH);
-            formData.append("isDir", false);
-            formData.append("file", new Blob([JSON.stringify(userSettings, null, 2)], { type: 'application/json' }));
-            
-            await fetch("/api/file/putFile", { method: "POST", body: formData });
+            try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
+            const ok = await __tomatoPutFileText(SETTINGS_FILE_PATH, JSON.stringify(userSettings, null, 2));
+            if (!ok) throw new Error('思源API保存失败');
         } catch (e) {
             Logger.error('保存设置失败:', e);
-            localStorage.setItem('tomato-user-settings', JSON.stringify(userSettings));
+            try { localStorage.setItem('tomato-user-settings', JSON.stringify(userSettings)); } catch (localError) {}
         }
     }
 
@@ -1659,6 +1872,7 @@
 
     async function saveFocusTimeSettings() {
         try {
+            try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
             const formData = new FormData();
             formData.append("path", FOCUS_TIME_SETTINGS_PATH);
             formData.append("isDir", false);
@@ -1754,6 +1968,7 @@
         const dataToSave = JSON.stringify(records, null, 2);
         
         try {
+            try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
             const formData = new FormData();
             formData.append("path", HISTORY_FILE_PATH);
             formData.append("isDir", false);
@@ -13407,11 +13622,18 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (workEndPath) {
             try {
                 // 使用 getFile API 读取文件为 Blob
-                const fileResponse = await fetch('/api/file/getFile', {
+                let fileResponse = await fetch('/api/file/getFile', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ path: AUDIO_STORAGE_PATH + workEndPath })
                 });
+                if (!fileResponse.ok) {
+                    fileResponse = await fetch('/api/file/getFile', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: LEGACY_AUDIO_STORAGE_PATH + workEndPath })
+                    });
+                }
 
                 if (fileResponse.ok) {
                     const blob = await fileResponse.blob();
@@ -13441,11 +13663,18 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (breakEndPath) {
             try {
                 // 使用 getFile API 读取文件为 Blob
-                const fileResponse = await fetch('/api/file/getFile', {
+                let fileResponse = await fetch('/api/file/getFile', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ path: AUDIO_STORAGE_PATH + breakEndPath })
                 });
+                if (!fileResponse.ok) {
+                    fileResponse = await fetch('/api/file/getFile', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: LEGACY_AUDIO_STORAGE_PATH + breakEndPath })
+                    });
+                }
 
                 if (fileResponse.ok) {
                     const blob = await fileResponse.blob();
@@ -13807,7 +14036,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         tomatoInput.type = 'text';
         tomatoInput.placeholder = '番茄时长列表，例如：5,15,30,60';
         tomatoInput.value = getTomatoDurations().join(',');
-        tomatoInput.style.cssText = 'width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--b3-border-color); background: var(--b3-theme-surface); color: var(--b3-theme-on-surface); margin-bottom: 8px;';
+        tomatoInput.style.cssText = 'width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px; border: 1px solid var(--b3-border-color); background: var(--b3-theme-surface); color: var(--b3-theme-on-surface); margin-bottom: 8px;';
         tomatoInput.onchange = async (e) => {
             userSettings.main.tomatoDurations = normalizeMinuteList(e.target.value, DEFAULT_TOMATO_DURATIONS);
             await saveUserSettings();
@@ -13818,7 +14047,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         breakInput.type = 'text';
         breakInput.placeholder = '休息间隔列表，例如：5,10,15,30';
         breakInput.value = getBreakDurations().join(',');
-        breakInput.style.cssText = 'width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--b3-border-color); background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);';
+        breakInput.style.cssText = 'width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px; border: 1px solid var(--b3-border-color); background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);';
         breakInput.onchange = async (e) => {
             userSettings.main.breakDurations = normalizeMinuteList(e.target.value, DEFAULT_BREAK_DURATIONS);
             await saveUserSettings();
@@ -13989,12 +14218,12 @@ function calculateWeeklyStats(dailyStatsArray) {
 
             try {
                 try {
-                        await postJSON('/api/file/mkdir', { path: AUDIO_STORAGE_PATH });
+                        await __tomatoEnsureDir(AUDIO_STORAGE_PATH);
                 } catch (mkdirErr) {}
 
                 const formData = new FormData();
                 formData.append('path', AUDIO_STORAGE_PATH + filename);
-                formData.append('isDir', false);
+                formData.append('isDir', 'false');
                 formData.append('file', file);
 
                 const response = await fetch('/api/file/putFile', {
@@ -14036,7 +14265,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         }
                         audioSettings.workEndSound = filename;
                         userSettings.audioSettings = audioSettings;
-                        saveUserSettings();
+                        await saveUserSettings();
                         workSoundInput.value = filename;
 
                         setTimeout(() => {
@@ -14140,12 +14369,12 @@ function calculateWeeklyStats(dailyStatsArray) {
 
             try {
                 try {
-                        await postJSON('/api/file/mkdir', { path: AUDIO_STORAGE_PATH });
+                        await __tomatoEnsureDir(AUDIO_STORAGE_PATH);
                 } catch (mkdirErr) {}
 
                 const formData = new FormData();
                 formData.append('path', AUDIO_STORAGE_PATH + filename);
-                formData.append('isDir', false);
+                formData.append('isDir', 'false');
                 formData.append('file', file);
 
                 const response = await fetch('/api/file/putFile', {
@@ -14187,7 +14416,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         }
                         audioSettings.breakEndSound = filename;
                         userSettings.audioSettings = audioSettings;
-                        saveUserSettings();
+                        await saveUserSettings();
                         breakSoundInput.value = filename;
 
                         setTimeout(() => {
@@ -14418,10 +14647,34 @@ function calculateWeeklyStats(dailyStatsArray) {
         themeCardsContainer.className = 'tomato-theme-cards';
         container.appendChild(themeCardsContainer);
 
+        let customCard = null;
+        function updateThemeCardSelection() {
+            const appearanceNow = userSettings.appearance || appearance;
+            const hasCustom = appearanceNow.customColors !== null || appearanceNow.theme === 'custom';
+            const presetTheme = appearanceNow.theme;
+
+            for (const card of themeCardsContainer.querySelectorAll('.tomato-theme-card')) {
+                const theme = card.dataset.theme || '';
+                const active = theme === 'custom' ? hasCustom : (!hasCustom && theme === presetTheme);
+                if (active) {
+                    card.classList.add('tomato-theme-card--active');
+                } else {
+                    card.classList.remove('tomato-theme-card--active');
+                }
+            }
+
+            if (customCard) {
+                const preview = customCard.querySelector('.tomato-theme-preview');
+                const start = (hasCustom && appearanceNow.customColors?.start) ? appearanceNow.customColors.start : '#ff6b9d';
+                const end = (hasCustom && appearanceNow.customColors?.end) ? appearanceNow.customColors.end : '#c44569';
+                if (preview) preview.style.background = `linear-gradient(135deg, ${start}, ${end})`;
+            }
+        }
+
         // 预设主题卡片
         Object.entries(NEON_THEMES).forEach(([key, config]) => {
             const card = document.createElement('div');
-            card.className = `tomato-theme-card ${currentTheme === key && !appearance.customColors ? 'tomato-theme-card--active' : ''}`;
+            card.className = 'tomato-theme-card';
             card.dataset.theme = key;
             card.innerHTML = `
                 <div class="tomato-theme-preview" style="background: linear-gradient(135deg, ${config.gradientStart}, ${config.gradientEnd});"></div>
@@ -14430,12 +14683,6 @@ function calculateWeeklyStats(dailyStatsArray) {
                     <span class="tomato-theme-desc">${config.description}</span>
                 </div>
             `;
-            card.style.cssText = `
-                flex: 1; min-width: 100px; max-width: 140px;
-                border: 2px solid ${currentTheme === key && !appearance.customColors ? 'var(--b3-theme-primary)' : 'var(--b3-theme-surfaceVariant)'};
-                border-radius: 8px; padding: 10px; cursor: pointer;
-                transition: all 0.3s ease; background: var(--b3-theme-background);
-            `;
             card.onclick = async () => {
                 appearance.theme = key;
                 appearance.customColors = null; // 清除自定义颜色
@@ -14443,14 +14690,16 @@ function calculateWeeklyStats(dailyStatsArray) {
                 await saveUserSettings();
                 NeonStyleManager.refresh(); // 立即应用设置
                 addNeonStyles();
+                updateThemeCardSelection();
                 showToastDialog('🍅 主题已切换', `已切换到「${config.name}」主题`, 'success');
             };
             themeCardsContainer.appendChild(card);
         });
 
         // 自定义颜色卡片
-        const customCard = document.createElement('div');
         const hasCustomColors = appearance.customColors !== null || appearance.theme === 'custom';
+        customCard = document.createElement('div');
+        customCard.dataset.theme = 'custom';
         customCard.className = `tomato-theme-card ${hasCustomColors ? 'tomato-theme-card--active' : ''}`;
         customCard.innerHTML = `
             <div class="tomato-theme-preview" style="background: linear-gradient(135deg, ${hasCustomColors && appearance.customColors ? appearance.customColors.start : '#ff6b9d'}, ${hasCustomColors && appearance.customColors ? appearance.customColors.end : '#c44569'});"></div>
@@ -14459,19 +14708,14 @@ function calculateWeeklyStats(dailyStatsArray) {
                 <span class="tomato-theme-desc">设置专属配色方案</span>
             </div>
         `;
-        customCard.style.cssText = `
-            flex: 1; min-width: 100px; max-width: 140px;
-            border: 2px solid ${hasCustomColors ? 'var(--b3-theme-primary)' : 'var(--b3-theme-surfaceVariant)'};
-            border-radius: 8px; padding: 10px; cursor: pointer;
-            transition: all 0.3s ease; background: var(--b3-theme-background);
-        `;
-        customCard.onclick = () => {
+        customCard.onclick = async () => {
             // 切换到自定义颜色主题
             appearance.theme = 'custom';
             userSettings.appearance = appearance;
-            saveUserSettings();
+            await saveUserSettings();
             NeonStyleManager.refresh();
             addNeonStyles();
+            updateThemeCardSelection();
             showToastDialog('🍅 已选择', '请在下方设置自定义颜色', 'success');
             
             // 聚焦到自定义颜色输入框
@@ -14481,6 +14725,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             }, 100);
         };
         themeCardsContainer.appendChild(customCard);
+        updateThemeCardSelection();
 
         // 自定义颜色设置
         const customColorContainer = document.createElement('div');
@@ -14604,6 +14849,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             await saveUserSettings();
             NeonStyleManager.refresh(); // 立即应用设置
             addNeonStyles();
+            updateThemeCardSelection();
             showToastDialog('保存成功', '自定义颜色已应用', 'success');
         };
         customColorContainer.appendChild(saveCustomBtn);
@@ -15289,7 +15535,18 @@ function calculateWeeklyStats(dailyStatsArray) {
         // v8.6 修复：使用 syncState 替代 localStorage 状态恢复
         let stateRestored = false;
         
+        await ensureTomatoStorageMigration();
         await loadUserSettings();
+        try {
+            if (SETTINGS_FILE_PATH === NEW_SETTINGS_FILE_PATH) {
+                const s = await __tomatoGetFileText(NEW_SETTINGS_FILE_PATH);
+                if (!s.exists) await saveUserSettings();
+            }
+            if (HISTORY_FILE_PATH === NEW_HISTORY_FILE_PATH) {
+                const h = await __tomatoGetFileText(NEW_HISTORY_FILE_PATH);
+                if (!h.exists) await __tomatoPutFileText(NEW_HISTORY_FILE_PATH, '[]');
+            }
+        } catch (e) {}
         // 确保 audioSettings 对象存在（兼容旧配置）
         if (!userSettings.audioSettings) {
             userSettings.audioSettings = {
@@ -15313,6 +15570,12 @@ function calculateWeeklyStats(dailyStatsArray) {
         audioSettings = userSettings.audioSettings;
         Logger.info('🍅 audioSettings 初始化:', JSON.stringify(audioSettings));
         await loadFocusTimeSettings();
+        try {
+            if (FOCUS_TIME_SETTINGS_PATH === NEW_FOCUS_TIME_SETTINGS_PATH) {
+                const f = await __tomatoGetFileText(NEW_FOCUS_TIME_SETTINGS_PATH);
+                if (!f.exists) await saveFocusTimeSettings();
+            }
+        } catch (e) {}
         const records = await loadHistoryRecords();
         Logger.info('🍅 历史记录条数:', records.length);
         window.showPage = showPage;
@@ -16194,10 +16457,12 @@ function calculateWeeklyStats(dailyStatsArray) {
         try { delete globalThis.__dockTomato; } catch (e) {}
 
         try { delete globalThis.__TomatoTimerCleanup; } catch (e) {}
+        try { delete globalThis.__TomatoTimerUninstallCleanup; } catch (e) {}
         try { delete globalThis.__TomatoTimerLoaded; } catch (e) {}
     };
 
     globalThis.__TomatoTimerCleanup = cleanupTomato;
+    globalThis.__TomatoTimerUninstallCleanup = cleanupTomatoFilesOnUninstall;
 
     // 🔧 性能优化：保存 inject Observer 引用，用于后续清理
     const injectObserver = new MutationObserver(debouncedInject);
