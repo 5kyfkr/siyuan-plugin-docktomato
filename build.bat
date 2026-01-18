@@ -1,48 +1,57 @@
 @echo off
-REM build.bat - 打包插件，排除开发和系统临时文件
+REM build.bat - package plugin (exclude dev/temp files)
 
 setlocal enabledelayedexpansion
 
 set OUTPUT=package.zip
 set PLUGIN_DIR=.
+set PLUGIN_NAME=
 
 if not exist "%PLUGIN_DIR%" (
-    echo ❌ 错误: 未找到插件目录 '%PLUGIN_DIR%' >&2
+    echo ERROR: plugin directory not found '%PLUGIN_DIR%' >&2
     exit /b 1
 )
 
-REM ✅ 保存原始工作目录
+REM Save original working directory
 set ORIGINAL_DIR=%cd%
 
-REM 创建临时目录
+REM Create temp directory
 set TEMP_DIR=%TEMP%\plugin_build_%RANDOM%
+if exist "%TEMP_DIR%" rd /s /q "%TEMP_DIR%"
 mkdir "%TEMP_DIR%"
 
-echo 📁 复制插件文件到临时目录...
+REM Read plugin name from plugin.json (force UTF-8 to avoid mojibake)
+for /f "usebackq delims=" %%i in (`powershell -nologo -noprofile -executionpolicy bypass -command "(Get-Content -Raw -Encoding UTF8 -LiteralPath 'plugin.json' | ConvertFrom-Json).name"`) do set "PLUGIN_NAME=%%i"
+if "%PLUGIN_NAME%"=="" (
+    echo ERROR: failed to read plugin.json name >&2
+    rd /s /q "%TEMP_DIR%"
+    exit /b 1
+)
+set TEMP_PLUGIN_DIR=%TEMP_DIR%\%PLUGIN_NAME%
+mkdir "%TEMP_PLUGIN_DIR%"
 
-REM 复制全部内容 (排除临时目录本身)
-xcopy "%PLUGIN_DIR%\*" "%TEMP_DIR%\" /E /I /Q /H /Y
-
-REM 删除不需要的文件和目录
-if exist "%TEMP_DIR%\.git" rd /s /q "%TEMP_DIR%\.git"
-if exist "%TEMP_DIR%\.gitignore" del /q "%TEMP_DIR%\.gitignore"
-if exist "%TEMP_DIR%\.history" rd /s /q "%TEMP_DIR%\.history"
-if exist "%TEMP_DIR%\.idea" rd /s /q "%TEMP_DIR%\.idea"
-if exist "%TEMP_DIR%\.DS_Store" del /q "%TEMP_DIR%\.DS_Store"
-if exist "%TEMP_DIR%\node_modules" rd /s /q "%TEMP_DIR%\node_modules"
-if exist "%TEMP_DIR%\build.sh" del /q "%TEMP_DIR%\build.sh"
-if exist "%TEMP_DIR%\build.bat" del /q "%TEMP_DIR%\build.bat"
-if exist "%TEMP_DIR%\.hotreload" del /q "%TEMP_DIR%\.hotreload"
-
-REM 删除旧的输出文件
+REM Delete old output first (avoid copying it into temp dir)
 if exist "%ORIGINAL_DIR%\%OUTPUT%" del /q "%ORIGINAL_DIR%\%OUTPUT%"
 
-REM 使用 PowerShell 打包 (Windows 内置)
-echo 📦 正在打包...
-powershell -nologo -noprofile -command "Compress-Archive -Path '%TEMP_DIR%\*' -DestinationPath '%ORIGINAL_DIR%\%OUTPUT%' -Force"
+echo Copy plugin files to temp dir...
+
+REM Copy content with excludes
+robocopy "%PLUGIN_DIR%" "%TEMP_PLUGIN_DIR%" /E /R:1 /W:1 ^
+ /XD ".git" "node_modules" ".history" ".idea" ^
+ /XF ".gitignore" ".DS_Store" ".hotreload" "build.bat" "build.ps1" "build.sh" "%OUTPUT%"
+set RC=%errorlevel%
+if %RC% GEQ 8 (
+    echo ERROR: robocopy failed with code %RC% >&2
+    rd /s /q "%TEMP_DIR%"
+    exit /b 1
+)
+
+REM Pack with PowerShell ZipFile to ensure Windows Explorer compatibility
+echo Packing...
+powershell -nologo -noprofile -executionpolicy bypass -command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::CreateFromDirectory('%TEMP_DIR%', '%ORIGINAL_DIR%\\%OUTPUT%', [System.IO.Compression.CompressionLevel]::Optimal, $false)"
 
 if %errorlevel% neq 0 (
-    echo ❌ 打包失败
+    echo Pack failed
     rd /s /q "%TEMP_DIR%"
     exit /b 1
 )
@@ -50,6 +59,6 @@ if %errorlevel% neq 0 (
 REM 清理临时目录
 rd /s /q "%TEMP_DIR%"
 
-echo ✅ 打包成功: %OUTPUT%
+echo Pack success: %OUTPUT%
 
 endlocal

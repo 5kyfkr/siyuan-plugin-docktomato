@@ -32,7 +32,9 @@ rm -f  "$TEMP_DIR/.DS_Store"
 rm -rf "$TEMP_DIR/node_modules"
 rm -f  "$TEMP_DIR/build.sh"
 rm -f  "$TEMP_DIR/build.bat"
+rm -f  "$TEMP_DIR/build.ps1"
 rm -f  "$TEMP_DIR/.hotreload"
+rm -f  "$TEMP_DIR/$OUTPUT"
 
 # ✅ 使用保存的原始目录
 (cd "$TEMP_DIR" && zip -r "$ORIGINAL_DIR/$OUTPUT" .)

@@ -1,8 +1,8 @@
 {
-    "name": "my-plugin",
-    "author": "Wilson",
-    "url": "https://github.com/wish5115/my-plugin",
-    "version": "0.0.1",
+    "name": "siyuan-plugin-docktomato",
+    "author": "5kyfkr",
+    "url": "https://github.com/5kyfkr/siyuan-plugin-docktomato",
+    "version": "1.0.0",
     "minAppVersion": "3.0.12",
     "disabledInPublish": false,
     "backends": [
@@ -12,21 +12,16 @@
         "all"
     ],
     "displayName": {
-        "default": "My Plugin",
-        "zh_CN": "我的插件"
+        "default": "Dock Tomato",
+        "zh_CN": "底栏番茄钟"
     },
     "description": {
-        "default": "It is commonly used to implement some personalized features.",
-        "zh_CN": "常用来实现一些个性化的功能。"
+        "default": "A dock Tomato Timer for SiYuan.",
+        "zh_CN": "思源底栏番茄钟：支持时间轴视图/多端状态同步/移动端/数据库联动/块绑定/历史记录"
     },
     "readme": {
         "default": "README.md",
         "zh_CN": "README_zh_CN.md"
     },
-    "keywords": [],
-    "funding": {
-        "custom": [
-            "https://b3logfile.com/file/2025/06/image-fEA9BRv.png?imageView2/2/interlace/1/format/webp"
-        ]
-    }
+    "keywords": ["tomato", "timer", "pomodoro", "dock"]
 }

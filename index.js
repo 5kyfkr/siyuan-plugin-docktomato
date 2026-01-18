@@ -1,120 +1,87 @@
-const { Plugin, Dialog, Setting } = require("siyuan");
+const { Plugin, Setting, openTab, openMobileFileById } = require("siyuan");
 
-const STORAGE_NAME = "config.json";
+const PLUGIN_ID = "siyuan-plugin-docktomato";
+const TOMATO_SCRIPT_PATH = `/data/plugins/${PLUGIN_ID}/tomato.js`;
 
-module.exports = class MyPlugin extends Plugin {
-    onload() {
-        console.log("Hello My Plugin");
-        const textareaElement = document.createElement("textarea");
-        this.data[STORAGE_NAME] = {readonlyText: "Readonly"};
-        this.addCommand({
-            langKey: "showDialog",
-            hotkey: "⇧⌘O",
-            callback: () => {
-                this.showDialog();
-            },
-        });
+const fetchText = async (url, data) => {
+    const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data || {}),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+};
 
-        const DOCK_TYPE = "dock_tab";
-        this.addDock({
-            config: {
-                position: "LeftBottom",
-                size: {width: 200, height: 0},
-                icon: "iconSaving",
-                title: "Custom Dock",
-                hotkey: "⌥⌘W",
-            },
-            data: {
-                text: "This is my custom dock"
-            },
-            type: DOCK_TYPE,
-            resize() {
-                console.log(DOCK_TYPE + " resize");
-            },
-            update() {
-                console.log(DOCK_TYPE + " update");
-            },
-            init: (dock) => {
-                if (this.isMobile) {
-                    dock.element.innerHTML = `<div class="toolbar toolbar--border toolbar--dark">
-    <svg class="toolbar__icon"><use xlink:href="#iconEmoji"></use></svg>
-        <div class="toolbar__text">Custom Dock</div>
-    </div>
-    <div class="fn__flex-1 plugin-sample__custom-dock">
-        ${dock.data.text}
-    </div>
-</div>`;
-                } else {
-                    dock.element.innerHTML = `<iframe allow="clipboard-read; clipboard-write" sandbox="allow-forms allow-presentation allow-same-origin allow-scripts allow-modals allow-popups" src="https://m.baidu.com" data-src="" border="1" frameborder="no" framespacing="0" allowfullscreen="true" style="height: 100%; width: 100%; pointer-events: auto;">
-                </iframe><!--<div class="fn__flex-1 fn__flex-column">
-    <div class="block__icons">
-        <div class="block__logo">
-            <svg class="block__logoicon"><use xlink:href="#iconEmoji"></use></svg>Custom Dock
-        </div>
-        <span class="fn__flex-1 fn__space"></span>
-        <span data-type="min" class="block__icon b3-tooltips b3-tooltips__sw" aria-label="Min "><svg><use xlink:href="#iconMin"></use></svg></span>
-    </div>
-    <div class="fn__flex-1 plugin-sample__custom-dock">
-        ${dock.data.text}
-    </div>
-</div>-->`;
-                }
-            },
-            destroy() {
-                console.log("destroy dock:", DOCK_TYPE);
-            }
-        });
-
-        this.setting = new Setting({
-            confirmCallback: () => {
-                this.saveData(STORAGE_NAME, {readonlyText: textareaElement.value});
-            }
-        });
-        this.setting.addItem({
-            title: "Readonly text",
-            direction: "row",
-            description: "Open plugin url in browser",
-            createActionElement: () => {
-                textareaElement.className = "b3-text-field fn__block";
-                textareaElement.placeholder = "Readonly text in the menu";
-                textareaElement.value = this.data[STORAGE_NAME].readonlyText;
-                return textareaElement;
-            },
-        });
-
+const loadTomatoScript = async () => {
+    try {
+        const code = await fetchText("/api/file/getFile", { path: TOMATO_SCRIPT_PATH });
+        if (!code || !code.trim()) throw new Error("empty script");
+        (0, eval)(code);
+        return true;
+    } catch (e) {
+        console.error("[tomato] load script failed", e);
+        return false;
     }
-    onLayoutReady() {
-        console.log(`onLayoutReady`);
+};
+
+module.exports = class TomatoTimerPlugin extends Plugin {
+    async onload() {
+        globalThis.__tomatoPluginApp = this.app;
+        globalThis.__tomatoPluginIsMobile = !!this.isMobile;
+        globalThis.__tomatoOpenTab = typeof openTab === "function" ? openTab : null;
+        globalThis.__tomatoOpenMobileFileById = typeof openMobileFileById === "function" ? openMobileFileById : null;
+        await loadTomatoScript();
+
+        this.setting = new Setting({});
+
+        const mkButton = (label, onClick) => {
+            const btn = document.createElement("button");
+            btn.className = "b3-button b3-button--outline fn__block";
+            btn.textContent = label;
+            btn.onclick = () => {
+                try { onClick?.(); } catch (e) { console.error("[tomato] open setting failed", e); }
+            };
+            return btn;
+        };
+
+        this.setting.addItem({
+            title: "番茄钟设置",
+            description: "同步/音频/外观/任务块",
+            createActionElement: () => mkButton("打开设置", () => globalThis.__dockTomato?.openSettings?.()),
+        });
+
+        this.setting.addItem({
+            title: "专注时间范围",
+            description: "配置工作日/周末等专注时间段",
+            createActionElement: () => mkButton("打开时间范围设置", () => globalThis.__dockTomato?.openFocusSettings?.()),
+        });
+
+        this.setting.addItem({
+            title: "时间轴设置",
+            description: "时间轴样式与显示范围",
+            createActionElement: () => mkButton("打开时间轴设置", () => globalThis.__dockTomato?.openTimelineSettings?.()),
+        });
+
+        this.setting.addItem({
+            title: "历史统计",
+            description: "查看历史记录与统计",
+            createActionElement: () => mkButton("打开历史面板", () => globalThis.__dockTomato?.openHistory?.("summary")),
+        });
     }
 
     onunload() {
-        console.log("Bye Plugin");
-    }
-
-    uninstall() {
-        console.log("uninstall");
-    }
-
-    showDialog() {
-        const dialog = new Dialog({
-            title: `hello world`,
-            content: `<div class="b3-dialog__content">
-    <div>appId:</div>
-    <div class="fn__hr"></div>
-    <div class="plugin-sample__time">${this.app.appId}</div>
-    <div class="fn__hr"></div>
-    <div class="fn__hr"></div>
-    <div>API demo:</div>
-    <div class="fn__hr"></div>
-    <div class="plugin-sample__time">System current time: <span id="time">1111</span></div>
-    <div class="fn__hr"></div>
-    <div class="fn__hr"></div>
-    <div>Protyle demo:</div>
-    <div class="fn__hr"></div>
-    <div id="protyle" style="height: 360px;">hi ni hao</div>
-</div>`,
-            width: this.isMobile ? "92vw" : "560px",
-            height: "540px",
-        });
+        try {
+            if (typeof globalThis.__TomatoTimerCleanup === "function") {
+                globalThis.__TomatoTimerCleanup();
+            }
+        } catch (e) {
+            console.error("[tomato] cleanup failed", e);
+        } finally {
+            try { delete globalThis.__tomatoPluginApp; } catch (e) {}
+            try { delete globalThis.__tomatoPluginIsMobile; } catch (e) {}
+            try { delete globalThis.__tomatoOpenTab; } catch (e) {}
+            try { delete globalThis.__tomatoOpenMobileFileById; } catch (e) {}
+        }
     }
 };
