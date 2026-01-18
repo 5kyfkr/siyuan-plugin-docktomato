@@ -4,7 +4,8 @@ const PLUGIN_ID = "siyuan-plugin-docktomato";
 const TOMATO_SCRIPT_PATH = `/data/plugins/${PLUGIN_ID}/tomato.js`;
 const PLUGIN_STORAGE_DIR = "/data/storage/petal/siyuan-plugin-docktomato";
 const LEGACY_STORAGE_DIR = "/data/storage";
-const LEGACY_AUDIO_DIR = "/data/storage/tomato-audio";
+const LEGACY_AUDIO_DIR = "/data/storage/tomato-audio/";
+const PLUGIN_AUDIO_DIR = `${PLUGIN_STORAGE_DIR}/tomato-audio/`;
 
 const fetchText = async (url, data) => {
     const res = await fetch(url, {
@@ -30,7 +31,12 @@ const loadTomatoScript = async () => {
 
 const removeFile = async (path, isDir) => {
     try {
-        const payload = { path };
+        let normalizedPath = path;
+        if (isDir === true && typeof normalizedPath === "string" && normalizedPath && !normalizedPath.endsWith("/")) {
+            normalizedPath = normalizedPath + "/";
+        }
+
+        const payload = { path: normalizedPath };
         if (isDir === true) payload.isDir = true;
         if (isDir === false) payload.isDir = false;
         const res = await fetch("/api/file/removeFile", {
@@ -121,7 +127,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             }
 
             await removeFile(LEGACY_AUDIO_DIR, true);
-            await removeFile(`${PLUGIN_STORAGE_DIR}/tomato-audio`, true);
+            await removeFile(PLUGIN_AUDIO_DIR, true);
         };
 
         keepHistoryOnly().catch((e) => {
