@@ -1,12 +1,12 @@
 $ErrorActionPreference = 'Stop'
 
-$pluginDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$pluginDir = Split-Path -Parent $PSCommandPath
 $output = Join-Path $pluginDir 'package.zip'
 $pluginJson = Join-Path $pluginDir 'plugin.json'
 $pluginName = (Get-Content -Raw -Encoding UTF8 -LiteralPath $pluginJson | ConvertFrom-Json).name
 if ([string]::IsNullOrWhiteSpace($pluginName)) { throw 'plugin.json name missing' }
 
-$tempDir = Join-Path $env:TEMP ('plugin_build_' + [System.Guid]::NewGuid().ToString('N'))
+$tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('plugin_build_' + [System.Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 
 try {
