@@ -17,8 +17,10 @@ try {
     $removePaths = @(
         '.git',
         '.gitignore',
+        '.github',
         '.history',
         '.idea',
+        '.vscode',
         '.DS_Store',
         'node_modules',
         'package.zip',
