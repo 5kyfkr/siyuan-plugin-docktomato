@@ -30,20 +30,13 @@ const loadTomatoScript = async () => {
 
 const removeFile = async (path, isDir) => {
     try {
-        const formData = new FormData();
-        formData.append("path", path);
-        if (isDir === true) formData.append("isDir", "true");
-        if (isDir === false) formData.append("isDir", "false");
-        const res = await fetch("/api/file/removeFile", { method: "POST", body: formData });
-        const result = await res.json().catch(() => null);
-        if (result?.code === 0) return true;
-    } catch (e) {}
-
-    try {
+        const payload = { path };
+        if (isDir === true) payload.isDir = true;
+        if (isDir === false) payload.isDir = false;
         const res = await fetch("/api/file/removeFile", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ path }),
+            body: JSON.stringify(payload),
         });
         const result = await res.json().catch(() => null);
         if (result?.code === 0) return true;
@@ -124,7 +117,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
                 `${PLUGIN_STORAGE_DIR}/tomato-sync.json`,
             ];
             for (const p of deleteTargets) {
-                await removeFile(p, false);
+                await removeFile(p);
             }
 
             await removeFile(LEGACY_AUDIO_DIR, true);
