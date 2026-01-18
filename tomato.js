@@ -156,24 +156,40 @@
         return false;
     }
 
+    const __tomatoFileTextCache = new Map();
+
     async function __tomatoGetFileText(path) {
+        const key = String(path ?? '');
+        if (__tomatoFileTextCache.has(key)) {
+            return __tomatoFileTextCache.get(key);
+        }
         try {
             const response = await fetch('/api/file/getFile', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path }),
+                body: JSON.stringify({ path: key }),
             });
-            if (!response.ok) return { exists: false, text: '' };
+            if (!response.ok) {
+                const v = { exists: false, text: '' };
+                __tomatoFileTextCache.set(key, v);
+                return v;
+            }
             const text = await response.text();
             try {
                 const obj = safeJsonParse(text);
                 if (obj && typeof obj === 'object' && typeof obj.code === 'number' && typeof obj.msg === 'string' && ('data' in obj) && obj.code !== 0) {
-                    return { exists: false, text: '' };
+                    const v = { exists: false, text: '' };
+                    __tomatoFileTextCache.set(key, v);
+                    return v;
                 }
             } catch (e) {}
-            return { exists: true, text: text ?? '' };
+            const v = { exists: true, text: text ?? '' };
+            __tomatoFileTextCache.set(key, v);
+            return v;
         } catch (e) {
-            return { exists: false, text: '' };
+            const v = { exists: false, text: '' };
+            __tomatoFileTextCache.set(key, v);
+            return v;
         }
     }
 
@@ -259,11 +275,7 @@
     }
 
     async function ensureTomatoStorageMigration() {
-        await __tomatoEnsureDir(PLUGIN_STORAGE_PARENT_DIR);
-        await __tomatoEnsureDir(PLUGIN_STORAGE_DIR);
         await __tomatoSelectStoragePaths();
-
-        try { await __tomatoEnsureDir(AUDIO_STORAGE_PATH); } catch (e) {}
     }
 
     async function cleanupTomatoFilesOnUninstall() {
@@ -1804,18 +1816,11 @@
     // ========== 设置管理 ==========
     async function loadUserSettings() {
         try {
-            const response = await fetch("/api/file/getFile", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ path: SETTINGS_FILE_PATH }),
-            });
-
-            if (response.ok) {
-                const text = await response.text();
-                if (text && text.trim()) {
-                    const settings = JSON.parse(text);
-                    userSettings = { ...userSettings, ...settings };
-                }
+            const r = await __tomatoGetFileText(SETTINGS_FILE_PATH);
+            const text = r?.exists ? (r.text ?? '') : '';
+            if (text && String(text).trim()) {
+                const settings = JSON.parse(text);
+                userSettings = { ...userSettings, ...settings };
             }
         } catch (e) {
             try {
@@ -1845,26 +1850,19 @@
     // ========== 专注时间设置管理 ==========
     async function loadFocusTimeSettings() {
         try {
-            const response = await fetch("/api/file/getFile", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ path: FOCUS_TIME_SETTINGS_PATH }),
-            });
-
-            if (response.ok) {
-                const text = await response.text();
-                if (text && text.trim()) {
-                    const settings = JSON.parse(text);
-                    if (settings && Array.isArray(settings.groups)) {
-                        focusTimeSettings = settings;
-                    } else {
-                        Logger.warn('专注时间设置格式错误，使用默认值');
-                        focusTimeSettings = getDefaultFocusSettings();
-                    }
+            const r = await __tomatoGetFileText(FOCUS_TIME_SETTINGS_PATH);
+            const text = r?.exists ? (r.text ?? '') : '';
+            if (text && String(text).trim()) {
+                const settings = JSON.parse(text);
+                if (settings && Array.isArray(settings.groups)) {
+                    focusTimeSettings = settings;
+                } else {
+                    focusTimeSettings = getDefaultFocusSettings();
                 }
+            } else {
+                focusTimeSettings = getDefaultFocusSettings();
             }
         } catch (e) {
-            Logger.info('使用默认专注时间设置');
             focusTimeSettings = getDefaultFocusSettings();
         }
         return focusTimeSettings;
@@ -1903,37 +1901,29 @@
     // ========== 历史记录管理 ==========
     async function loadHistoryRecords() {
         try {
-            const response = await fetch("/api/file/getFile", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ path: HISTORY_FILE_PATH }),
-            });
-
-            if (response.ok) {
-                const text = await response.text();
-                if (text && text.trim()) {
-                    let records = JSON.parse(text);
-                    
-                    records = records.map(record => {
-                        if (record.date) {
-                            record.date = normalizeLegacyDate(record.date);
-                        } else if (record.start) {
-                            record.date = formatDateKey(record.start);
-                        }
-                        return record;
-                    });
-                    
-					const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
-					const filtered = records.filter(r => {
-						try { return toDateSafe(r.start).getTime() >= oneYearAgo; } catch (e) { return false; }
-					});
-                    
-                    if (filtered.length !== records.length) {
-                        await saveHistoryRecords(filtered);
-                        records = filtered;
+            const r = await __tomatoGetFileText(HISTORY_FILE_PATH);
+            const text = r?.exists ? (r.text ?? '') : '';
+            if (text && String(text).trim()) {
+                let records = JSON.parse(text);
+                
+                records = records.map(record => {
+                    if (record.date) {
+                        record.date = normalizeLegacyDate(record.date);
+                    } else if (record.start) {
+                        record.date = formatDateKey(record.start);
                     }
-                    return records;
+                    return record;
+                });
+                
+                const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
+                const filtered = records.filter(r => {
+                    try { return toDateSafe(r.start).getTime() >= oneYearAgo; } catch (e) { return false; }
+                });
+                
+                if (filtered.length !== records.length) {
+                    records = filtered;
                 }
+                return records;
             }
         } catch (e) {
             Logger.warn('读取历史记录失败:', e.message);
@@ -15537,16 +15527,6 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         await ensureTomatoStorageMigration();
         await loadUserSettings();
-        try {
-            if (SETTINGS_FILE_PATH === NEW_SETTINGS_FILE_PATH) {
-                const s = await __tomatoGetFileText(NEW_SETTINGS_FILE_PATH);
-                if (!s.exists) await saveUserSettings();
-            }
-            if (HISTORY_FILE_PATH === NEW_HISTORY_FILE_PATH) {
-                const h = await __tomatoGetFileText(NEW_HISTORY_FILE_PATH);
-                if (!h.exists) await __tomatoPutFileText(NEW_HISTORY_FILE_PATH, '[]');
-            }
-        } catch (e) {}
         // 确保 audioSettings 对象存在（兼容旧配置）
         if (!userSettings.audioSettings) {
             userSettings.audioSettings = {
@@ -15570,12 +15550,6 @@ function calculateWeeklyStats(dailyStatsArray) {
         audioSettings = userSettings.audioSettings;
         Logger.info('🍅 audioSettings 初始化:', JSON.stringify(audioSettings));
         await loadFocusTimeSettings();
-        try {
-            if (FOCUS_TIME_SETTINGS_PATH === NEW_FOCUS_TIME_SETTINGS_PATH) {
-                const f = await __tomatoGetFileText(NEW_FOCUS_TIME_SETTINGS_PATH);
-                if (!f.exists) await saveFocusTimeSettings();
-            }
-        } catch (e) {}
         const records = await loadHistoryRecords();
         Logger.info('🍅 历史记录条数:', records.length);
         window.showPage = showPage;
