@@ -21,6 +21,8 @@ try {
         '.vscode',
         '.DS_Store',
         'node_modules',
+        'CHANGELOG.md',
+        'LICENSE',
         'package.zip',
         'build.sh',
         'build.bat',

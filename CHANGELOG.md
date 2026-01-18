@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.6
+
+- 发布包不再包含 CHANGELOG.md 与 LICENSE
+
 ## 1.0.5
 
 - 启动时不再写入配置文件/不再 mkdir；配置缺失时直接使用默认配置
