@@ -255,6 +255,15 @@
         formData.append('file', new Blob([text ?? ''], { type: contentType }));
         const response = await fetch('/api/file/putFile', { method: 'POST', body: formData });
         const result = await response.json().catch(() => null);
+        
+        // 🔧 修复：保存成功后清除相关缓存，确保下次读取的是最新数据
+        if (result?.code === 0 && typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
+            const fileKey = String(path ?? '');
+            if (__tomatoFileTextCache.has(fileKey)) {
+                __tomatoFileTextCache.delete(fileKey);
+            }
+        }
+        
         return result?.code === 0;
     }
 
@@ -1968,6 +1977,14 @@
             const result = await response.json();
             
             if (result && result.code === 0) {
+                // 🔧 修复：保存成功后清除缓存，确保下次读取的是最新数据
+                if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map && HISTORY_FILE_PATH) {
+                    const historyFileKey = String(HISTORY_FILE_PATH);
+                    if (__tomatoFileTextCache.has(historyFileKey)) {
+                        __tomatoFileTextCache.delete(historyFileKey);
+                        Logger.debug('🍅 保存历史记录后已清除缓存');
+                    }
+                }
                 return true;
             } else {
                 throw new Error('思源API保存失败');
@@ -7507,17 +7524,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         return container;
     }
 
-    async function showHistoryDialog(targetPage = 'summary') {	
-		// 🔧 修复：进入历史记录页面时清除文件缓存，确保读取最新的历史记录
-		// __tomatoGetFileText 有一个全局缓存，需要清除 HISTORY_FILE_PATH 对应的缓存
-		if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
-			const historyFileKey = String(HISTORY_FILE_PATH ?? '');
-			if (__tomatoFileTextCache.has(historyFileKey)) {
-				__tomatoFileTextCache.delete(historyFileKey);
-				Logger.debug('🍅 已清除历史记录文件缓存，将重新读取最新数据');
-			}
-		}	
-		
+    async function showHistoryDialog(targetPage = 'summary') {
         // 完整清理可能存在的旧对话框，防止DOM残留导致界面变黑
         const oldDialog = document.getElementById('tomy-tomato-history-dialog');
         const oldBackdrop = document.getElementById('tomy-tomato-history-backdrop');
@@ -8000,7 +8007,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         const showBreakCheckbox = document.createElement('input');
         showBreakCheckbox.type = 'checkbox';
         showBreakCheckbox.checked = userSettings.showBreakRecords;
-        showBreakCheckbox.onchange = async () => {
+        showBreakCheckbox.onclick = async (e) => {
+            e.stopPropagation(); // 阻止事件冒泡，避免触发 backdrop 的关闭逻辑
             userSettings.showBreakRecords = showBreakCheckbox.checked;
             await saveUserSettings();
             const dialog = document.getElementById('tomy-tomato-history-dialog');
@@ -8021,7 +8029,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         const groupCheckbox = document.createElement('input');
         groupCheckbox.type = 'checkbox';
         groupCheckbox.checked = userSettings.groupByTimePeriod;
-        groupCheckbox.onchange = async () => {
+        groupCheckbox.onclick = async (e) => {
+            e.stopPropagation(); // 阻止事件冒泡，避免触发 backdrop 的关闭逻辑
             userSettings.groupByTimePeriod = groupCheckbox.checked;
             await saveUserSettings();
             const dialog = document.getElementById('tomy-tomato-history-dialog');
@@ -8043,7 +8052,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         const deleteConfirmCheckbox = document.createElement('input');
         deleteConfirmCheckbox.type = 'checkbox';
         deleteConfirmCheckbox.checked = userSettings.deleteWithoutConfirm;
-        deleteConfirmCheckbox.onchange = async () => {
+        deleteConfirmCheckbox.onclick = async (e) => {
+            e.stopPropagation(); // 阻止事件冒泡，避免触发 backdrop 的关闭逻辑
             userSettings.deleteWithoutConfirm = deleteConfirmCheckbox.checked;
             await saveUserSettings();
         };
@@ -8060,7 +8070,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         const hideShortCheckbox = document.createElement('input');
         hideShortCheckbox.type = 'checkbox';
         hideShortCheckbox.checked = userSettings.hideShortRecords;
-        hideShortCheckbox.onchange = async () => {
+        hideShortCheckbox.onclick = async (e) => {
+            e.stopPropagation(); // 阻止事件冒泡，避免触发 backdrop 的关闭逻辑
             userSettings.hideShortRecords = hideShortCheckbox.checked;
             await saveUserSettings();
             const dialog = document.getElementById('tomy-tomato-history-dialog');
