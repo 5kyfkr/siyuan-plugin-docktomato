@@ -7507,7 +7507,17 @@ function calculateWeeklyStats(dailyStatsArray) {
         return container;
     }
 
-    async function showHistoryDialog(targetPage = 'summary') {
+    async function showHistoryDialog(targetPage = 'summary') {	
+		// 🔧 修复：进入历史记录页面时清除文件缓存，确保读取最新的历史记录
+		// __tomatoGetFileText 有一个全局缓存，需要清除 HISTORY_FILE_PATH 对应的缓存
+		if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
+			const historyFileKey = String(HISTORY_FILE_PATH ?? '');
+			if (__tomatoFileTextCache.has(historyFileKey)) {
+				__tomatoFileTextCache.delete(historyFileKey);
+				Logger.debug('🍅 已清除历史记录文件缓存，将重新读取最新数据');
+			}
+		}	
+		
         // 完整清理可能存在的旧对话框，防止DOM残留导致界面变黑
         const oldDialog = document.getElementById('tomy-tomato-history-dialog');
         const oldBackdrop = document.getElementById('tomy-tomato-history-backdrop');
