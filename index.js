@@ -114,6 +114,21 @@ module.exports = class TomatoTimerPlugin extends Plugin {
 
     uninstall() {
         const keepHistoryOnly = async () => {
+            try {
+                if (typeof globalThis.__TomatoTimerCleanup === "function") {
+                    globalThis.__TomatoTimerCleanup();
+                }
+            } catch (e) {
+                console.error("[tomato] cleanup before uninstall failed", e);
+            }
+            try {
+                if (typeof globalThis.__TomatoTimerUninstallCleanup === "function") {
+                    await globalThis.__TomatoTimerUninstallCleanup();
+                }
+            } catch (e) {
+                console.error("[tomato] uninstall cleanup hook failed", e);
+            }
+
             const deleteTargets = [
                 `${LEGACY_STORAGE_DIR}/tomato-settings.json`,
                 `${LEGACY_STORAGE_DIR}/tomato-focus-settings.json`,

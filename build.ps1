@@ -21,6 +21,7 @@ try {
         '.vscode',
         '.DS_Store',
         'node_modules',
+        'GUIDE_zh_CN.md',
         'CHANGELOG.md',
         'LICENSE',
         'package.zip',
