@@ -1627,7 +1627,9 @@
         timeline: {
             enabled: false,
             enableBreathing: true,
-            syncRoutineButtonsHighlight: true, // 日常事务按钮高亮同步到时间轴，默认开启
+            enableHighlightGlassEffect: true,
+            glassIntensity: 0.7,
+            syncRoutineButtonsHighlight: true, // 日常事务按钮颜色同步到时间轴，默认开启
             startTime: '08:00',
             endTime: '24:00',
             scaleMinutes: 60,
@@ -3167,6 +3169,9 @@
             if (!userSettings.timeline) userSettings.timeline = {};
             if (typeof userSettings.timeline.enabled !== 'boolean') userSettings.timeline.enabled = false;
             if (typeof userSettings.timeline.enableBreathing !== 'boolean') userSettings.timeline.enableBreathing = true;
+            if (typeof userSettings.timeline.enableHighlightGlassEffect !== 'boolean') userSettings.timeline.enableHighlightGlassEffect = true;
+            if (typeof userSettings.timeline.glassIntensity !== 'number' || !Number.isFinite(userSettings.timeline.glassIntensity)) userSettings.timeline.glassIntensity = 0.7;
+            userSettings.timeline.glassIntensity = Math.max(0, Math.min(1, Number(userSettings.timeline.glassIntensity) || 0.7));
             if (!userSettings.timeline.startTime) userSettings.timeline.startTime = '08:00';
             if (!userSettings.timeline.endTime) userSettings.timeline.endTime = '24:00';
             if (!userSettings.timeline.scaleMinutes) userSettings.timeline.scaleMinutes = 60;
@@ -3191,7 +3196,7 @@
             if (!userSettings.timeline.highlightColors.tomato) userSettings.timeline.highlightColors.tomato = '#F44336';
             if (!userSettings.timeline.highlightColors.stopwatch) userSettings.timeline.highlightColors.stopwatch = '#00C853';
             if (!userSettings.timeline.highlightColors.break) userSettings.timeline.highlightColors.break = '#9E9E9E';
-            // 🔧 新增：日常事务按钮高亮同步到时间轴的全局开关
+            // 🔧 新增：日常事务按钮颜色同步到时间轴的全局开关
             if (typeof userSettings.timeline.syncRoutineButtonsHighlight !== 'boolean') userSettings.timeline.syncRoutineButtonsHighlight = true;
             if (typeof userSettings.timeline.collapsedHeightPx !== 'number') userSettings.timeline.collapsedHeightPx = 7;
             if (typeof userSettings.timeline.expandedHeightPx !== 'number') userSettings.timeline.expandedHeightPx = 27;
@@ -3229,6 +3234,7 @@
             padding: 0; width: 360px; max-width: calc(100vw - 24px);
             display: flex; flex-direction: column; pointer-events: auto;
             color: var(--b3-theme-on-background);
+            max-height: calc(100vh - 24px);
         `;
 
         const header = document.createElement('div');
@@ -3253,7 +3259,7 @@
         dialog.appendChild(header);
 
         const content = document.createElement('div');
-        content.style.cssText = `padding: 16px; display: flex; flex-direction: column; gap: 12px;`;
+        content.style.cssText = `padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;`;
 
         const row = (labelText, inputEl) => {
             const r = document.createElement('div');
@@ -3308,7 +3314,57 @@
         };
         content.appendChild(row('时间轴呼吸效果', breathingInput));
 
-        // 🔧 新增：日常事务按钮高亮同步到时间轴的全局开关
+        const glassEffectInput = document.createElement('input');
+        glassEffectInput.type = 'checkbox';
+        glassEffectInput.checked = userSettings.timeline.enableHighlightGlassEffect !== false;
+        glassEffectInput.style.cssText = `cursor: pointer; transform: scale(1.15);`;
+        glassEffectInput.onchange = async () => {
+            ensureTimelineDefaults();
+            userSettings.timeline.enableHighlightGlassEffect = glassEffectInput.checked;
+            await saveUserSettings();
+            syncGlassIntensityDisabled();
+            try { if (userSettings.timeline.enabled) updateTimelineBar(true); } catch (e) {}
+        };
+        content.appendChild(row('高亮玻璃效果', glassEffectInput));
+
+        const glassIntensityWrap = document.createElement('div');
+        glassIntensityWrap.style.cssText = `display: flex; align-items: center; gap: 8px;`;
+        const glassIntensityInput = document.createElement('input');
+        glassIntensityInput.type = 'range';
+        glassIntensityInput.min = '0';
+        glassIntensityInput.max = '1';
+        glassIntensityInput.step = '0.05';
+        glassIntensityInput.value = String(Number.isFinite(userSettings.timeline.glassIntensity) ? userSettings.timeline.glassIntensity : 0.7);
+        glassIntensityInput.style.cssText = `width: 160px; cursor: pointer;`;
+        const glassIntensityText = document.createElement('span');
+        glassIntensityText.style.cssText = `font-size: 12px; opacity: 0.8; width: 42px; text-align: right;`;
+        const renderGlassIntensityText = () => {
+            const v = Math.max(0, Math.min(1, Number(glassIntensityInput.value) || 0));
+            glassIntensityText.textContent = `${Math.round(v * 100)}%`;
+        };
+        renderGlassIntensityText();
+        const syncGlassIntensityDisabled = () => {
+            const disabled = !glassEffectInput.checked;
+            glassIntensityInput.disabled = disabled;
+            glassIntensityInput.style.opacity = disabled ? '0.6' : '1';
+            glassIntensityInput.style.cursor = disabled ? 'not-allowed' : 'pointer';
+            glassIntensityText.style.opacity = disabled ? '0.6' : '0.8';
+        };
+        syncGlassIntensityDisabled();
+        glassIntensityInput.oninput = () => {
+            renderGlassIntensityText();
+        };
+        glassIntensityInput.onchange = async () => {
+            ensureTimelineDefaults();
+            userSettings.timeline.glassIntensity = Math.max(0, Math.min(1, Number(glassIntensityInput.value) || 0));
+            await saveUserSettings();
+            try { if (userSettings.timeline.enabled) updateTimelineBar(true); } catch (e) {}
+        };
+        glassIntensityWrap.appendChild(glassIntensityInput);
+        glassIntensityWrap.appendChild(glassIntensityText);
+        content.appendChild(rowStack('玻璃效果强度', glassIntensityWrap));
+
+        // 🔧 新增：日常事务按钮颜色同步到时间轴的全局开关
         const syncRoutineHighlightInput = document.createElement('input');
         syncRoutineHighlightInput.type = 'checkbox';
         syncRoutineHighlightInput.checked = userSettings.timeline.syncRoutineButtonsHighlight !== false;
@@ -3318,7 +3374,7 @@
             userSettings.timeline.syncRoutineButtonsHighlight = syncRoutineHighlightInput.checked;
             await saveUserSettings();
         };
-        content.appendChild(row('日常事务按钮高亮同步到时间轴', syncRoutineHighlightInput));
+        content.appendChild(row('日常事务按钮颜色同步到时间轴', syncRoutineHighlightInput));
 
         const startInput = document.createElement('input');
         startInput.type = 'text';
@@ -4127,6 +4183,9 @@
         if (!userSettings.timeline) userSettings.timeline = {};
         if (typeof userSettings.timeline.enabled !== 'boolean') userSettings.timeline.enabled = false;
         if (typeof userSettings.timeline.enableBreathing !== 'boolean') userSettings.timeline.enableBreathing = true;
+        if (typeof userSettings.timeline.enableHighlightGlassEffect !== 'boolean') userSettings.timeline.enableHighlightGlassEffect = true;
+        if (typeof userSettings.timeline.glassIntensity !== 'number' || !Number.isFinite(userSettings.timeline.glassIntensity)) userSettings.timeline.glassIntensity = 0.7;
+        userSettings.timeline.glassIntensity = Math.max(0, Math.min(1, Number(userSettings.timeline.glassIntensity) || 0.7));
         if (typeof userSettings.timeline.syncRoutineButtonsHighlight !== 'boolean') userSettings.timeline.syncRoutineButtonsHighlight = true;
         if (!userSettings.timeline.startTime) userSettings.timeline.startTime = '08:00';
         if (!userSettings.timeline.endTime) userSettings.timeline.endTime = '24:00';
@@ -8176,12 +8235,41 @@
 
             const seg = document.createElement('div');
             seg.className = 'timeline-segment';
-            seg.style.cssText = `
-                position: absolute; bottom: 0; height: 100%;
-                left: ${left}%;
-                width: ${width}%;
-                background: ${color}; opacity: ${opacity};
-            `;
+            let glassIntensity = Number(userSettings.timeline?.glassIntensity);
+            if (!Number.isFinite(glassIntensity)) glassIntensity = 0.7;
+            glassIntensity = Math.max(0, Math.min(1, glassIntensity));
+            const enableGlass = userSettings.timeline?.enableHighlightGlassEffect !== false && glassIntensity > 0.01;
+            if (enableGlass) {
+                const topA = 0.26 * glassIntensity;
+                const midA = 0.06 * glassIntensity;
+                const borderTopA = 0.22 * glassIntensity;
+                const innerTopA = 0.24 * glassIntensity;
+                seg.style.cssText = `
+                    position: absolute; bottom: 0; height: 100%;
+                    left: ${left}%;
+                    width: ${width}%;
+                    background-color: ${color};
+                    background-image: linear-gradient(180deg, rgba(255,255,255,${topA}), rgba(255,255,255,${midA}) 35%, rgba(0,0,0,0.12) 100%);
+                    background-size: 100% 100%;
+                    background-repeat: no-repeat;
+                    opacity: ${opacity};
+                `;
+                if (opacity >= 0.6) {
+                    seg.style.borderTop = `1px solid rgba(255,255,255,${borderTopA})`;
+                    seg.style.borderBottom = '1px solid rgba(0,0,0,0.10)';
+                    seg.style.boxShadow = `inset 0 1px 0 rgba(255,255,255,${innerTopA}), inset 0 -1px 0 rgba(0,0,0,0.18), 0 1px 3px rgba(0,0,0,0.22)`;
+                }
+            } else {
+                seg.style.cssText = `
+                    position: absolute; bottom: 0; height: 100%;
+                    left: ${left}%;
+                    width: ${width}%;
+                    background: ${color}; opacity: ${opacity};
+                `;
+            }
+            seg.style.pointerEvents = 'auto';
+            seg.style.transition = 'filter 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease';
+            const baseBoxShadow = seg.style.boxShadow || '';
             seg.dataset.timelineLabel = label || '';
 
             if (segMeta?.taskBlockId) seg.dataset.taskBlockId = segMeta.taskBlockId;
@@ -8209,7 +8297,18 @@
             seg.addEventListener('mouseenter', (e) => {
                 if (timelineTooltipHideTimer) clearTimeout(timelineTooltipHideTimer);
                 timelineTooltipHideTimer = null;
+                const hoverBrightness = 1.06 + (0.06 * glassIntensity);
+                const hoverSaturate = 1.04 + (0.06 * glassIntensity);
+                const hoverOutlineA = 0.16 + (0.12 * glassIntensity);
+                seg.style.filter = `brightness(${hoverBrightness}) saturate(${hoverSaturate})`;
+                seg.style.transform = 'translateY(-0.5px)';
+                seg.style.boxShadow = (baseBoxShadow ? (baseBoxShadow + ', ') : '') + `0 0 0 1px rgba(255,255,255,${hoverOutlineA}), 0 4px 12px rgba(0,0,0,0.25)`;
                 showTimelineTooltipForSegment(seg);
+            });
+            seg.addEventListener('mouseleave', (e) => {
+                seg.style.filter = '';
+                seg.style.transform = '';
+                seg.style.boxShadow = baseBoxShadow;
             });
 
             parent.appendChild(seg);
@@ -8251,11 +8350,29 @@
         // 获取默认颜色
         const { tomatoColor: defaultTomatoColor, stopwatchColor: defaultStopwatchColor, breakColor: defaultBreakColor } = getTimelineHighlightPalette();
 
+        const allowRoutineHighlight = userSettings.timeline?.syncRoutineButtonsHighlight !== false;
+
         // 如果有按钮在运行且设置了颜色，使用按钮颜色
         let buttonColor = null;
-        if (userSettings.timeline?.syncRoutineButtonsHighlight !== false && routineButtonHighlightColor && activeRoutineButtonIndex !== null && activeRoutineButtonIndex !== undefined && activeRoutineButtonIndex !== '') {
-            const c = routineButtonHighlightColor.trim();
-            if (c) buttonColor = c;
+        if (allowRoutineHighlight) {
+            const fromVar = typeof routineButtonHighlightColor === 'string' ? routineButtonHighlightColor.trim() : '';
+            if (fromVar) buttonColor = fromVar;
+
+            if (!buttonColor && activeRoutineButtonIndex !== null && activeRoutineButtonIndex !== undefined && activeRoutineButtonIndex !== '') {
+                const btnConfig = userSettings?.routineButtons?.[activeRoutineButtonIndex];
+                const c = typeof btnConfig?.color === 'string' ? btnConfig.color.trim() : '';
+                if (c) buttonColor = c;
+            }
+
+            if (!buttonColor) {
+                const taskId = String(activeRoutineButtonBlockId || currentTaskBlockId || '').trim();
+                if (taskId) {
+                    const list = Array.isArray(userSettings?.routineButtons) ? userSettings.routineButtons : [];
+                    const btn = list.find(b => String(b?.blockId || '').trim() === taskId);
+                    const c = typeof btn?.color === 'string' ? btn.color.trim() : '';
+                    if (c) buttonColor = c;
+                }
+            }
         }
 
         // 根据按钮颜色和计时模式确定使用的颜色
@@ -8297,7 +8414,6 @@
                 isActive: true,
                 isCurrent: true
             }, layerEl);
-            layerEl.style.pointerEvents = 'auto';
             return;
         }
 
@@ -8317,7 +8433,6 @@
                 isActive: true,
                 isCurrent: true
             }, layerEl);
-            layerEl.style.pointerEvents = 'auto';
             return;
         }
 
@@ -8340,7 +8455,6 @@
                 mode: timerMode,
                 isCurrent: false
             }, layerEl);
-            if (layerEl.childElementCount > 0) layerEl.style.pointerEvents = 'auto';
             return;
         }
 
@@ -8354,14 +8468,13 @@
             const startM = getDayMinutesFromTimestamp(startTs);
             const nowM = getDayMinutesFromTimestamp(currentTs);
 
-            const breakSegmentColor = routineButtonHighlightColor ? routineButtonHighlightColor : breakColor;
+            const breakSegmentColor = buttonColor || breakColor;
             drawTimelineSegment(startM, nowM, breakSegmentColor, 0.75, offsetMin, totalMin, '☕ 休息', {
                 startIso: new Date(startTs).toISOString(),
                 endIso: new Date(currentTs).toISOString(),
                 mode: 'stopwatch-break',
                 isCurrent: true
             }, layerEl);
-            if (layerEl.childElementCount > 0) layerEl.style.pointerEvents = 'auto';
         }
     }
 
