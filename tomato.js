@@ -10359,7 +10359,7 @@
         menu.appendChild(stopwatchItem);
 
         const resetItem = document.createElement('div');
-        resetItem.textContent = (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') ? '✅完成正计时' : '重置当前';
+        resetItem.textContent = (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') ? '✅ 完成正计时' : '重置当前';
         resetItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
         resetItem.onmouseenter = () => resetItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
         resetItem.onmouseleave = () => resetItem.style.backgroundColor = '';
