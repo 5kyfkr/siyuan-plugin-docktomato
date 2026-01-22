@@ -2114,61 +2114,72 @@
     }
 
     // ========== 历史记录管理 ==========
+    let __tomatoHistoryParseCache = {
+        source: '',
+        raw: '',
+        records: null
+    };
+    let __tomatoHistoryLoadPromise = null;
     async function loadHistoryRecords() {
-        try {
-            const r = await __tomatoGetFileText(HISTORY_FILE_PATH);
-            const text = r?.exists ? (r.text ?? '') : '';
-            if (text && String(text).trim()) {
-                let records = JSON.parse(text);
-                
-                records = records.map(record => {
+        if (__tomatoHistoryLoadPromise) return __tomatoHistoryLoadPromise;
+        __tomatoHistoryLoadPromise = (async () => {
+            const normalizeRecords = (records) => {
+                const list = Array.isArray(records) ? records : [];
+                const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
+                const mapped = list.map(record => {
                     if (record && record.end) {
                         record.date = formatDateKey(record.end);
                         record.timePeriod = getTimePeriod(toDateSafe(record.end).getHours());
                     }
-                    if (record.date) {
+                    if (record?.date) {
                         record.date = normalizeLegacyDate(record.date);
-                    } else if (record.start) {
+                    } else if (record?.start) {
                         record.date = formatDateKey(record.end || record.start);
                     }
                     return record;
                 });
-                
-                const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
-                const filtered = records.filter(r => {
+                const filtered = mapped.filter(r => {
                     try { return toDateSafe(r.end || r.start).getTime() >= oneYearAgo; } catch (e) { return false; }
                 });
-                
-                if (filtered.length !== records.length) {
-                    records = filtered;
+                return filtered;
+            };
+
+            try {
+                const r = await __tomatoGetFileText(HISTORY_FILE_PATH);
+                const text = r?.exists ? (r.text ?? '') : '';
+                const raw = String(text || '');
+                if (raw.trim()) {
+                    if (__tomatoHistoryParseCache?.source === 'file' && __tomatoHistoryParseCache?.raw === raw && Array.isArray(__tomatoHistoryParseCache?.records)) {
+                        return __tomatoHistoryParseCache.records;
+                    }
+                    const parsed = JSON.parse(raw);
+                    const normalized = normalizeRecords(parsed);
+                    __tomatoHistoryParseCache = { source: 'file', raw, records: normalized };
+                    return normalized;
                 }
-                return records;
+            } catch (e) {
+                Logger.warn('读取历史记录失败:', e.message);
             }
-        } catch (e) {
-            Logger.warn('读取历史记录失败:', e.message);
-        }
+
+            try {
+                const raw = String(localStorage.getItem('siyuan-tomato-history') || '');
+                if (!raw.trim()) return [];
+                if (__tomatoHistoryParseCache?.source === 'localStorage' && __tomatoHistoryParseCache?.raw === raw && Array.isArray(__tomatoHistoryParseCache?.records)) {
+                    return __tomatoHistoryParseCache.records;
+                }
+                const parsed = JSON.parse(raw);
+                const normalized = normalizeRecords(parsed);
+                __tomatoHistoryParseCache = { source: 'localStorage', raw, records: normalized };
+                return normalized;
+            } catch (e) {
+                return [];
+            }
+        })();
+
         try {
-            const raw = localStorage.getItem('siyuan-tomato-history');
-            if (!raw || !raw.trim()) return [];
-            let records = JSON.parse(raw);
-            records = (records || []).map(record => {
-                if (record && record.end) {
-                    record.date = formatDateKey(record.end);
-                    record.timePeriod = getTimePeriod(toDateSafe(record.end).getHours());
-                }
-                if (record?.date) {
-                    record.date = normalizeLegacyDate(record.date);
-                } else if (record?.start) {
-                    record.date = formatDateKey(record.end || record.start);
-                }
-                return record;
-            });
-            const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
-            return (records || []).filter(r => {
-                try { return toDateSafe(r.end || r.start).getTime() >= oneYearAgo; } catch (e) { return false; }
-            });
-        } catch (e) {
-            return [];
+            return await __tomatoHistoryLoadPromise;
+        } finally {
+            __tomatoHistoryLoadPromise = null;
         }
     }
 
@@ -2199,6 +2210,7 @@
                         Logger.debug('🍅 保存历史记录后已清除缓存');
                     }
                 }
+                __tomatoHistoryParseCache = { source: '', raw: '', records: null };
                 return true;
             } else {
                 throw new Error('思源API保存失败');
@@ -8210,7 +8222,7 @@
                 mode: record.mode,
                 recordTimestamp: record.timestamp,
                 distractionCount: record.distractionCount || 0
-            }, layerEl);
+            }, layerEl, true);
         }
     }
 
@@ -8219,7 +8231,7 @@
         return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
     }
 
-    function drawTimelineSegment(startMin, endMin, color, opacity, offsetMin, totalMin, label, meta = null, parentEl = null) {
+    function drawTimelineSegment(startMin, endMin, color, opacity, offsetMin, totalMin, label, meta = null, parentEl = null, interactive = true) {
         const parent = parentEl || timelineActiveLayer || timelineSegments;
         if (!parent) return;
         if (endMin <= startMin) return;
@@ -8267,7 +8279,7 @@
                     background: ${color}; opacity: ${opacity};
                 `;
             }
-            seg.style.pointerEvents = 'auto';
+            seg.style.pointerEvents = interactive ? 'auto' : 'none';
             seg.style.transition = 'filter 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease';
             const baseBoxShadow = seg.style.boxShadow || '';
             seg.dataset.timelineLabel = label || '';
@@ -8286,30 +8298,32 @@
                 seg.classList.add('breathing');
             }
 
-            const hasTask = !!(segMeta?.taskBlockId);
-            if (hasTask) seg.style.cursor = 'pointer';
+            if (interactive) {
+                const hasTask = !!(segMeta?.taskBlockId);
+                if (hasTask) seg.style.cursor = 'pointer';
 
-            seg.addEventListener('click', (e) => {
-                e.stopPropagation();
-                showTimelineTooltipForSegment(seg);
-            });
+                seg.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    showTimelineTooltipForSegment(seg);
+                });
 
-            seg.addEventListener('mouseenter', (e) => {
-                if (timelineTooltipHideTimer) clearTimeout(timelineTooltipHideTimer);
-                timelineTooltipHideTimer = null;
-                const hoverBrightness = 1.06 + (0.06 * glassIntensity);
-                const hoverSaturate = 1.04 + (0.06 * glassIntensity);
-                const hoverOutlineA = 0.16 + (0.12 * glassIntensity);
-                seg.style.filter = `brightness(${hoverBrightness}) saturate(${hoverSaturate})`;
-                seg.style.transform = 'translateY(-0.5px)';
-                seg.style.boxShadow = (baseBoxShadow ? (baseBoxShadow + ', ') : '') + `0 0 0 1px rgba(255,255,255,${hoverOutlineA}), 0 4px 12px rgba(0,0,0,0.25)`;
-                showTimelineTooltipForSegment(seg);
-            });
-            seg.addEventListener('mouseleave', (e) => {
-                seg.style.filter = '';
-                seg.style.transform = '';
-                seg.style.boxShadow = baseBoxShadow;
-            });
+                seg.addEventListener('mouseenter', (e) => {
+                    if (timelineTooltipHideTimer) clearTimeout(timelineTooltipHideTimer);
+                    timelineTooltipHideTimer = null;
+                    const hoverBrightness = 1.06 + (0.06 * glassIntensity);
+                    const hoverSaturate = 1.04 + (0.06 * glassIntensity);
+                    const hoverOutlineA = 0.16 + (0.12 * glassIntensity);
+                    seg.style.filter = `brightness(${hoverBrightness}) saturate(${hoverSaturate})`;
+                    seg.style.transform = 'translateY(-0.5px)';
+                    seg.style.boxShadow = (baseBoxShadow ? (baseBoxShadow + ', ') : '') + `0 0 0 1px rgba(255,255,255,${hoverOutlineA}), 0 4px 12px rgba(0,0,0,0.25)`;
+                    showTimelineTooltipForSegment(seg);
+                });
+                seg.addEventListener('mouseleave', (e) => {
+                    seg.style.filter = '';
+                    seg.style.transform = '';
+                    seg.style.boxShadow = baseBoxShadow;
+                });
+            }
 
             parent.appendChild(seg);
         };
@@ -8403,7 +8417,7 @@
                 endIso: new Date(endTs).toISOString(),
                 mode: 'countdown',
                 isActive: true
-            }, layerEl);
+            }, layerEl, false);
             drawTimelineSegment(startM, Math.min(nowM, endM), tomatoColor, 0.85, offsetMin, totalMin, '🍅 已专注', {
                 taskBlockId: currentTaskBlockId,
                 taskBlockName: currentTaskBlockName,
@@ -8413,7 +8427,7 @@
                 mode: 'countdown',
                 isActive: true,
                 isCurrent: true
-            }, layerEl);
+            }, layerEl, false);
             return;
         }
 
@@ -8432,7 +8446,7 @@
                 mode: 'stopwatch',
                 isActive: true,
                 isCurrent: true
-            }, layerEl);
+            }, layerEl, false);
             return;
         }
 
@@ -8454,7 +8468,7 @@
                 endIso: new Date(currentTs).toISOString(),
                 mode: timerMode,
                 isCurrent: false
-            }, layerEl);
+            }, layerEl, false);
             return;
         }
 
@@ -8474,7 +8488,7 @@
                 endIso: new Date(currentTs).toISOString(),
                 mode: 'stopwatch-break',
                 isCurrent: true
-            }, layerEl);
+            }, layerEl, false);
         }
     }
 
