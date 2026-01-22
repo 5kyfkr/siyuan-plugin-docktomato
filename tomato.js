@@ -8734,6 +8734,39 @@
         return `${(date.getMonth() + 1).toString().padStart(2, '0')}月${date.getDate().toString().padStart(2, '0')}日`;
     }
 
+    function getDefaultTimerPrefix(mode) {
+        if (mode === 'break' || mode === 'stopwatch-break') return '☕';
+        if (mode === 'stopwatch') return '⏱️';
+        return '🍅';
+    }
+
+    function getRoutineButtonEmojiIconValue(iconVal) {
+        const v = String(iconVal || '').trim();
+        if (!v) return null;
+        if (v.startsWith('img:')) return null;
+        if (/^([0-9a-f]{4,})(-[0-9a-f]{4,})*$/i.test(v)) {
+            try {
+                const parts = v.split('-').filter(Boolean);
+                const cps = parts.map(p => parseInt(p, 16)).filter(n => Number.isFinite(n) && n > 0);
+                if (cps.length) return String.fromCodePoint(...cps);
+            } catch (e) {}
+        }
+        return v;
+    }
+
+    function getActiveRoutineButtonEmojiIcon() {
+        const idx = parseInt(String(activeRoutineButtonIndex ?? ''), 10);
+        if (!Number.isFinite(idx) || idx < 0) return null;
+        const btn = userSettings?.routineButtons?.[idx];
+        if (!btn) return null;
+        return getRoutineButtonEmojiIconValue(btn.icon);
+    }
+
+    function getDisplayPrefixForTimer(mode) {
+        const routineIcon = getActiveRoutineButtonEmojiIcon();
+        return routineIcon || getDefaultTimerPrefix(mode);
+    }
+
     function updateDisplay() {
         // 🔧 v9.0 修复：如果 timeDisplay 不存在且用户已关闭悬浮窗，不重新创建
         if (!timeDisplay) {
@@ -8755,17 +8788,18 @@
         };
 
         let text;
+        const prefix = getDisplayPrefixForTimer(timerMode);
         if (timerMode === 'countdown') {
             const displaySeconds = (isRunning || remainingSeconds > 0) ? remainingSeconds : currentDuration * 60;
-            setDisplayText('🍅', formatTime(displaySeconds));
+            setDisplayText(prefix, formatTime(displaySeconds));
         } else if (timerMode === 'break') {
             const displaySeconds = (isRunning || remainingSeconds > 0) ? remainingSeconds : currentDuration * 60;
-            setDisplayText('☕', formatTime(displaySeconds));
+            setDisplayText(prefix, formatTime(displaySeconds));
         } else if (timerMode === 'stopwatch') {
             // 🔧 修复：显示时加上休息前的时间偏移
-            setDisplayText('⏱️', formatTime(elapsedSeconds + stopwatchDisplayOffset));
+            setDisplayText(prefix, formatTime(elapsedSeconds + stopwatchDisplayOffset));
         } else if (timerMode === 'stopwatch-break') {
-            setDisplayText('☕', formatTime(elapsedSeconds));
+            setDisplayText(prefix, formatTime(elapsedSeconds));
         }
         timeDisplay.style.color = isRunning ? '#1E88E5' : 'var(--b3-theme-on-surface)';
         updateProgressBar();
@@ -10325,7 +10359,7 @@
         menu.appendChild(stopwatchItem);
 
         const resetItem = document.createElement('div');
-        resetItem.textContent = (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') ? '完成正计时' : '重置当前';
+        resetItem.textContent = (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') ? '✅完成正计时' : '重置当前';
         resetItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
         resetItem.onmouseenter = () => resetItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
         resetItem.onmouseleave = () => resetItem.style.backgroundColor = '';
@@ -14086,7 +14120,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         timerDisplay.innerHTML = `<span class="tomato-float-icon" style="display:inline-block;line-height:1;width:1.2em;text-align:center;"></span><span class="tomato-float-time" style="display:inline-block;line-height:1;min-width:5ch;text-align:center;font-variant-numeric: tabular-nums; font-feature-settings: &quot;tnum&quot; 1; white-space: nowrap;"></span>`;
         const iconEl = timerDisplay.querySelector('.tomato-float-icon');
         const timeEl = timerDisplay.querySelector('.tomato-float-time');
-        const initPrefix = (timerMode === 'break' || timerMode === 'stopwatch-break') ? '☕' : (timerMode === 'stopwatch' ? '⏱️' : '🍅');
+        const initPrefix = getDisplayPrefixForTimer(timerMode);
         const initTime = (timerMode === 'stopwatch' || timerMode === 'stopwatch-break')
             ? formatTime(elapsedSeconds + (timerMode === 'stopwatch' ? (stopwatchDisplayOffset || 0) : 0))
             : formatTime(remainingSeconds);
