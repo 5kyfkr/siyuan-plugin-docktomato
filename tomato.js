@@ -86,7 +86,7 @@
     const CONFIG = {
         TIMER_INTERVAL: 500, // 计时器更新频率 (ms)
         SYNC_POLL_INTERVAL_BG: 60000, // 后台轮询频率 (ms)
-        MAX_STOPWATCH_SECONDS: 12 * 3600, // 正计时最大时长 (12小时)
+        MAX_STOPWATCH_SECONDS: 16 * 3600, // 正计时最大时长 (16小时)
     };
 
     function __tomatoNormalizeDirPath(path) {
@@ -590,11 +590,11 @@
             }
 
             if (remoteState.status === 'RUNNING' && remoteState.startTime > 0) {
-                // 🔧 修复：正计时模式使用 elapsed 判断，最长 8 小时
+                // 🔧 修复：正计时模式使用 elapsed 判断，最长 16 小时
                 const isStopwatchMode = remoteState.mode === 'stopwatch' || remoteState.mode === 'stopwatch-break';
                 const remaining = StateCalculator.calculateRemaining(remoteState);
                 const elapsed = StateCalculator.calculateElapsed(remoteState);
-                const MAX_STOPWATCH_SECONDS = 12 * 3600;
+                const MAX_STOPWATCH_SECONDS = CONFIG.MAX_STOPWATCH_SECONDS;
                 
                 const isExpired = isStopwatchMode ? (elapsed >= MAX_STOPWATCH_SECONDS) : (remaining <= 0);
                 if (isExpired) {
@@ -863,8 +863,9 @@
         }
         
         // 更新时长
-        if (syncState.duration) {
-            currentDuration = Math.round(syncState.duration / 60);
+        const durationSec = Number(syncState.duration);
+        if (Number.isFinite(durationSec) && durationSec > 0 && (timerMode === 'countdown' || timerMode === 'break')) {
+            currentDuration = Math.round(durationSec / 60);
             // 🔧 修复：计算实际剩余时间，而不是直接使用总时长
             if (syncState.status === 'RUNNING' && syncState.startTime) {
                 // 使用 StateCalculator 计算实际剩余时间
@@ -874,7 +875,7 @@
                 remainingSeconds = StateCalculator.calculateRemaining(syncState);
             } else {
                 // IDLE 状态使用总时长
-                remainingSeconds = syncState.duration;
+                remainingSeconds = durationSec;
             }
         }
         
@@ -1493,8 +1494,21 @@
     function toDateSafe(input) {
         if (input == null) return new Date(NaN);
         if (input instanceof Date) return input;
-        if (typeof input === 'number') return new Date(input);
-        const raw = String(input);
+        if (typeof input === 'number') {
+            if (!Number.isFinite(input)) return new Date(NaN);
+            const abs = Math.abs(input);
+            const ms = (abs >= 1e9 && abs < 1e11) ? (input * 1000) : input;
+            return new Date(ms);
+        }
+        const raw = String(input).trim();
+        if (!raw) return new Date(NaN);
+        if (/^\d+(\.\d+)?$/.test(raw)) {
+            const n = Number(raw);
+            if (!Number.isFinite(n)) return new Date(NaN);
+            const abs = Math.abs(n);
+            const ms = (abs >= 1e9 && abs < 1e11) ? (n * 1000) : n;
+            return new Date(ms);
+        }
         if (raw.includes(' ') && !raw.includes('T')) {
             return new Date(raw.replace(' ', 'T'));
         }
@@ -1628,6 +1642,7 @@
             enabled: false,
             enableBreathing: true,
             enableHighlightGlassEffect: true,
+            enableHighlightRoundedCorners: true,
             glassIntensity: 0.7,
             syncRoutineButtonsHighlight: true, // 日常事务按钮颜色同步到时间轴，默认开启
             startTime: '08:00',
@@ -3182,6 +3197,7 @@
             if (typeof userSettings.timeline.enabled !== 'boolean') userSettings.timeline.enabled = false;
             if (typeof userSettings.timeline.enableBreathing !== 'boolean') userSettings.timeline.enableBreathing = true;
             if (typeof userSettings.timeline.enableHighlightGlassEffect !== 'boolean') userSettings.timeline.enableHighlightGlassEffect = true;
+            if (typeof userSettings.timeline.enableHighlightRoundedCorners !== 'boolean') userSettings.timeline.enableHighlightRoundedCorners = true;
             if (typeof userSettings.timeline.glassIntensity !== 'number' || !Number.isFinite(userSettings.timeline.glassIntensity)) userSettings.timeline.glassIntensity = 0.7;
             userSettings.timeline.glassIntensity = Math.max(0, Math.min(1, Number(userSettings.timeline.glassIntensity) || 0.7));
             if (!userSettings.timeline.startTime) userSettings.timeline.startTime = '08:00';
@@ -3336,8 +3352,24 @@
             await saveUserSettings();
             syncGlassIntensityDisabled();
             try { if (userSettings.timeline.enabled) updateTimelineBar(true); } catch (e) {}
+            try {
+                const routineToolbar = document.getElementById('tomato-routine-toolbar');
+                if (routineToolbar) renderRoutineButtons(routineToolbar);
+            } catch (e) {}
         };
         content.appendChild(row('高亮玻璃效果', glassEffectInput));
+
+        const roundedCornersInput = document.createElement('input');
+        roundedCornersInput.type = 'checkbox';
+        roundedCornersInput.checked = userSettings.timeline.enableHighlightRoundedCorners !== false;
+        roundedCornersInput.style.cssText = `cursor: pointer; transform: scale(1.15);`;
+        roundedCornersInput.onchange = async () => {
+            ensureTimelineDefaults();
+            userSettings.timeline.enableHighlightRoundedCorners = roundedCornersInput.checked;
+            await saveUserSettings();
+            try { if (userSettings.timeline.enabled) updateTimelineBar(true); } catch (e) {}
+        };
+        content.appendChild(row('高亮块圆角(展开时)', roundedCornersInput));
 
         const glassIntensityWrap = document.createElement('div');
         glassIntensityWrap.style.cssText = `display: flex; align-items: center; gap: 8px;`;
@@ -3371,6 +3403,10 @@
             userSettings.timeline.glassIntensity = Math.max(0, Math.min(1, Number(glassIntensityInput.value) || 0));
             await saveUserSettings();
             try { if (userSettings.timeline.enabled) updateTimelineBar(true); } catch (e) {}
+            try {
+                const routineToolbar = document.getElementById('tomato-routine-toolbar');
+                if (routineToolbar) renderRoutineButtons(routineToolbar);
+            } catch (e) {}
         };
         glassIntensityWrap.appendChild(glassIntensityInput);
         glassIntensityWrap.appendChild(glassIntensityText);
@@ -4196,6 +4232,7 @@
         if (typeof userSettings.timeline.enabled !== 'boolean') userSettings.timeline.enabled = false;
         if (typeof userSettings.timeline.enableBreathing !== 'boolean') userSettings.timeline.enableBreathing = true;
         if (typeof userSettings.timeline.enableHighlightGlassEffect !== 'boolean') userSettings.timeline.enableHighlightGlassEffect = true;
+        if (typeof userSettings.timeline.enableHighlightRoundedCorners !== 'boolean') userSettings.timeline.enableHighlightRoundedCorners = true;
         if (typeof userSettings.timeline.glassIntensity !== 'number' || !Number.isFinite(userSettings.timeline.glassIntensity)) userSettings.timeline.glassIntensity = 0.7;
         userSettings.timeline.glassIntensity = Math.max(0, Math.min(1, Number(userSettings.timeline.glassIntensity) || 0.7));
         if (typeof userSettings.timeline.syncRoutineButtonsHighlight !== 'boolean') userSettings.timeline.syncRoutineButtonsHighlight = true;
@@ -4634,7 +4671,7 @@
             }
             let btnContent = `<span style="margin-right: 4px; user-select: none; -webkit-user-select: none;">${iconHtml}</span>`;
             if (config.showName !== false) {
-                btnContent += `<span class="btn-name" style="user-select: none; -webkit-user-select: none;">${config.name || '任务'}</span>`;
+                btnContent += `<span class="btn-name" style="user-select: none; -webkit-user-select: none; text-shadow: 0 1px 1px rgba(0,0,0,0.25);">${config.name || '任务'}</span>`;
             }
             btn.innerHTML = btnContent;
             
@@ -4643,7 +4680,7 @@
                 display: inline-flex;
                 align-items: center;
                 padding: 4px 10px;
-                background: ${config.color || 'var(--b3-theme-primary, #1E88E5)'};
+                background-color: ${config.color || 'var(--b3-theme-primary, #1E88E5)'};
                 color: #fff;
                 border-radius: 4px;
                 cursor: pointer;
@@ -4658,6 +4695,21 @@
                 user-select: none;
                 -webkit-user-select: none;
             `;
+            (function () {
+                let glassIntensity = Number(userSettings.timeline?.glassIntensity);
+                if (!Number.isFinite(glassIntensity)) glassIntensity = 0.7;
+                glassIntensity = Math.max(0, Math.min(1, glassIntensity));
+                const enableGlass = userSettings.timeline?.enableHighlightGlassEffect !== false && glassIntensity > 0.01;
+                if (!enableGlass) {
+                    btn.style.backgroundImage = '';
+                    return;
+                }
+                const topA = 0.10 * glassIntensity;
+                const midA = 0.02 * glassIntensity;
+                btn.style.backgroundImage = `linear-gradient(180deg, rgba(255,255,255,${topA}), rgba(255,255,255,${midA}) 38%, rgba(255,255,255,0) 100%)`;
+                btn.style.backgroundSize = '100% 100%';
+                btn.style.backgroundRepeat = 'no-repeat';
+            })();
             
             // 悬停效果
             btn.onmouseenter = () => {
@@ -7085,12 +7137,19 @@
             const dx = Math.abs(e.touches[0].clientX - startX);
             const dyAbs = Math.abs(e.touches[0].clientY - startY);
             const dy = e.touches[0].clientY - startY;
-            if (dx + dyAbs > 35) {
+            const isMobile = isMobileDevice();
+            if (isMobile && isTimelineExpanded && dyAbs > dx * 1.05 && dyAbs > 3) {
+                touchMoved = true;
+                if (touchLongPressTimer) clearTimeout(touchLongPressTimer);
+                touchLongPressTimer = null;
+                try { e.preventDefault(); } catch (err) {}
+            }
+            if (dx + dyAbs > 18) {
                 touchMoved = true;
                 if (touchLongPressTimer) clearTimeout(touchLongPressTimer);
                 touchLongPressTimer = null;
             }
-            if (isMobileDevice() && isTimelineExpanded && dy > 48 && dyAbs > dx * 1.2) {
+            if (isMobile && isTimelineExpanded && dy > 5 && dyAbs > 5 && dyAbs > dx * 1.05) {
                 touchMoved = true;
                 if (touchLongPressTimer) clearTimeout(touchLongPressTimer);
                 touchLongPressTimer = null;
@@ -7103,6 +7162,20 @@
             if (touchLongPressTimer) clearTimeout(touchLongPressTimer);
             touchLongPressTimer = null;
             if (longPressed) return;
+            try {
+                const isMobile = isMobileDevice();
+                if (isMobile && isTimelineExpanded && e.changedTouches && e.changedTouches.length === 1) {
+                    const endX = e.changedTouches[0].clientX;
+                    const endY = e.changedTouches[0].clientY;
+                    const dxAbs = Math.abs(endX - startX);
+                    const dy = endY - startY;
+                    const dyAbs = Math.abs(dy);
+                    if (dy > 5 && dyAbs > 5 && dyAbs > dxAbs * 1.05) {
+                        applyExpandedState(false);
+                        return;
+                    }
+                }
+            } catch (err) {}
             if (touchMoved) return;
             if (!isTimelineExpanded) {
                 applyExpandedState(true, true);
@@ -7621,6 +7694,7 @@
                 tickTop.style.cssText = `
                     position: absolute; left: ${percent}%; top: 0;
                     width: 1px; height: calc(50% - ${halfGapPx}px); background: ${tickColor};
+                    box-shadow: 0 1px 1px rgba(0,0,0,0.20);
                     transform: scaleX(${tickScaleX});
                     transform-origin: left;
                 `;
@@ -7630,6 +7704,7 @@
                 tickBottom.style.cssText = `
                     position: absolute; left: ${percent}%; bottom: 0;
                     width: 1px; height: calc(50% - ${halfGapPx}px); background: ${tickColor};
+                    box-shadow: 0 1px 1px rgba(0,0,0,0.20);
                     transform: scaleX(${tickScaleX});
                     transform-origin: left;
                 `;
@@ -7641,6 +7716,7 @@
                 tick.style.cssText = `
                     position: absolute; left: ${percent}%; top: 0; bottom: ${labelBandPx}px;
                     width: 1px; background: ${tickColor};
+                    box-shadow: 0 1px 1px rgba(0,0,0,0.20);
                     transform: scaleX(${tickScaleX}) scaleY(${ratio});
                     transform-origin: left top;
                 `;
@@ -7650,6 +7726,7 @@
                 tick.style.cssText = `
                     position: absolute; left: ${percent}%; bottom: 0;
                     width: 1px; height: ${t.heightPx}px; background: ${tickColor};
+                    box-shadow: 0 1px 1px rgba(0,0,0,0.20);
                     transform: scaleX(${tickScaleX});
                     transform-origin: left;
                 `;
@@ -7674,6 +7751,7 @@
                     position: absolute; left: ${labelLeft}%; ${positionCss}
                     transform: ${labelTransform}; font-size: ${labelFontSizePx}px;
                     color: ${labelColor}; white-space: nowrap;
+                    text-shadow: 0 1px 1px rgba(0,0,0,0.25);
                 `;
                 axisEl.appendChild(label);
             }
@@ -7876,6 +7954,10 @@
             createTimelineBar();
         }
         if (timelineBar) timelineBar.style.display = 'block';
+        if (timelineBar) {
+            timelineBar.dataset.expanded = isTimelineExpanded ? '1' : '0';
+            timelineBar.dataset.segRound = (userSettings.timeline?.enableHighlightRoundedCorners !== false) ? '1' : '0';
+        }
 
         if (timelineBar && timelineVisual) {
             const hotArea = Math.max(10, userSettings.timeline.hotAreaHeightPx || 15);
@@ -8279,6 +8361,9 @@
                     background: ${color}; opacity: ${opacity};
                 `;
             }
+            const enableRounded = isTimelineExpanded && userSettings.timeline?.enableHighlightRoundedCorners !== false;
+            seg.style.borderRadius = enableRounded ? '3px' : '0px';
+            seg.style.overflow = enableRounded ? 'hidden' : '';
             seg.style.pointerEvents = interactive ? 'auto' : 'none';
             seg.style.transition = 'filter 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease';
             const baseBoxShadow = seg.style.boxShadow || '';
@@ -8354,12 +8439,12 @@
 
     function renderTimelineActiveSegments(offsetMin, totalMin, layerEl = timelineActiveLayer) {
         if (!layerEl) return;
-        if (timelineTooltip && timelineTooltip.style.display === 'block') {
-            return;
-        }
         layerEl.innerHTML = '';
         layerEl.style.pointerEvents = 'none';
-        if (!isRunning && !isTimerPaused) return;
+        const syncActive = !!(syncState && syncState.status && syncState.status !== 'IDLE' && syncState.startTime);
+        const effectiveRunning = !!(isRunning || (syncActive && syncState.status === 'RUNNING'));
+        const effectivePaused = !!(isTimerPaused || (syncActive && syncState.status === 'PAUSED'));
+        if (!effectiveRunning && !effectivePaused) return;
 
         // 获取默认颜色
         const { tomatoColor: defaultTomatoColor, stopwatchColor: defaultStopwatchColor, breakColor: defaultBreakColor } = getTimelineHighlightPalette();
@@ -8394,20 +8479,44 @@
         const stopwatchColor = buttonColor || defaultStopwatchColor;
         const breakColor = buttonColor || defaultBreakColor;
 
+        const toMs = (v) => {
+            try {
+                const d = toDateSafe(v);
+                const ms = d?.getTime?.();
+                return Number.isFinite(ms) ? ms : 0;
+            } catch (e) {
+                return 0;
+            }
+        };
         const nowTs = Date.now();
 
         if (timerMode === 'countdown') {
-            const startTs = currentStartTimeMs || syncState?.startTime || 0;
+            let durationMin = Number(currentDuration);
+            if (!Number.isFinite(durationMin) || durationMin <= 0) {
+                const fromSync = Number(syncState?.duration);
+                if (Number.isFinite(fromSync) && fromSync > 0) durationMin = Math.max(1, Math.round(fromSync / 60));
+            }
+            if (!Number.isFinite(durationMin) || durationMin <= 0) return;
+            const startTs = toMs(currentStartTimeMs || currentStartTimestamp || syncState?.startTime || startTime || 0);
             if (!startTs) return;
-            const endTs = startTs + (currentDuration * 60 * 1000);
+            const endTs = startTs + (durationMin * 60 * 1000);
+            const startKey = formatDateKey(new Date(startTs));
+            const endKey = formatDateKey(new Date(endTs));
             const startM = getDayMinutesFromTimestamp(startTs);
-            const endM = getDayMinutesFromTimestamp(endTs);
+            let endM = getDayMinutesFromTimestamp(endTs);
+            if (endKey !== startKey) endM = 1440;
             let currentTs = nowTs;
-            if (isTimerPaused && pausedRemainingSeconds != null) {
-                const elapsedSeconds = currentDuration * 60 - pausedRemainingSeconds;
+            if (effectivePaused && pausedRemainingSeconds != null) {
+                const elapsedSeconds = durationMin * 60 - pausedRemainingSeconds;
+                currentTs = startTs + Math.max(0, elapsedSeconds) * 1000;
+            } else if (effectivePaused && typeof remainingSeconds === 'number' && Number.isFinite(remainingSeconds)) {
+                const elapsedSeconds = durationMin * 60 - remainingSeconds;
                 currentTs = startTs + Math.max(0, elapsedSeconds) * 1000;
             }
-            const nowM = getDayMinutesFromTimestamp(currentTs);
+            const nowKey = formatDateKey(new Date(currentTs));
+            let nowM = getDayMinutesFromTimestamp(currentTs);
+            if (nowKey !== startKey) nowM = 1440;
+            if (!Number.isFinite(startM) || !Number.isFinite(endM) || !Number.isFinite(nowM)) return;
 
             drawTimelineSegment(startM, endM, tomatoColor, 0.25, offsetMin, totalMin, '🍅 计划中', {
                 taskBlockId: currentTaskBlockId,
@@ -8432,11 +8541,14 @@
         }
 
         if (timerMode === 'stopwatch') {
-            if (isTimerPaused) return;
-            const startTs = syncState?.stopwatchStartTimeMs || syncState?.startTime || stopwatchStartTimeMs || startTime || 0;
+            if (effectivePaused) return;
+            const startTs = toMs(syncState?.stopwatchStartTimeMs || syncState?.startTime || stopwatchStartTimeMs || startTime || 0);
             if (!startTs) return;
+            const startKey = formatDateKey(new Date(startTs));
+            const nowKey = formatDateKey(new Date(nowTs));
             const startM = getDayMinutesFromTimestamp(startTs);
-            const nowM = getDayMinutesFromTimestamp(nowTs);
+            let nowM = getDayMinutesFromTimestamp(nowTs);
+            if (nowKey !== startKey) nowM = 1440;
             drawTimelineSegment(startM, nowM, stopwatchColor, 0.8, offsetMin, totalMin, '⏱️ 正计时', {
                 taskBlockId: currentTaskBlockId,
                 taskBlockName: currentTaskBlockName,
@@ -8451,17 +8563,32 @@
         }
 
         if (timerMode === 'break') {
-            const startTs = currentStartTimeMs || syncState?.startTime || startTime || 0;
+            let durationMin = Number(currentDuration);
+            if (!Number.isFinite(durationMin) || durationMin <= 0) {
+                const fromSync = Number(syncState?.duration);
+                if (Number.isFinite(fromSync) && fromSync > 0) durationMin = Math.max(1, Math.round(fromSync / 60));
+            }
+            if (!Number.isFinite(durationMin) || durationMin <= 0) return;
+            const startTs = toMs(currentStartTimeMs || currentStartTimestamp || syncState?.startTime || startTime || 0);
             if (!startTs) return;
-            const endTs = startTs + (currentDuration * 60 * 1000);
+            const endTs = startTs + (durationMin * 60 * 1000);
+            const startKey = formatDateKey(new Date(startTs));
+            const endKey = formatDateKey(new Date(endTs));
             const startM = getDayMinutesFromTimestamp(startTs);
-            const endM = getDayMinutesFromTimestamp(endTs);
+            let endM = getDayMinutesFromTimestamp(endTs);
+            if (endKey !== startKey) endM = 1440;
             let currentTs = nowTs;
-            if (isTimerPaused && pausedRemainingSeconds != null) {
-                const elapsedSeconds = currentDuration * 60 - pausedRemainingSeconds;
+            if (effectivePaused && pausedRemainingSeconds != null) {
+                const elapsedSeconds = durationMin * 60 - pausedRemainingSeconds;
+                currentTs = startTs + Math.max(0, elapsedSeconds) * 1000;
+            } else if (effectivePaused && typeof remainingSeconds === 'number' && Number.isFinite(remainingSeconds)) {
+                const elapsedSeconds = durationMin * 60 - remainingSeconds;
                 currentTs = startTs + Math.max(0, elapsedSeconds) * 1000;
             }
-            const nowM = getDayMinutesFromTimestamp(currentTs);
+            const nowKey = formatDateKey(new Date(currentTs));
+            let nowM = getDayMinutesFromTimestamp(currentTs);
+            if (nowKey !== startKey) nowM = 1440;
+            if (!Number.isFinite(startM) || !Number.isFinite(endM) || !Number.isFinite(nowM)) return;
 
             drawTimelineSegment(startM, Math.min(nowM, endM), breakColor, 0.75, offsetMin, totalMin, '☕ 休息', {
                 startIso: new Date(startTs).toISOString(),
@@ -8473,14 +8600,17 @@
         }
 
         if (timerMode === 'stopwatch-break') {
-            const startTs = syncState?.stopwatchStartTimeMs || syncState?.startTime || stopwatchStartTimeMs || startTime || currentStartTimeMs || 0;
+            const startTs = toMs(syncState?.stopwatchStartTimeMs || syncState?.startTime || stopwatchStartTimeMs || startTime || currentStartTimeMs || 0);
             if (!startTs) return;
             let currentTs = nowTs;
-            if (isTimerPaused && pausedRemainingSeconds != null) {
+            if (effectivePaused && pausedRemainingSeconds != null) {
                 currentTs = startTs + Math.max(0, pausedRemainingSeconds) * 1000;
             }
+            const startKey = formatDateKey(new Date(startTs));
+            const nowKey = formatDateKey(new Date(currentTs));
             const startM = getDayMinutesFromTimestamp(startTs);
-            const nowM = getDayMinutesFromTimestamp(currentTs);
+            let nowM = getDayMinutesFromTimestamp(currentTs);
+            if (nowKey !== startKey) nowM = 1440;
 
             const breakSegmentColor = buttonColor || breakColor;
             drawTimelineSegment(startM, nowM, breakSegmentColor, 0.75, offsetMin, totalMin, '☕ 休息', {
@@ -9062,6 +9192,13 @@
 
             try { updateDisplay(); } catch (e) {}
             updateProgressBar(true);
+            try {
+                if (userSettings.timeline?.enabled && timelineViewport) {
+                    const w = timelineViewport.clientWidth || 1;
+                    const left = w * 2;
+                    timelineViewport.scrollLeft = left;
+                }
+            } catch (e) {}
 
             startLocalTimerLoop();
 
@@ -9540,11 +9677,9 @@
         if (isRunning) await recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
         preBreakState = null;
         pausedRemainingSeconds = null;
-        
-        // ✅ 修复：在开始计时时设置 currentStartTimestamp 和 currentStartTimeMs
-        const now = new Date();
-        currentStartTimestamp = now.toISOString();
-        currentStartTimeMs = Date.now();
+
+        currentStartTimestamp = null;
+        currentStartTimeMs = 0;
         
         isFreshTomatoStart = true;
         timerMode = 'countdown';
@@ -10009,11 +10144,18 @@
         if (isSyncEnabled() && SyncManager.updateLocal) {
             syncState.status = 'IDLE';
             syncState.startTime = null;
+            syncState.stopwatchStartTimeMs = null;
             syncState.pausedIntervals = [];
             syncState.currentPauseStart = null;
             syncState.pausedElapsedSeconds = null;
             syncState.distractionCount = 0;
             syncState.distractionSavedCount = 0;
+            syncState.mode = timerMode;
+            if (timerMode === 'countdown' || timerMode === 'break') {
+                syncState.duration = Math.max(1, Math.round(Number(currentDuration) || 0)) * 60;
+            } else {
+                syncState.duration = 0;
+            }
             await SyncManager.updateLocal(syncState, true);
             Logger.info('🔄 重置状态已同步到云端');
         }
@@ -14784,6 +14926,12 @@ function calculateWeeklyStats(dailyStatsArray) {
                 display: none;
             }
 
+            #tomato-timeline-bar[data-expanded="1"][data-seg-round="1"] .timeline-segment {
+                border-radius: 3px !important;
+                overflow: hidden;
+                clip-path: inset(0 round 3px);
+            }
+
             #tomato-timeline-bar .timeline-segment.breathing {
                 animation: neonBreatheStrong var(--breathing-duration, 3s) ease-in-out infinite;
                 will-change: opacity, transform;
@@ -15620,12 +15768,25 @@ function calculateWeeklyStats(dailyStatsArray) {
     // ========== 任务块菜单功能 ==========
     
     // 等待元素出现
-    function whenElementExist(selector, node) {
+    function whenElementExist(selector, node, options = null) {
+        const maxWaitMs = Number(options?.maxWaitMs);
+        const timeoutMs = Number.isFinite(maxWaitMs) && maxWaitMs > 0 ? maxWaitMs : 30000;
         return new Promise(resolve => {
-            const check = () => {
-                const el = typeof selector === 'function' ? selector() : (node || document).querySelector(selector);
-                el ? resolve(el) : requestAnimationFrame(check);
+            let settled = false;
+            let timeoutId = null;
+            const settle = (el) => {
+                if (settled) return;
+                settled = true;
+                if (timeoutId != null) clearTimeout(timeoutId);
+                resolve(el || null);
             };
+            const check = () => {
+                if (settled) return;
+                const el = typeof selector === 'function' ? selector() : (node || document).querySelector(selector);
+                if (el) settle(el);
+                else requestAnimationFrame(check);
+            };
+            timeoutId = setTimeout(() => settle(null), timeoutMs);
             check();
         });
     }
@@ -16993,6 +17154,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         // 监听块右键菜单
         whenElementExist('#commonMenu .b3-menu__items').then((menuItems) => {
+            if (!menuItems) return;
             Logger.info('🍅 addTaskBlockMenuFeature: 检测到菜单', menuItems);
             observeBlockMenu(menuItems, async (isTitleMenu) => {
                 try { document.getElementById('tomato-task-submenu')?.remove(); } catch (e) {}
@@ -20199,25 +20361,45 @@ function calculateWeeklyStats(dailyStatsArray) {
     /**
      * 在移动端面包屑栏右上角添加番茄按钮
      */
+    let mobileBreadcrumbNextTimer = null;
+    let mobileBreadcrumbNextTries = 0;
     function addMobileBreadcrumbButton() {
         if (!isMobileDevice() || !isMobileSupportEnabled()) return;
 
         // 检查是否已存在按钮
         if (document.getElementById('tomato-breadcrumb-btn')) {
+            if (mobileBreadcrumbNextTimer != null) {
+                clearTimeout(mobileBreadcrumbNextTimer);
+                mobileBreadcrumbNextTimer = null;
+            }
+            mobileBreadcrumbNextTries = 0;
             return;
         }
+
+        if (mobileBreadcrumbNextTimer != null) return;
+
+        const scheduleTry = (delayMs) => {
+            if (mobileBreadcrumbNextTimer != null) return;
+            const d = Math.max(0, Number(delayMs) || 0);
+            mobileBreadcrumbNextTimer = setTimeout(() => {
+                mobileBreadcrumbNextTimer = null;
+                tryAddButton();
+            }, d);
+        };
 
         // 等待面包屑栏渲染
         const tryAddButton = () => {
             const breadcrumb = document.querySelector('.protyle-breadcrumb');
             if (!breadcrumb) {
                 // 如果面包屑还没出现，设置定时器重试
-                setTimeout(tryAddButton, 500);
+                mobileBreadcrumbNextTries += 1;
+                if (mobileBreadcrumbNextTries <= 60) scheduleTry(500);
                 return;
             }
 
             // 检查按钮是否已存在
             if (document.getElementById('tomato-breadcrumb-btn')) {
+                mobileBreadcrumbNextTries = 0;
                 return;
             }
 
@@ -20292,10 +20474,11 @@ function calculateWeeklyStats(dailyStatsArray) {
             // 添加到面包屑栏的末尾（右上角位置）
             breadcrumb.appendChild(tomatoBtn);
             Logger.info('🍅 面包屑按钮已添加');
+            mobileBreadcrumbNextTries = 0;
         };
 
         // 延迟执行，等待面包屑栏渲染
-        setTimeout(tryAddButton, 1000);
+        scheduleTry(1000);
     }
 
     /**
@@ -20308,8 +20491,13 @@ function calculateWeeklyStats(dailyStatsArray) {
         addMobileBreadcrumbButton();
 
         // 使用 MutationObserver 监听面包屑栏变化
+        let throttleTimer = null;
         const observer = new MutationObserver(() => {
-            addMobileBreadcrumbButton();
+            if (throttleTimer != null) return;
+            throttleTimer = setTimeout(() => {
+                throttleTimer = null;
+                addMobileBreadcrumbButton();
+            }, 400);
         });
 
         // 监听整个文档的子节点变化
@@ -20427,7 +20615,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
                     if (syncState.startTime) startTime = syncState.startTime;
                     if (syncState.mode) timerMode = syncState.mode;
-                    if (syncState.duration) currentDuration = Math.round(syncState.duration / 60);
+                    if (syncState.duration && (timerMode === 'countdown' || timerMode === 'break')) currentDuration = Math.round(syncState.duration / 60);
 
                     // 🔧 v9.0 修复：恢复本地时间戳变量，以便重置时能保存记录
                     if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
@@ -20504,7 +20692,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         // 更新本地开始时间
                         if (syncState.startTime) startTime = syncState.startTime;
                         if (syncState.mode) timerMode = syncState.mode;
-                        if (syncState.duration) currentDuration = Math.round(syncState.duration / 60);
+                        if (syncState.duration && (timerMode === 'countdown' || timerMode === 'break')) currentDuration = Math.round(syncState.duration / 60);
                         
                         // 正计时模式恢复时间戳
                         if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
@@ -20570,7 +20758,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         timerMode = syncState.mode;
                     }
 
-                    if (syncState.duration) currentDuration = Math.round(syncState.duration / 60);
+                    if (syncState.duration && (timerMode === 'countdown' || timerMode === 'break')) currentDuration = Math.round(syncState.duration / 60);
 
                     if (syncState.currentPauseStart) {
                         currentPauseStart = syncState.currentPauseStart;
@@ -20684,7 +20872,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         timerMode = syncState.mode;
                     }
 
-                    if (syncState.duration) currentDuration = Math.round(syncState.duration / 60);
+                    if (syncState.duration && (timerMode === 'countdown' || timerMode === 'break')) currentDuration = Math.round(syncState.duration / 60);
 
                     pausedRemainingSeconds = null;
 
@@ -20745,11 +20933,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                 if (currentSyncState.status === 'RUNNING') {
                     Logger.info('🔄 SyncManager: 检测到云端计时器运行中');
                     
-                    // 🔧 修复：正计时模式使用 elapsed 判断，最长 8 小时；倒计时使用 remaining 判断
+                    // 🔧 修复：正计时模式使用 elapsed 判断，最长 16 小时；倒计时使用 remaining 判断
                     const isStopwatchMode = currentSyncState.mode === 'stopwatch' || currentSyncState.mode === 'stopwatch-break';
                     const cloudRemaining = StateCalculator.calculateRemaining(currentSyncState);
                     const cloudElapsed = StateCalculator.calculateElapsed(currentSyncState);
-                    const MAX_STOPWATCH_SECONDS = 12 * 3600; // 12 小时
+                    const MAX_STOPWATCH_SECONDS = CONFIG.MAX_STOPWATCH_SECONDS;
                     
                     Logger.info('🔄 云端剩余时间:', cloudRemaining, '秒, 已过时间:', cloudElapsed, '秒, 模式:', currentSyncState.mode);
                     
@@ -20838,7 +21026,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                             timerMode = syncState.mode;
                         }
                         if (syncState.duration) {
-                            currentDuration = Math.round(syncState.duration / 60);
+                            if (timerMode === 'countdown' || timerMode === 'break') currentDuration = Math.round(syncState.duration / 60);
                         }
                         
                         if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
@@ -20886,7 +21074,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         timerMode = syncState.mode;
                     }
                     if (syncState.duration) {
-                        currentDuration = Math.round(syncState.duration / 60);
+                        if (timerMode === 'countdown' || timerMode === 'break') currentDuration = Math.round(syncState.duration / 60);
                     }
 
                     if (syncState.currentPauseStart) {
