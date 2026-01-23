@@ -1694,6 +1694,7 @@
         userSettings.main.debugMode = userSettings.main.debugMode === true;
         userSettings.main.enableMobileSupport = userSettings.main.enableMobileSupport !== false;
         userSettings.main.extendTomatoOnDistraction = userSettings.main.extendTomatoOnDistraction !== false;
+        if (typeof userSettings.main.distractionToastText !== 'string') userSettings.main.distractionToastText = '已记录一次分心（{count} 次）';
         if (typeof userSettings.main.enableSystemDialogRepeatReminder !== 'boolean') userSettings.main.enableSystemDialogRepeatReminder = true;
 
         if (!userSettings.sync || typeof userSettings.sync !== 'object') userSettings.sync = {};
@@ -1926,6 +1927,18 @@
         } catch (e) {}
     }
 
+    function getDistractionToastText(count) {
+        try {
+            ensureUserSettings();
+            const template = String(userSettings?.main?.distractionToastText ?? '已记录一次分心（{count} 次）');
+            const n = Number.isFinite(Number(count)) ? String(Math.max(0, Math.floor(Number(count)))) : '';
+            const out = template.replaceAll('{count}', n);
+            return out || `已记录一次分心（${n} 次）`;
+        } catch (e) {
+            return `已记录一次分心（${count} 次）`;
+        }
+    }
+
     async function recordDistraction() {
         if (!isRunning) return false;
         if (timerMode !== 'countdown' && timerMode !== 'stopwatch') return false;
@@ -1949,7 +1962,7 @@
             } catch (e) {}
         }
 
-        showMiniToast(`已记录一次分心（${currentDistractionCount} 次）`);
+        showToast(getDistractionToastText(currentDistractionCount), 3000);
         return true;
     }
     
@@ -6276,13 +6289,8 @@
                 const btnConfig = userSettings.routineButtons?.[activeRoutineButtonIndex];
                 if (btnConfig?.color) {
                     routineButtonHighlightColor = btnConfig.color.trim() || null;
-                    // 重新渲染时间轴active segments以应用新颜色
                     if (timelineActiveLayer && (isRunning || isTimerPaused)) {
-                        const todayPage = timelineDayPages?.find(p => p?.dayOffset === 0);
-                        if (todayPage && todayPage.activeLayerEl) {
-                            const { rangeStartMin } = getTimelineRangeState();
-                            renderTimelineActiveSegments(rangeStartMin, 1440, todayPage.activeLayerEl);
-                        }
+                        try { if (timelineBar && timelineBar.parentNode) updateTimelineBar(true); } catch (e) {}
                     }
                 }
             }
@@ -8184,12 +8192,7 @@
                 cache.renderedCoordKey = coordKey;
             }
 
-            if (p.dayOffset === 0) {
-                renderTimelineActiveSegments(startMin, totalMinutes, p.activeLayerEl);
-            } else {
-                if (p.activeLayerEl) p.activeLayerEl.innerHTML = '';
-                if (p.activeLayerEl) p.activeLayerEl.style.pointerEvents = 'none';
-            }
+            renderTimelineActiveSegments(startMin, totalMinutes, p.activeLayerEl, dateKey);
         }
     }
 
@@ -8226,10 +8229,21 @@
 
         (async () => {
             const all = await loadHistoryRecords();
+            const dayRange = (() => {
+                const d = toDateSafe(`${cache.dateKey}T00:00:00`);
+                const startMs = d?.getTime?.();
+                if (!Number.isFinite(startMs)) return null;
+                return { startMs, endMs: startMs + 86400000 };
+            })();
             cache.records = (all || []).filter(r => {
-                if (!r) return false;
-                const recordDate = r.date || getRecordDateKeyByEnd(r) || formatDateKey(r.start);
-                return recordDate === cache.dateKey;
+                if (!r || !dayRange) return false;
+                const startIso = r.start;
+                const endIso = r.end;
+                if (!startIso || !endIso) return false;
+                const startMs = toDateSafe(startIso)?.getTime?.() || 0;
+                const endMs = toDateSafe(endIso)?.getTime?.() || 0;
+                if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return false;
+                return startMs < dayRange.endMs && endMs > dayRange.startMs;
             });
             cache.version += 1;
         })().catch(() => {
@@ -8247,6 +8261,12 @@
         layerEl.innerHTML = '';
         const cache = getTimelineHistoryCache(dateKey);
         const { tomatoColor, stopwatchColor, breakColor } = getTimelineHighlightPalette();
+        const dayRange = (() => {
+            const d = toDateSafe(`${cache.dateKey}T00:00:00`);
+            const startMs = d?.getTime?.();
+            if (!Number.isFinite(startMs)) return null;
+            return { startMs, endMs: startMs + 86400000 };
+        })();
 
         const allowRoutineHighlight = userSettings.timeline?.syncRoutineButtonsHighlight !== false;
         const routineButtons = allowRoutineHighlight && Array.isArray(userSettings?.routineButtons) ? userSettings.routineButtons : [];
@@ -8255,12 +8275,15 @@
             const startIso = record.start;
             const endIso = record.end;
             if (!startIso || !endIso) continue;
-            const startD = toDateSafe(startIso);
-            const endD = toDateSafe(endIso);
-            const startKey = formatDateKey(startD);
-            const endKey = formatDateKey(endD);
-            const startM = (cache.dateKey === endKey && startKey !== endKey) ? 0 : getDayMinutesFromTimestamp(startIso);
-            const endM = getDayMinutesFromTimestamp(endIso);
+            if (!dayRange) continue;
+            const startMs = toDateSafe(startIso)?.getTime?.() || 0;
+            const endMs = toDateSafe(endIso)?.getTime?.() || 0;
+            if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue;
+            if (!(startMs < dayRange.endMs && endMs > dayRange.startMs)) continue;
+            const segStartMs = Math.max(startMs, dayRange.startMs);
+            const segEndMs = Math.min(endMs, dayRange.endMs);
+            const startM = segStartMs <= dayRange.startMs ? 0 : getDayMinutesFromTimestamp(segStartMs);
+            const endM = segEndMs >= dayRange.endMs ? 1440 : getDayMinutesFromTimestamp(segEndMs);
 
             let color = '#9E9E9E';
             let opacity = 0.8;
@@ -8299,8 +8322,8 @@
                 taskBlockId: record.taskBlockId,
                 taskBlockName: record.taskBlockName,
                 databaseBlockId: record.databaseBlockId,
-                startIso,
-                endIso,
+                startIso: new Date(segStartMs).toISOString(),
+                endIso: new Date(segEndMs).toISOString(),
                 mode: record.mode,
                 recordTimestamp: record.timestamp,
                 distractionCount: record.distractionCount || 0
@@ -8437,7 +8460,7 @@
         }
     }
 
-    function renderTimelineActiveSegments(offsetMin, totalMin, layerEl = timelineActiveLayer) {
+    function renderTimelineActiveSegments(offsetMin, totalMin, layerEl = timelineActiveLayer, dateKey = null) {
         if (!layerEl) return;
         layerEl.innerHTML = '';
         layerEl.style.pointerEvents = 'none';
@@ -8445,6 +8468,14 @@
         const effectiveRunning = !!(isRunning || (syncActive && syncState.status === 'RUNNING'));
         const effectivePaused = !!(isTimerPaused || (syncActive && syncState.status === 'PAUSED'));
         if (!effectiveRunning && !effectivePaused) return;
+        const dayRange = (() => {
+            const dk = dateKey || formatDateKey(new Date());
+            const d = toDateSafe(`${dk}T00:00:00`);
+            const startMs = d?.getTime?.();
+            if (!Number.isFinite(startMs)) return null;
+            return { dateKey: dk, startMs, endMs: startMs + 86400000 };
+        })();
+        if (!dayRange) return;
 
         // 获取默认颜色
         const { tomatoColor: defaultTomatoColor, stopwatchColor: defaultStopwatchColor, breakColor: defaultBreakColor } = getTimelineHighlightPalette();
@@ -8489,6 +8520,22 @@
             }
         };
         const nowTs = Date.now();
+        const drawActiveRange = (rangeStartMs, rangeEndMs, color, opacity, label, meta) => {
+            const rs = Number(rangeStartMs);
+            const re = Number(rangeEndMs);
+            if (!Number.isFinite(rs) || !Number.isFinite(re) || re <= rs) return;
+            if (!(rs < dayRange.endMs && re > dayRange.startMs)) return;
+            const segStartMs = Math.max(rs, dayRange.startMs);
+            const segEndMs = Math.min(re, dayRange.endMs);
+            const startM = segStartMs <= dayRange.startMs ? 0 : getDayMinutesFromTimestamp(segStartMs);
+            const endM = segEndMs >= dayRange.endMs ? 1440 : getDayMinutesFromTimestamp(segEndMs);
+            if (!Number.isFinite(startM) || !Number.isFinite(endM) || endM <= startM) return;
+            drawTimelineSegment(startM, endM, color, opacity, offsetMin, totalMin, label, {
+                ...(meta || {}),
+                startIso: new Date(segStartMs).toISOString(),
+                endIso: new Date(segEndMs).toISOString()
+            }, layerEl, false);
+        };
 
         if (timerMode === 'countdown') {
             let durationMin = Number(currentDuration);
@@ -8500,11 +8547,6 @@
             const startTs = toMs(currentStartTimeMs || currentStartTimestamp || syncState?.startTime || startTime || 0);
             if (!startTs) return;
             const endTs = startTs + (durationMin * 60 * 1000);
-            const startKey = formatDateKey(new Date(startTs));
-            const endKey = formatDateKey(new Date(endTs));
-            const startM = getDayMinutesFromTimestamp(startTs);
-            let endM = getDayMinutesFromTimestamp(endTs);
-            if (endKey !== startKey) endM = 1440;
             let currentTs = nowTs;
             if (effectivePaused && pausedRemainingSeconds != null) {
                 const elapsedSeconds = durationMin * 60 - pausedRemainingSeconds;
@@ -8513,30 +8555,21 @@
                 const elapsedSeconds = durationMin * 60 - remainingSeconds;
                 currentTs = startTs + Math.max(0, elapsedSeconds) * 1000;
             }
-            const nowKey = formatDateKey(new Date(currentTs));
-            let nowM = getDayMinutesFromTimestamp(currentTs);
-            if (nowKey !== startKey) nowM = 1440;
-            if (!Number.isFinite(startM) || !Number.isFinite(endM) || !Number.isFinite(nowM)) return;
-
-            drawTimelineSegment(startM, endM, tomatoColor, 0.25, offsetMin, totalMin, '🍅 计划中', {
+            drawActiveRange(startTs, endTs, tomatoColor, 0.25, '🍅 计划中', {
                 taskBlockId: currentTaskBlockId,
                 taskBlockName: currentTaskBlockName,
                 databaseBlockId: currentDatabaseBlockId,
-                startIso: new Date(startTs).toISOString(),
-                endIso: new Date(endTs).toISOString(),
                 mode: 'countdown',
                 isActive: true
-            }, layerEl, false);
-            drawTimelineSegment(startM, Math.min(nowM, endM), tomatoColor, 0.85, offsetMin, totalMin, '🍅 已专注', {
+            });
+            drawActiveRange(startTs, currentTs, tomatoColor, 0.85, '🍅 已专注', {
                 taskBlockId: currentTaskBlockId,
                 taskBlockName: currentTaskBlockName,
                 databaseBlockId: currentDatabaseBlockId,
-                startIso: new Date(startTs).toISOString(),
-                endIso: new Date(currentTs).toISOString(),
                 mode: 'countdown',
                 isActive: true,
                 isCurrent: true
-            }, layerEl, false);
+            });
             return;
         }
 
@@ -8544,21 +8577,14 @@
             if (effectivePaused) return;
             const startTs = toMs(syncState?.stopwatchStartTimeMs || syncState?.startTime || stopwatchStartTimeMs || startTime || 0);
             if (!startTs) return;
-            const startKey = formatDateKey(new Date(startTs));
-            const nowKey = formatDateKey(new Date(nowTs));
-            const startM = getDayMinutesFromTimestamp(startTs);
-            let nowM = getDayMinutesFromTimestamp(nowTs);
-            if (nowKey !== startKey) nowM = 1440;
-            drawTimelineSegment(startM, nowM, stopwatchColor, 0.8, offsetMin, totalMin, '⏱️ 正计时', {
+            drawActiveRange(startTs, nowTs, stopwatchColor, 0.8, '⏱️ 正计时', {
                 taskBlockId: currentTaskBlockId,
                 taskBlockName: currentTaskBlockName,
                 databaseBlockId: currentDatabaseBlockId,
-                startIso: new Date(startTs).toISOString(),
-                endIso: new Date(nowTs).toISOString(),
                 mode: 'stopwatch',
                 isActive: true,
                 isCurrent: true
-            }, layerEl, false);
+            });
             return;
         }
 
@@ -8572,11 +8598,6 @@
             const startTs = toMs(currentStartTimeMs || currentStartTimestamp || syncState?.startTime || startTime || 0);
             if (!startTs) return;
             const endTs = startTs + (durationMin * 60 * 1000);
-            const startKey = formatDateKey(new Date(startTs));
-            const endKey = formatDateKey(new Date(endTs));
-            const startM = getDayMinutesFromTimestamp(startTs);
-            let endM = getDayMinutesFromTimestamp(endTs);
-            if (endKey !== startKey) endM = 1440;
             let currentTs = nowTs;
             if (effectivePaused && pausedRemainingSeconds != null) {
                 const elapsedSeconds = durationMin * 60 - pausedRemainingSeconds;
@@ -8585,17 +8606,10 @@
                 const elapsedSeconds = durationMin * 60 - remainingSeconds;
                 currentTs = startTs + Math.max(0, elapsedSeconds) * 1000;
             }
-            const nowKey = formatDateKey(new Date(currentTs));
-            let nowM = getDayMinutesFromTimestamp(currentTs);
-            if (nowKey !== startKey) nowM = 1440;
-            if (!Number.isFinite(startM) || !Number.isFinite(endM) || !Number.isFinite(nowM)) return;
-
-            drawTimelineSegment(startM, Math.min(nowM, endM), breakColor, 0.75, offsetMin, totalMin, '☕ 休息', {
-                startIso: new Date(startTs).toISOString(),
-                endIso: new Date(currentTs).toISOString(),
+            drawActiveRange(startTs, Math.min(currentTs, endTs), breakColor, 0.75, '☕ 休息', {
                 mode: timerMode,
                 isCurrent: false
-            }, layerEl, false);
+            });
             return;
         }
 
@@ -8606,19 +8620,11 @@
             if (effectivePaused && pausedRemainingSeconds != null) {
                 currentTs = startTs + Math.max(0, pausedRemainingSeconds) * 1000;
             }
-            const startKey = formatDateKey(new Date(startTs));
-            const nowKey = formatDateKey(new Date(currentTs));
-            const startM = getDayMinutesFromTimestamp(startTs);
-            let nowM = getDayMinutesFromTimestamp(currentTs);
-            if (nowKey !== startKey) nowM = 1440;
-
             const breakSegmentColor = buttonColor || breakColor;
-            drawTimelineSegment(startM, nowM, breakSegmentColor, 0.75, offsetMin, totalMin, '☕ 休息', {
-                startIso: new Date(startTs).toISOString(),
-                endIso: new Date(currentTs).toISOString(),
+            drawActiveRange(startTs, currentTs, breakSegmentColor, 0.75, '☕ 休息', {
                 mode: 'stopwatch-break',
                 isCurrent: true
-            }, layerEl, false);
+            });
         }
     }
 
@@ -18630,6 +18636,28 @@ function calculateWeeklyStats(dailyStatsArray) {
             await saveUserSettings();
         });
 
+        const distractionToastContainer = document.createElement('div');
+        distractionToastContainer.style.cssText = 'padding: 10px 0;';
+        const distractionToastLabel = document.createElement('div');
+        distractionToastLabel.textContent = '分心提示文本（支持 {count} 占位符）';
+        distractionToastLabel.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
+        const distractionToastInput = document.createElement('input');
+        distractionToastInput.type = 'text';
+        distractionToastInput.value = String(userSettings?.main?.distractionToastText ?? '已记录一次分心（{count} 次）');
+        distractionToastInput.placeholder = '例如：已记录一次分心（{count} 次）';
+        distractionToastInput.style.cssText = `
+            width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px;
+            border: 1px solid var(--b3-border-color); font-size: 13px;
+            background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+        `;
+        distractionToastInput.onchange = async (e) => {
+            userSettings.main.distractionToastText = String(e.target.value ?? '');
+            await saveUserSettings();
+        };
+        distractionToastContainer.appendChild(distractionToastLabel);
+        distractionToastContainer.appendChild(distractionToastInput);
+        togglesSection.appendChild(distractionToastContainer);
+
         mkToggleRow('超过60分钟后计时显示为 H:MM:SS 格式', userSettings?.main?.showHoursInTimerFormat === true, async (e) => {
             userSettings.main.showHoursInTimerFormat = e.target.checked;
             await saveUserSettings();
@@ -19634,9 +19662,23 @@ function calculateWeeklyStats(dailyStatsArray) {
             for (const label of breathingSpeedContainer.querySelectorAll('label[data-breathing-speed]')) {
                 const val = label.dataset.breathingSpeed || '';
                 const active = val === currentSpeed;
-                label.style.borderColor = active ? 'var(--b3-theme-primary)' : 'var(--b3-theme-surfaceVariant)';
+                label.style.border = `1px solid ${active ? 'var(--b3-theme-primary)' : 'var(--b3-theme-surfaceVariant)'}`;
                 label.style.background = active ? 'var(--b3-theme-surface-light)' : 'var(--b3-theme-background)';
             }
+        };
+
+        const applyBreathingSpeed = async (value, labelText) => {
+            const v = value || 'normal';
+            if ((appearance.breathingSpeed || 'normal') === v) {
+                updateBreathingSpeedStyles();
+                return;
+            }
+            appearance.breathingSpeed = v;
+            userSettings.appearance = appearance;
+            await saveUserSettings();
+            NeonStyleManager.refresh();
+            updateBreathingSpeedStyles();
+            if (labelText) showToastDialog('🍅 已设置', `呼吸速度: ${labelText}`, 'success');
         };
         
         speedOptions.forEach(opt => {
@@ -19650,12 +19692,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                 transition: all 0.2s ease;
             `;
             radioLabel.onmouseenter = () => {
-                radioLabel.style.borderColor = 'var(--b3-theme-primary)';
+                radioLabel.style.border = '1px solid var(--b3-theme-primary)';
             };
             radioLabel.onmouseleave = () => {
-                radioLabel.style.borderColor = (appearance.breathingSpeed || 'normal') === opt.value 
-                    ? 'var(--b3-theme-primary)' 
-                    : 'var(--b3-theme-surfaceVariant)';
+                const active = (appearance.breathingSpeed || 'normal') === opt.value;
+                radioLabel.style.border = `1px solid ${active ? 'var(--b3-theme-primary)' : 'var(--b3-theme-surfaceVariant)'}`;
             };
             
             const radio = document.createElement('input');
@@ -19667,13 +19708,14 @@ function calculateWeeklyStats(dailyStatsArray) {
             
             radio.onchange = async (e) => {
                 if (e.target.checked) {
-                    appearance.breathingSpeed = opt.value;
-                    userSettings.appearance = appearance;
-                    await saveUserSettings();
-                    NeonStyleManager.refresh();
-                    updateBreathingSpeedStyles();
-                    showToastDialog('🍅 已设置', `呼吸速度: ${opt.label}`, 'success');
+                    await applyBreathingSpeed(opt.value, opt.label);
                 }
+            };
+
+            radioLabel.onclick = async (e) => {
+                e.preventDefault();
+                radio.checked = true;
+                await applyBreathingSpeed(opt.value, opt.label);
             };
             
             radioLabel.appendChild(radio);
