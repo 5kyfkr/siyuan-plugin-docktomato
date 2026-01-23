@@ -9068,6 +9068,38 @@
     // 🔧 新增：计时器 tick 处理逻辑
     async function handleTimerTick() {
         const now = Date.now();
+        const lastNow = handleTimerTick._lastNow;
+        handleTimerTick._lastNow = now;
+        const gapMs = (typeof lastNow === 'number' && Number.isFinite(lastNow) && now > lastNow) ? (now - lastNow) : 0;
+        const shouldAttemptResync = gapMs > 30000
+            && (now - (handleTimerTick._lastResumeSyncAt || 0) > 10000)
+            && isSyncEnabled()
+            && SyncManager
+            && typeof SyncManager.poll === 'function';
+        if (shouldAttemptResync && !handleTimerTick._resumeSyncing) {
+            handleTimerTick._lastResumeSyncAt = now;
+            handleTimerTick._resumeSyncing = true;
+            (async () => {
+                try {
+                    if (typeof SyncManager.triggerSiyuanSync === 'function') {
+                        await SyncManager.triggerSiyuanSync();
+                    }
+                } catch (e) {}
+                await new Promise(resolve => setTimeout(resolve, 800));
+                try { await SyncManager.poll(true); } catch (e) {}
+                try {
+                    const st = typeof SyncManager.getState === 'function' ? SyncManager.getState() : null;
+                    if (st) {
+                        syncState = st;
+                        updateFromSyncState();
+                    }
+                } catch (e) {}
+                try { updateDisplay(true); } catch (e) {}
+                try { if (timelineBar && timelineBar.parentNode) updateTimelineBar(true); } catch (e) {}
+            })().finally(() => {
+                handleTimerTick._resumeSyncing = false;
+            });
+        }
             
         if (timerMode === 'countdown' || timerMode === 'break') {
             let newRemainingSeconds;
@@ -11286,7 +11318,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         const { dateList, currentPage } = historyState;
 
-        const summaryBtn = createPageButton('📊 统计', 'summary', currentPage === 'summary');
+        const summaryBtn = createPageButton('🎯 专注统计', 'summary', currentPage === 'summary');
         pageButtons.appendChild(summaryBtn);
 
         const routineSummaryBtn = createPageButton('📌 日常统计', 'routine', currentPage === 'routine');
