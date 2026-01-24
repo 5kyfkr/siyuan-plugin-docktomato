@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.0
+// @version      1.3.0
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -9,6 +9,40 @@
     if (globalThis.__TomatoTimerLoaded) return;
     globalThis.__TomatoTimerLoaded = true;
     let __tomatoDestroyed = false;
+    let __tomatoInitPromise = null;
+
+    const __tomatoTrackedIntervals = new Set();
+    const __tomatoTrackedTimeouts = new Set();
+    const __tomatoTrackInterval = (handler, ms) => {
+        const id = setInterval(handler, ms);
+        try { __tomatoTrackedIntervals.add(id); } catch (e) {}
+        return id;
+    };
+    const __tomatoTrackTimeout = (handler, ms) => {
+        let id = null;
+        const wrapped = () => {
+            try { handler?.(); } catch (e) {} finally {
+                try { if (id != null) __tomatoTrackedTimeouts.delete(id); } catch (e) {}
+            }
+        };
+        id = setTimeout(wrapped, ms);
+        try { __tomatoTrackedTimeouts.add(id); } catch (e) {}
+        return id;
+    };
+    const __tomatoClearTrackedTimers = () => {
+        try {
+            for (const id of __tomatoTrackedIntervals) {
+                try { clearInterval(id); } catch (e) {}
+            }
+            __tomatoTrackedIntervals.clear();
+        } catch (e) {}
+        try {
+            for (const id of __tomatoTrackedTimeouts) {
+                try { clearTimeout(id); } catch (e) {}
+            }
+            __tomatoTrackedTimeouts.clear();
+        } catch (e) {}
+    };
 
     let __siyuanSdk = null;
     try {
@@ -339,6 +373,7 @@
         onStateChange: null,
         lastPollTime: 0,
         _lastSyncTime: 0, // 🔧 v9.5: 记录上次触发思源同步的时间
+        _focusHandler: null,
         
         async init(initialState, onChangeCallback) {
             this.localState = JSON.parse(JSON.stringify(initialState));
@@ -666,11 +701,24 @@
                 this._visibilityHandler = () => {
                     try {
                         if (!document.hidden && isSyncEnabled()) {
-                            this.poll(true);
+                            handleAppResumeRefresh('visibility');
                         }
                     } catch (e) {}
                 };
                 document.addEventListener('visibilitychange', this._visibilityHandler, true);
+            } catch (e) {}
+            try {
+                if (this._focusHandler) {
+                    window.removeEventListener('focus', this._focusHandler, true);
+                }
+                this._focusHandler = () => {
+                    try {
+                        if (!document.hidden && isSyncEnabled()) {
+                            handleAppResumeRefresh('focus');
+                        }
+                    } catch (e) {}
+                };
+                window.addEventListener('focus', this._focusHandler, true);
             } catch (e) {}
             Logger.debug('🔄 SyncManager: 轮询已启动');
         },
@@ -685,6 +733,12 @@
                 if (this._visibilityHandler) {
                     document.removeEventListener('visibilitychange', this._visibilityHandler, true);
                     this._visibilityHandler = null;
+                }
+            } catch (e) {}
+            try {
+                if (this._focusHandler) {
+                    window.removeEventListener('focus', this._focusHandler, true);
+                    this._focusHandler = null;
                 }
             } catch (e) {}
         },
@@ -846,6 +900,82 @@
             return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
         }
     };
+
+    let lastKnownHistoryMaxEndMinute = null;
+    let lastKnownSyncSignature = '';
+    let lastResumeRefreshAtMs = 0;
+    let resumeRefreshRunning = false;
+
+    function buildSyncSignature(st) {
+        try {
+            if (!st) return '';
+            return [
+                st.status,
+                st.mode,
+                String(st.startTime || ''),
+                String(st.stopwatchStartTimeMs || ''),
+                String(st.duration || ''),
+                String(st.currentPauseStart || ''),
+                String(st.pausedElapsedSeconds ?? ''),
+                String(st.sequenceId || 0),
+                String(st.lastModifiedTime || 0),
+                String(st.taskBlockId || ''),
+                String(st.taskBlockName || ''),
+                String(st.databaseBlockId || '')
+            ].join('|');
+        } catch (e) {
+            return '';
+        }
+    }
+
+    async function handleAppResumeRefresh(source = '') {
+        try {
+            if (resumeRefreshRunning) return;
+            const now = Date.now();
+            if (now - lastResumeRefreshAtMs < 800) return;
+            lastResumeRefreshAtMs = now;
+            resumeRefreshRunning = true;
+
+            const prevSig = buildSyncSignature(syncState);
+            try {
+                if (isSyncEnabled()) {
+                    await SyncManager.poll(true);
+                    const st = SyncManager.getState();
+                    if (st) syncState = st;
+                }
+            } catch (e) {}
+            const nextSig = buildSyncSignature(syncState);
+
+            if (nextSig && nextSig !== lastKnownSyncSignature) {
+                lastKnownSyncSignature = nextSig;
+            }
+            if (prevSig !== nextSig && nextSig) {
+                try { updateFromSyncState(); } catch (e) {}
+                try { updateDisplay(true); } catch (e) {}
+                try { updateTimelineBar(true); } catch (e) {}
+            }
+
+            try {
+                const all = await loadHistoryRecords();
+                let maxEndMs = 0;
+                for (const r of Array.isArray(all) ? all : []) {
+                    const endMs = toDateSafe(r?.end)?.getTime?.() || 0;
+                    if (Number.isFinite(endMs) && endMs > maxEndMs) maxEndMs = endMs;
+                }
+                const maxEndMinute = Math.max(0, Math.floor((Number(maxEndMs) || 0) / 60000));
+                if (lastKnownHistoryMaxEndMinute == null) {
+                    lastKnownHistoryMaxEndMinute = maxEndMinute;
+                } else if (maxEndMinute > lastKnownHistoryMaxEndMinute) {
+                    lastKnownHistoryMaxEndMinute = maxEndMinute;
+                    markTimelineHistoryDirty();
+                    try { updateTimelineBar(true); } catch (e) {}
+                }
+            } catch (e) {}
+        } catch (e) {
+        } finally {
+            resumeRefreshRunning = false;
+        }
+    }
     
     // ========== 从同步状态更新本地变量 ==========
     function updateFromSyncState() {
@@ -1594,10 +1724,15 @@
             enableSystemDialogRepeatReminder: true
         },
         showBreakRecords: true,
+        showIdleRecords: false,
         groupByTimePeriod: true,
         hideShortRecords: true,
         mergeSameTaskRecords: true,  // 默认开启合并相同任务时间功能
         deleteWithoutConfirm: false,  // 删除记录无需确认开关
+        historyEditor: {
+            enabled: false,
+            fillMinutes: 30
+        },
         // 每日专注目标时间（分钟）
         dailyFocusTargetMinutes: 180,  // 默认目标3小时
         // 多端同步配置
@@ -1696,6 +1831,16 @@
         userSettings.main.extendTomatoOnDistraction = userSettings.main.extendTomatoOnDistraction !== false;
         if (typeof userSettings.main.distractionToastText !== 'string') userSettings.main.distractionToastText = '已记录一次分心（{count} 次）';
         if (typeof userSettings.main.enableSystemDialogRepeatReminder !== 'boolean') userSettings.main.enableSystemDialogRepeatReminder = true;
+        if (typeof userSettings.showIdleRecords !== 'boolean') userSettings.showIdleRecords = false;
+        if (!userSettings.historyEditor || typeof userSettings.historyEditor !== 'object') userSettings.historyEditor = {};
+        if (typeof userSettings.historyEditor.enabled !== 'boolean') userSettings.historyEditor.enabled = false;
+        const legacyGap = Number(userSettings.historyEditor.gapFillMinMinutes);
+        if (typeof userSettings.historyEditor.fillMinutes !== 'number' || !Number.isFinite(userSettings.historyEditor.fillMinutes)) {
+            if (Number.isFinite(legacyGap) && legacyGap > 0) userSettings.historyEditor.fillMinutes = Math.max(1, Math.min(180, Math.round(legacyGap)));
+            else userSettings.historyEditor.fillMinutes = 30;
+        } else {
+            userSettings.historyEditor.fillMinutes = Math.max(1, Math.min(180, Math.round(userSettings.historyEditor.fillMinutes)));
+        }
 
         if (!userSettings.sync || typeof userSettings.sync !== 'object') userSettings.sync = {};
         userSettings.sync.enabled = userSettings.sync.enabled !== false;
@@ -2276,6 +2421,8 @@
                 records.splice(index, 1);
                 const success = await saveHistoryRecords(records);
                 if (success) {
+                    try { markTimelineHistoryDirty(); } catch (e) {}
+                    try { updateTimelineBar(true); } catch (e) {}
                     return true;
                 }
             }
@@ -10850,7 +10997,11 @@ function calculateWeeklyStats(dailyStatsArray) {
     function createFocusTimeChart(dailyStatsArray) {
         if (!dailyStatsArray || dailyStatsArray.length === 0) return null;
         
+        const isMobile = isMobileDevice();
         const recentStats = dailyStatsArray.slice(0, 30).reverse();
+        const enableHScroll = isMobile && recentStats.length > 15;
+        const minColumnWidth = enableHScroll ? 22 : null;
+        const scrollMinWidth = enableHScroll ? (recentStats.length * ((minColumnWidth || 0) + 8) + 10) : 0;
         const maxFocusTime = Math.max(...recentStats.map(d => d.focusTime));
         const dailyTarget = userSettings.dailyFocusTargetMinutes || 180;
         const getScaleMaxValue = (rawMax) => {
@@ -10940,6 +11091,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             height: 100%;
             position: relative;
             min-width: 0;
+            ${enableHScroll ? 'overflow-x: auto; overflow-y: hidden; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;' : ''}
         `;
 
         const plotArea = document.createElement('div');
@@ -10949,6 +11101,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             align-items: flex-end;
             gap: 8px;
             position: relative;
+            ${enableHScroll ? `width: max-content; min-width: ${scrollMinWidth}px; padding-right: 10px;` : ''}
         `;
 
         const xAxis = document.createElement('div');
@@ -10957,6 +11110,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             display: flex;
             align-items: flex-start;
             gap: 8px;
+            ${enableHScroll ? `width: max-content; min-width: ${scrollMinWidth}px; padding-right: 10px;` : ''}
         `;
 
         // ========== 添加目标线（绘制在 plotArea 内，确保与柱状图基线一致） ==========
@@ -10985,14 +11139,14 @@ function calculateWeeklyStats(dailyStatsArray) {
         recentStats.forEach((day) => {
             const barContainer = document.createElement('div');
             barContainer.style.cssText = `
-                flex: 1;
+                ${enableHScroll ? `flex: 1 0 ${minColumnWidth}px; min-width: ${minColumnWidth}px;` : 'flex: 1;'}
                 display: flex;
                 flex-direction: column;
                 align-items: center;
                 justify-content: flex-end;
                 height: 100%;
                 position: relative;
-                min-width: 0;
+                ${enableHScroll ? '' : 'min-width: 0;'}
             `;
 
             const barHeight = scaleMaxValue > 0 ? (day.focusTime / scaleMaxValue * CHART_PLOT_HEIGHT) : 0;
@@ -11041,12 +11195,12 @@ function calculateWeeklyStats(dailyStatsArray) {
             const dateLabel = document.createElement('div');
             dateLabel.textContent = new Date(day.date).getDate();
             dateLabel.style.cssText = `
-                flex: 1;
+                ${enableHScroll ? `flex: 1 0 ${minColumnWidth}px; min-width: ${minColumnWidth}px;` : 'flex: 1;'}
                 text-align: center;
                 font-size: 11px;
                 color: var(--b3-theme-on-surface-light);
                 white-space: nowrap;
-                min-width: 0;
+                ${enableHScroll ? '' : 'min-width: 0;'}
             `;
             xAxis.appendChild(dateLabel);
         });
@@ -11056,6 +11210,25 @@ function calculateWeeklyStats(dailyStatsArray) {
         chartContainer.appendChild(plotWrap);
         
         container.appendChild(chartContainer);
+        if (enableHScroll) {
+            let attempts = 0;
+            const scrollToEnd = () => {
+                try {
+                    if (!plotWrap.isConnected) {
+                        attempts += 1;
+                        if (attempts < 12) requestAnimationFrame(scrollToEnd);
+                        return;
+                    }
+                    requestAnimationFrame(() => {
+                        try {
+                            const maxLeft = Math.max(0, (plotWrap.scrollWidth || 0) - (plotWrap.clientWidth || 0));
+                            plotWrap.scrollLeft = maxLeft;
+                        } catch (e) {}
+                    });
+                } catch (e) {}
+            };
+            requestAnimationFrame(scrollToEnd);
+        }
         
         const legend = document.createElement('div');
         legend.style.cssText = `
@@ -11103,6 +11276,9 @@ function calculateWeeklyStats(dailyStatsArray) {
         let filteredRecords = allRecords;
         if (!userSettings.showBreakRecords) {
             filteredRecords = allRecords.filter(r => r.mode !== 'break' && r.mode !== 'stopwatch-break');
+        }
+        if (!userSettings.showIdleRecords) {
+            filteredRecords = filteredRecords.filter(r => r?.mode !== 'idle');
         }
         
         if (userSettings.hideShortRecords) {
@@ -11256,6 +11432,34 @@ function calculateWeeklyStats(dailyStatsArray) {
         titleBar.appendChild(closeBtn);
 
         topBar.appendChild(titleBar);
+
+        const editorRow = document.createElement('div');
+        editorRow.style.cssText = `display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin: ${isMobile ? '6px 0 2px 0' : '6px 0 2px 0'};`;
+        const editorLabel = document.createElement('label');
+        editorLabel.style.cssText = 'display: inline-flex; align-items: center; gap: 6px; font-size: 12px; opacity: 0.9; cursor: pointer;';
+        const editorToggle = document.createElement('input');
+        editorToggle.type = 'checkbox';
+        editorToggle.checked = userSettings?.historyEditor?.enabled === true;
+        editorToggle.style.cssText = 'width: 16px; height: 16px; cursor: pointer;';
+        editorToggle.onchange = async (e) => {
+            try { ensureUserSettings(); } catch (err) {}
+            try {
+                userSettings.historyEditor.enabled = !!e.target.checked;
+                await saveUserSettings();
+            } catch (err) {}
+            try { updatePageButtons(); } catch (err) {}
+            try {
+                const enabled = userSettings?.historyEditor?.enabled === true;
+                const cur = historyState?.currentPage || 'summary';
+                const isDayLike = cur === 'today' || cur === 'yesterday' || cur === 'day-before-yesterday' || /^\d{4}-\d{2}-\d{2}$/.test(cur);
+                if (enabled) showPage(isDayLike ? cur : 'today');
+                else showPage(cur);
+            } catch (err) {}
+        };
+        editorLabel.appendChild(editorToggle);
+        editorLabel.appendChild(document.createTextNode('编辑模式'));
+        editorRow.appendChild(editorLabel);
+        topBar.appendChild(editorRow);
 
         const dates = {};
         filteredRecords.forEach(record => {
@@ -11442,6 +11646,11 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     function showPage(pageId) {
+        if (pageId === 'editor') {
+            const cur = historyState?.currentPage || '';
+            const isDayLike = cur === 'today' || cur === 'yesterday' || cur === 'day-before-yesterday' || /^\d{4}-\d{2}-\d{2}$/.test(cur);
+            pageId = isDayLike ? cur : 'today';
+        }
         historyState.currentPage = pageId;
         
         const contentArea = document.getElementById('tomy-tomato-history-content');
@@ -12390,7 +12599,17 @@ function calculateWeeklyStats(dailyStatsArray) {
             headerRow.innerHTML = `<div>分组</div><div style="text-align:right;">专注</div><div style="text-align:right;">休息</div><div style="text-align:right;">合计</div><div style="text-align:right;">占比</div>`;
             table.appendChild(headerRow);
 
-            stats.list.forEach(row => {
+            const sortedGroupRows = [...stats.list].sort((a, b) => {
+                const aId = String(a?.id || '');
+                const bId = String(b?.id || '');
+                if (aId === '__unrecorded') return 1;
+                if (bId === '__unrecorded') return -1;
+                const av = Number(a?.total) || 0;
+                const bv = Number(b?.total) || 0;
+                return bv - av;
+            });
+
+            sortedGroupRows.forEach(row => {
                 const expandable = Array.isArray(row.buttons) && row.buttons.length > 0 && !String(row.id || '').startsWith('__other_');
                 const expanded = !!routineStatsState?.expandedGroups?.[row.id];
                 const r = document.createElement('div');
@@ -12455,7 +12674,12 @@ function calculateWeeklyStats(dailyStatsArray) {
                         if (s.startsWith('img:')) return '🖼';
                         return s;
                     };
-                    row.buttons.forEach(btn => {
+                    const sortedButtons = [...row.buttons].sort((a, b) => {
+                        const av = Number(a?.total) || 0;
+                        const bv = Number(b?.total) || 0;
+                        return bv - av;
+                    });
+                    sortedButtons.forEach(btn => {
                         const rr = document.createElement('div');
                         rr.style.cssText = `display:grid;grid-template-columns:minmax(${isMobile ? 80 : 140}px,1fr) ${isMobile ? 48 : 78}px ${isMobile ? 48 : 78}px ${isMobile ? 48 : 78}px ${isMobile ? 40 : 58}px;gap:${isMobile ? 4 : 8}px;align-items:center;padding:8px 0;border-bottom:1px dashed var(--b3-theme-surface-light);`;
                         const l = document.createElement('div');
@@ -13327,7 +13551,1778 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
     }
 
+    function showHistoryEditorPage(container, dateKey) {
+        try { ensureUserSettings(); } catch (e) {}
+        const isMobile = isMobileDevice();
+        let undoBtn = null;
+        const updateUndoButton = () => {
+            try {
+                if (!undoBtn) return;
+                const u = historyState?.editorUndo;
+                const enabled = !!(u && u.dateKey === selectedDate && Number.isFinite(Number(u.prevStartMin)) && Number.isFinite(Number(u.prevEndMin)));
+                undoBtn.disabled = !enabled;
+                undoBtn.style.opacity = enabled ? '0.95' : '0.45';
+                undoBtn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+            } catch (e) {}
+        };
+        const getAllRecords = () => (Array.isArray(historyState?.allRecords) ? historyState.allRecords : []);
+        const getDayRange = (dateKey) => {
+            const d = toDateSafe(`${String(dateKey || '').trim()}T00:00:00`);
+            const startMs = d?.getTime?.();
+            if (!Number.isFinite(startMs)) return null;
+            return { startMs, endMs: startMs + 86400000 };
+        };
+        const fmtHHMM = (ms) => {
+            try {
+                const d = new Date(ms);
+                if (isNaN(d.getTime())) return '';
+                return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            } catch (e) {
+                return '';
+            }
+        };
+        const fmtMinToHHMM = (m) => {
+            try {
+                const mm = Math.max(0, Math.min(1440, Number(m) || 0));
+                const h = Math.floor(mm / 60);
+                const mi = Math.floor(mm % 60);
+                return `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
+            } catch (e) {
+                return '';
+            }
+        };
+        const fmtDateTimeLocal = (d) => {
+            const pad = (n) => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        };
+        const buildFilteredRecords = (records) => {
+            let out = Array.isArray(records) ? records.slice() : [];
+            if (!userSettings.showBreakRecords) out = out.filter(r => r?.mode !== 'break' && r?.mode !== 'stopwatch-break');
+            if (!userSettings.showIdleRecords) out = out.filter(r => r?.mode !== 'idle');
+            if (userSettings.hideShortRecords) out = out.filter(r => Number(r?.durationSec || 0) >= 60);
+            return out;
+        };
+        const rebuildHistoryState = (records) => {
+            historyState.allRecords = records;
+            historyState.filteredRecords = buildFilteredRecords(records);
+            const dates = {};
+            historyState.filteredRecords.forEach(record => {
+                const date = record?.date || getRecordDateKeyByEnd(record) || formatDateKey(record?.start);
+                if (date) dates[date] = true;
+            });
+            historyState.dateList = Object.keys(dates).sort((a, b) => new Date(b) - new Date(a));
+        };
+        const findRecordIndex = (records, record) => {
+            const list = Array.isArray(records) ? records : [];
+            const start = record?.start;
+            const end = record?.end;
+            const mode = record?.mode;
+            const ts = record?.timestamp;
+            const idx = list.findIndex(r => r && r.start === start && r.end === end && r.mode === mode && r.timestamp === ts);
+            if (idx >= 0) return idx;
+            return list.findIndex(r => r && r.start === start && r.end === end && r.mode === mode);
+        };
+        const getDaySlices = (dateKey) => {
+            const range = getDayRange(dateKey);
+            if (!range) return [];
+            const out = [];
+            for (const record of getAllRecords()) {
+                const startMs = toDateSafe(record?.start)?.getTime?.() || 0;
+                const endMs = toDateSafe(record?.end)?.getTime?.() || 0;
+                if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue;
+                if (!(startMs < range.endMs && endMs > range.startMs)) continue;
+                const sliceStartMs = Math.max(startMs, range.startMs);
+                const sliceEndMs = Math.min(endMs, range.endMs);
+                if (!(sliceEndMs > sliceStartMs)) continue;
+                out.push({
+                    record,
+                    sliceStartMs,
+                    sliceEndMs,
+                    sliceStartMin: (sliceStartMs - range.startMs) / 60000,
+                    sliceEndMin: (sliceEndMs - range.startMs) / 60000
+                });
+            }
+            out.sort((a, b) => a.sliceStartMs - b.sliceStartMs);
+            return out;
+        };
+
+        const today = formatDateKey(new Date());
+        const dateList = Array.isArray(historyState?.dateList) ? historyState.dateList : [];
+        const selectedDate = (typeof dateKey === 'string' && dateKey.trim())
+            ? dateKey.trim()
+            : ((historyState?.editorDate && typeof historyState.editorDate === 'string')
+                ? historyState.editorDate
+                : (dateList.includes(today) ? today : (dateList[0] || today)));
+        historyState.editorDate = selectedDate;
+
+        const header = document.createElement('div');
+        header.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom: 12px; flex-wrap: wrap;';
+        const left = document.createElement('div');
+        left.style.cssText = 'display:flex; align-items:center; gap:8px; flex-wrap: wrap;';
+        const dateText = document.createElement('div');
+        dateText.textContent = `📅 ${selectedDate}`;
+        dateText.style.cssText = 'font-size: 13px; font-weight: 700; opacity: 0.95;';
+        left.appendChild(dateText);
+        header.appendChild(left);
+
+        const right = document.createElement('div');
+        right.style.cssText = 'display:flex; align-items:center; gap:8px; flex-wrap: wrap; justify-content:flex-end;';
+        const tip = document.createElement('div');
+        tip.textContent = '选中日常事务后，点击下方时间轴空白处即可补录';
+        tip.style.cssText = 'font-size: 12px; opacity: 0.75;';
+        right.appendChild(tip);
+        undoBtn = document.createElement('button');
+        undoBtn.type = 'button';
+        undoBtn.textContent = '撤销';
+        undoBtn.style.cssText = 'padding: 6px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background); font-size: 12px;';
+        right.appendChild(undoBtn);
+        header.appendChild(right);
+
+        container.appendChild(header);
+
+        const layout = document.createElement('div');
+        layout.style.cssText = `display: flex; align-items: ${isMobile ? 'stretch' : 'flex-start'}; gap: 12px; flex-direction: ${isMobile ? 'column' : 'row'};`;
+        container.appendChild(layout);
+        const main = document.createElement('div');
+        main.style.cssText = `flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; ${isMobile ? 'width: 100%;' : ''}`;
+        const side = document.createElement('div');
+        side.style.cssText = `${isMobile ? 'width: 100%;' : 'width: 260px; flex: 0 0 auto;'} display: flex; flex-direction: column; gap: 10px;`;
+        layout.appendChild(main);
+        layout.appendChild(side);
+
+        const dayRange = getDayRange(selectedDate);
+        if (!dayRange) {
+            const err = document.createElement('div');
+            err.textContent = '日期无效';
+            err.style.cssText = 'opacity: 0.75;';
+            main.appendChild(err);
+            return;
+        }
+
+        let slices = getDaySlices(selectedDate);
+
+        const selectedRoutineIndexRaw = historyState?.editorSelectedRoutineIndex;
+        const selectedRoutineIndex = Number.isFinite(Number(selectedRoutineIndexRaw)) ? Number(selectedRoutineIndexRaw) : null;
+        const routineButtons = Array.isArray(userSettings?.routineButtons) ? userSettings.routineButtons : [];
+        let fillMinutes = Number(historyState?.editorFillMinutes);
+        if (!Number.isFinite(fillMinutes) || fillMinutes <= 0) fillMinutes = Number(userSettings?.historyEditor?.fillMinutes) || 30;
+        fillMinutes = Math.max(1, Math.min(180, Math.round(fillMinutes)));
+        historyState.editorFillMinutes = fillMinutes;
+
+        const sideCard = document.createElement('div');
+        sideCard.style.cssText = 'border: 1px solid var(--b3-theme-surface-light); border-radius: 10px; padding: 10px; background: var(--b3-theme-background);';
+        const sideTitle = document.createElement('div');
+        sideTitle.textContent = '日常事务';
+        sideTitle.style.cssText = 'font-size: 13px; font-weight: 600; margin-bottom: 8px;';
+        sideCard.appendChild(sideTitle);
+
+        const buttonList = document.createElement('div');
+        buttonList.style.cssText = 'display:flex; flex-direction: column; gap: 8px; max-height: 280px; overflow: auto;';
+        try {
+            const savedTop = Number(historyState?.editorRoutineListScrollTop);
+            if (Number.isFinite(savedTop) && savedTop >= 0) {
+                requestAnimationFrame(() => {
+                    try { buttonList.scrollTop = Math.max(0, savedTop); } catch (e) {}
+                });
+            }
+        } catch (e) {}
+        try {
+            buttonList.addEventListener('scroll', () => {
+                try { historyState.editorRoutineListScrollTop = buttonList.scrollTop; } catch (e) {}
+            }, { passive: true });
+        } catch (e) {}
+
+        const normalizeGroupId = (v) => {
+            const s = String(v || '').trim();
+            return s ? s : null;
+        };
+        const groups = Array.isArray(userSettings?.routineGroups) ? userSettings.routineGroups : [];
+        const getGroupName = (id) => {
+            const gid = normalizeGroupId(id);
+            if (!gid) return '未分组';
+            const g = groups.find(x => x && x.id === gid);
+            return String(g?.name || '分组');
+        };
+        const orderGroups = () => {
+            const ids = groups.map(g => g?.id).filter(Boolean);
+            const hasUngrouped = routineButtons.some(b => !normalizeGroupId(b?.groupId));
+            const result = [];
+            if (hasUngrouped) result.push(null);
+            ids.forEach(id => result.push(id));
+            return result;
+        };
+
+        const buildRoutineOption = (cfg, idx, isBlank = false) => {
+            const item = document.createElement('button');
+            const isActive = selectedRoutineIndex === idx;
+            const leftColor = isBlank
+                ? '#9E9E9E'
+                : ((typeof cfg?.color === 'string' && cfg.color.trim()) ? cfg.color.trim() : null);
+            item.type = 'button';
+            item.style.cssText = `
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                width: 100%;
+                text-align: left;
+                padding: 8px 10px;
+                border-radius: 8px;
+                border: 1px solid ${isActive ? 'var(--b3-theme-primary)' : 'var(--b3-theme-surface-light)'};
+                background: ${isActive ? 'rgba(33,150,243,0.12)' : 'var(--b3-theme-surface)'};
+                color: var(--b3-theme-on-background);
+                cursor: pointer;
+                font-size: 12px;
+                opacity: 0.95;
+                ${leftColor ? `box-shadow: inset 3px 0 0 ${leftColor};` : ''}
+            `;
+
+            const iconWrap = document.createElement('span');
+            iconWrap.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:16px;height:16px;';
+            const iconVal = isBlank ? '🕳️' : String(cfg?.icon || '').trim();
+            if (!isBlank && iconVal.startsWith('img:')) {
+                const path = iconVal.slice(4).trim();
+                const img = document.createElement('img');
+                img.style.cssText = 'width:16px;height:16px;object-fit:contain;';
+                iconWrap.appendChild(img);
+                __getRoutineIconObjectUrl(path).then((url) => {
+                    if (!url) return;
+                    if (!img.isConnected) return;
+                    img.src = url;
+                });
+            } else if (!isBlank && /^([0-9a-f]{4,})(-[0-9a-f]{4,})*$/i.test(iconVal)) {
+                try {
+                    const parts = iconVal.split('-').filter(Boolean);
+                    const cps = parts.map(p => parseInt(p, 16)).filter(n => Number.isFinite(n) && n > 0);
+                    iconWrap.textContent = cps.length ? String.fromCodePoint(...cps) : (iconVal || '📌');
+                } catch (e) {
+                    iconWrap.textContent = iconVal || '📌';
+                }
+            } else {
+                iconWrap.textContent = iconVal || (isBlank ? '🕳️' : '📌');
+            }
+            item.appendChild(iconWrap);
+
+            const label = document.createElement('span');
+            if (isBlank) {
+                label.textContent = '空白（不计入统计）';
+            } else {
+                const name = (typeof cfg?.name === 'string' && cfg.name.trim()) ? cfg.name.trim() : `任务 ${Number(idx) + 1}`;
+                label.textContent = name;
+            }
+            label.style.cssText = 'flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+            item.appendChild(label);
+
+            item.onclick = async () => {
+                historyState.editorSelectedRoutineIndex = idx;
+                try { historyState.editorRoutineListScrollTop = buttonList.scrollTop; } catch (e) {}
+                const nextBtn = idx != null && idx >= 0 ? routineButtons[idx] : null;
+                if (nextBtn && nextBtn.timerType === 'pomodoro') {
+                    const d = Number(nextBtn.tomatoDuration);
+                    if (Number.isFinite(d) && d > 0) {
+                        historyState.editorFillMinutes = Math.max(1, Math.min(180, Math.round(d)));
+                    }
+                }
+                try {
+                    ensureUserSettings();
+                    if (userSettings.historyEditor) {
+                        userSettings.historyEditor.fillMinutes = Math.max(1, Math.min(180, Math.round(Number(historyState.editorFillMinutes) || fillMinutes)));
+                        await saveUserSettings();
+                    }
+                } catch (e) {}
+                showPage(historyState?.currentPage || selectedDate);
+            };
+            return item;
+        };
+
+        const blankWrap = document.createElement('div');
+        blankWrap.style.cssText = 'display:flex; flex-direction: column; gap: 6px;';
+        blankWrap.appendChild(buildRoutineOption(null, -1, true));
+        buttonList.appendChild(blankWrap);
+
+        const groupIds = orderGroups().filter(gid => routineButtons.some(b => normalizeGroupId(b?.groupId) === normalizeGroupId(gid)));
+        groupIds.forEach((gid) => {
+            const groupButtons = routineButtons
+                .map((b, idx) => ({ b, idx }))
+                .filter(({ b }) => normalizeGroupId(b?.groupId) === normalizeGroupId(gid));
+            if (!groupButtons.length) return;
+
+            const groupWrap = document.createElement('div');
+            groupWrap.style.cssText = 'display:flex; flex-direction: column; gap: 6px;';
+
+            const groupLabel = document.createElement('div');
+            groupLabel.textContent = getGroupName(gid);
+            groupLabel.style.cssText = 'font-size: 11px; font-weight: 600; opacity: 0.75; padding: 0 2px;';
+            groupWrap.appendChild(groupLabel);
+
+            groupButtons.forEach(({ b, idx }) => groupWrap.appendChild(buildRoutineOption(b, idx, false)));
+            buttonList.appendChild(groupWrap);
+        });
+
+        if (!routineButtons.length) {
+            const empty = document.createElement('div');
+            empty.textContent = '暂无日常事务按钮，请先在时间轴或设置中添加';
+            empty.style.cssText = 'font-size: 12px; opacity: 0.7; padding: 6px 2px;';
+            buttonList.appendChild(empty);
+        }
+
+        sideCard.appendChild(buttonList);
+
+        const fillRow = document.createElement('div');
+        fillRow.style.cssText = 'margin-top: 10px;';
+        const fillLabel = document.createElement('div');
+        fillLabel.textContent = `补录时长：${fillMinutes} 分钟`;
+        fillLabel.style.cssText = 'font-size: 12px; opacity: 0.85; margin-bottom: 6px;';
+        const fillSlider = document.createElement('input');
+        fillSlider.type = 'range';
+        fillSlider.min = '1';
+        fillSlider.max = '180';
+        fillSlider.value = String(fillMinutes);
+        fillSlider.style.cssText = 'width: 100%;';
+        fillSlider.oninput = (e) => {
+            const v = Math.max(1, Math.min(180, Math.round(Number(e.target.value) || fillMinutes)));
+            historyState.editorFillMinutes = v;
+            fillLabel.textContent = `补录时长：${v} 分钟`;
+        };
+        fillSlider.onchange = async () => {
+            try {
+                ensureUserSettings();
+                if (userSettings.historyEditor) {
+                    userSettings.historyEditor.fillMinutes = Math.max(1, Math.min(180, Math.round(Number(historyState.editorFillMinutes) || fillMinutes)));
+                    await saveUserSettings();
+                }
+            } catch (e) {}
+        };
+        fillRow.appendChild(fillLabel);
+        fillRow.appendChild(fillSlider);
+        sideCard.appendChild(fillRow);
+
+        side.appendChild(sideCard);
+
+        const timelineCard = document.createElement('div');
+        timelineCard.style.cssText = `border: 1px solid var(--b3-theme-surface-light); border-radius: 10px; padding: ${isMobile ? 8 : 10}px; background: var(--b3-theme-background); width: 100%; box-sizing: border-box;`;
+        const timelineTitle = document.createElement('div');
+        timelineTitle.textContent = isMobile ? '日历时间轴（长按块后拖动调整，点击空白补录）' : '日历时间轴（拖动块调整，点击空白补录）';
+        timelineTitle.style.cssText = 'font-size: 12px; opacity: 0.85; margin-bottom: 8px;';
+        timelineCard.appendChild(timelineTitle);
+        const timelineScroll = document.createElement('div');
+        timelineScroll.id = 'tomy-history-editor-timeline-scroll';
+        timelineScroll.style.cssText = `border-radius: 10px; border: 1px solid var(--b3-theme-surface-light); overflow: auto; max-height: 520px; background: var(--b3-theme-surface); width: 100%; box-sizing: border-box;`;
+        try {
+            const savedTop = Number(historyState?.editorTimelineScrollTop);
+            if (Number.isFinite(savedTop) && savedTop >= 0) {
+                requestAnimationFrame(() => {
+                    try { timelineScroll.scrollTop = Math.max(0, savedTop); } catch (e) {}
+                });
+            }
+        } catch (e) {}
+        try {
+            timelineScroll.addEventListener('scroll', () => {
+                try { historyState.editorTimelineScrollTop = timelineScroll.scrollTop; } catch (e) {}
+            }, { passive: true });
+        } catch (e) {}
+        const timelineWrap = document.createElement('div');
+        timelineWrap.style.cssText = `display: flex; gap: ${isMobile ? 6 : 10}px; padding: ${isMobile ? 8 : 10}px; min-width: ${isMobile ? '0' : '420px'}; width: 100%; box-sizing: border-box;`;
+        const timeCol = document.createElement('div');
+        timeCol.style.cssText = `width: ${isMobile ? 40 : 48}px; flex: 0 0 auto; position: relative; height: 1440px;`;
+        const timeline = document.createElement('div');
+        timeline.style.cssText = `flex: 1; min-width: ${isMobile ? 0 : 260}px; position: relative; height: 1440px; border-radius: 10px; background: var(--b3-theme-background); overflow: hidden; cursor: crosshair;`;
+        timelineWrap.appendChild(timeCol);
+        timelineWrap.appendChild(timeline);
+        timelineScroll.appendChild(timelineWrap);
+        timelineCard.appendChild(timelineScroll);
+        main.appendChild(timelineCard);
+
+        const openAdjustDialog = (record) => {
+            try {
+                const existing = document.getElementById('tomy-history-editor-dialog');
+                const existingBackdrop = document.getElementById('tomy-history-editor-backdrop');
+                if (existing) existing.remove();
+                if (existingBackdrop) existingBackdrop.remove();
+
+                const backdrop = document.createElement('div');
+                backdrop.id = 'tomy-history-editor-backdrop';
+                backdrop.style.cssText = 'position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 2147483647;';
+
+                const dialog = document.createElement('div');
+                dialog.id = 'tomy-history-editor-dialog';
+                dialog.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2147483648; background: var(--b3-theme-background); color: var(--b3-theme-on-background); border: 1px solid var(--b3-theme-surface-light); border-radius: 10px; width: 92vw; max-width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); padding: 14px;';
+
+                const title = document.createElement('div');
+                title.textContent = '调整起止时间';
+                title.style.cssText = 'font-size: 14px; font-weight: 600; margin-bottom: 10px;';
+                dialog.appendChild(title);
+
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex; flex-direction: column; gap: 10px; margin-bottom: 12px;';
+
+                const startInput = document.createElement('input');
+                startInput.type = 'datetime-local';
+                startInput.style.cssText = 'padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background);';
+                const endInput = document.createElement('input');
+                endInput.type = 'datetime-local';
+                endInput.style.cssText = startInput.style.cssText;
+
+                const startD = toDateSafe(record?.start);
+                const endD = toDateSafe(record?.end);
+                if (!isNaN(startD.getTime())) startInput.value = fmtDateTimeLocal(startD);
+                if (!isNaN(endD.getTime())) endInput.value = fmtDateTimeLocal(endD);
+
+                row.appendChild(startInput);
+                row.appendChild(endInput);
+                dialog.appendChild(row);
+
+                const footer = document.createElement('div');
+                footer.style.cssText = 'display:flex; justify-content:flex-end; gap: 8px;';
+                const cancel = document.createElement('button');
+                cancel.textContent = '取消';
+                cancel.style.cssText = 'padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background); cursor:pointer;';
+                const ok = document.createElement('button');
+                ok.textContent = '保存';
+                ok.style.cssText = 'padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-primary); background: var(--b3-theme-primary); color: white; cursor:pointer;';
+
+                const close = () => { try { dialog.remove(); backdrop.remove(); } catch (e) {} };
+                cancel.onclick = close;
+                backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+
+                ok.onclick = async () => {
+                    try {
+                        const ns = new Date(startInput.value);
+                        const ne = new Date(endInput.value);
+                        const startMs = ns?.getTime?.();
+                        const endMs = ne?.getTime?.();
+                        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+                            showToastDialog('提示', '开始/结束时间不合法', 'info');
+                            return;
+                        }
+                        const records = await loadHistoryRecords();
+                        const idx = findRecordIndex(records, record);
+                        if (idx < 0) {
+                            showToastDialog('提示', '未找到对应记录（可能已被刷新）', 'info');
+                            close();
+                            return;
+                        }
+                        const ms = endMs - startMs;
+                        records[idx].start = ns.toISOString();
+                        records[idx].end = ne.toISOString();
+                        records[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
+                        records[idx].durationMin = Math.max(0, Math.round(ms / 60000));
+                        records[idx].timestamp = Math.round(endMs);
+                        records[idx].date = formatDateKey(ne);
+                        records[idx].dateTime = ne.toLocaleString('zh-CN');
+                        records[idx].timePeriod = getTimePeriod(ne.getHours());
+                        const success = await saveHistoryRecords(records);
+                        if (success) {
+                            markTimelineHistoryDirty();
+                            rebuildHistoryState(records);
+                            try { updatePageButtons(); } catch (e) {}
+                            close();
+                            showPage(historyState?.currentPage || selectedDate);
+                        } else {
+                            showToastDialog('提示', '保存失败', 'error');
+                        }
+                    } catch (err) {
+                        showToastDialog('提示', '保存失败', 'error');
+                    }
+                };
+
+                footer.appendChild(cancel);
+                footer.appendChild(ok);
+                dialog.appendChild(footer);
+
+                document.body.appendChild(backdrop);
+                document.body.appendChild(dialog);
+            } catch (e) {}
+        };
+
+        const openSplitDialog = (record) => {
+            try {
+                const startD = toDateSafe(record?.start);
+                const endD = toDateSafe(record?.end);
+                if (isNaN(startD.getTime()) || isNaN(endD.getTime()) || endD.getTime() <= startD.getTime()) {
+                    showToastDialog('提示', '记录时间无效', 'info');
+                    return;
+                }
+                if (formatDateKey(startD) !== formatDateKey(endD)) {
+                    showToastDialog('提示', '跨天记录暂不支持拆分（请先调整为单日范围）', 'info');
+                    return;
+                }
+
+                const existing = document.getElementById('tomy-history-editor-dialog');
+                const existingBackdrop = document.getElementById('tomy-history-editor-backdrop');
+                if (existing) existing.remove();
+                if (existingBackdrop) existingBackdrop.remove();
+
+                const backdrop = document.createElement('div');
+                backdrop.id = 'tomy-history-editor-backdrop';
+                backdrop.style.cssText = 'position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 2147483647;';
+
+                const dialog = document.createElement('div');
+                dialog.id = 'tomy-history-editor-dialog';
+                dialog.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2147483648; background: var(--b3-theme-background); color: var(--b3-theme-on-background); border: 1px solid var(--b3-theme-surface-light); border-radius: 10px; width: 92vw; max-width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); padding: 14px;';
+
+                const title = document.createElement('div');
+                title.textContent = '拆分记录';
+                title.style.cssText = 'font-size: 14px; font-weight: 600; margin-bottom: 10px;';
+                dialog.appendChild(title);
+
+                const splitInput = document.createElement('input');
+                splitInput.type = 'datetime-local';
+                splitInput.style.cssText = 'padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background); width: 100%; box-sizing: border-box; margin-bottom: 12px;';
+                const midMs = startD.getTime() + Math.floor((endD.getTime() - startD.getTime()) / 2);
+                splitInput.value = fmtDateTimeLocal(new Date(midMs));
+                dialog.appendChild(splitInput);
+
+                const footer = document.createElement('div');
+                footer.style.cssText = 'display:flex; justify-content:flex-end; gap: 8px;';
+                const cancel = document.createElement('button');
+                cancel.textContent = '取消';
+                cancel.style.cssText = 'padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background); cursor:pointer;';
+                const ok = document.createElement('button');
+                ok.textContent = '拆分';
+                ok.style.cssText = 'padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-primary); background: var(--b3-theme-primary); color: white; cursor:pointer;';
+                const close = () => { try { dialog.remove(); backdrop.remove(); } catch (e) {} };
+                cancel.onclick = close;
+                backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+
+                ok.onclick = async () => {
+                    try {
+                        const sp = new Date(splitInput.value);
+                        const splitMs = sp?.getTime?.();
+                        if (!Number.isFinite(splitMs) || splitMs <= startD.getTime() || splitMs >= endD.getTime()) {
+                            showToastDialog('提示', '拆分点不在记录范围内', 'info');
+                            return;
+                        }
+                        const records = await loadHistoryRecords();
+                        const idx = findRecordIndex(records, record);
+                        if (idx < 0) {
+                            showToastDialog('提示', '未找到对应记录（可能已被刷新）', 'info');
+                            close();
+                            return;
+                        }
+                        const original = records[idx];
+                        const origStartMs = toDateSafe(original?.start)?.getTime?.() || 0;
+                        const origEndMs = toDateSafe(original?.end)?.getTime?.() || 0;
+                        if (!Number.isFinite(origStartMs) || !Number.isFinite(origEndMs) || origEndMs <= origStartMs) {
+                            showToastDialog('提示', '记录时间无效', 'info');
+                            close();
+                            return;
+                        }
+                        if (formatDateKey(new Date(origStartMs)) !== formatDateKey(new Date(origEndMs))) {
+                            showToastDialog('提示', '跨天记录暂不支持拆分', 'info');
+                            close();
+                            return;
+                        }
+
+                        const aStart = origStartMs;
+                        const aEnd = splitMs;
+                        const bStart = splitMs;
+                        const bEnd = origEndMs;
+
+                        const recA = { ...original };
+                        const recB = { ...original };
+
+                        const aEndD = new Date(aEnd);
+                        const bEndD = new Date(bEnd);
+                        recA.start = new Date(aStart).toISOString();
+                        recA.end = aEndD.toISOString();
+                        recA.durationSec = Math.max(0, Math.floor((aEnd - aStart) / 1000));
+                        recA.durationMin = Math.max(0, Math.round((aEnd - aStart) / 60000));
+                        recA.timestamp = Math.round(aEnd);
+                        recA.date = formatDateKey(aEndD);
+                        recA.dateTime = aEndD.toLocaleString('zh-CN');
+                        recA.timePeriod = getTimePeriod(aEndD.getHours());
+
+                        recB.start = new Date(bStart).toISOString();
+                        recB.end = bEndD.toISOString();
+                        recB.durationSec = Math.max(0, Math.floor((bEnd - bStart) / 1000));
+                        recB.durationMin = Math.max(0, Math.round((bEnd - bStart) / 60000));
+                        recB.timestamp = Math.round(bEnd);
+                        recB.date = formatDateKey(bEndD);
+                        recB.dateTime = bEndD.toLocaleString('zh-CN');
+                        recB.timePeriod = getTimePeriod(bEndD.getHours());
+
+                        if (recA.mode === 'countdown') {
+                            if (recA.plannedDuration != null) recB.plannedDuration = 0;
+                            if (recA.distractionCount != null) recA.distractionCount = 0;
+                        }
+
+                        records.splice(idx, 1, recA, recB);
+                        const success = await saveHistoryRecords(records);
+                        if (success) {
+                            markTimelineHistoryDirty();
+                            rebuildHistoryState(records);
+                            try { updatePageButtons(); } catch (e) {}
+                            close();
+                            showPage(historyState?.currentPage || selectedDate);
+                        } else {
+                            showToastDialog('提示', '保存失败', 'error');
+                        }
+                    } catch (err) {
+                        showToastDialog('提示', '拆分失败', 'error');
+                    }
+                };
+
+                footer.appendChild(cancel);
+                footer.appendChild(ok);
+                dialog.appendChild(footer);
+
+                document.body.appendChild(backdrop);
+                document.body.appendChild(dialog);
+            } catch (e) {}
+        };
+
+        const getEditorSegColor = (record) => {
+            try {
+                const mode = String(record?.mode || '');
+                const allowRoutineHighlight = true;
+                const saved = typeof record?.routineButtonColor === 'string' ? record.routineButtonColor.trim() : '';
+                if (saved) return saved;
+                if (allowRoutineHighlight && record?.taskBlockId) {
+                    const btn = routineButtons.find(b => String(b?.blockId) === String(record.taskBlockId));
+                    if (btn?.color && typeof btn.color === 'string' && btn.color.trim()) return btn.color.trim();
+                }
+                const { tomatoColor, stopwatchColor, breakColor } = getTimelineHighlightPalette();
+                if (mode === 'countdown') return tomatoColor;
+                if (mode === 'stopwatch') return stopwatchColor;
+                if (mode === 'break' || mode === 'stopwatch-break') return breakColor;
+                if (mode === 'idle') return '#9E9E9E';
+                return '#9E9E9E';
+            } catch (e) {
+                return '#9E9E9E';
+            }
+        };
+
+        const getEditorSegLabel = (record) => {
+            try {
+                const mode = String(record?.mode || '');
+                const modeText = mode === 'countdown'
+                    ? '🍅 番茄'
+                    : (mode === 'stopwatch'
+                        ? '⏱️ 正计时'
+                        : (mode === 'break' || mode === 'stopwatch-break'
+                            ? '☕ 休息'
+                            : (mode === 'idle' ? '🕳️ 空白' : '记录')));
+                let name = (typeof record?.taskBlockName === 'string' && record.taskBlockName.trim()) ? record.taskBlockName.trim() : '';
+                if (!name && record?.taskBlockId) {
+                    const btn = routineButtons.find(b => String(b?.blockId) === String(record.taskBlockId));
+                    const btnName = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : '';
+                    if (btnName) name = btnName;
+                }
+                return name ? `${modeText} / ${name}` : modeText;
+            } catch (e) {
+                return '记录';
+            }
+        };
+
+        const renderEditorTimeline = () => {
+            if (!timeline) return;
+            timeline.innerHTML = '';
+            timeCol.innerHTML = '';
+            const segPad = isMobile ? 6 : 8;
+            for (let h = 0; h <= 24; h++) {
+                const label = document.createElement('div');
+                label.textContent = `${String(h).padStart(2, '0')}:00`;
+                label.style.cssText = `position: absolute; left: 0; right: 0; top: ${h * 60}px; transform: translateY(-50%); font-size: ${isMobile ? 10 : 11}px; opacity: 0.7; font-variant-numeric: tabular-nums; text-align: right; padding-right: 2px; box-sizing: border-box; white-space: nowrap;`;
+                timeCol.appendChild(label);
+                if (h < 24) {
+                    const line = document.createElement('div');
+                    line.style.cssText = `position: absolute; left: 0; right: 0; top: ${h * 60}px; height: 1px; background: rgba(0,0,0,0.10); pointer-events: none;`;
+                    timeline.appendChild(line);
+                }
+            }
+            for (const s of slices) {
+                const startMin = Math.max(0, Math.min(1440, Number(s.sliceStartMin)));
+                const endMin = Math.max(0, Math.min(1440, Number(s.sliceEndMin)));
+                if (!(endMin > startMin)) continue;
+                const height = Math.max(8, endMin - startMin);
+                const seg = document.createElement('div');
+                seg.style.cssText = `
+                    position: absolute;
+                    left: ${segPad}px;
+                    right: ${segPad}px;
+                    top: ${startMin}px;
+                    height: ${height}px;
+                    background: ${getEditorSegColor(s.record)};
+                    opacity: ${s.record?.mode === 'idle' ? 0.45 : 0.85};
+                    border-radius: 6px;
+                    box-shadow: 0 1px 2px rgba(0,0,0,0.18);
+                    cursor: grab;
+                    user-select: none;
+                `;
+                const handleTop = document.createElement('div');
+                handleTop.dataset.handle = 'start';
+                handleTop.style.cssText = 'position:absolute; left: 0; right: 0; top: 0; height: 8px; cursor: ns-resize;';
+                const handleBottom = document.createElement('div');
+                handleBottom.dataset.handle = 'end';
+                handleBottom.style.cssText = 'position:absolute; left: 0; right: 0; bottom: 0; height: 8px; cursor: ns-resize;';
+                seg.appendChild(handleTop);
+                seg.appendChild(handleBottom);
+
+                if (height >= 18) {
+                    const label = document.createElement('div');
+                    const timeText = `${fmtHHMM(s.sliceStartMs)}-${(s.sliceEndMin >= 1440 ? '24:00' : fmtHHMM(s.sliceEndMs))}`;
+                    label.textContent = `${timeText} ${getEditorSegLabel(s.record)}`;
+                    label.dataset.role = 'label';
+                    label.style.cssText = `
+                        position: absolute;
+                        left: 50%;
+                        top: 9px;
+                        transform: translateX(-50%);
+                        font-size: 11px;
+                        font-weight: 600;
+                        line-height: 1.1;
+                        max-width: calc(100% - 20px);
+                        white-space: nowrap;
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                        color: #fff;
+                        text-shadow: 0 1px 2px rgba(0,0,0,0.55);
+                        pointer-events: none;
+                    `;
+                    seg.appendChild(label);
+                }
+
+                seg.dataset.recordStart = String(s.record?.start || '');
+                seg.dataset.recordEnd = String(s.record?.end || '');
+                seg.dataset.recordMode = String(s.record?.mode || '');
+                seg.title = `${fmtHHMM(s.sliceStartMs)} - ${(s.sliceEndMin >= 1440 ? '24:00' : fmtHHMM(s.sliceEndMs))}`;
+                timeline.appendChild(seg);
+            }
+        };
+
+        const createEditorRecordAtMinute = async (startMinuteRaw) => {
+            const sel = Number(historyState?.editorSelectedRoutineIndex);
+            if (!Number.isFinite(sel)) {
+                showToast('请先选择一个日常事务（或空白）', 2000);
+                return;
+            }
+            let durationMin = Number(historyState?.editorFillMinutes);
+            if (!Number.isFinite(durationMin) || durationMin <= 0) durationMin = 30;
+            durationMin = Math.max(1, Math.min(180, Math.round(durationMin)));
+
+            const startMin = Math.max(0, Math.min(1439, Math.floor(Number(startMinuteRaw) || 0)));
+            const nextStart = slices
+                .map(s => Number(s.sliceStartMin))
+                .filter(v => Number.isFinite(v) && v > startMin)
+                .reduce((min, v) => Math.min(min, v), Infinity);
+            const endLimit = Number.isFinite(nextStart) ? nextStart : 1440;
+            const endMin = Math.max(startMin, Math.min(1440, Math.min(startMin + durationMin, endLimit)));
+            if (endMin - startMin < 1) {
+                showToast('该位置没有足够的空白可补录', 2000);
+                return;
+            }
+
+            const range = getDayRange(selectedDate);
+            if (!range) return;
+            const startMs = range.startMs + startMin * 60 * 1000;
+            let endMs = range.startMs + endMin * 60 * 1000;
+            if (endMin >= 1440) endMs = range.endMs - 1;
+            if (!(endMs > startMs)) return;
+
+            let mode = 'idle';
+            let taskBlockId = null;
+            let taskBlockName = null;
+            let routineButtonColor = null;
+            let plannedDuration = null;
+            if (sel >= 0 && sel < routineButtons.length) {
+                const btn = routineButtons[sel];
+                const type = String(btn?.timerType || 'stopwatch');
+                mode = (type === 'pomodoro') ? 'countdown' : 'stopwatch';
+                taskBlockId = (typeof btn?.blockId === 'string' && btn.blockId.trim()) ? btn.blockId.trim() : null;
+                taskBlockName = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : null;
+                routineButtonColor = (typeof btn?.color === 'string' && btn.color.trim()) ? btn.color.trim() : null;
+                plannedDuration = (mode === 'countdown') ? Math.max(1, Math.round(durationMin)) : null;
+            }
+
+            const startD = new Date(startMs);
+            const endD = new Date(endMs);
+            const ms = endMs - startMs;
+            const newRecord = {
+                start: startD.toISOString(),
+                end: endD.toISOString(),
+                durationMin: Math.max(0, Math.round(ms / 60000)),
+                durationSec: Math.max(0, Math.floor(ms / 1000)),
+                mode,
+                timestamp: Math.round(endMs),
+                date: formatDateKey(endD),
+                dateTime: endD.toLocaleString('zh-CN'),
+                timePeriod: getTimePeriod(endD.getHours()),
+                isCompleted: true,
+                wasReset: false,
+                taskBlockId,
+                taskBlockName,
+                databaseBlockId: null,
+                plannedDuration,
+                distractionCount: 0,
+                routineButtonColor,
+                manual: true,
+                category: mode === 'idle' ? 'idle' : 'manual'
+            };
+
+            const records = await loadHistoryRecords();
+            records.push(newRecord);
+            const success = await saveHistoryRecords(records);
+            if (success) {
+                markTimelineHistoryDirty();
+                rebuildHistoryState(records);
+                slices = getDaySlices(selectedDate);
+                try { renderEditorTimelineWithDrag(); } catch (e) {}
+                try { updatePageButtons(); } catch (e) {}
+            } else {
+                showToastDialog('提示', '保存失败', 'error');
+            }
+        };
+
+        const getMinuteFromPointer = (clientY) => {
+            const rect = timeline.getBoundingClientRect();
+            const y = clientY - rect.top;
+            return Math.max(0, Math.min(1439.999, y));
+        };
+
+        const canDragRecord = (record) => {
+            try {
+                const s = toDateSafe(record?.start);
+                const e = toDateSafe(record?.end);
+                if (isNaN(s.getTime()) || isNaN(e.getTime())) return false;
+                return formatDateKey(s) === formatDateKey(e);
+            } catch (err) {
+                return false;
+            }
+        };
+
+        const persistRecordByMinutes = async (record, newStartMin, newEndMin) => {
+            const range = getDayRange(selectedDate);
+            if (!range) return false;
+            const startMin = Math.max(0, Math.min(1439, Math.round(newStartMin)));
+            const endMin = Math.max(startMin + 1, Math.min(1440, Math.round(newEndMin)));
+            const startMs = range.startMs + startMin * 60000;
+            const endMs = endMin >= 1440 ? (range.endMs - 1) : (range.startMs + endMin * 60000);
+            if (!(endMs > startMs)) return false;
+            const ns = new Date(startMs);
+            const ne = new Date(endMs);
+
+            const records = await loadHistoryRecords();
+            const idx = findRecordIndex(records, record);
+            if (idx < 0) return false;
+            const ms = endMs - startMs;
+            records[idx].start = ns.toISOString();
+            records[idx].end = ne.toISOString();
+            records[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
+            records[idx].durationMin = Math.max(0, Math.round(ms / 60000));
+            records[idx].timestamp = Math.round(endMs);
+            records[idx].date = formatDateKey(ne);
+            records[idx].dateTime = ne.toLocaleString('zh-CN');
+            records[idx].timePeriod = getTimePeriod(ne.getHours());
+            const success = await saveHistoryRecords(records);
+            if (success) {
+                markTimelineHistoryDirty();
+                rebuildHistoryState(records);
+                slices = getDaySlices(selectedDate);
+                try { renderEditorTimelineWithDrag(); } catch (e) {}
+                try { updatePageButtons(); } catch (e) {}
+            }
+            return success;
+        };
+
+        const buildDragNeighbors = (slice) => {
+            const idx = slices.indexOf(slice);
+            const prev = idx > 0 ? slices[idx - 1] : null;
+            const next = idx >= 0 && idx < slices.length - 1 ? slices[idx + 1] : null;
+            const prevEnd = prev ? Number(prev.sliceEndMin) : 0;
+            const nextStart = next ? Number(next.sliceStartMin) : 1440;
+            return {
+                prevEndMin: Number.isFinite(prevEnd) ? prevEnd : 0,
+                nextStartMin: Number.isFinite(nextStart) ? nextStart : 1440
+            };
+        };
+
+        EventManager.removeByContext('history-editor-timeline');
+
+        let dragState = null;
+        let dragIndicator = null;
+        let suppressMenuClickUntil = 0;
+        const suppressMenuClick = (ms = 800) => {
+            try { suppressMenuClickUntil = Date.now() + Math.max(0, Number(ms) || 0); } catch (e) { suppressMenuClickUntil = Date.now() + 800; }
+        };
+        const setSegTouchAction = (segEl, value) => {
+            try {
+                if (!segEl) return;
+                if (segEl.dataset?.tomyBaseTouchAction == null) segEl.dataset.tomyBaseTouchAction = String(segEl.style.touchAction || '');
+                segEl.style.touchAction = String(value || '');
+            } catch (e) {}
+        };
+        const restoreSegTouchAction = (segEl) => {
+            try {
+                if (!segEl) return;
+                if (segEl.dataset?.tomyBaseTouchAction != null) segEl.style.touchAction = String(segEl.dataset.tomyBaseTouchAction || '');
+            } catch (e) {}
+        };
+        let timelineScrollLocked = false;
+        let pageScrollLocked = false;
+        let pageScrollY = 0;
+        let docTouchMoveLocked = false;
+        const setDocTouchMoveLock = (locked) => {
+            try {
+                if (!!locked === docTouchMoveLocked) return;
+                docTouchMoveLocked = !!locked;
+                if (docTouchMoveLocked) {
+                    EventManager.add(document, 'touchmove', (ev) => {
+                        try {
+                            if (!dragState) return;
+                            if (dragState.dragReady !== true && dragState.isDragging !== true) return;
+                            if (ev.cancelable) ev.preventDefault();
+                            ev.stopPropagation();
+                        } catch (e) {}
+                    }, { passive: false, capture: true }, 'history-editor-drag-scrolllock');
+                } else {
+                    EventManager.removeByContext('history-editor-drag-scrolllock');
+                }
+            } catch (e) {}
+        };
+        const setPageScrollLock = (locked) => {
+            try {
+                const html = document.documentElement;
+                const body = document.body;
+                if (!html || !body) return;
+                if (!!locked === pageScrollLocked) return;
+                pageScrollLocked = !!locked;
+                if (pageScrollLocked) {
+                    pageScrollY = window.scrollY || window.pageYOffset || 0;
+                    if (body.dataset?.tomyBasePos == null) body.dataset.tomyBasePos = String(body.style.position || '');
+                    if (body.dataset?.tomyBaseTop == null) body.dataset.tomyBaseTop = String(body.style.top || '');
+                    if (body.dataset?.tomyBaseLeft == null) body.dataset.tomyBaseLeft = String(body.style.left || '');
+                    if (body.dataset?.tomyBaseRight == null) body.dataset.tomyBaseRight = String(body.style.right || '');
+                    if (body.dataset?.tomyBaseWidth == null) body.dataset.tomyBaseWidth = String(body.style.width || '');
+                    if (body.dataset?.tomyBaseOverflow == null) body.dataset.tomyBaseOverflow = String(body.style.overflow || '');
+                    if (body.dataset?.tomyBaseOverscroll == null) body.dataset.tomyBaseOverscroll = String(body.style.overscrollBehavior || '');
+                    if (html.dataset?.tomyBaseOverscroll == null) html.dataset.tomyBaseOverscroll = String(html.style.overscrollBehavior || '');
+
+                    body.style.position = 'fixed';
+                    body.style.top = `-${pageScrollY}px`;
+                    body.style.left = '0';
+                    body.style.right = '0';
+                    body.style.width = '100%';
+                    body.style.overflow = 'hidden';
+                    body.style.overscrollBehavior = 'none';
+                    html.style.overscrollBehavior = 'none';
+                } else {
+                    body.style.position = String(body.dataset?.tomyBasePos || '');
+                    body.style.top = String(body.dataset?.tomyBaseTop || '');
+                    body.style.left = String(body.dataset?.tomyBaseLeft || '');
+                    body.style.right = String(body.dataset?.tomyBaseRight || '');
+                    body.style.width = String(body.dataset?.tomyBaseWidth || '');
+                    body.style.overflow = String(body.dataset?.tomyBaseOverflow || '');
+                    body.style.overscrollBehavior = String(body.dataset?.tomyBaseOverscroll || '');
+                    html.style.overscrollBehavior = String(html.dataset?.tomyBaseOverscroll || '');
+                    const restoreY = Number(pageScrollY) || 0;
+                    requestAnimationFrame(() => {
+                        try { window.scrollTo(0, restoreY); } catch (e) {}
+                    });
+                }
+            } catch (e) {}
+        };
+        const setTimelineScrollLock = (locked) => {
+            try {
+                if (!timelineScroll) return;
+                if (!!locked === timelineScrollLocked) return;
+                timelineScrollLocked = !!locked;
+                if (timelineScrollLocked) {
+                    if (timelineScroll.dataset?.tomyBaseOverflowY == null) timelineScroll.dataset.tomyBaseOverflowY = String(timelineScroll.style.overflowY || '');
+                    if (timelineScroll.dataset?.tomyBaseOverflowX == null) timelineScroll.dataset.tomyBaseOverflowX = String(timelineScroll.style.overflowX || '');
+                    timelineScroll.style.overflowY = 'hidden';
+                    timelineScroll.style.overflowX = 'auto';
+                } else {
+                    timelineScroll.style.overflowY = String(timelineScroll.dataset?.tomyBaseOverflowY || '');
+                    timelineScroll.style.overflowX = String(timelineScroll.dataset?.tomyBaseOverflowX || '');
+                }
+            } catch (e) {}
+        };
+        const autoScrollTimelineScrollByPointer = (clientY) => {
+            try {
+                if (!isMobile) return;
+                if (!timelineScroll) return;
+                if (!dragState || dragState.isDragging !== true) return;
+                const rect = timelineScroll.getBoundingClientRect();
+                const edge = 36;
+                const maxStep = 18;
+                if (clientY < rect.top + edge) {
+                    const ratio = Math.max(0, Math.min(1, (rect.top + edge - clientY) / edge));
+                    timelineScroll.scrollTop = Math.max(0, timelineScroll.scrollTop - Math.ceil(ratio * maxStep));
+                } else if (clientY > rect.bottom - edge) {
+                    const ratio = Math.max(0, Math.min(1, (clientY - (rect.bottom - edge)) / edge));
+                    timelineScroll.scrollTop = Math.min(timelineScroll.scrollHeight, timelineScroll.scrollTop + Math.ceil(ratio * maxStep));
+                }
+            } catch (e) {}
+        };
+        const setHandleActive = (segEl, handle, active) => {
+            try {
+                if (!segEl) return;
+                const el = segEl.querySelector?.(`[data-handle="${String(handle || '')}"]`) || null;
+                if (!el) return;
+                if (el.dataset?.tomyBaseBg == null) el.dataset.tomyBaseBg = String(el.style.background || '');
+                if (el.dataset?.tomyBaseBoxShadow == null) el.dataset.tomyBaseBoxShadow = String(el.style.boxShadow || '');
+                if (active) {
+                    el.style.background = 'rgba(255,255,255,0.18)';
+                    el.style.boxShadow = handle === 'end'
+                        ? 'inset 0 -2px 0 rgba(255,255,255,0.95)'
+                        : 'inset 0 2px 0 rgba(255,255,255,0.95)';
+                } else {
+                    el.style.background = String(el.dataset?.tomyBaseBg || '');
+                    el.style.boxShadow = String(el.dataset?.tomyBaseBoxShadow || '');
+                }
+            } catch (e) {}
+        };
+        const setSegHandleHighlightByType = (segEl, type) => {
+            try {
+                setHandleActive(segEl, 'start', type === 'resize-start');
+                setHandleActive(segEl, 'end', type === 'resize-end');
+            } catch (e) {}
+        };
+        const setSegActive = (segEl, active) => {
+            try {
+                if (!segEl) return;
+                const base = segEl.dataset?.tomyBaseFilter;
+                if (base == null) segEl.dataset.tomyBaseFilter = String(segEl.style.filter || '');
+                if (active) segEl.style.filter = 'brightness(0.78) saturate(1.12)';
+                else segEl.style.filter = String(segEl.dataset?.tomyBaseFilter || '');
+            } catch (e) {}
+        };
+        const removeDragIndicator = () => {
+            try { dragIndicator?.remove?.(); } catch (e) {}
+            dragIndicator = null;
+        };
+        const ensureDragIndicator = () => {
+            if (!isMobile) return null;
+            if (dragState && dragState.type === 'move') return null;
+            if (dragIndicator) return dragIndicator;
+            const el = document.createElement('div');
+            el.style.cssText = 'position:absolute; left: 0; right: 0; height: 0; pointer-events: none; z-index: 5;';
+            const line = document.createElement('div');
+            line.style.cssText = 'position:absolute; left: 0; right: 0; top: 0; height: 1px; background: rgba(255,255,255,0.85); box-shadow: 0 1px 2px rgba(0,0,0,0.35);';
+            const tag = document.createElement('div');
+            tag.dataset.role = 'tag';
+            tag.style.cssText = 'position:absolute; right: 6px; top: -10px; padding: 2px 6px; border-radius: 999px; font-size: 10px; line-height: 1; background: rgba(0,0,0,0.55); color: #fff; font-variant-numeric: tabular-nums;';
+            el.appendChild(line);
+            el.appendChild(tag);
+            dragIndicator = el;
+            try { timeline.appendChild(dragIndicator); } catch (e) {}
+            return dragIndicator;
+        };
+        const updateDragIndicator = (minute) => {
+            try {
+                if (dragState && dragState.type === 'move') {
+                    removeDragIndicator();
+                    return;
+                }
+                const el = ensureDragIndicator();
+                if (!el) return;
+                const m = Math.max(0, Math.min(1440, Number(minute) || 0));
+                el.style.top = `${Math.round(m)}px`;
+                const tag = el.querySelector?.('[data-role="tag"]');
+                if (tag) tag.textContent = fmtMinToHHMM(m);
+            } catch (e) {}
+        };
+        const stopDrag = () => {
+            try {
+                if (dragState?.longPressDragTimer) {
+                    clearTimeout(dragState.longPressDragTimer);
+                    dragState.longPressDragTimer = null;
+                }
+                if (dragState?.longPressMenuTimer) {
+                    clearTimeout(dragState.longPressMenuTimer);
+                    dragState.longPressMenuTimer = null;
+                }
+            } catch (e) {}
+            try {
+                const segEl = dragState?.segEl;
+                if (segEl && !dragState?.keepHighlight) setSegActive(segEl, false);
+            } catch (e) {}
+            try {
+                const segEl = dragState?.segEl;
+                setSegHandleHighlightByType(segEl, '');
+            } catch (e) {}
+            try {
+                const segEl = dragState?.segEl;
+                restoreSegTouchAction(segEl);
+            } catch (e) {}
+            try { setTimelineScrollLock(false); } catch (e) {}
+            try { setPageScrollLock(false); } catch (e) {}
+            try { setDocTouchMoveLock(false); } catch (e) {}
+            removeDragIndicator();
+            dragState = null;
+            EventManager.removeByContext('history-editor-drag');
+            EventManager.removeByContext('history-editor-drag-pending');
+            EventManager.removeByContext('history-editor-drag-scrolllock');
+            docTouchMoveLocked = false;
+        };
+
+        const closeEditorContextMenu = () => {
+            try { document.getElementById('tomy-history-editor-menu')?.remove(); } catch (e) {}
+            try { document.getElementById('tomy-history-editor-menu-backdrop')?.remove(); } catch (e) {}
+            try { EventManager.removeByContext('history-editor-menu'); } catch (e) {}
+            try {
+                const segEls = Array.from(timeline?.querySelectorAll?.('[data-menu-highlight="1"]') || []);
+                for (const el of segEls) {
+                    el.removeAttribute('data-menu-highlight');
+                    setSegActive(el, false);
+                }
+            } catch (e) {}
+        };
+
+        const applyRecordAssociation = async (record, assocValue) => {
+            try {
+                const records = await loadHistoryRecords();
+                const idx = findRecordIndex(records, record);
+                if (idx < 0) return false;
+                if (assocValue === '__clear__') {
+                    records[idx].taskBlockId = null;
+                    records[idx].taskBlockName = null;
+                    records[idx].databaseBlockId = null;
+                    records[idx].routineButtonColor = null;
+                } else {
+                    const selIdx = Number(assocValue);
+                    const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
+                    if (!btn) return false;
+                    const blockId = (typeof btn?.blockId === 'string' && btn.blockId.trim()) ? btn.blockId.trim() : null;
+                    const name = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : null;
+                    const color = (typeof btn?.color === 'string' && btn.color.trim()) ? btn.color.trim() : null;
+                    records[idx].taskBlockId = blockId;
+                    records[idx].taskBlockName = name;
+                    records[idx].databaseBlockId = null;
+                    records[idx].routineButtonColor = color;
+                }
+                const success = await saveHistoryRecords(records);
+                if (success) {
+                    markTimelineHistoryDirty();
+                    rebuildHistoryState(records);
+                    try { updatePageButtons(); } catch (e) {}
+                }
+                return success;
+            } catch (e) {
+                return false;
+            }
+        };
+
+        const showEditorContextMenuForRecord = (record, clientX, clientY) => {
+            try {
+                closeEditorContextMenu();
+
+                const backdrop = document.createElement('div');
+                backdrop.id = 'tomy-history-editor-menu-backdrop';
+                backdrop.style.cssText = 'position: fixed; inset: 0; background: transparent; z-index: 2147483648;';
+
+                const menu = document.createElement('div');
+                menu.id = 'tomy-history-editor-menu';
+                menu.style.cssText = `
+                    position: fixed;
+                    z-index: 2147483649;
+                    min-width: 220px;
+                    max-width: 320px;
+                    background: var(--b3-theme-background);
+                    color: var(--b3-theme-on-background);
+                    border: 1px solid var(--b3-theme-surface-light);
+                    border-radius: 10px;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+                    padding: 10px;
+                `;
+
+                const header = document.createElement('div');
+                header.style.cssText = 'margin-bottom: 10px;';
+                const slice = slices.find(s => s?.record?.start === record?.start && s?.record?.end === record?.end) || null;
+                const timeText = (() => {
+                    try {
+                        if (slice) {
+                            const s = fmtHHMM(slice.sliceStartMs);
+                            const e = (slice.sliceEndMin >= 1440) ? '24:00' : fmtHHMM(slice.sliceEndMs);
+                            if (s && e) return `${s} - ${e}`;
+                        }
+                        const sd = toDateSafe(record?.start);
+                        const ed = toDateSafe(record?.end);
+                        if (isNaN(sd.getTime()) || isNaN(ed.getTime())) return '';
+                        return `${String(sd.getHours()).padStart(2, '0')}:${String(sd.getMinutes()).padStart(2, '0')} - ${String(ed.getHours()).padStart(2, '0')}:${String(ed.getMinutes()).padStart(2, '0')}`;
+                    } catch (e) {
+                        return '';
+                    }
+                })();
+                const timeEl = document.createElement('div');
+                timeEl.textContent = timeText;
+                timeEl.style.cssText = 'font-size: 12px; opacity: 0.8; font-variant-numeric: tabular-nums; margin-bottom: 4px;';
+                const infoEl = document.createElement('div');
+                infoEl.textContent = getEditorSegLabel(record);
+                infoEl.style.cssText = 'font-size: 12px; font-weight: 700; opacity: 0.95; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
+                header.appendChild(timeEl);
+                header.appendChild(infoEl);
+                menu.appendChild(header);
+                try {
+                    const segEl = timeline?.querySelector?.(`[data-record-start="${String(record?.start || '')}"][data-record-end="${String(record?.end || '')}"]`) || null;
+                    if (segEl) {
+                        segEl.dataset.menuHighlight = '1';
+                        setSegActive(segEl, true);
+                    }
+                } catch (e) {}
+
+                const toDateTimeLocalValue = (iso) => {
+                    try {
+                        const d = toDateSafe(iso);
+                        if (isNaN(d.getTime())) return '';
+                        const pad = (n) => String(n).padStart(2, '0');
+                        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                    } catch (e) {
+                        return '';
+                    }
+                };
+                const toHHMM = (iso) => {
+                    try {
+                        const d = toDateSafe(iso);
+                        if (isNaN(d.getTime())) return '';
+                        return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                    } catch (e) {
+                        return '';
+                    }
+                };
+                const formatMenuTimeText = () => {
+                    const s = toHHMM(record?.start);
+                    const e = toHHMM(record?.end);
+                    return (s && e) ? `${s} - ${e}` : '';
+                };
+                const updateMenuHeader = () => {
+                    timeEl.textContent = formatMenuTimeText();
+                    infoEl.textContent = getEditorSegLabel(record);
+                };
+                const findSegEl = () => {
+                    try {
+                        const start = String(record?.start || '');
+                        const end = String(record?.end || '');
+                        return timeline?.querySelector?.(`[data-record-start="${start}"][data-record-end="${end}"]`) || null;
+                    } catch (e) {
+                        return null;
+                    }
+                };
+                const updateSegUI = () => {
+                    const segEl = findSegEl();
+                    if (!segEl) return;
+                    segEl.style.background = getEditorSegColor(record);
+                    const labelEl = segEl.querySelector?.('[data-role="label"]') || null;
+                    if (labelEl) {
+                        const t = segEl.title ? segEl.title.replace(/\s/g, '') : `${toHHMM(record?.start)}-${toHHMM(record?.end)}`;
+                        labelEl.textContent = `${t} ${getEditorSegLabel(record)}`;
+                    }
+                };
+
+                const timeSection = document.createElement('div');
+                timeSection.style.cssText = 'margin-bottom: 10px;';
+                const timeTitle = document.createElement('div');
+                timeTitle.textContent = '调整时间';
+                timeTitle.style.cssText = 'font-size: 12px; opacity: 0.8; margin-bottom: 6px;';
+                timeSection.appendChild(timeTitle);
+
+                const startInput = document.createElement('input');
+                startInput.type = 'datetime-local';
+                startInput.value = toDateTimeLocalValue(record?.start);
+                startInput.style.cssText = 'width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background); font-size: 12px; box-sizing: border-box; margin-bottom: 8px;';
+                const endInput = document.createElement('input');
+                endInput.type = 'datetime-local';
+                endInput.value = toDateTimeLocalValue(record?.end);
+                endInput.style.cssText = startInput.style.cssText;
+                timeSection.appendChild(startInput);
+                timeSection.appendChild(endInput);
+
+                const saveTimeBtn = document.createElement('button');
+                saveTimeBtn.textContent = '保存时间';
+                saveTimeBtn.style.cssText = 'width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background); cursor: pointer; font-size: 12px;';
+                saveTimeBtn.onclick = async () => {
+                    saveTimeBtn.disabled = true;
+                    try {
+                        const segElBefore = findSegEl();
+                        const ns = new Date(startInput.value);
+                        const ne = new Date(endInput.value);
+                        const startMs = ns?.getTime?.();
+                        const endMs = ne?.getTime?.();
+                        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+                            showToast('开始/结束时间不合法', 2000);
+                            return;
+                        }
+                        if (formatDateKey(ns) !== selectedDate || formatDateKey(ne) !== selectedDate) {
+                            showToast('仅支持同一天内调整', 2000);
+                            return;
+                        }
+                        const range = getDayRange(selectedDate);
+                        if (!range) return;
+                        const currentSlice = slices.find(s => s?.record?.start === record?.start && s?.record?.end === record?.end) || slice;
+                        const neighbors = currentSlice ? buildDragNeighbors(currentSlice) : { prevEndMin: 0, nextStartMin: 1440 };
+                        const startMinRaw = (startMs - range.startMs) / 60000;
+                        const endMinRaw = (endMs - range.startMs) / 60000;
+                        let startMin = Math.max(neighbors.prevEndMin, Math.min(neighbors.nextStartMin - 1, startMinRaw));
+                        let endMin = Math.max(startMin + 1, Math.min(neighbors.nextStartMin, endMinRaw));
+                        const newStartMs = range.startMs + Math.round(startMin) * 60000;
+                        const newEndMs = Math.round(endMin) >= 1440 ? (range.endMs - 1) : (range.startMs + Math.round(endMin) * 60000);
+                        if (!(newEndMs > newStartMs)) {
+                            showToast('开始/结束时间不合法', 2000);
+                            return;
+                        }
+
+                        const records = await loadHistoryRecords();
+                        const idx = findRecordIndex(records, record);
+                        if (idx < 0) {
+                            showToast('未找到对应记录（可能已被刷新）', 2000);
+                            return;
+                        }
+                        const ms = newEndMs - newStartMs;
+                        const newStart = new Date(newStartMs);
+                        const newEnd = new Date(newEndMs);
+                        records[idx].start = newStart.toISOString();
+                        records[idx].end = newEnd.toISOString();
+                        records[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
+                        records[idx].durationMin = Math.max(0, Math.round(ms / 60000));
+                        records[idx].timestamp = Math.round(newEndMs);
+                        records[idx].date = formatDateKey(newEnd);
+                        records[idx].dateTime = newEnd.toLocaleString('zh-CN');
+                        records[idx].timePeriod = getTimePeriod(newEnd.getHours());
+
+                        const ok = await saveHistoryRecords(records);
+                        if (!ok) {
+                            showToast('保存失败', 2000);
+                            return;
+                        }
+                        markTimelineHistoryDirty();
+
+                        record.start = newStart.toISOString();
+                        record.end = newEnd.toISOString();
+                        record.timestamp = Math.round(newEndMs);
+                        record.durationSec = Math.max(0, Math.floor((newEndMs - newStartMs) / 1000));
+                        record.durationMin = Math.max(0, Math.round((newEndMs - newStartMs) / 60000));
+                        record.date = formatDateKey(newEnd);
+                        record.dateTime = newEnd.toLocaleString('zh-CN');
+                        record.timePeriod = getTimePeriod(newEnd.getHours());
+                        if (currentSlice) {
+                            currentSlice.sliceStartMs = newStartMs;
+                            currentSlice.sliceEndMs = newEndMs;
+                            currentSlice.sliceStartMin = (newStartMs - range.startMs) / 60000;
+                            currentSlice.sliceEndMin = (newEndMs - range.startMs) / 60000;
+                            currentSlice.record = record;
+                        }
+                        if (segElBefore) {
+                            segElBefore.dataset.recordStart = record.start;
+                            segElBefore.dataset.recordEnd = record.end;
+                            segElBefore.style.top = `${Math.max(0, Math.min(1440, Math.round(currentSlice?.sliceStartMin ?? startMin)))}px`;
+                            segElBefore.style.height = `${Math.max(8, Math.round((currentSlice?.sliceEndMin ?? endMin) - (currentSlice?.sliceStartMin ?? startMin)))}px`;
+                            const tStart = fmtHHMM(newStartMs);
+                            const tEnd = (Math.round(endMin) >= 1440) ? '24:00' : fmtHHMM(newEndMs);
+                            segElBefore.title = `${tStart} - ${tEnd}`;
+                            const labelEl = segElBefore.querySelector?.('[data-role="label"]') || null;
+                            if (labelEl) labelEl.textContent = `${segElBefore.title.replace(/\\s/g, '')} ${getEditorSegLabel(record)}`;
+                        }
+                        startInput.value = toDateTimeLocalValue(record.start);
+                        endInput.value = toDateTimeLocalValue(record.end);
+                        updateMenuHeader();
+                        rebuildHistoryState(records);
+                        slices = getDaySlices(selectedDate);
+                        try { renderEditorTimelineWithDrag(); } catch (e) {}
+                        try { updatePageButtons(); } catch (e) {}
+                    } catch (e) {
+                        showToast('保存失败', 2000);
+                    } finally {
+                        saveTimeBtn.disabled = false;
+                    }
+                };
+                timeSection.appendChild(saveTimeBtn);
+                menu.appendChild(timeSection);
+
+                const assocTitle = document.createElement('div');
+                assocTitle.textContent = '更换关联任务';
+                assocTitle.style.cssText = 'font-size: 12px; opacity: 0.8; margin-bottom: 6px;';
+                menu.appendChild(assocTitle);
+
+                const assocSelect = document.createElement('select');
+                assocSelect.style.cssText = 'width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background); font-size: 12px;';
+                const optClear = document.createElement('option');
+                optClear.value = '__clear__';
+                optClear.textContent = '清空关联';
+                assocSelect.appendChild(optClear);
+                routineButtons.forEach((b, idx) => {
+                    const opt = document.createElement('option');
+                    const icon = (typeof b?.icon === 'string' && b.icon.trim()) ? b.icon.trim() : '📌';
+                    const name = (typeof b?.name === 'string' && b.name.trim()) ? b.name.trim() : `按钮 ${idx + 1}`;
+                    opt.value = String(idx);
+                    opt.textContent = `${icon} ${name}`;
+                    assocSelect.appendChild(opt);
+                });
+                menu.appendChild(assocSelect);
+
+                assocSelect.onchange = async () => {
+                    try {
+                        assocSelect.disabled = true;
+                        const value = assocSelect.value;
+                        const records = await loadHistoryRecords();
+                        const idx = findRecordIndex(records, record);
+                        if (idx < 0) {
+                            showToast('未找到对应记录（可能已被刷新）', 2000);
+                            return;
+                        }
+                        if (value === '__clear__') {
+                            records[idx].taskBlockId = null;
+                            records[idx].taskBlockName = null;
+                            records[idx].databaseBlockId = null;
+                            records[idx].routineButtonColor = null;
+                        } else {
+                            const selIdx = Number(value);
+                            const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
+                            if (!btn) return;
+                            records[idx].taskBlockId = (typeof btn?.blockId === 'string' && btn.blockId.trim()) ? btn.blockId.trim() : null;
+                            records[idx].taskBlockName = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : null;
+                            records[idx].databaseBlockId = null;
+                            records[idx].routineButtonColor = (typeof btn?.color === 'string' && btn.color.trim()) ? btn.color.trim() : null;
+                        }
+                        const ok = await saveHistoryRecords(records);
+                        if (!ok) {
+                            showToast('更新失败', 2000);
+                            return;
+                        }
+                        markTimelineHistoryDirty();
+                        if (value === '__clear__') {
+                            record.taskBlockId = null;
+                            record.taskBlockName = null;
+                            record.databaseBlockId = null;
+                            record.routineButtonColor = null;
+                        } else {
+                            const selIdx = Number(value);
+                            const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
+                            if (btn) {
+                                record.taskBlockId = (typeof btn?.blockId === 'string' && btn.blockId.trim()) ? btn.blockId.trim() : null;
+                                record.taskBlockName = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : null;
+                                record.databaseBlockId = null;
+                                record.routineButtonColor = (typeof btn?.color === 'string' && btn.color.trim()) ? btn.color.trim() : null;
+                            }
+                        }
+                        updateMenuHeader();
+                        rebuildHistoryState(records);
+                        slices = getDaySlices(selectedDate);
+                        try { renderEditorTimelineWithDrag(); } catch (e) {}
+                        try { updatePageButtons(); } catch (e) {}
+                    } catch (e) {
+                        showToast('更新失败', 2000);
+                    } finally {
+                        assocSelect.disabled = false;
+                    }
+                };
+
+                const footerRow = document.createElement('div');
+                footerRow.style.cssText = 'display:flex; gap: 8px; margin-top: 8px;';
+
+                const delRecordBtn = document.createElement('button');
+                delRecordBtn.textContent = '删除记录';
+                delRecordBtn.style.cssText = 'width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(244,67,54,0.35); background: rgba(244,67,54,0.12); color: var(--b3-theme-on-background); cursor: pointer; font-size: 12px;';
+                delRecordBtn.onclick = async () => {
+                    closeEditorContextMenu();
+                    try {
+                        const ok = await deleteRecord(record);
+                        if (ok) {
+                            markTimelineHistoryDirty();
+                            const records = await loadHistoryRecords();
+                            rebuildHistoryState(records);
+                            try { updatePageButtons(); } catch (e) {}
+                            showPage(historyState?.currentPage || selectedDate);
+                        }
+                    } catch (e) {}
+                };
+                footerRow.appendChild(delRecordBtn);
+                menu.appendChild(footerRow);
+
+                document.body.appendChild(backdrop);
+                document.body.appendChild(menu);
+
+                const padding = 10;
+                const w = menu.getBoundingClientRect().width;
+                const h = menu.getBoundingClientRect().height;
+                const left = Math.max(padding, Math.min(window.innerWidth - padding - w, clientX));
+                const top = Math.max(padding, Math.min(window.innerHeight - padding - h, clientY));
+                menu.style.left = `${Math.round(left)}px`;
+                menu.style.top = `${Math.round(top)}px`;
+
+                EventManager.add(backdrop, 'pointerdown', (e) => {
+                    if (e.target === backdrop) closeEditorContextMenu();
+                }, { capture: true }, 'history-editor-menu');
+            } catch (e) {}
+        };
+
+        const onPointerMove = async (e) => {
+            try {
+                if (!dragState || dragState.isDragging !== true) return;
+                if (dragState.pointerId != null && e.pointerId !== dragState.pointerId) return;
+                try { if (e.cancelable) e.preventDefault(); } catch (e) {}
+                autoScrollTimelineScrollByPointer(e.clientY);
+                const minute = getMinuteFromPointer(e.clientY);
+                updateDragIndicator(minute);
+                const delta = minute - dragState.pointerStartMin;
+                let newStart = dragState.startMin;
+                let newEnd = dragState.endMin;
+
+                if (dragState.type === 'move') {
+                    const dur = dragState.endMin - dragState.startMin;
+                    newStart = dragState.startMin + delta;
+                    newEnd = newStart + dur;
+                } else if (dragState.type === 'resize-start') {
+                    newStart = dragState.startMin + delta;
+                } else if (dragState.type === 'resize-end') {
+                    newEnd = dragState.endMin + delta;
+                }
+
+                newStart = Math.max(dragState.prevEndMin, Math.min(dragState.nextStartMin - 1, newStart));
+                newEnd = Math.max(newStart + 1, Math.min(dragState.nextStartMin, newEnd));
+
+                const seg = dragState.segEl;
+                if (seg) {
+                    seg.style.top = `${Math.round(newStart)}px`;
+                    seg.style.height = `${Math.max(8, Math.round(newEnd - newStart))}px`;
+                    const tStart = fmtMinToHHMM(newStart);
+                    const tEnd = (Math.round(newEnd) >= 1440) ? '24:00' : fmtMinToHHMM(newEnd);
+                    seg.title = `${tStart} - ${tEnd}`;
+                    const labelEl = seg.querySelector?.('[data-role="label"]') || null;
+                    if (labelEl) labelEl.textContent = `${seg.title.replace(/\s/g, '')} ${getEditorSegLabel(dragState.record)}`;
+                }
+                dragState.liveStartMin = newStart;
+                dragState.liveEndMin = newEnd;
+            } catch (err) {}
+        };
+
+        const finishDrag = async () => {
+            const state = dragState;
+            try {
+                if (!state || state.isDragging !== true) return;
+                const changed = Math.round(state.liveStartMin) !== Math.round(state.startMin) || Math.round(state.liveEndMin) !== Math.round(state.endMin);
+                const record = state.record;
+                const startMin = Math.round(state.liveStartMin);
+                const endMin = Math.round(state.liveEndMin);
+                if (!changed) return;
+                const prevStartMin = state.startMin;
+                const prevEndMin = state.endMin;
+                const ok = await persistRecordByMinutes(record, startMin, endMin);
+                if (!ok) return;
+                const range = getDayRange(selectedDate);
+                if (!range) return;
+                const startMs = range.startMs + startMin * 60000;
+                const endMs = endMin >= 1440 ? (range.endMs - 1) : (range.startMs + endMin * 60000);
+                if (endMs > startMs) {
+                    const ns = new Date(startMs);
+                    const ne = new Date(endMs);
+                    record.start = ns.toISOString();
+                    record.end = ne.toISOString();
+                    record.timestamp = Math.round(endMs);
+                    record.durationSec = Math.max(0, Math.floor((endMs - startMs) / 1000));
+                    record.durationMin = Math.max(0, Math.round((endMs - startMs) / 60000));
+                    record.date = formatDateKey(ne);
+                    record.dateTime = ne.toLocaleString('zh-CN');
+                    record.timePeriod = getTimePeriod(ne.getHours());
+                }
+                historyState.editorUndo = {
+                    dateKey: selectedDate,
+                    record: { start: record?.start, end: record?.end, mode: record?.mode, timestamp: record?.timestamp },
+                    prevStartMin,
+                    prevEndMin
+                };
+                updateUndoButton();
+            } catch (err) {
+            } finally {
+                stopDrag();
+            }
+        };
+        const onPointerUp = async () => { await finishDrag(); };
+        const onPointerCancel = async () => { await finishDrag(); };
+
+        const bindSegmentDrag = (segEl, slice) => {
+            const record = slice.record;
+            segEl.addEventListener('contextmenu', (e) => {
+                try {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!isMobile) showEditorContextMenuForRecord(record, e.clientX, e.clientY);
+                } catch (err) {}
+            }, { passive: false });
+            if (isMobile) {
+                segEl.addEventListener('click', (e) => {
+                    try {
+                        if (Date.now() < suppressMenuClickUntil) return;
+                        if (dragState) return;
+                        const x = e.clientX || (window.innerWidth / 2);
+                        const y = e.clientY || (window.innerHeight / 2);
+                        showEditorContextMenuForRecord(record, x, y);
+                    } catch (e) {}
+                }, { passive: true });
+            }
+            segEl.addEventListener('pointerdown', (e) => {
+                try {
+                    if (!canDragRecord(record)) {
+                        showToast('跨天记录请用“调整”弹窗修改', 2000);
+                        return;
+                    }
+                    const handle = e.target?.dataset?.handle || '';
+                    const neighbors = buildDragNeighbors(slice);
+                    const pointerMin = getMinuteFromPointer(e.clientY);
+                    const startMin = Math.max(0, Math.min(1440, Number(slice.sliceStartMin)));
+                    const endMin = Math.max(0, Math.min(1440, Number(slice.sliceEndMin)));
+                    if (!(endMin > startMin)) return;
+                    const type = handle === 'start' ? 'resize-start' : (handle === 'end' ? 'resize-end' : 'move');
+                    const isTouch = e.pointerType === 'touch';
+                    if (!isTouch) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setSegTouchAction(segEl, 'none');
+                        suppressMenuClick(700);
+                        dragState = {
+                            isDragging: true,
+                            type,
+                            record,
+                            segEl,
+                            pointerId: e.pointerId,
+                            pointerStartMin: pointerMin,
+                            startMin,
+                            endMin,
+                            liveStartMin: startMin,
+                            liveEndMin: endMin,
+                            ...neighbors
+                        };
+                        setSegActive(segEl, true);
+                        setSegHandleHighlightByType(segEl, type);
+                        updateDragIndicator(pointerMin);
+                        segEl.setPointerCapture?.(e.pointerId);
+                        EventManager.add(document, 'pointermove', onPointerMove, { passive: false, capture: true }, 'history-editor-drag');
+                        EventManager.add(document, 'pointerup', onPointerUp, { passive: false, capture: true }, 'history-editor-drag');
+                        EventManager.add(document, 'pointercancel', onPointerCancel, { passive: false, capture: true }, 'history-editor-drag');
+                        return;
+                    }
+
+                    const DRAG_READY_MS = 360;
+                    const MOVE_CANCEL_PX = 16;
+                    const MOVE_START_PX = 2;
+
+                    stopDrag();
+                    dragState = {
+                        isDragging: false,
+                        dragReady: false,
+                        type,
+                        record,
+                        segEl,
+                        pointerId: e.pointerId,
+                        pointerStartMin: pointerMin,
+                        startMin,
+                        endMin,
+                        liveStartMin: startMin,
+                        liveEndMin: endMin,
+                        ...neighbors,
+                        startClientX: e.clientX,
+                        startClientY: e.clientY,
+                        longPressDragTimer: null,
+                        longPressMenuTimer: null
+                    };
+
+                    dragState.longPressDragTimer = setTimeout(() => {
+                        try {
+                            if (!dragState) return;
+                            if (dragState.pointerId !== e.pointerId) return;
+                            if (dragState.record !== record) return;
+                            dragState.dragReady = true;
+                            suppressMenuClick(1200);
+                            setSegTouchAction(segEl, 'none');
+                            segEl.setPointerCapture?.(dragState.pointerId);
+                            setTimelineScrollLock(true);
+                            setPageScrollLock(true);
+                            setDocTouchMoveLock(true);
+                            setSegActive(segEl, true);
+                            setSegHandleHighlightByType(segEl, dragState.type);
+                            updateDragIndicator(getMinuteFromPointer(dragState.startClientY));
+                        } catch (e) {}
+                    }, DRAG_READY_MS);
+
+                    const pendingMove = (ev) => {
+                        try {
+                            if (!dragState) return;
+                            if (dragState.isDragging === true) return;
+                            if (ev.pointerId !== dragState.pointerId) return;
+                            const dx = Math.abs((Number(ev.clientX) || 0) - (Number(dragState.startClientX) || 0));
+                            const dy = Math.abs((Number(ev.clientY) || 0) - (Number(dragState.startClientY) || 0));
+                            if (!dragState.dragReady) {
+                                if (dx > MOVE_CANCEL_PX || dy > MOVE_CANCEL_PX) stopDrag();
+                                return;
+                            }
+                            if (dx <= MOVE_START_PX && dy <= MOVE_START_PX) return;
+
+                            try { if (ev.cancelable) ev.preventDefault(); } catch (e) {}
+                            try { ev.stopPropagation(); } catch (e) {}
+                            suppressMenuClick(900);
+                            dragState.isDragging = true;
+                            setTimelineScrollLock(true);
+                            setPageScrollLock(true);
+                            setDocTouchMoveLock(true);
+                            dragState.pointerStartMin = getMinuteFromPointer(ev.clientY);
+                            updateDragIndicator(dragState.pointerStartMin);
+                            setSegTouchAction(segEl, 'none');
+                            segEl.setPointerCapture?.(dragState.pointerId);
+                            EventManager.removeByContext('history-editor-drag-pending');
+                            EventManager.add(document, 'pointermove', onPointerMove, { passive: false, capture: true }, 'history-editor-drag');
+                            EventManager.add(document, 'pointerup', onPointerUp, { passive: false, capture: true }, 'history-editor-drag');
+                            EventManager.add(document, 'pointercancel', onPointerCancel, { passive: false, capture: true }, 'history-editor-drag');
+                            onPointerMove(ev);
+                        } catch (e) {}
+                    };
+                    const pendingUp = (ev) => {
+                        try {
+                            if (!dragState) return;
+                            if (ev.pointerId !== dragState.pointerId) return;
+                            if (dragState.isDragging === true) return;
+                            if (dragState.dragReady === true) suppressMenuClick(1200);
+                            stopDrag();
+                        } catch (e) {}
+                    };
+                    EventManager.add(document, 'pointermove', pendingMove, { passive: false, capture: true }, 'history-editor-drag-pending');
+                    EventManager.add(document, 'pointerup', pendingUp, { passive: true, capture: true }, 'history-editor-drag-pending');
+                    EventManager.add(document, 'pointercancel', pendingUp, { passive: true, capture: true }, 'history-editor-drag-pending');
+                } catch (err) {}
+            }, { passive: false });
+        };
+
+        const renderEditorTimelineWithDrag = () => {
+            renderEditorTimeline();
+            const segEls = Array.from(timeline.querySelectorAll('div')).filter(el => el.dataset && el.dataset.recordStart);
+            for (const el of segEls) {
+                const start = el.dataset.recordStart;
+                const end = el.dataset.recordEnd;
+                const slice = slices.find(s => s.record?.start === start && s.record?.end === end);
+                if (slice) bindSegmentDrag(el, slice);
+            }
+        };
+
+        EventManager.add(timeline, 'click', (e) => {
+            try {
+                if (e.target?.closest?.('[data-record-start]')) return;
+                const minute = getMinuteFromPointer(e.clientY);
+                createEditorRecordAtMinute(minute);
+            } catch (err) {}
+        }, {}, 'history-editor-timeline');
+
+        try {
+            if (undoBtn) {
+                undoBtn.onclick = async () => {
+                    try {
+                        const u = historyState?.editorUndo;
+                        if (!u || u.dateKey !== selectedDate) return;
+                        const ok = await persistRecordByMinutes(u.record, u.prevStartMin, u.prevEndMin);
+                        if (ok) {
+                            historyState.editorUndo = null;
+                            updateUndoButton();
+                        }
+                    } catch (e) {}
+                };
+            }
+        } catch (e) {}
+        updateUndoButton();
+        renderEditorTimelineWithDrag();
+    }
+
     function showDayPage(container, date, pageIndex) {
+        if (userSettings?.historyEditor?.enabled === true) {
+            showHistoryEditorPage(container, date);
+            return;
+        }
         const { filteredRecords } = historyState;
         
         const headerContainer = document.createElement('div');
@@ -17359,6 +19354,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         // 记录点击的数据库行的核心函数
         const recordDatabaseCell = (element) => {
+            if (__tomatoDestroyed) return false;
             if (!element || element.nodeType === Node.TEXT_NODE) {
                 return false;
             }
@@ -17423,6 +19419,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         // 处理 click 事件
         const handleClick = (e) => {
+            if (__tomatoDestroyed) return;
             // 排除点击菜单本身的情况
             if (e.target.closest?.('.b3-menu')) {
                 return;
@@ -17432,6 +19429,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         // 处理 touch 事件（移动端）
         const handleTouchEnd = (e) => {
+            if (__tomatoDestroyed) return;
             // 触摸结束时的目标元素
             if (e.changedTouches && e.changedTouches.length > 0) {
                 const touch = e.changedTouches[0];
@@ -17447,57 +19445,15 @@ function calculateWeeklyStats(dailyStatsArray) {
         EventManager.add(document, 'click', handleClick, { capture: true }, 'db-menu-global-click');
         EventManager.add(document, 'touchend', handleTouchEnd, { capture: true, passive: true }, 'db-menu-global-touchend');
 
-        // 监听菜单打开
-        const menuObserver = new MutationObserver((mutations) => {
-            for (const mutation of mutations) {
-                if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                    for (const node of mutation.addedNodes) {
-                        // 安全检查：确保 node 是元素节点且有有效的 className
-                        if (node.nodeType === Node.ELEMENT_NODE && 
-                            (node.id === 'commonMenu' || 
-                             (typeof node.className === 'string' && node.className.includes('b3-menu')))) {
-                            Logger.info('🍅 🔔 检测到菜单打开');
-                            
-                            // 菜单打开时也尝试从 DOM 获取（备用）
-                            setTimeout(() => {
-                                const avs = document.querySelectorAll('.av');
-                                for (const av of avs) {
-                                    const activeRow = av.querySelector('.av__row--active, .av__row[data-rv-current="true"], .av__row[data-rv-selected="true"]');
-                                    if (activeRow) {
-                                        const blockRef = activeRow.querySelector('[data-type="block-ref"]');
-                                        if (blockRef && blockRef.dataset.id) {
-                                            lastRightClickedDatabaseCell = {
-                                                rowId: activeRow.dataset?.rowId,
-                                                blockId: blockRef.dataset.id,
-                                                avId: av.dataset.avId,
-                                                taskName: blockRef.textContent?.trim() || null,
-                                                timestamp: Date.now()
-                                            };
-                                            Logger.info('🍅 ✅ 菜单打开时更新:', lastRightClickedDatabaseCell.blockId);
-                                            return;
-                                        }
-                                    }
-                                }
-                            }, 50);
-                        }
-                    }
-                }
-            }
-        });
-        
-        menuObserver.observe(document.body, { childList: true, subtree: true });
-        // 🔧 性能优化：存储 Observer 引用，用于后续清理
-        mutationObservers.push(menuObserver);
-
         // 存储当前菜单的触发源元素
         let currentMenuTriggerElement = null;
 
         // 检查菜单是否已经存在，如果存在则处理
         const checkAndAddMenu = async () => {
+            if (__tomatoDestroyed) return;
+
             const menuContainer = document.querySelector('#commonMenu');
-            if (!menuContainer) {
-                return;
-            }
+            if (!menuContainer) return;
 
             // 🔧 关键修复：尝试找到菜单的触发源
             // 移动端数据库行菜单通常是点击行上的按钮触发的
@@ -17548,54 +19504,103 @@ function calculateWeeklyStats(dailyStatsArray) {
             await handleDatabaseMenu(menuItems, openByBtn);
         };
 
-        // 使用 MutationObserver 监听 #commonMenu 的变化
-        const observer = new MutationObserver((mutations) => {
+        let commonMenuObserver = null;
+        let commonMenuEl = null;
+        const ensureCommonMenuObserver = () => {
+            if (__tomatoDestroyed) return false;
+            const el = document.querySelector('#commonMenu');
+            if (!el) return false;
+            if (commonMenuObserver && commonMenuEl === el) return true;
+
+            try { commonMenuObserver?.disconnect?.(); } catch (e) {}
+            commonMenuEl = el;
+            commonMenuObserver = new MutationObserver((mutations) => {
+                if (__tomatoDestroyed) return;
+                for (const mutation of mutations) {
+                    if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+                        requestAnimationFrame(() => { try { checkAndAddMenu(); } catch (e) {} });
+                        return;
+                    }
+                    if (mutation.type === 'attributes') {
+                        requestAnimationFrame(() => { try { checkAndAddMenu(); } catch (e) {} });
+                        return;
+                    }
+                }
+            });
+            try {
+                commonMenuObserver.observe(el, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['style', 'class']
+                });
+            } catch (e) {
+                return false;
+            }
+            mutationObservers.push(commonMenuObserver);
+            return true;
+        };
+
+        const scheduleCheckAndAddMenu = () => {
+            if (__tomatoDestroyed) return;
+            requestAnimationFrame(() => {
+                try { ensureCommonMenuObserver(); } catch (e) {}
+                try { checkAndAddMenu(); } catch (e) {}
+            });
+        };
+
+        // 监听菜单打开（只监听 childList；不要在 body 上监听 attributes）
+        const menuObserver = new MutationObserver((mutations) => {
+            if (__tomatoDestroyed) return;
             for (const mutation of mutations) {
-                // 检查是否有子节点添加
                 if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                    requestAnimationFrame(checkAndAddMenu);
-                    return;
-                }
-                // 检查是否有属性变化（菜单显示时可能改变 display 或 class 属性）
-                if (mutation.type === 'attributes') {
-                    requestAnimationFrame(checkAndAddMenu);
-                    return;
+                    for (const node of mutation.addedNodes) {
+                        if (node.nodeType === Node.ELEMENT_NODE &&
+                            (node.id === 'commonMenu' ||
+                             (typeof node.className === 'string' && node.className.includes('b3-menu')))) {
+                            Logger.info('🍅 🔔 检测到菜单打开');
+                            scheduleCheckAndAddMenu();
+
+                            __tomatoTrackTimeout(() => {
+                                if (__tomatoDestroyed) return;
+                                const avs = document.querySelectorAll('.av');
+                                for (const av of avs) {
+                                    const activeRow = av.querySelector('.av__row--active, .av__row[data-rv-current="true"], .av__row[data-rv-selected="true"]');
+                                    if (activeRow) {
+                                        const blockRef = activeRow.querySelector('[data-type="block-ref"]');
+                                        if (blockRef && blockRef.dataset.id) {
+                                            lastRightClickedDatabaseCell = {
+                                                rowId: activeRow.dataset?.rowId,
+                                                blockId: blockRef.dataset.id,
+                                                avId: av.dataset.avId,
+                                                taskName: blockRef.textContent?.trim() || null,
+                                                timestamp: Date.now()
+                                            };
+                                            Logger.info('🍅 ✅ 菜单打开时更新:', lastRightClickedDatabaseCell.blockId);
+                                            return;
+                                        }
+                                    }
+                                }
+                            }, 50);
+                        }
+                    }
                 }
             }
         });
 
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: ['style', 'class', 'id']
-        });
-        // 🔧 性能优化：存储 Observer 引用，用于后续清理
-        mutationObservers.push(observer);
+        menuObserver.observe(document.body, { childList: true, subtree: true });
+        mutationObservers.push(menuObserver);
 
-        // 🔧 修复：增加检查次数和持续检查，确保页面刷新后仍能检测到菜单
-        // 🔧 修复：使用单一定时器，避免多个定时器累积导致内存泄漏
-        let checkCount = 0;
-        const maxChecks = 100; // 增加检查次数
-        const checkInterval = 100; // 检查间隔
-
-        // 使用单一定时器，50次检查后降低频率
-        const timerId = setInterval(() => {
-            checkCount++;
-            checkAndAddMenu();
-
-            // 50次检查后降低检查频率（从100ms降到1s）
-            if (checkCount >= 50) {
-                clearInterval(timerId); // 清除原定时器
-                // 创建新的低频率定时器
-                const slowTimerId = setInterval(checkAndAddMenu, 1000);
-                // 30秒后清除低频率定时器，避免一直运行
-                setTimeout(() => {
-                    clearInterval(slowTimerId);
-                }, 30000);
-                Logger.info('🍅 数据库菜单检测已转为低频率模式');
+        let bootstrapTries = 0;
+        const bootstrap = () => {
+            if (__tomatoDestroyed) return;
+            bootstrapTries++;
+            scheduleCheckAndAddMenu();
+            if (bootstrapTries < 12) {
+                __tomatoTrackTimeout(bootstrap, 250);
             }
-        }, checkInterval);
+        };
+        bootstrap();
 
         Logger.info('🍅 数据库菜单监听器已设置');
     }
@@ -20568,7 +22573,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         let throttleTimer = null;
         const observer = new MutationObserver(() => {
             if (throttleTimer != null) return;
-            throttleTimer = setTimeout(() => {
+            throttleTimer = __tomatoTrackTimeout(() => {
                 throttleTimer = null;
                 addMobileBreadcrumbButton();
             }, 400);
@@ -20586,90 +22591,94 @@ function calculateWeeklyStats(dailyStatsArray) {
         window.tomatoBreadcrumbObserver = observer;
     }
 
-    async function initialize() {
-        Logger.info('🍅 番茄钟 v9.1 初始化...');
-        
-        // v8.6 修复：使用 syncState 替代 localStorage 状态恢复
-        let stateRestored = false;
-        
-        await ensureTomatoStorageMigration();
-        await loadUserSettings();
-        // 确保 audioSettings 对象存在（兼容旧配置）
-        if (!userSettings.audioSettings) {
-            userSettings.audioSettings = {
-                workEndSound: '',
-                breakEndSound: '',
-                workEndPreset: '',
-                breakEndPreset: '',
-                volume: 0.8,
-                enabled: true
-            };
-        } else {
-            if (userSettings.audioSettings.workEndPreset == null) userSettings.audioSettings.workEndPreset = '';
-            if (userSettings.audioSettings.breakEndPreset == null) userSettings.audioSettings.breakEndPreset = '';
-        }
-        // 确保 taskBlockTomatoTime 对象存在（兼容旧配置）
-        if (!userSettings.taskBlockTomatoTime) {
-            userSettings.taskBlockTomatoTime = {
-                enabled: true,
-                enableHourAttr: true,
-                hourAttrName: 'custom-tomato-time',
-                enableMinuteAttr: false,
-                minuteAttrName: 'custom-tomato-minutes'
-            };
-        }
-        // 确保 audioSettings 引用 userSettings 中的配置
-        audioSettings = userSettings.audioSettings;
-        Logger.info('🍅 audioSettings 初始化:', JSON.stringify(audioSettings));
-        
-        // 修复：加载用户设置后，重新设置默认番茄时间
-        const loadedDefaultTime = userSettings?.main?.defaultTomatoTime || DEFAULT_TOMATO_TIME;
-        currentDuration = loadedDefaultTime;
-        remainingSeconds = loadedDefaultTime * 60;
-        Logger.info('🍅 默认番茄时间已设置为:', loadedDefaultTime, '分钟');
-        
-        await loadFocusTimeSettings();
-        const records = await loadHistoryRecords();
-        Logger.info('🍅 历史记录条数:', records.length);
-        window.showPage = showPage;
-        
-        // ========== 多端同步：初始化同步管理器 ==========
-        if (isSyncEnabled()) {
-            let lastSyncedRemainingSeconds = null;
+    function initialize() {
+        if (__tomatoDestroyed) return Promise.resolve();
+        if (__tomatoInitPromise) return __tomatoInitPromise;
 
-            const handleStateChange = (newState) => {
-                const now = Date.now();
+        __tomatoInitPromise = (async () => {
+            Logger.info('🍅 番茄钟 v9.1 初始化...');
+            
+            // v8.6 修复：使用 syncState 替代 localStorage 状态恢复
+            let stateRestored = false;
+            
+            await ensureTomatoStorageMigration();
+            await loadUserSettings();
+            // 确保 audioSettings 对象存在（兼容旧配置）
+            if (!userSettings.audioSettings) {
+                userSettings.audioSettings = {
+                    workEndSound: '',
+                    breakEndSound: '',
+                    workEndPreset: '',
+                    breakEndPreset: '',
+                    volume: 0.8,
+                    enabled: true
+                };
+            } else {
+                if (userSettings.audioSettings.workEndPreset == null) userSettings.audioSettings.workEndPreset = '';
+                if (userSettings.audioSettings.breakEndPreset == null) userSettings.audioSettings.breakEndPreset = '';
+            }
+            // 确保 taskBlockTomatoTime 对象存在（兼容旧配置）
+            if (!userSettings.taskBlockTomatoTime) {
+                userSettings.taskBlockTomatoTime = {
+                    enabled: true,
+                    enableHourAttr: true,
+                    hourAttrName: 'custom-tomato-time',
+                    enableMinuteAttr: false,
+                    minuteAttrName: 'custom-tomato-minutes'
+                };
+            }
+            // 确保 audioSettings 引用 userSettings 中的配置
+            audioSettings = userSettings.audioSettings;
+            Logger.info('🍅 audioSettings 初始化:', JSON.stringify(audioSettings));
+            
+            // 修复：加载用户设置后，重新设置默认番茄时间
+            const loadedDefaultTime = userSettings?.main?.defaultTomatoTime || DEFAULT_TOMATO_TIME;
+            currentDuration = loadedDefaultTime;
+            remainingSeconds = loadedDefaultTime * 60;
+            Logger.info('🍅 默认番茄时间已设置为:', loadedDefaultTime, '分钟');
+            
+            await loadFocusTimeSettings();
+            const records = await loadHistoryRecords();
+            Logger.info('🍅 历史记录条数:', records.length);
+            window.showPage = showPage;
+            
+            // ========== 多端同步：初始化同步管理器 ==========
+            if (isSyncEnabled()) {
+                let lastSyncedRemainingSeconds = null;
 
-                const MIN_STATE_UPDATE_INTERVAL = 500;
-                if (handleStateChange._lastTime && now - handleStateChange._lastTime < MIN_STATE_UPDATE_INTERVAL) {
-                    Logger.debug('🔄 handleStateChange: 状态更新过于频繁，跳过');
-                    return;
-                }
-                handleStateChange._lastTime = now;
+                const handleStateChange = (newState) => {
+                    const now = Date.now();
 
-                // 🔧 修复：如果是本地设备发起的更新，跳过状态重置（避免显示跳动）
-                if (newState.lastModifiedDevice === SYNC_DEVICE_ID && isRunning) {
-                    Logger.debug('🔄 handleStateChange: 本地设备发起的更新且正在运行，跳过');
-                    syncState = newState;
-                    return;
-                }
+                    const MIN_STATE_UPDATE_INTERVAL = 500;
+                    if (handleStateChange._lastTime && now - handleStateChange._lastTime < MIN_STATE_UPDATE_INTERVAL) {
+                        Logger.debug('🔄 handleStateChange: 状态更新过于频繁，跳过');
+                        return;
+                    }
+                    handleStateChange._lastTime = now;
 
-                const isLocalStateInitial = !syncState?.startTime && syncState?.status === 'IDLE';
+                    // 🔧 修复：如果是本地设备发起的更新，跳过状态重置（避免显示跳动）
+                    if (newState.lastModifiedDevice === SYNC_DEVICE_ID && isRunning) {
+                        Logger.debug('🔄 handleStateChange: 本地设备发起的更新且正在运行，跳过');
+                        syncState = newState;
+                        return;
+                    }
 
-                Logger.info('🔄 SyncManager 回调：接收到云端状态更新', {
-                    isLocalStateInitial: isLocalStateInitial,
-                    localStatus: syncState?.status,
-                    localStartTime: syncState?.startTime,
-                    remoteStatus: newState.status,
-                    remoteStartTime: newState.startTime,
-                    remoteSequenceId: newState.sequenceId
-                });
+                    const isLocalStateInitial = !syncState?.startTime && syncState?.status === 'IDLE';
 
-                if (isLocalStateInitial && newState.status === 'IDLE') {
-                    Logger.info('🔄 SyncManager: 首次初始化且云端为空闲，跳过更新');
-                    syncState = newState;
-                    return;
-                }
+                    Logger.info('🔄 SyncManager 回调：接收到云端状态更新', {
+                        isLocalStateInitial: isLocalStateInitial,
+                        localStatus: syncState?.status,
+                        localStartTime: syncState?.startTime,
+                        remoteStatus: newState.status,
+                        remoteStartTime: newState.startTime,
+                        remoteSequenceId: newState.sequenceId
+                    });
+
+                    if (isLocalStateInitial && newState.status === 'IDLE') {
+                        Logger.info('🔄 SyncManager: 首次初始化且云端为空闲，跳过更新');
+                        syncState = newState;
+                        return;
+                    }
 
                 if (isLocalStateInitial && newState.startTime && newState.status !== 'IDLE') {
                     Logger.info('🔄 SyncManager: 恢复云端状态');
@@ -21344,10 +23353,13 @@ function calculateWeeklyStats(dailyStatsArray) {
             }
         }
         
-        // 🔧 修复：刷新UI显示，确保使用用户设置的默认番茄时间
-        if (timeDisplay) {
-            updateDisplay();
-        }
+            // 🔧 修复：刷新UI显示，确保使用用户设置的默认番茄时间
+            if (timeDisplay) {
+                updateDisplay();
+            }
+        })();
+
+        return __tomatoInitPromise;
     }
     
     // 设置变更后的刷新函数
@@ -21456,6 +23468,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
     const cleanupTomato = () => {
         __tomatoDestroyed = true;
+        try { __tomatoClearTrackedTimers(); } catch (e) {}
         try { if (injectTimeout) clearTimeout(injectTimeout); } catch (e) {}
         try { injectTimeout = null; } catch (e) {}
         try { if (injectInitTimeout) clearTimeout(injectInitTimeout); } catch (e) {}
@@ -21560,7 +23573,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     mutationObservers.push(injectObserver);
     injectInitTimeout = setTimeout(inject, 1000);
 
-    EventManager.addWindowBeforeUnload(async () => {
+    EventManager.addWindowBeforeUnload(() => {
         // 页面关闭时保存状态到云端
         if (isRunning || isTimerPaused) {
             Logger.info('💾 页面即将刷新/跳转，保存计时器状态到云端...', {
@@ -21593,13 +23606,22 @@ function calculateWeeklyStats(dailyStatsArray) {
                     if (isTimerPaused) {
                         syncState.currentPauseStart = syncState.currentPauseStart || Date.now();
                     }
-                    
-                    await SyncManager.updateLocal(syncState, true);
-                    Logger.info('💾 状态已同步到云端', { 
-                        status: syncState.status,
-                        timerMode: syncState.mode,
-                        stopwatchStartTimeMs: syncState.stopwatchStartTimeMs
-                    });
+                    try {
+                        const p = SyncManager.updateLocal(syncState, true);
+                        if (p && typeof p.then === 'function') {
+                            p.then(() => {
+                                Logger.info('💾 状态已同步到云端', {
+                                    status: syncState.status,
+                                    timerMode: syncState.mode,
+                                    stopwatchStartTimeMs: syncState.stopwatchStartTimeMs
+                                });
+                            }).catch((e) => {
+                                Logger.warn('⚠️ 同步状态到云端失败:', e?.message || String(e));
+                            });
+                        }
+                    } catch (e) {
+                        Logger.warn('⚠️ 同步状态到云端失败:', e?.message || String(e));
+                    }
                 } catch (e) {
                     Logger.warn('⚠️ 同步状态到云端失败:', e.message);
                 }
