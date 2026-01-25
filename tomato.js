@@ -694,32 +694,6 @@
 
             this.poll(true);
             this.pollTimer = setInterval(() => this.poll(), SYNC_POLL_INTERVAL);
-            try {
-                if (this._visibilityHandler) {
-                    document.removeEventListener('visibilitychange', this._visibilityHandler, true);
-                }
-                this._visibilityHandler = () => {
-                    try {
-                        if (!document.hidden && isSyncEnabled()) {
-                            handleAppResumeRefresh('visibility');
-                        }
-                    } catch (e) {}
-                };
-                document.addEventListener('visibilitychange', this._visibilityHandler, true);
-            } catch (e) {}
-            try {
-                if (this._focusHandler) {
-                    window.removeEventListener('focus', this._focusHandler, true);
-                }
-                this._focusHandler = () => {
-                    try {
-                        if (!document.hidden && isSyncEnabled()) {
-                            handleAppResumeRefresh('focus');
-                        }
-                    } catch (e) {}
-                };
-                window.addEventListener('focus', this._focusHandler, true);
-            } catch (e) {}
             Logger.debug('🔄 SyncManager: 轮询已启动');
         },
         
@@ -905,6 +879,188 @@
     let lastKnownSyncSignature = '';
     let lastResumeRefreshAtMs = 0;
     let resumeRefreshRunning = false;
+    let lastKnownAppDateKey = null;
+    let appResumeListenersInstalled = false;
+    let appResumeVisibilityHandler = null;
+    let appResumeFocusHandler = null;
+    let appResumePageShowHandler = null;
+
+    function installAppResumeListeners() {
+        if (appResumeListenersInstalled) return;
+        appResumeListenersInstalled = true;
+        try {
+            if (appResumeVisibilityHandler) {
+                document.removeEventListener('visibilitychange', appResumeVisibilityHandler, true);
+            }
+            appResumeVisibilityHandler = () => {
+                try {
+                    if (!document.hidden) {
+                        handleAppResumeRefresh('visibility');
+                    }
+                } catch (e) {}
+            };
+            document.addEventListener('visibilitychange', appResumeVisibilityHandler, true);
+        } catch (e) {}
+        try {
+            if (appResumeFocusHandler) {
+                window.removeEventListener('focus', appResumeFocusHandler, true);
+            }
+            appResumeFocusHandler = () => {
+                try {
+                    if (!document.hidden) {
+                        handleAppResumeRefresh('focus');
+                    }
+                } catch (e) {}
+            };
+            window.addEventListener('focus', appResumeFocusHandler, true);
+        } catch (e) {}
+        try {
+            if (appResumePageShowHandler) {
+                window.removeEventListener('pageshow', appResumePageShowHandler, true);
+            }
+            appResumePageShowHandler = () => {
+                try {
+                    if (!document.hidden) {
+                        handleAppResumeRefresh('pageshow');
+                    }
+                } catch (e) {}
+            };
+            window.addEventListener('pageshow', appResumePageShowHandler, true);
+        } catch (e) {}
+    }
+
+    function uninstallAppResumeListeners() {
+        appResumeListenersInstalled = false;
+        try {
+            if (appResumeVisibilityHandler) {
+                document.removeEventListener('visibilitychange', appResumeVisibilityHandler, true);
+            }
+        } catch (e) {}
+        try {
+            if (appResumeFocusHandler) {
+                window.removeEventListener('focus', appResumeFocusHandler, true);
+            }
+        } catch (e) {}
+        try {
+            if (appResumePageShowHandler) {
+                window.removeEventListener('pageshow', appResumePageShowHandler, true);
+            }
+        } catch (e) {}
+        appResumeVisibilityHandler = null;
+        appResumeFocusHandler = null;
+        appResumePageShowHandler = null;
+    }
+
+    function getEffectiveTimerActivity() {
+        const syncActive = !!(syncState && syncState.status && syncState.status !== 'IDLE' && (syncState.startTime || syncState.stopwatchStartTimeMs));
+        const running = !!(isRunning || (syncActive && syncState.status === 'RUNNING'));
+        const paused = !!(isTimerPaused || (syncActive && syncState.status === 'PAUSED'));
+        return { syncActive, running, paused };
+    }
+
+    function invalidateHistoryReadCache() {
+        try {
+            if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map && HISTORY_FILE_PATH) {
+                const key = String(HISTORY_FILE_PATH);
+                if (__tomatoFileTextCache.has(key)) {
+                    __tomatoFileTextCache.delete(key);
+                }
+            }
+        } catch (e) {}
+        try {
+            __tomatoHistoryParseCache = { source: '', raw: '', records: null };
+        } catch (e) {}
+    }
+
+    function invalidateAllFileReadCache() {
+        try {
+            if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
+                __tomatoFileTextCache.clear();
+            }
+        } catch (e) {}
+        try {
+            __tomatoHistoryParseCache = { source: '', raw: '', records: null };
+        } catch (e) {}
+    }
+
+    async function softReloadOnResume(options = {}) {
+        if (__tomatoDestroyed) return;
+        const longGap = options?.longGap === true;
+        if (longGap) {
+            invalidateAllFileReadCache();
+        } else {
+            invalidateHistoryReadCache();
+        }
+        try { await loadUserSettings(); } catch (e) {}
+        try { await loadFocusTimeSettings(); } catch (e) {}
+    }
+
+    async function refreshHistoryDialogIfOpen() {
+        if (__tomatoDestroyed) return;
+        const dialog = document.getElementById('tomy-tomato-history-dialog');
+        const contentArea = document.getElementById('tomy-tomato-history-content');
+        if (!dialog || !contentArea) return;
+        if (!historyState) return;
+
+        let allRecords = [];
+        try {
+            allRecords = await loadHistoryRecords();
+        } catch (e) {
+            return;
+        }
+
+        try { await loadUserSettings(); } catch (e) {}
+        try { await loadFocusTimeSettings(); } catch (e) {}
+
+        historyState.allRecords = allRecords;
+
+        let filteredRecords = allRecords;
+        try {
+            if (!userSettings.showBreakRecords) {
+                filteredRecords = filteredRecords.filter(r => r.mode !== 'break' && r.mode !== 'stopwatch-break');
+            }
+            if (!userSettings.showIdleRecords) {
+                filteredRecords = filteredRecords.filter(r => r?.mode !== 'idle');
+            }
+            if (userSettings.hideShortRecords) {
+                filteredRecords = filteredRecords.filter(r => r && typeof r.durationSec === 'number' && r.durationSec >= 60);
+            }
+        } catch (e) {}
+
+        const dates = {};
+        try {
+            filteredRecords.forEach(record => {
+                const date = record?.date || getRecordDateKeyByEnd(record) || formatDateKey(record?.start);
+                if (date) dates[date] = true;
+            });
+        } catch (e) {}
+
+        const dateList = Object.keys(dates).sort((a, b) => new Date(b) - new Date(a));
+
+        historyState.filteredRecords = filteredRecords;
+        historyState.dateList = dateList;
+
+        try {
+            const cur = String(historyState.currentPage || 'summary');
+            let nextPage = cur;
+            if (cur === 'today') {
+                const todayKey = formatDateKey(new Date());
+                if (!dateList.includes(todayKey)) nextPage = 'summary';
+            } else if (cur === 'yesterday') {
+                const k = formatDateKey(new Date(Date.now() - 86400000));
+                if (!dateList.includes(k)) nextPage = 'summary';
+            } else if (cur === 'day-before-yesterday') {
+                const k = formatDateKey(new Date(Date.now() - 172800000));
+                if (!dateList.includes(k)) nextPage = 'summary';
+            } else if (/^\d{4}-\d{2}-\d{2}$/.test(cur)) {
+                if (!dateList.includes(cur)) nextPage = 'summary';
+            }
+            historyState.currentPage = nextPage;
+        } catch (e) {}
+
+        try { updatePageButtons(); } catch (e) {}
+        try { showPage(historyState.currentPage || 'summary'); } catch (e) {}
+    }
 
     function buildSyncSignature(st) {
         try {
@@ -930,11 +1086,34 @@
 
     async function handleAppResumeRefresh(source = '') {
         try {
+            if (__tomatoDestroyed) return;
             if (resumeRefreshRunning) return;
             const now = Date.now();
             if (now - lastResumeRefreshAtMs < 800) return;
             lastResumeRefreshAtMs = now;
             resumeRefreshRunning = true;
+
+            const lastNow = handleAppResumeRefresh._lastNow;
+            handleAppResumeRefresh._lastNow = now;
+            const gapMs = (typeof lastNow === 'number' && Number.isFinite(lastNow) && now > lastNow) ? (now - lastNow) : 0;
+            let nowDateKey = null;
+            try { nowDateKey = formatDateKey(new Date()); } catch (e) {}
+            const dayChanged = !!(lastKnownAppDateKey && nowDateKey && lastKnownAppDateKey !== nowDateKey);
+            if (nowDateKey) lastKnownAppDateKey = nowDateKey;
+            const longGap = gapMs > 300000 || dayChanged;
+
+            try {
+                const needsSiyuanSync = isSyncEnabled() && (gapMs > 30000 || dayChanged);
+                if (needsSiyuanSync && SyncManager && typeof SyncManager.triggerSiyuanSync === 'function') {
+                    const lastSyncAt = handleAppResumeRefresh._lastSiyuanSyncAt || 0;
+                    if (now - lastSyncAt > 15000) {
+                        handleAppResumeRefresh._lastSiyuanSyncAt = now;
+                        await SyncManager.triggerSiyuanSync();
+                        await new Promise(resolve => setTimeout(resolve, 900));
+                        await softReloadOnResume({ longGap });
+                    }
+                }
+            } catch (e) {}
 
             const prevSig = buildSyncSignature(syncState);
             try {
@@ -949,13 +1128,47 @@
             if (nextSig && nextSig !== lastKnownSyncSignature) {
                 lastKnownSyncSignature = nextSig;
             }
-            if (prevSig !== nextSig && nextSig) {
-                try { updateFromSyncState(); } catch (e) {}
+            const sigChanged = !!(prevSig !== nextSig && nextSig);
+            const shouldForce = sigChanged || gapMs > 30000 || dayChanged;
+            if (shouldForce) {
+                try {
+                    await softReloadOnResume({ longGap });
+                    if (isSyncEnabled() && syncState && syncState.status) {
+                        updateFromSyncState();
+                        if (syncState.status === 'RUNNING') {
+                            isRunning = true;
+                            isTimerPaused = false;
+                        } else if (syncState.status === 'PAUSED') {
+                            isRunning = false;
+                            isTimerPaused = true;
+                            if (timerMode !== 'stopwatch' && timerMode !== 'stopwatch-break') {
+                                pausedRemainingSeconds = remainingSeconds;
+                            }
+                        } else {
+                            isRunning = false;
+                            isTimerPaused = false;
+                            pausedRemainingSeconds = null;
+                        }
+                        if (isRunning && !timerId) {
+                            startLocalTimerLoop();
+                        }
+                    } else if (isRunning) {
+                        await handleTimerTick();
+                    }
+                } catch (e) {}
                 try { updateDisplay(true); } catch (e) {}
+                try { updateRoutineButtonRunningHighlight(true); } catch (e) {}
                 try { updateTimelineBar(true); } catch (e) {}
+                try {
+                    if (dayChanged) {
+                        markTimelineHistoryDirty();
+                    }
+                } catch (e) {}
+                try { await refreshHistoryDialogIfOpen(); } catch (e) {}
             }
 
             try {
+                if (shouldForce) await softReloadOnResume({ longGap });
                 const all = await loadHistoryRecords();
                 let maxEndMs = 0;
                 for (const r of Array.isArray(all) ? all : []) {
@@ -969,6 +1182,7 @@
                     lastKnownHistoryMaxEndMinute = maxEndMinute;
                     markTimelineHistoryDirty();
                     try { updateTimelineBar(true); } catch (e) {}
+                    try { await refreshHistoryDialogIfOpen(); } catch (e) {}
                 }
             } catch (e) {}
         } catch (e) {
@@ -4674,7 +4888,8 @@
         const toolbar = document.getElementById('tomato-routine-toolbar');
         if (!toolbar) return;
 
-        const running = !!(isRunning || isTimerPaused);
+        const { running: effectiveRunning, paused: effectivePaused } = getEffectiveTimerActivity();
+        const running = !!(effectiveRunning || effectivePaused);
         const taskId = String(currentTaskBlockId || '').trim();
         const activeId = String(activeRoutineButtonBlockId || '').trim();
         const key = `${running ? 1 : 0}|${timerMode}|${activeRoutineButtonIndex ?? ''}|${activeId || taskId}`;
@@ -9072,11 +9287,13 @@
 
         let text;
         const prefix = getDisplayPrefixForTimer(timerMode);
+        const { running: effectiveRunning, paused: effectivePaused } = getEffectiveTimerActivity();
+        const effectiveActive = !!(effectiveRunning || effectivePaused);
         if (timerMode === 'countdown') {
-            const displaySeconds = (isRunning || remainingSeconds > 0) ? remainingSeconds : currentDuration * 60;
+            const displaySeconds = (effectiveActive || remainingSeconds > 0) ? remainingSeconds : currentDuration * 60;
             setDisplayText(prefix, formatTime(displaySeconds));
         } else if (timerMode === 'break') {
-            const displaySeconds = (isRunning || remainingSeconds > 0) ? remainingSeconds : currentDuration * 60;
+            const displaySeconds = (effectiveActive || remainingSeconds > 0) ? remainingSeconds : currentDuration * 60;
             setDisplayText(prefix, formatTime(displaySeconds));
         } else if (timerMode === 'stopwatch') {
             // 🔧 修复：显示时加上休息前的时间偏移
@@ -9084,7 +9301,16 @@
         } else if (timerMode === 'stopwatch-break') {
             setDisplayText(prefix, formatTime(elapsedSeconds));
         }
-        timeDisplay.style.color = isRunning ? '#1E88E5' : 'var(--b3-theme-on-surface)';
+        timeDisplay.style.color = effectiveRunning ? '#1E88E5' : 'var(--b3-theme-on-surface)';
+        try {
+            if (controlButton) {
+                controlButton.innerHTML = effectiveRunning ? '⏸️' : '▶️';
+            }
+        } catch (e) {}
+        try {
+            const floatBar = document.getElementById('siyuan-tomato-float-bar');
+            if (floatBar) floatBar.classList.toggle('running', effectiveRunning);
+        } catch (e) {}
         updateProgressBar();
 
         // 更新任务块图标状态
@@ -22600,6 +22826,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             
             // v8.6 修复：使用 syncState 替代 localStorage 状态恢复
             let stateRestored = false;
+            try { installAppResumeListeners(); } catch (e) {}
             
             await ensureTomatoStorageMigration();
             await loadUserSettings();
@@ -23468,6 +23695,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
     const cleanupTomato = () => {
         __tomatoDestroyed = true;
+        try { uninstallAppResumeListeners(); } catch (e) {}
         try { __tomatoClearTrackedTimers(); } catch (e) {}
         try { if (injectTimeout) clearTimeout(injectTimeout); } catch (e) {}
         try { injectTimeout = null; } catch (e) {}
