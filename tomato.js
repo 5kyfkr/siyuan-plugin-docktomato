@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.3.0
+// @version      1.3.2
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -484,7 +484,8 @@
         },
 
         // 🔧 v9.5: 尝试触发思源笔记的云端同步
-        async triggerSiyuanSync() {
+        // forceSync: 强制触发同步（用于暂停、停止等关键状态变化，优先于节流）
+        async triggerSiyuanSync(forceSync = false) {
             try {
                 // 检查配置是否开启（默认开启）
                 if (userSettings.sync && userSettings.sync.autoTriggerSiyuanSync === false) {
@@ -493,16 +494,17 @@
                 }
 
                 // 节流：10秒内最多触发一次，避免频繁请求
+                // 但暂停、停止等关键状态变化应该优先于节流
                 const now = Date.now();
                 const MIN_SYNC_INTERVAL = 10000;
                 
-                if (this._lastSyncTime && now - this._lastSyncTime < MIN_SYNC_INTERVAL) {
+                if (!forceSync && this._lastSyncTime && now - this._lastSyncTime < MIN_SYNC_INTERVAL) {
                     // Logger.debug('🔄 SyncManager: 同步请求过于频繁，跳过触发思源同步');
                     return;
                 }
                 this._lastSyncTime = now;
 
-                Logger.info('🔄 SyncManager: 尝试触发思源笔记云端同步...');
+                Logger.info('🔄 SyncManager: 尝试触发思源笔记云端同步...', { forceSync });
                 
                 // 尝试调用思源同步 API
                 // /api/sync/performSync 是常见的同步触发接口
@@ -1131,11 +1133,22 @@
             const sigChanged = !!(prevSig !== nextSig && nextSig);
             const shouldForce = sigChanged || gapMs > 30000 || dayChanged;
             if (shouldForce) {
+                // 🔧 关键修复：清除历史记录缓存，确保下次打开对话框时加载最新数据
+                invalidateHistoryReadCache();
+                
+                // 🔧 关键修复：每次同步刷新时都清理时间轴状态，防止折叠残留
+                // 必须在 softReloadOnResume 之前清理，确保新数据不会与旧状态混合
+                markTimelineHistoryDirty();
+                
                 try {
                     await softReloadOnResume({ longGap });
+                    // 🔧 关键修复：如果本地已经暂停，不被云端的旧状态覆盖
+                    // 这确保用户手动暂停后，不会因为同步延迟而被重新启动
+                    const localWasPaused = isTimerPaused;
+                    
                     if (isSyncEnabled() && syncState && syncState.status) {
                         updateFromSyncState();
-                        if (syncState.status === 'RUNNING') {
+                        if (syncState.status === 'RUNNING' && !localWasPaused) {
                             isRunning = true;
                             isTimerPaused = false;
                         } else if (syncState.status === 'PAUSED') {
@@ -1152,18 +1165,16 @@
                         if (isRunning && !timerId) {
                             startLocalTimerLoop();
                         }
-                    } else if (isRunning) {
+                    } else if (isRunning && !localWasPaused) {
                         await handleTimerTick();
                     }
                 } catch (e) {}
                 try { updateDisplay(true); } catch (e) {}
                 try { updateRoutineButtonRunningHighlight(true); } catch (e) {}
                 try { updateTimelineBar(true); } catch (e) {}
-                try {
-                    if (dayChanged) {
-                        markTimelineHistoryDirty();
-                    }
-                } catch (e) {}
+                // 🔧 修复：同步后刷新任务块图标
+                try { updateTaskBlockIcon(); } catch (e) {}
+                // 🔧 已移除重复的 markTimelineHistoryDirty 调用（现在在 shouldForce 块开头统一处理）
                 try { await refreshHistoryDialogIfOpen(); } catch (e) {}
             }
 
@@ -8236,8 +8247,17 @@
         ensureTimelineTooltip();
 
         const label = segEl.dataset.timelineLabel || '';
-        const taskName = segEl.dataset.taskBlockName || '';
+        let taskName = segEl.dataset.taskBlockName || '';
         const taskId = segEl.dataset.taskBlockId || '';
+
+        // 🔧 修复：休息模式下，如果 taskBlockName 为空但有活跃的日常按钮，使用按钮名称
+        // 这样可以和非休息模式保持一致，按钮名称优先级最高
+        if (!taskName && activeRoutineButtonIndex !== null && activeRoutineButtonIndex !== undefined && activeRoutineButtonIndex !== '') {
+            const btnConfig = userSettings?.routineButtons?.[activeRoutineButtonIndex];
+            if (btnConfig?.name) {
+                taskName = btnConfig.name;
+            }
+        }
 
         let timeText = '';
         if (segEl.dataset.startIso && segEl.dataset.endIso) {
@@ -8495,9 +8515,11 @@
                 }
             }
 
+            // 🔧 修复：休息模式下时间轴呼吸效果不显示的问题
+            // 添加 timerMode === 'break' 条件，使呼吸效果在休息模式下也能正常工作
             const shouldBreathe = (userSettings.timeline.enableBreathing !== false)
                 && (userSettings.appearance?.enableBreathing !== false)
-                && (timerMode === 'countdown' || timerMode === 'stopwatch' || timerMode === 'stopwatch-break')
+                && (timerMode === 'countdown' || timerMode === 'stopwatch' || timerMode === 'stopwatch-break' || timerMode === 'break')
                 && isRunning
                 && !isTimerPaused;
             if (shouldBreathe) timelineVisual.classList.add('breathing');
@@ -8579,6 +8601,34 @@
         for (const cache of timelineHistoryCacheByDateKey.values()) {
             cache.dirty = true;
         }
+
+        // 🔧 清理时间轴折叠状态，确保同步刷新后不会残留旧的折叠状态
+        try {
+            if (typeof timelineFoldedGroups !== 'undefined') {
+                timelineFoldedGroups = {};
+            }
+        } catch (e) {}
+
+        // 🔧 清理折叠的日期组 ID 列表，防止残留
+        try {
+            if (typeof __timelineFoldedGroupIds !== 'undefined') {
+                __timelineFoldedGroupIds = [];
+            }
+        } catch (e) {}
+
+        // 🔧 清理时间轴容器中的旧元素，为重新渲染做准备
+        try {
+            const timelineContainer = document.getElementById('tomato-timeline-bar');
+            if (timelineContainer) {
+                // 移除所有时间轴组元素，但保留容器结构
+                const existingGroups = timelineContainer.querySelectorAll('.tomato-timeline-group');
+                existingGroups.forEach(group => group.remove());
+
+                // 移除可能存在的残留元素
+                const staleElements = timelineContainer.querySelectorAll('.tomato-timeline-date-group, .tomato-timeline-record, .tomato-timeline-filler');
+                staleElements.forEach(el => el.remove());
+            }
+        } catch (e) {}
     }
 
     function refreshTimelineHistoryCacheForDateIfNeeded(dateKey) {
@@ -8764,9 +8814,15 @@
             if (segMeta?.distractionCount) seg.dataset.distractionCount = String(segMeta.distractionCount);
             if (segMeta?.isCurrent) seg.dataset.isCurrent = 'true';
 
-            if (userSettings.timeline?.enableBreathing !== false && userSettings.appearance?.enableBreathing !== false && opacity >= 0.75 && isRunning && !isTimerPaused) {
+            // 🔧 修复：完全关闭时间轴块的呼吸动画，避免视觉干扰
+            // 呼吸动画会导致正在进行块和历史块的动画速率不一致问题
+            // 如果需要启用呼吸效果，请取消下面代码的注释：
+
+            /* 启用呼吸动画代码（已注释）:
+            if (userSettings.timeline?.enableBreathing !== false && userSettings.appearance?.enableBreathing !== false && opacity >= 0.75 && !segMeta?.isCurrent) {
                 seg.classList.add('breathing');
             }
+            */
 
             if (interactive) {
                 const hasTask = !!(segMeta?.taskBlockId);
@@ -8896,7 +8952,7 @@
                 ...(meta || {}),
                 startIso: new Date(segStartMs).toISOString(),
                 endIso: new Date(segEndMs).toISOString()
-            }, layerEl, false);
+            }, layerEl, true);
         };
 
         if (timerMode === 'countdown') {
@@ -8968,7 +9024,15 @@
                 const elapsedSeconds = durationMin * 60 - remainingSeconds;
                 currentTs = startTs + Math.max(0, elapsedSeconds) * 1000;
             }
-            drawActiveRange(startTs, Math.min(currentTs, endTs), breakColor, 0.75, '☕ 休息', {
+            // 🔧 修复：传递任务块信息到时间轴，使休息模式也能显示任务名称
+            // 🔧 修复：如果有活跃的日常按钮，使用按钮名称作为标签
+            const breakLabel = (activeRoutineButtonIndex !== null && activeRoutineButtonIndex !== undefined && activeRoutineButtonIndex !== '') 
+                ? (userSettings?.routineButtons?.[activeRoutineButtonIndex]?.name || '☕ 休息') 
+                : '☕ 休息';
+            drawActiveRange(startTs, Math.min(currentTs, endTs), breakColor, 0.75, breakLabel, {
+                taskBlockId: syncState?.taskBlockId || currentTaskBlockId,
+                taskBlockName: syncState?.taskBlockName || currentTaskBlockName,
+                databaseBlockId: syncState?.databaseBlockId || currentDatabaseBlockId,
                 mode: timerMode,
                 isCurrent: false
             });
@@ -8983,7 +9047,15 @@
                 currentTs = startTs + Math.max(0, pausedRemainingSeconds) * 1000;
             }
             const breakSegmentColor = buttonColor || breakColor;
-            drawActiveRange(startTs, currentTs, breakSegmentColor, 0.75, '☕ 休息', {
+            // 🔧 修复：如果有活跃的日常按钮，使用按钮名称作为标签
+            const stopwatchBreakLabel = (activeRoutineButtonIndex !== null && activeRoutineButtonIndex !== undefined && activeRoutineButtonIndex !== '') 
+                ? (userSettings?.routineButtons?.[activeRoutineButtonIndex]?.name || '☕ 休息') 
+                : '☕ 休息';
+            // 🔧 修复：传递任务块信息到时间轴，使休息模式也能显示任务名称
+            drawActiveRange(startTs, currentTs, breakSegmentColor, 0.75, stopwatchBreakLabel, {
+                taskBlockId: syncState?.taskBlockId || currentTaskBlockId,
+                taskBlockName: syncState?.taskBlockName || currentTaskBlockName,
+                databaseBlockId: syncState?.databaseBlockId || currentDatabaseBlockId,
                 mode: 'stopwatch-break',
                 isCurrent: true
             });
@@ -9304,7 +9376,9 @@
         timeDisplay.style.color = effectiveRunning ? '#1E88E5' : 'var(--b3-theme-on-surface)';
         try {
             if (controlButton) {
-                controlButton.innerHTML = effectiveRunning ? '⏸️' : '▶️';
+                // 🔧 关键修复：优先使用本地 isRunning 状态决定图标
+                // 避免云端同步延迟导致暂停后图标没更新
+                controlButton.innerHTML = isRunning ? '⏸️' : '▶️';
             }
         } catch (e) {}
         try {
@@ -9446,6 +9520,11 @@
 
     // 🔧 新增：计时器 tick 处理逻辑
     async function handleTimerTick() {
+        // 🔧 关键修复：如果已暂停，不执行心跳逻辑
+        // 这确保即使 handleTimerTick 在暂停后仍被调用，也会立即返回
+        // 防止暂停后定时器继续运行
+        if (isTimerPaused) return;
+        
         const now = Date.now();
         const lastNow = handleTimerTick._lastNow;
         handleTimerTick._lastNow = now;
@@ -9719,6 +9798,15 @@
             syncState.distractionCount = currentDistractionCount || 0;
             Logger.info('🔄 pauseTimer: 同步暂停状态到云端');
             await SyncManager.updateLocal(syncState, true);
+            
+            // 🔧 修复：暂停时强制触发思源同步（优先于节流），确保其他设备能立即看到暂停状态
+            if (typeof SyncManager.triggerSiyuanSync === 'function') {
+                try {
+                    await SyncManager.triggerSiyuanSync(true);
+                } catch (e) {
+                    Logger.debug('🔄 pauseTimer: 触发思源同步失败（忽略）', e);
+                }
+            }
         }
     }
 
@@ -9752,6 +9840,15 @@
             syncState.distractionSavedCount = 0;
             Logger.info('🔄 stopTimer: 同步停止状态到云端');
             await SyncManager.updateLocal(syncState, true);
+            
+            // 🔧 修复：停止时强制触发思源同步（优先于节流），确保其他设备能立即看到停止状态
+            if (typeof SyncManager.triggerSiyuanSync === 'function') {
+                try {
+                    await SyncManager.triggerSiyuanSync(true);
+                } catch (e) {
+                    Logger.debug('🔄 stopTimer: 触发思源同步失败（忽略）', e);
+                }
+            }
         }
     }
 
@@ -17219,11 +17316,9 @@ function calculateWeeklyStats(dailyStatsArray) {
             @keyframes neonBreatheStrong {
                 0%, 100% {
                     opacity: var(--breathing-min-opacity, 0.5);
-                    transform: scaleY(1);
                 }
                 50% {
                     opacity: var(--breathing-max-opacity, 1);
-                    transform: scaleY(1.02);
                 }
             }
 
@@ -23167,6 +23262,14 @@ function calculateWeeklyStats(dailyStatsArray) {
                 }
 
                 if (newState.status === 'RUNNING' && isTimerPaused) {
+                    // 🔧 关键修复：如果状态更新来自本地设备，说明是暂停操作还没同步到云端
+                    // 此时不应该覆盖本地的暂停状态
+                    if (newState.lastModifiedDevice === SYNC_DEVICE_ID) {
+                        Logger.debug('🔄 SyncManager: 远端运行状态来自本地设备，忽略（等待暂停同步）');
+                        syncState = newState;
+                        return;
+                    }
+                    
                     Logger.info('🔄 SyncManager: 远端恢复运行，同步状态');
 
                     syncState = newState;
