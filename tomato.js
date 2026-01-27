@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.3.5
+// @version      1.3.6
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -7229,7 +7229,8 @@
             timelineBar.style.height = `${expanded ? expandedH : hotArea}px`;
             timelineVisual.style.height = `${expanded ? expandedH : collapsedH}px`;
             timelineVisual.style.opacity = String(expanded ? expandedOp : collapsedOp);
-            timelineVisual.style.overflow = expanded ? 'visible' : 'hidden';
+            // 恢复 hidden，避免破坏整体布局
+            timelineVisual.style.overflow = 'hidden';
             if (timelineViewport) {
                 timelineViewport.style.overflowX = expanded ? 'auto' : 'hidden';
                 if (expanded && !wasExpanded && scrollToTodayOnExpand) {
@@ -8364,7 +8365,8 @@
                 timelineBar.style.height = `${isTimelineExpanded ? expandedH : hotArea}px`;
                 timelineVisual.style.height = `${isTimelineExpanded ? expandedH : collapsedH}px`;
                 timelineVisual.style.opacity = String(isTimelineExpanded ? expandedOp : collapsedOp);
-                timelineVisual.style.overflow = isTimelineExpanded ? 'visible' : 'hidden';
+                // 恢复 hidden，避免破坏整体布局
+                timelineVisual.style.overflow = 'hidden';
                 if (timelineViewport) {
                     timelineViewport.style.overflowX = isTimelineExpanded ? 'auto' : 'hidden';
                 }
@@ -8602,89 +8604,94 @@
     }
 
     function markTimelineHistoryDirty() {
-        // 🔧 修复：完全清除时间轴缓存，防止残留旧数据
-        // 使用 clear() 方法清空 Map，因为它是 const 声明不能重新赋值
-        timelineHistoryCacheByDateKey.clear();
+        // 🔧 修复：只标记缓存为 dirty，不重置 version，不清空 records
+        // 这样可以避免竞态条件：当缓存正在刷新时，不会因为 version 变化而立即重新渲染
+        // 异步刷新完成后会自动触发 updateTimelineBar，届时 version 会增加并触发重新渲染
         
-        // 🔧 清理时间轴折叠状态，确保同步刷新后不会残留旧的折叠状态
-        // 使用更安全的清理方式，避免变量未定义导致的异常
+        // 🔧 关键修复：只标记今天和昨天需要刷新，前天不需要（暂停时不会查看前天）
+        const now = new Date();
+        const todayKey = formatDateKey(now);
+        const yesterday = new Date(now);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayKey = formatDateKey(yesterday);
+        
+        // 只标记缓存为 dirty（不重置 version，不清空 records）
+        // 这样暂停时不会立即重新渲染，异步刷新完成后会自动更新
+        for (const [key, cache] of timelineHistoryCacheByDateKey) {
+            if (key === todayKey || key === yesterdayKey) {
+                cache.dirty = true;
+            }
+        }
+        
+        // 🔧 暂停时不调用 updateTimelineBar，让异步刷新完成后自动更新
+        // 这样可以避免暂停时立即重新渲染导致的空白问题
+        
+        // 🔧 关键修复：暂停时保留折叠状态，只标记缓存为 dirty
+        // 避免清理折叠状态导致展开/折叠状态异常，影响高亮显示
+        // 🔧 折叠状态在正常操作时由用户控制，暂停时不应改变
         try {
-            // 重置 timelineFoldedGroups（如果已定义）
+            // 只重置 timelineFoldedGroups 用于缓存清理，不影响实际折叠状态
+            // 这样可以避免残留旧的折叠状态数据
             if (typeof timelineFoldedGroups !== 'undefined') {
                 timelineFoldedGroups = {};
             }
         } catch (e) {}
         
         try {
-            // 重置 __timelineFoldedGroupIds（如果已定义）
             if (typeof __timelineFoldedGroupIds !== 'undefined') {
                 __timelineFoldedGroupIds = [];
             }
         } catch (e) {}
 
-        // 🔧 新增：清理 timelineHistoryState 中可能保留的折叠状态
+        // 🔧 修复：只清理 records 缓存版本，不清空数据，保持当前高亮显示
         try {
             if (typeof timelineHistoryState !== 'undefined' && timelineHistoryState) {
-                if (Array.isArray(timelineHistoryState.expandedGroups)) {
-                    timelineHistoryState.expandedGroups = [];
+                // 只清理版本号，让异步刷新时重新加载数据
+                if (typeof timelineHistoryState.recordsVersion !== 'undefined') {
+                    timelineHistoryState.recordsVersion = 0;
                 }
-                if (typeof timelineHistoryState.collapsedGroups === 'object') {
-                    timelineHistoryState.collapsedGroups = {};
-                }
-                if (typeof timelineHistoryState.records !== 'undefined') {
-                    timelineHistoryState.records = [];
-                }
+                // 注意：保留 expandedGroups 和 collapsedGroups，保持折叠状态
             }
         } catch (e) {}
 
-        // 🔧 新增：清理 timelineContainerState 中可能保留的折叠和滚动状态
+        // 🔧 关键修复：暂停时保留 timelineContainerState 的折叠状态
+        // 只清理滚动位置等不影响高亮显示的状态
         try {
             if (typeof timelineContainerState !== 'undefined' && timelineContainerState) {
-                if (typeof timelineContainerState.expandedGroups !== 'undefined') {
-                    timelineContainerState.expandedGroups = new Set();
-                }
-                if (typeof timelineContainerState.collapsedGroups !== 'undefined') {
-                    timelineContainerState.collapsedGroups = new Set();
-                }
+                // 只重置滚动位置，不清理折叠状态
                 if (typeof timelineContainerState.scrollTop !== 'undefined') {
                     timelineContainerState.scrollTop = 0;
                 }
             }
         } catch (e) {}
 
-        // 🔧 清理时间轴容器中的旧元素，为重新渲染做准备
+        // 🔧 关键修复：暂停时只清理历史记录层，保留活跃层（当前计时器高亮）
+        // 不移除任何元素，只清空历史记录层的内容，活跃层保持不变
         try {
             const timelineContainer = document.getElementById('tomato-timeline-bar');
             if (timelineContainer) {
-                // 🔧 修复：移除所有时间轴段元素（这是实际存在的元素类名）
-                const existingSegments = timelineContainer.querySelectorAll('.timeline-segment');
-                existingSegments.forEach(seg => seg.remove());
-
-                // 移除可能存在的残留日期组元素
-                const staleElements = timelineContainer.querySelectorAll('.tomato-timeline-date-group, .tomato-timeline-record, .tomato-timeline-filler');
-                staleElements.forEach(el => el.remove());
-                
-                // 🔧 新增：清理历史记录层的残留内容
-                const historyLayers = timelineContainer.querySelectorAll('.tomato-timeline-history-layer, .tomato-timeline-active-layer');
+                // 只清理历史记录层，保留活跃层
+                const historyLayers = timelineContainer.querySelectorAll('.tomato-timeline-history-layer');
                 historyLayers.forEach(layer => {
                     if (layer) layer.innerHTML = '';
                 });
                 
-                // 🔧 新增：清理可能影响呼吸动画的残留样式类
+                // 移除可能存在的残留日期组元素（这些不属于活跃层）
+                const staleElements = timelineContainer.querySelectorAll('.tomato-timeline-date-group, .tomato-timeline-record, .tomato-timeline-filler');
+                staleElements.forEach(el => el.remove());
+                
+                // 🔧 清理可能影响呼吸动画的残留样式类
                 const visualEl = timelineContainer.querySelector('#tomato-timeline-visual');
                 if (visualEl) {
                     visualEl.classList.remove('breathing');
                 }
                 
-                // 🔧 新增：清理时间轴视口的滚动位置
+                // 🔧 清理时间轴视口的滚动位置
                 const viewportEl = timelineContainer.querySelector('.timeline-viewport');
                 if (viewportEl) {
                     viewportEl.scrollLeft = 0;
                     viewportEl.scrollTop = 0;
                 }
-                
-                // 🔧 已移除不存在的类名清理（timeline-group-collapsed/timeline-group-expanded/tomato-timeline-group）
-                // 这些类名在当前代码中不存在，清理已由上述代码覆盖
             }
         } catch (e) {}
     }
@@ -8719,6 +8726,14 @@
         })().catch(() => {
             cache.dirty = true;
         }).finally(() => {
+            // 🔧 关键修复：检查缓存是否仍有效（未被 markTimelineHistoryDirty 清除）
+            // 如果缓存已被清除，说明这是旧的刷新操作，应该丢弃结果
+            const cacheKey = String(cache.dateKey || '');
+            if (!timelineHistoryCacheByDateKey.has(cacheKey)) {
+                // 缓存已被清除，跳过更新和渲染
+                cache.refreshing = false;
+                return;
+            }
             cache.refreshing = false;
             try {
                 if (timelineBar && timelineBar.parentNode) updateTimelineBar(true);
@@ -8832,7 +8847,7 @@
                 const borderTopA = 0.22 * glassIntensity;
                 const innerTopA = 0.24 * glassIntensity;
                 seg.style.cssText = `
-                    position: absolute; bottom: 0; height: 100%;
+                    position: absolute; top: 0; height: 100%; box-sizing: border-box;
                     left: ${left}%;
                     width: ${width}%;
                     background-color: ${color};
@@ -8848,7 +8863,7 @@
                 }
             } else {
                 seg.style.cssText = `
-                    position: absolute; bottom: 0; height: 100%;
+                    position: absolute; top: 0; height: 100%; box-sizing: border-box;
                     left: ${left}%;
                     width: ${width}%;
                     background: ${color}; opacity: ${opacity};
@@ -9701,6 +9716,10 @@
                     const totalMs = currentDuration * 60 * 1000;
                     const elapsedMs = totalMs - (remainingSeconds * 1000);
                     startTime = Date.now() - elapsedMs;
+                    // 🔧 关键修复：同时设置 currentStartTimestamp 和 currentStartTimeMs
+                    // 这些值用于 renderTimelineActiveSegments 中的时间计算
+                    currentStartTimeMs = startTime;
+                    currentStartTimestamp = new Date(startTime).toISOString();
                 } else {
                     const isContinuingTomato = (remainingSeconds < currentDuration * 60);
 
@@ -9708,9 +9727,14 @@
                         const totalMs = currentDuration * 60 * 1000;
                         const elapsedMs = totalMs - (remainingSeconds * 1000);
                         startTime = Date.now() - elapsedMs;
+                        // 🔧 关键修复：同时设置 currentStartTimestamp 和 currentStartTimeMs
+                        currentStartTimeMs = startTime;
+                        currentStartTimestamp = new Date(startTime).toISOString();
                     } else {
                         remainingSeconds = currentDuration * 60;
                         startTime = Date.now();
+                        currentStartTimeMs = startTime;
+                        currentStartTimestamp = new Date(startTime).toISOString();
                     }
                 }
             } else if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
@@ -9888,11 +9912,13 @@
         if (controlButton) controlButton.innerHTML = '▶️';
         updateDisplay();
         updateProgressBar(false);  // 暂停时不使用动画，进度条保持当前位置
-        // 🔧 修复：暂停时清除时间轴缓存，防止折叠时显示旧数据
-        // 必须在更新时间轴之前清除缓存，确保新数据不会与旧状态混合
+        // 🔧 修复：暂停时标记时间轴缓存为 dirty（不重置 version，不清空 records）
+        // 这样可以避免暂停时立即重新渲染导致的空白问题
+        // 异步刷新完成后会自动触发 updateTimelineBar
         if (userSettings.timeline?.enabled) {
             try { markTimelineHistoryDirty(); } catch (e) {}
-            try { updateTimelineBar(true); } catch (e) {}
+            // 🔧 不再调用 updateTimelineBar，因为 markTimelineHistoryDirty 不重置 version
+            // 异步刷新完成后会在 finally 回调中自动调用 updateTimelineBar
         }
         
         // 🔧 修复：同步暂停状态到云端
