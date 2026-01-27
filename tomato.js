@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.3.6
+// @version      1.3.8
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -4083,11 +4083,25 @@
         await stopTimer();
         pausedRemainingSeconds = null;
         isRunning = false;
-        timerMode = 'countdown';
-        currentDuration = lastTomatoConfig.duration;
-        remainingSeconds = lastTomatoConfig.duration * 60;
-        elapsedSeconds = 0;
-        stopwatchDisplayOffset = 0;  // 🔧 重置时清除显示偏移
+        const resetMode = (lastTomatoConfig && lastTomatoConfig.mode === 'stopwatch') ? 'stopwatch' : 'countdown';
+        timerMode = resetMode;
+        syncState.mode = resetMode;
+        if (resetMode === 'stopwatch') {
+            elapsedSeconds = 0;
+            stopwatchDisplayOffset = 0;
+            stopwatchStartTimestamp = null;
+            stopwatchStartTimeMs = 0;
+            stopwatchSegmentStartTimestamp = null;
+            stopwatchSegmentStartTimeMs = 0;
+            stopwatchSegmentBaseElapsedSeconds = 0;
+            isFreshTomatoStart = false;
+        } else {
+            currentDuration = lastTomatoConfig.duration;
+            remainingSeconds = lastTomatoConfig.duration * 60;
+            elapsedSeconds = 0;
+            stopwatchDisplayOffset = 0;  // 🔧 重置时清除显示偏移
+            isFreshTomatoStart = true;
+        }
         currentStartTimestamp = null;
         currentStartTimeMs = 0;
         preBreakState = null;
@@ -4184,7 +4198,7 @@
         const closeDialog = () => {
             dialog.remove();
             backdrop.remove();
-            document.removeEventListener('keydown', handleEsc);
+            try { EventManager.removeByContext('toast-dialog'); } catch (e) {}
             if (reminderIntervalId) {
                 clearInterval(reminderIntervalId);
                 reminderIntervalId = null;
@@ -4301,6 +4315,9 @@
                         // 🔧 修复：清除开始时间，让 startTimer 设置新的开始时间
                         stopwatchStartTimestamp = null;
                         stopwatchStartTimeMs = 0;
+                        stopwatchSegmentStartTimestamp = null;
+                        stopwatchSegmentStartTimeMs = 0;
+                        stopwatchSegmentBaseElapsedSeconds = 0;
                         isRunning = false;
                         pausedRemainingSeconds = null;
                         lastTickTime = 0;
@@ -4366,6 +4383,9 @@
                         // 🔧 修复：清除开始时间，让 startTimer 设置新的开始时间
                         stopwatchStartTimestamp = null;
                         stopwatchStartTimeMs = 0;
+                        stopwatchSegmentStartTimestamp = null;
+                        stopwatchSegmentStartTimeMs = 0;
+                        stopwatchSegmentBaseElapsedSeconds = 0;
                         isRunning = false;
                         pausedRemainingSeconds = null;
                         lastTickTime = 0;
@@ -4422,6 +4442,9 @@
                             // 🔧 修复：清除开始时间，让 startTimer 设置新的开始时间
                             stopwatchStartTimestamp = null;
                             stopwatchStartTimeMs = 0;
+                            stopwatchSegmentStartTimestamp = null;
+                            stopwatchSegmentStartTimeMs = 0;
+                            stopwatchSegmentBaseElapsedSeconds = 0;
                             isRunning = false;
                             pausedRemainingSeconds = null;
                             lastTickTime = 0;
@@ -7432,9 +7455,14 @@
         };
 
         let lastTimelineHoverSeg = null;
-        timelineBar.addEventListener('mousemove', (e) => {
-            if (isMobileDevice()) return;
-            const seg = pickTimelineSegmentFromPoint(e.clientX, e.clientY, e.target);
+        let timelineHoverRafId = 0;
+        let timelineHoverPending = null;
+        const flushTimelineHover = () => {
+            timelineHoverRafId = 0;
+            const p = timelineHoverPending;
+            timelineHoverPending = null;
+            if (!p) return;
+            const seg = pickTimelineSegmentFromPoint(p.x, p.y, p.target);
             if (!seg) {
                 lastTimelineHoverSeg = null;
                 if (timelineTooltip && !timelineTooltipHovering) {
@@ -7450,6 +7478,12 @@
             if (timelineTooltipHideTimer) clearTimeout(timelineTooltipHideTimer);
             timelineTooltipHideTimer = null;
             showTimelineTooltipForSegment(seg);
+        };
+        timelineBar.addEventListener('mousemove', (e) => {
+            if (isMobileDevice()) return;
+            timelineHoverPending = { x: e.clientX, y: e.clientY, target: e.target || null };
+            if (timelineHoverRafId) return;
+            timelineHoverRafId = requestAnimationFrame(flushTimelineHover);
         }, { passive: true, capture: true });
 
         timelineBar.addEventListener('click', (e) => {
@@ -7964,13 +7998,16 @@
                 } catch (err) {}
             }, { capture: true }, 'timeline-outside-collapse');
 
-            timelineViewport.addEventListener('click', (e) => {
-                if (dragMoved) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.stopImmediatePropagation();
-                }
-            }, true);
+            if (!timelineViewport.__tomatoClickBound) {
+                timelineViewport.__tomatoClickBound = true;
+                timelineViewport.addEventListener('click', (e) => {
+                    if (dragMoved) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                    }
+                }, true);
+            }
         }
     }
 
@@ -7982,6 +8019,7 @@
         if (timelineTickId != null) return;
         timelineTickId = setInterval(() => {
             if (userSettings.timeline?.enabled) {
+                if (document.hidden) return;
                 updateTimelineBar();
             } else {
                 hideTimelineBar();
@@ -8604,93 +8642,22 @@
     }
 
     function markTimelineHistoryDirty() {
-        // 🔧 修复：只标记缓存为 dirty，不重置 version，不清空 records
-        // 这样可以避免竞态条件：当缓存正在刷新时，不会因为 version 变化而立即重新渲染
-        // 异步刷新完成后会自动触发 updateTimelineBar，届时 version 会增加并触发重新渲染
-        
-        // 🔧 关键修复：只标记今天和昨天需要刷新，前天不需要（暂停时不会查看前天）
         const now = new Date();
         const todayKey = formatDateKey(now);
         const yesterday = new Date(now);
         yesterday.setDate(yesterday.getDate() - 1);
         const yesterdayKey = formatDateKey(yesterday);
         
-        // 只标记缓存为 dirty（不重置 version，不清空 records）
-        // 这样暂停时不会立即重新渲染，异步刷新完成后会自动更新
         for (const [key, cache] of timelineHistoryCacheByDateKey) {
             if (key === todayKey || key === yesterdayKey) {
                 cache.dirty = true;
             }
         }
-        
-        // 🔧 暂停时不调用 updateTimelineBar，让异步刷新完成后自动更新
-        // 这样可以避免暂停时立即重新渲染导致的空白问题
-        
-        // 🔧 关键修复：暂停时保留折叠状态，只标记缓存为 dirty
-        // 避免清理折叠状态导致展开/折叠状态异常，影响高亮显示
-        // 🔧 折叠状态在正常操作时由用户控制，暂停时不应改变
-        try {
-            // 只重置 timelineFoldedGroups 用于缓存清理，不影响实际折叠状态
-            // 这样可以避免残留旧的折叠状态数据
-            if (typeof timelineFoldedGroups !== 'undefined') {
-                timelineFoldedGroups = {};
-            }
-        } catch (e) {}
-        
-        try {
-            if (typeof __timelineFoldedGroupIds !== 'undefined') {
-                __timelineFoldedGroupIds = [];
-            }
-        } catch (e) {}
 
-        // 🔧 修复：只清理 records 缓存版本，不清空数据，保持当前高亮显示
         try {
             if (typeof timelineHistoryState !== 'undefined' && timelineHistoryState) {
-                // 只清理版本号，让异步刷新时重新加载数据
                 if (typeof timelineHistoryState.recordsVersion !== 'undefined') {
                     timelineHistoryState.recordsVersion = 0;
-                }
-                // 注意：保留 expandedGroups 和 collapsedGroups，保持折叠状态
-            }
-        } catch (e) {}
-
-        // 🔧 关键修复：暂停时保留 timelineContainerState 的折叠状态
-        // 只清理滚动位置等不影响高亮显示的状态
-        try {
-            if (typeof timelineContainerState !== 'undefined' && timelineContainerState) {
-                // 只重置滚动位置，不清理折叠状态
-                if (typeof timelineContainerState.scrollTop !== 'undefined') {
-                    timelineContainerState.scrollTop = 0;
-                }
-            }
-        } catch (e) {}
-
-        // 🔧 关键修复：暂停时只清理历史记录层，保留活跃层（当前计时器高亮）
-        // 不移除任何元素，只清空历史记录层的内容，活跃层保持不变
-        try {
-            const timelineContainer = document.getElementById('tomato-timeline-bar');
-            if (timelineContainer) {
-                // 只清理历史记录层，保留活跃层
-                const historyLayers = timelineContainer.querySelectorAll('.tomato-timeline-history-layer');
-                historyLayers.forEach(layer => {
-                    if (layer) layer.innerHTML = '';
-                });
-                
-                // 移除可能存在的残留日期组元素（这些不属于活跃层）
-                const staleElements = timelineContainer.querySelectorAll('.tomato-timeline-date-group, .tomato-timeline-record, .tomato-timeline-filler');
-                staleElements.forEach(el => el.remove());
-                
-                // 🔧 清理可能影响呼吸动画的残留样式类
-                const visualEl = timelineContainer.querySelector('#tomato-timeline-visual');
-                if (visualEl) {
-                    visualEl.classList.remove('breathing');
-                }
-                
-                // 🔧 清理时间轴视口的滚动位置
-                const viewportEl = timelineContainer.querySelector('.timeline-viewport');
-                if (viewportEl) {
-                    viewportEl.scrollLeft = 0;
-                    viewportEl.scrollTop = 0;
                 }
             }
         } catch (e) {}
@@ -9752,6 +9719,9 @@
                     stopwatchStartTimeMs = Date.now() - (elapsedSeconds * 1000);
                     startTime = Date.now() - (elapsedSeconds * 1000);
                 }
+                stopwatchSegmentBaseElapsedSeconds = Number.isFinite(elapsedSeconds) ? elapsedSeconds : 0;
+                stopwatchSegmentStartTimeMs = Date.now();
+                stopwatchSegmentStartTimestamp = new Date(stopwatchSegmentStartTimeMs).toISOString();
             }
 
             isRunning = true;
@@ -9917,8 +9887,7 @@
         // 异步刷新完成后会自动触发 updateTimelineBar
         if (userSettings.timeline?.enabled) {
             try { markTimelineHistoryDirty(); } catch (e) {}
-            // 🔧 不再调用 updateTimelineBar，因为 markTimelineHistoryDirty 不重置 version
-            // 异步刷新完成后会在 finally 回调中自动调用 updateTimelineBar
+            try { updateTimelineBar(true); } catch (e) {}
         }
         
         // 🔧 修复：同步暂停状态到云端
@@ -9998,6 +9967,9 @@
     // 🔧 修复：为正计时添加变量，用于记录正计时的开始时间
     let stopwatchStartTimestamp = null;
     // stopwatchStartTimeMs 已在正计时模式专用状态区域声明
+    let stopwatchSegmentStartTimestamp = null;
+    let stopwatchSegmentStartTimeMs = 0;
+    let stopwatchSegmentBaseElapsedSeconds = 0;
 
     // 🔧 v9.5 新增：番茄钟会话ID，用于追踪同一个番茄钟的多次暂停/恢复
     let currentSessionId = null;
@@ -10013,6 +9985,13 @@
         // 正计时使用 stopwatchStartTimestamp，倒计时使用 currentStartTimestamp
         let startTimestamp = isStopwatch ? stopwatchStartTimestamp : currentStartTimestamp;
         let startTimeMs = isStopwatch ? stopwatchStartTimeMs : currentStartTimeMs;
+        if (isStopwatch) {
+            const hasSegStart = !!stopwatchSegmentStartTimestamp && typeof stopwatchSegmentStartTimeMs === 'number' && stopwatchSegmentStartTimeMs > 0;
+            if (hasSegStart) {
+                startTimestamp = stopwatchSegmentStartTimestamp;
+                startTimeMs = stopwatchSegmentStartTimeMs;
+            }
+        }
 
         // 🔧 v9.0 修复：如果本地时间戳无效，尝试从云端状态恢复
         if ((!startTimestamp || startTimeMs === 0) && syncState && syncState.startTime && syncState.status !== 'IDLE') {
@@ -10062,7 +10041,10 @@
 
         // 🔧 正计时使用 elapsedSeconds（暂停时计算的值）
         if (isStopwatch) {
-            finalElapsedSec = elapsedSeconds || finalElapsedSec;
+            const curElapsed = Number.isFinite(elapsedSeconds) ? elapsedSeconds : null;
+            const baseElapsed = Number.isFinite(stopwatchSegmentBaseElapsedSeconds) ? stopwatchSegmentBaseElapsedSeconds : 0;
+            const segmentElapsed = curElapsed === null ? null : Math.max(0, curElapsed - baseElapsed);
+            finalElapsedSec = (segmentElapsed !== null && segmentElapsed > 0) ? segmentElapsed : (curElapsed || finalElapsedSec);
             finalElapsedMin = Math.floor(finalElapsedSec / 60);
         }
 
@@ -10125,8 +10107,8 @@
                 routineButtonColor: routineButtonHighlightColor
             };
             
-            // 🔧 v9.5：如果设置了隐藏短记录且时长小于1分钟，则不保存
-            if (userSettings.hideShortRecords && durationMinToSave < 1) {
+            // 🔧 如果开启隐藏短记录：以秒为准，避免因分钟四舍五入导致“1分钟短记录”
+            if (userSettings.hideShortRecords && Number(durationSecToSave || 0) < 60) {
                 Logger.info('🔍 recordEndTime: 时长小于1分钟且开启隐藏短记录，跳过保存');
             } else {
                 if (timerMode === 'break' || timerMode === 'stopwatch-break') {
@@ -10199,6 +10181,9 @@
         if (isStopwatch) {
             stopwatchStartTimestamp = null;
             stopwatchStartTimeMs = 0;
+            stopwatchSegmentStartTimestamp = null;
+            stopwatchSegmentStartTimeMs = 0;
+            stopwatchSegmentBaseElapsedSeconds = Number.isFinite(elapsedSeconds) ? elapsedSeconds : 0;
         }
 
         // 注意：不再自动清除任务块关联，保留供后续计时使用
@@ -10381,6 +10366,7 @@
         timerMode = 'stopwatch';
         // 🔧 修复：同步更新 syncState.mode，确保自定义属性更新正确判断模式
         syncState.mode = 'stopwatch';
+        lastTomatoConfig = { ...(lastTomatoConfig || { duration: 30, mode: 'countdown' }), mode: 'stopwatch' };
         elapsedSeconds = 0;
         stopwatchDisplayOffset = 0;  // 🔧 新开始时清除显示偏移
         // 🔧 修复：清除旧的时间戳，确保 startTimer() 设置新值
@@ -10416,6 +10402,7 @@
         timerMode = 'stopwatch';
         // 🔧 修复：同步更新 syncState.mode，确保自定义属性更新正确判断模式
         syncState.mode = 'stopwatch';
+        lastTomatoConfig = { ...(lastTomatoConfig || { duration: 30, mode: 'countdown' }), mode: 'stopwatch' };
         elapsedSeconds = 0;
         stopwatchDisplayOffset = 0;  // 🔧 新开始时清除显示偏移
         isRunning = false;
@@ -14803,11 +14790,16 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (sel >= 0 && sel < routineButtons.length) {
                 const btn = routineButtons[sel];
                 const type = String(btn?.timerType || 'stopwatch');
-                mode = (type === 'pomodoro') ? 'countdown' : 'stopwatch';
+                const useBreak = btn?.useBreakMode === true;
+                if (useBreak) {
+                    mode = (type === 'pomodoro') ? 'break' : 'stopwatch-break';
+                } else {
+                    mode = (type === 'pomodoro') ? 'countdown' : 'stopwatch';
+                }
                 taskBlockId = (typeof btn?.blockId === 'string' && btn.blockId.trim()) ? btn.blockId.trim() : null;
                 taskBlockName = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : null;
                 routineButtonColor = (typeof btn?.color === 'string' && btn.color.trim()) ? btn.color.trim() : null;
-                plannedDuration = (mode === 'countdown') ? Math.max(1, Math.round(durationMin)) : null;
+                plannedDuration = (mode === 'countdown' || mode === 'break') ? Math.max(1, Math.round(durationMin)) : null;
             }
 
             const startD = new Date(startMs);
@@ -15444,10 +15436,24 @@ function calculateWeeklyStats(dailyStatsArray) {
                             const selIdx = Number(value);
                             const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
                             if (!btn) return;
+                            const timerType = String(btn?.timerType || 'stopwatch');
+                            const useBreak = btn?.useBreakMode === true;
+                            const nextMode = useBreak
+                                ? (timerType === 'pomodoro' ? 'break' : 'stopwatch-break')
+                                : (timerType === 'pomodoro' ? 'countdown' : 'stopwatch');
                             records[idx].taskBlockId = (typeof btn?.blockId === 'string' && btn.blockId.trim()) ? btn.blockId.trim() : null;
                             records[idx].taskBlockName = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : null;
                             records[idx].databaseBlockId = null;
                             records[idx].routineButtonColor = (typeof btn?.color === 'string' && btn.color.trim()) ? btn.color.trim() : null;
+                            records[idx].mode = nextMode;
+                            if (nextMode === 'countdown' || nextMode === 'break') {
+                                const base = Number.isFinite(Number(records[idx].plannedDuration)) && Number(records[idx].plannedDuration) > 0
+                                    ? Number(records[idx].plannedDuration)
+                                    : Number(records[idx].durationMin || 0);
+                                records[idx].plannedDuration = Math.max(1, Math.round(base || 1));
+                            } else {
+                                records[idx].plannedDuration = null;
+                            }
                         }
                         const ok = await saveHistoryRecords(records);
                         if (!ok) {
@@ -15464,10 +15470,24 @@ function calculateWeeklyStats(dailyStatsArray) {
                             const selIdx = Number(value);
                             const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
                             if (btn) {
+                                const timerType = String(btn?.timerType || 'stopwatch');
+                                const useBreak = btn?.useBreakMode === true;
+                                const nextMode = useBreak
+                                    ? (timerType === 'pomodoro' ? 'break' : 'stopwatch-break')
+                                    : (timerType === 'pomodoro' ? 'countdown' : 'stopwatch');
                                 record.taskBlockId = (typeof btn?.blockId === 'string' && btn.blockId.trim()) ? btn.blockId.trim() : null;
                                 record.taskBlockName = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : null;
                                 record.databaseBlockId = null;
                                 record.routineButtonColor = (typeof btn?.color === 'string' && btn.color.trim()) ? btn.color.trim() : null;
+                                record.mode = nextMode;
+                                if (nextMode === 'countdown' || nextMode === 'break') {
+                                    const base = Number.isFinite(Number(record.plannedDuration)) && Number(record.plannedDuration) > 0
+                                        ? Number(record.plannedDuration)
+                                        : Number(record.durationMin || 0);
+                                    record.plannedDuration = Math.max(1, Math.round(base || 1));
+                                } else {
+                                    record.plannedDuration = null;
+                                }
                             }
                         }
                         updateMenuHeader();
@@ -24181,5 +24201,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         Logger.info('🍅 番茄钟已清理完成');
     });
 
-    Logger.info('🍅 思源笔记番茄钟 v1.0 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.3.8 已加载');
 })();
