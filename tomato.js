@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.3.3
+// @version      1.3.5
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -4096,13 +4096,8 @@
         if (controlButton) controlButton.innerHTML = '▶️';
         updateDisplay();
         
-        // 🔧 v9.0 修复：同步 countdown 模式到云端，确保状态一致
-        if (isSyncEnabled() && SyncManager.updateLocal) {
-            syncState.mode = 'countdown';
-            syncState.duration = lastTomatoConfig.duration * 60;
-            await SyncManager.updateLocal(syncState, true);
-            Logger.info('🔄 resetToLastTomato: 状态已同步到云端');
-        }
+        // 注意：同步到云端的操作由 stopTimer() 统一处理，这里不再重复调用
+        // 避免在 UI 操作中产生同步写入导致的卡顿
     }
 
     // 简单的提示消息函数
@@ -4157,7 +4152,7 @@
         backdrop.id = 'tomy-tomato-backdrop';
         backdrop.style.cssText = `
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: rgba(0, 0, 0, 0.3); z-index: 2147483647; pointer-events: none;
+            background: rgba(0, 0, 0, 0.3); z-index: 2147483646; pointer-events: none;
         `;
 
         const dialog = document.createElement('div');
@@ -9738,8 +9733,21 @@
             isRunning = true;
             isTimerPaused = false;
             pausedRemainingSeconds = null;
-            // 🔧 修复：恢复运行时清除暂停颜色
+            // 🔧 修复：恢复运行时清除暂停颜色，并重新获取当前按钮颜色
+            // 这确保暂停后恢复时，时间轴能正确使用当前活跃按钮的颜色
             window.__tomatoPausedColor = null;
+            // 清除旧的高亮颜色，让 renderTimelineActiveSegments 重新获取当前按钮颜色
+            routineButtonHighlightColor = null;
+            
+            // 🔧 关键修复：如果当前有活跃的日常事务按钮，恢复运行时立即更新高亮颜色
+            // 这确保恢复瞬间时间轴就能使用正确的按钮颜色，而不是等待 handleTimerTick
+            if (activeRoutineButtonIndex !== null && activeRoutineButtonIndex !== undefined && activeRoutineButtonIndex !== '') {
+                const btnConfig = userSettings?.routineButtons?.[activeRoutineButtonIndex];
+                if (btnConfig?.color) {
+                    routineButtonHighlightColor = btnConfig.color.trim();
+                }
+            }
+            
             Logger.info('🔍 startTimer: 调用 recordStartTime，当前 timerMode =', timerMode, ', currentTaskBlockId =', currentTaskBlockId);
             recordStartTime();
             Logger.info('🔍 startTimer: recordStartTime 完成，currentStartTimestamp =', currentStartTimestamp, ', currentStartTimeMs =', currentStartTimeMs);
@@ -9759,6 +9767,12 @@
                     timelineViewport.scrollLeft = left;
                 }
             } catch (e) {}
+
+            // 🔧 修复：恢复计时时强制更新时间轴，修复暂停期间可能产生的缓存问题
+            // 这确保暂停后恢复时，时间轴能正确显示当天的高亮状态
+            if (userSettings.timeline?.enabled) {
+                try { updateTimelineBar(true); } catch (e) {}
+            }
 
             startLocalTimerLoop();
 
@@ -9847,7 +9861,8 @@
         timerId = null;
         isRunning = false;
         isTimerPaused = true;  // 设置暂停状态，进度条保持可见
-        startTime = 0;
+        // 🔧 修复：暂停时不重置 startTime，保留用于 recordEndTime 的时间戳计算
+        // startTime 只在完全停止（stopTimer）时才重置为 0
         lastTickTime = 0;
 
         // 🔧 修复：暂停时保存当前按钮颜色，确保暂停期间颜色不变
@@ -9913,6 +9928,11 @@
         window.__tomatoPausedColor = null;
         // 停止保持高亮的定时器
         stopHighlightKeepAlive();
+        // 🔧 修复：停止时清除定时提醒
+        if (reminderIntervalId) {
+            clearInterval(reminderIntervalId);
+            reminderIntervalId = null;
+        }
         if (currentStartTimestamp) await recordEndTime();
         // 停止提示音
         stopAllAudio();
@@ -9923,7 +9943,7 @@
         if (floatBar) floatBar.classList.remove('running');
         clearRoutineButtonRunningHighlight(true);
         
-        // 🔧 修复：同步停止状态到云端
+        // 🔧 修复：同步停止状态到云端（fire-and-forget 模式，避免阻塞 UI）
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             syncState.status = 'IDLE';
             syncState.startTime = null;
@@ -9932,17 +9952,20 @@
             syncState.pausedElapsedSeconds = null;
             syncState.distractionCount = 0;
             syncState.distractionSavedCount = 0;
-            Logger.info('🔄 stopTimer: 同步停止状态到云端');
-            await SyncManager.updateLocal(syncState, true);
             
-            // 🔧 修复：停止时强制触发思源同步（优先于节流），确保其他设备能立即看到停止状态
-            if (typeof SyncManager.triggerSiyuanSync === 'function') {
-                try {
-                    await SyncManager.triggerSiyuanSync(true);
-                } catch (e) {
-                    Logger.debug('🔄 stopTimer: 触发思源同步失败（忽略）', e);
+            // 🔧 优化：使用 fire-and-forget 模式，不 await 避免阻塞 UI
+            SyncManager.updateLocal(syncState, true).then(() => {
+                Logger.info('🔄 stopTimer: 状态已异步同步到云端');
+                
+                // 🔧 修复：停止时异步触发思源同步（优先于节流），确保其他设备能立即看到停止状态
+                if (typeof SyncManager.triggerSiyuanSync === 'function') {
+                    SyncManager.triggerSiyuanSync(true).catch(e => {
+                        Logger.debug('🔄 stopTimer: 触发思源同步失败（忽略）', e);
+                    });
                 }
-            }
+            }).catch(e => {
+                Logger.debug('🔄 stopTimer: 同步到云端失败（忽略）', e);
+            });
         }
     }
 
@@ -10177,6 +10200,14 @@
         currentTaskBlockId = taskBlockId || null;
         currentTaskBlockName = taskBlockName || null;
         currentDatabaseBlockId = databaseBlockId || null;
+        
+        // 🔧 修复：清除关联时，同时清除日常按钮的状态，恢复默认图标
+        if (!taskBlockId) {
+            activeRoutineButtonIndex = null;
+            activeRoutineButtonBlockId = null;
+            clearRoutineButtonRunningHighlight(false);
+        }
+        
         updateTaskBlockIcon();
         try { updateTaskBlockTooltip(); } catch (e) {}
 
@@ -11006,6 +11037,8 @@
                 });
                 // 更新任务块图标
                 updateTaskBlockIcon();
+                // 🔧 修复：更新显示以恢复默认图标
+                updateDisplay();
                 // 关闭菜单
                 menu.remove(); 
                 isContextMenuOpen = false;  // 菜单关闭
@@ -18091,7 +18124,20 @@ function calculateWeeklyStats(dailyStatsArray) {
     function updateTaskBlockIcon() {
         const icon = document.getElementById('tomy-task-block-icon');
         if (icon) {
-            icon.style.display = currentTaskBlockId ? 'inline' : 'none';
+            if (currentTaskBlockId) {
+                // 有任务关联时显示图标
+                icon.style.display = 'inline';
+            } else {
+                // 清除关联时隐藏图标并确保从DOM中移除可能的残留
+                icon.style.display = 'none';
+                // 清除可能残留的高亮样式
+                document.querySelectorAll('.tomato-task-highlight').forEach(el => {
+                    el.classList.remove('tomato-task-highlight');
+                });
+                document.querySelectorAll('.tomato-db-row-highlight').forEach(el => {
+                    el.classList.remove('tomato-db-row-highlight');
+                });
+            }
         }
     }
     
