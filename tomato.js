@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.3.2
+// @version      1.3.3
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -1296,6 +1296,11 @@
             currentDuration,
             startTime
         });
+        
+        // 🔧 修复：同步状态变化时，如果是恢复运行状态，清除暂停颜色
+        if (syncState.status === 'RUNNING') {
+            window.__tomatoPausedColor = null;
+        }
     }
     
     // ========== 正计时模式专用状态 ==========
@@ -7084,6 +7089,7 @@
                 pointer-events: auto;
             `;
             const historyLayer = document.createElement('div');
+            historyLayer.className = 'tomato-timeline-history-layer';
             historyLayer.style.cssText = `
                 position: absolute; top: 0; left: 0; width: 100%; height: 100%;
                 pointer-events: auto; z-index: 1;
@@ -7091,6 +7097,7 @@
             segments.appendChild(historyLayer);
 
             const activeLayer = document.createElement('div');
+            activeLayer.className = 'tomato-timeline-active-layer';
             activeLayer.style.cssText = `
                 position: absolute; top: 0; left: 0; width: 100%; height: 100%;
                 pointer-events: none; z-index: 2;
@@ -8569,7 +8576,9 @@
             refreshTimelineHistoryCacheForDateIfNeeded(dateKey);
             const cache = getTimelineHistoryCache(dateKey);
             const hiddenKey = timelineDisplayMap.enabled ? `hidden-${hiddenRange.startMin}-${hiddenRange.endMin}` : 'hidden-off';
-            const coordKey = `full-day-${totalMinutes}-${highlightKey}-${hiddenKey}`;
+            // 🔧 修复：添加时间范围信息到 coordKey，防止缓存错误复用
+            // 当自定义时间范围变化时，必须重新渲染历史记录
+            const coordKey = `full-day-${totalMinutes}-${highlightKey}-${hiddenKey}-r${rangeStartMin ?? 0}-e${rangeEndMin ?? 0}`;
             if (!cache.refreshing && (cache.renderedVersion !== cache.version || cache.renderedCoordKey !== coordKey)) {
                 renderTimelineHistorySegmentsForDate(dateKey, p.historyLayerEl, startMin, totalMinutes);
                 cache.renderedVersion = cache.version;
@@ -8598,21 +8607,53 @@
     }
 
     function markTimelineHistoryDirty() {
-        for (const cache of timelineHistoryCacheByDateKey.values()) {
-            cache.dirty = true;
-        }
-
+        // 🔧 修复：完全清除时间轴缓存，防止残留旧数据
+        // 使用 clear() 方法清空 Map，因为它是 const 声明不能重新赋值
+        timelineHistoryCacheByDateKey.clear();
+        
         // 🔧 清理时间轴折叠状态，确保同步刷新后不会残留旧的折叠状态
+        // 使用更安全的清理方式，避免变量未定义导致的异常
         try {
+            // 重置 timelineFoldedGroups（如果已定义）
             if (typeof timelineFoldedGroups !== 'undefined') {
                 timelineFoldedGroups = {};
             }
         } catch (e) {}
-
-        // 🔧 清理折叠的日期组 ID 列表，防止残留
+        
         try {
+            // 重置 __timelineFoldedGroupIds（如果已定义）
             if (typeof __timelineFoldedGroupIds !== 'undefined') {
                 __timelineFoldedGroupIds = [];
+            }
+        } catch (e) {}
+
+        // 🔧 新增：清理 timelineHistoryState 中可能保留的折叠状态
+        try {
+            if (typeof timelineHistoryState !== 'undefined' && timelineHistoryState) {
+                if (Array.isArray(timelineHistoryState.expandedGroups)) {
+                    timelineHistoryState.expandedGroups = [];
+                }
+                if (typeof timelineHistoryState.collapsedGroups === 'object') {
+                    timelineHistoryState.collapsedGroups = {};
+                }
+                if (typeof timelineHistoryState.records !== 'undefined') {
+                    timelineHistoryState.records = [];
+                }
+            }
+        } catch (e) {}
+
+        // 🔧 新增：清理 timelineContainerState 中可能保留的折叠和滚动状态
+        try {
+            if (typeof timelineContainerState !== 'undefined' && timelineContainerState) {
+                if (typeof timelineContainerState.expandedGroups !== 'undefined') {
+                    timelineContainerState.expandedGroups = new Set();
+                }
+                if (typeof timelineContainerState.collapsedGroups !== 'undefined') {
+                    timelineContainerState.collapsedGroups = new Set();
+                }
+                if (typeof timelineContainerState.scrollTop !== 'undefined') {
+                    timelineContainerState.scrollTop = 0;
+                }
             }
         } catch (e) {}
 
@@ -8620,13 +8661,35 @@
         try {
             const timelineContainer = document.getElementById('tomato-timeline-bar');
             if (timelineContainer) {
-                // 移除所有时间轴组元素，但保留容器结构
-                const existingGroups = timelineContainer.querySelectorAll('.tomato-timeline-group');
-                existingGroups.forEach(group => group.remove());
+                // 🔧 修复：移除所有时间轴段元素（这是实际存在的元素类名）
+                const existingSegments = timelineContainer.querySelectorAll('.timeline-segment');
+                existingSegments.forEach(seg => seg.remove());
 
-                // 移除可能存在的残留元素
+                // 移除可能存在的残留日期组元素
                 const staleElements = timelineContainer.querySelectorAll('.tomato-timeline-date-group, .tomato-timeline-record, .tomato-timeline-filler');
                 staleElements.forEach(el => el.remove());
+                
+                // 🔧 新增：清理历史记录层的残留内容
+                const historyLayers = timelineContainer.querySelectorAll('.tomato-timeline-history-layer, .tomato-timeline-active-layer');
+                historyLayers.forEach(layer => {
+                    if (layer) layer.innerHTML = '';
+                });
+                
+                // 🔧 新增：清理可能影响呼吸动画的残留样式类
+                const visualEl = timelineContainer.querySelector('#tomato-timeline-visual');
+                if (visualEl) {
+                    visualEl.classList.remove('breathing');
+                }
+                
+                // 🔧 新增：清理时间轴视口的滚动位置
+                const viewportEl = timelineContainer.querySelector('.timeline-viewport');
+                if (viewportEl) {
+                    viewportEl.scrollLeft = 0;
+                    viewportEl.scrollTop = 0;
+                }
+                
+                // 🔧 已移除不存在的类名清理（timeline-group-collapsed/timeline-group-expanded/tomato-timeline-group）
+                // 这些类名在当前代码中不存在，清理已由上述代码覆盖
             }
         } catch (e) {}
     }
@@ -8902,7 +8965,12 @@
 
         // 如果有按钮在运行且设置了颜色，使用按钮颜色
         let buttonColor = null;
-        if (allowRoutineHighlight) {
+        
+        // 🔧 修复：如果处于暂停状态，使用暂停时保存的颜色，防止颜色残留
+        const pausedColor = window.__tomatoPausedColor;
+        if (effectivePaused && pausedColor) {
+            buttonColor = pausedColor;
+        } else if (allowRoutineHighlight) {
             const fromVar = typeof routineButtonHighlightColor === 'string' ? routineButtonHighlightColor.trim() : '';
             if (fromVar) buttonColor = fromVar;
 
@@ -9670,6 +9738,8 @@
             isRunning = true;
             isTimerPaused = false;
             pausedRemainingSeconds = null;
+            // 🔧 修复：恢复运行时清除暂停颜色
+            window.__tomatoPausedColor = null;
             Logger.info('🔍 startTimer: 调用 recordStartTime，当前 timerMode =', timerMode, ', currentTaskBlockId =', currentTaskBlockId);
             recordStartTime();
             Logger.info('🔍 startTimer: recordStartTime 完成，currentStartTimestamp =', currentStartTimestamp, ', currentStartTimeMs =', currentStartTimeMs);
@@ -9780,6 +9850,22 @@
         startTime = 0;
         lastTickTime = 0;
 
+        // 🔧 修复：暂停时保存当前按钮颜色，确保暂停期间颜色不变
+        // 获取暂停时的颜色（如果有活跃的日常按钮）
+        let pausedButtonColor = null;
+        if (activeRoutineButtonIndex !== null && activeRoutineButtonIndex !== undefined && activeRoutineButtonIndex !== '') {
+            const btnConfig = userSettings?.routineButtons?.[activeRoutineButtonIndex];
+            if (btnConfig?.color) {
+                pausedButtonColor = btnConfig.color.trim();
+            }
+        }
+        // 如果变量中没有，但 routineButtonHighlightColor 有值，也保存
+        if (!pausedButtonColor && routineButtonHighlightColor) {
+            pausedButtonColor = routineButtonHighlightColor;
+        }
+        // 保存暂停颜色到全局变量
+        window.__tomatoPausedColor = pausedButtonColor;
+
         // 移动端悬浮条移除运行动画
         const floatBar = document.getElementById('siyuan-tomato-float-bar');
         if (floatBar) floatBar.classList.remove('running');
@@ -9787,6 +9873,12 @@
         if (controlButton) controlButton.innerHTML = '▶️';
         updateDisplay();
         updateProgressBar(false);  // 暂停时不使用动画，进度条保持当前位置
+        // 🔧 修复：暂停时清除时间轴缓存，防止折叠时显示旧数据
+        // 必须在更新时间轴之前清除缓存，确保新数据不会与旧状态混合
+        if (userSettings.timeline?.enabled) {
+            try { markTimelineHistoryDirty(); } catch (e) {}
+            try { updateTimelineBar(true); } catch (e) {}
+        }
         
         // 🔧 修复：同步暂停状态到云端
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
@@ -9817,6 +9909,8 @@
         isTimerPaused = false;  // 清除暂停状态
         startTime = 0;
         lastTickTime = 0;
+        // 🔧 修复：停止时清除暂停颜色
+        window.__tomatoPausedColor = null;
         // 停止保持高亮的定时器
         stopHighlightKeepAlive();
         if (currentStartTimestamp) await recordEndTime();
@@ -15341,10 +15435,22 @@ function calculateWeeklyStats(dailyStatsArray) {
                         const ok = await deleteRecord(record);
                         if (ok) {
                             markTimelineHistoryDirty();
-                            const records = await loadHistoryRecords();
-                            rebuildHistoryState(records);
-                            try { updatePageButtons(); } catch (e) {}
-                            showPage(historyState?.currentPage || selectedDate);
+                            // 🔧 修复：保存滚动位置，刷新内容后恢复
+                            const contentArea = document.getElementById('tomy-tomato-history-content');
+                            let scrollTop = 0;
+                            if (contentArea) {
+                                scrollTop = contentArea.scrollTop;
+                            }
+
+                            // 重新加载数据并刷新页面
+                            await refreshHistoryDialogIfOpen();
+
+                            // 恢复滚动位置
+                            if (contentArea) {
+                                requestAnimationFrame(() => {
+                                    contentArea.scrollTop = scrollTop;
+                                });
+                            }
                         }
                     } catch (e) {}
                 };
@@ -16082,13 +16188,21 @@ function calculateWeeklyStats(dailyStatsArray) {
         const timePeriodText = userSettings.groupByTimePeriod ? '' : 
             ` | ${getTimePeriodName(record.timePeriod || getTimePeriod(endDate.getHours()))}`;
         
+        // 格式化时间显示（应用超过60分钟显示"X小时Y分"格式）
         let durationText = '';
-        
-        if (record.durationSec < 60) {
-            durationText = `${record.durationSec}秒`;
-        } else {
-            durationText = `${record.durationMin}分钟`;
-        }
+        const formatDuration = (sec, min) => {
+            if (sec < 60) {
+                return `${sec}秒`;
+            }
+            // 超过60分钟显示"X小时Y分"格式
+            if (sec >= 3600) {
+                const hours = Math.floor(sec / 3600);
+                const mins = Math.floor((sec % 3600) / 60);
+                return `${hours}小时${mins}分`;
+            }
+            return `${min}分钟`;
+        };
+        durationText = formatDuration(record.durationSec, record.durationMin);
         
         const resetText = (record.wasReset && record.mode !== 'stopwatch' && record.mode !== 'stopwatch-break') ? '<span style="color:#FF9800; font-weight:bold">🔄重置</span> ' : '';
         const plannedText = record.mode === 'countdown' && record.plannedDuration && record.plannedDuration !== record.durationMin ?
@@ -16107,20 +16221,31 @@ function calculateWeeklyStats(dailyStatsArray) {
                 ">📋 ${record.taskBlockName}</span>`)
             : '';
         
-        // 合并相同任务时间（默认开启）
+        // 合并相同任务时间（只统计当天）
         let mergedDurationText = '';
         if (record.taskBlockId && record.taskBlockName && allRecords.length > 0) {
+            // 获取当前记录的日期
+            const recordDateKey = record.date || getRecordDateKeyByEnd(record) || formatDateKey(new Date(record.start));
+            const todayKey = formatDateKey(new Date());
+            const isToday = recordDateKey === todayKey;
+            
             // 获取所有相同任务的记录
             const sameTaskRecords = allRecords.filter(r => 
                 r.taskBlockId === record.taskBlockId && 
                 r.taskBlockName === record.taskBlockName
             );
             
-            if (sameTaskRecords.length > 1) {
-                const totalDuration = sameTaskRecords.reduce((sum, r) => sum + (r.durationMin || 0), 0);
-                const totalCount = sameTaskRecords.length;
+            // 只统计当天的记录
+            const todaySameTaskRecords = sameTaskRecords.filter(r => {
+                const rDateKey = r.date || getRecordDateKeyByEnd(r) || formatDateKey(new Date(r.start));
+                return rDateKey === recordDateKey;
+            });
+            
+            if (todaySameTaskRecords.length > 1) {
+                const totalDuration = todaySameTaskRecords.reduce((sum, r) => sum + (r.durationMin || 0), 0);
+                const totalCount = todaySameTaskRecords.length;
                 mergedDurationText = `<div style="font-size: 11px; margin-top: 2px; color: var(--b3-theme-primary);">
-                    📊 合计: ${totalDuration}分钟 (${totalCount}次)
+                    📊 本日合计: ${totalDuration}分钟 (${totalCount}次)
                 </div>`;
             }
         }
@@ -16189,24 +16314,32 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         deleteBtn.onclick = async (e) => {
             e.stopPropagation();
-            
+
             // 禁用按钮防止重复点击
             deleteBtn.disabled = true;
             deleteBtn.style.opacity = '0.5';
-            
+
             try {
                 const success = await deleteRecord(record);
                 if (success) {
-                    // 先移除现有的对话框和遮罩
-                    const existingDialog = document.getElementById('tomy-tomato-history-dialog');
-                    const existingBackdrop = document.getElementById('tomy-tomato-history-backdrop');
-                    if (existingDialog) existingDialog.remove();
-                    if (existingBackdrop) existingBackdrop.remove();
-                    
-                    // 短暂延迟后重新打开，确保DOM已清理
-                    setTimeout(() => {
-                        showHistoryDialog(historyState.currentPage);
-                    }, 50);
+                    markTimelineHistoryDirty();
+                    // 🔧 修复：保存滚动位置，刷新内容后恢复
+                    const contentArea = document.getElementById('tomy-tomato-history-content');
+                    let scrollTop = 0;
+                    if (contentArea) {
+                        scrollTop = contentArea.scrollTop;
+                    }
+                    const currentPage = historyState?.currentPage || selectedDate;
+
+                    // 重新加载数据并刷新页面
+                    await refreshHistoryDialogIfOpen();
+
+                    // 恢复滚动位置
+                    if (contentArea) {
+                        requestAnimationFrame(() => {
+                            contentArea.scrollTop = scrollTop;
+                        });
+                    }
                 }
             } finally {
                 // 恢复按钮状态
@@ -23378,12 +23511,22 @@ function calculateWeeklyStats(dailyStatsArray) {
                                 taskBlockName: currentSyncState.taskBlockName || null,
                                 databaseBlockId: currentSyncState.databaseBlockId || null
                             };
-                            
+
                             try {
                                 const records = await loadHistoryRecords();
-                                records.push(recordData);
-                                await saveHistoryRecords(records);
-                                Logger.info('✅ 历史记录已保存（正常运行到期）');
+                                // 🔧 修复：去重检查 - 防止代码重启时重复保存同一个番茄钟周期
+                                // 只根据开始时间和模式判断，因为同一周期内的重载durationSec会不同
+                                const isDuplicate = records.some(r =>
+                                    r.start === recordData.start &&
+                                    r.mode === recordData.mode
+                                );
+                                if (isDuplicate) {
+                                    Logger.info('🔄 历史记录已存在，跳过重复保存（start:', recordData.start, ', mode:', recordData.mode, '）');
+                                } else {
+                                    records.push(recordData);
+                                    await saveHistoryRecords(records);
+                                    Logger.info('✅ 历史记录已保存（正常运行到期）');
+                                }
                             } catch (e) {
                                 Logger.error('❌ 保存历史记录失败:', e);
                             }
@@ -23810,6 +23953,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         try { reminderIntervalId = null; } catch (e) {}
         try { if (taskBlockHighlightInterval) clearInterval(taskBlockHighlightInterval); } catch (e) {}
         try { taskBlockHighlightInterval = null; } catch (e) {}
+        try { if (timelineTickId) clearInterval(timelineTickId); } catch (e) {}
+        try { timelineTickId = null; } catch (e) {}
         try { isRunning = false; } catch (e) {}
         try { isTimerPaused = false; } catch (e) {}
         try { startTime = 0; } catch (e) {}
