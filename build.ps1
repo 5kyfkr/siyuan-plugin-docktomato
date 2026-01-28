@@ -22,6 +22,7 @@ try {
         '.DS_Store',
         'node_modules',
         'GUIDE_zh_CN.md',
+        'REPRO_SYNC.md',
         'CHANGELOG.md',
         'LICENSE',
         'package.zip',

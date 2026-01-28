@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.3.8
+// @version      1.4.0
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -351,6 +351,7 @@
         status: 'IDLE',  // 'IDLE' | 'RUNNING' | 'PAUSED' | 'COMPLETED'
         startTime: null,  // UTC时间戳，计时开始时间
         stopwatchStartTimeMs: null,  // 正计时开始时间戳（毫秒）
+        stopwatchDisplayOffset: 0,  // 正计时显示偏移（秒）
         pausedElapsedSeconds: null,  // 暂停时的正计时已运行秒数
         pausedIntervals: [],  // [{start: ts, end: ts}, ...]
         currentPauseStart: null,  // 当前暂停开始时间
@@ -362,6 +363,7 @@
         databaseBlockId: null,  // 关联的数据库块ID
         distractionCount: 0,
         distractionSavedCount: 0,
+        endDialog: null,  // {id,type,startAtMs,durationSec,endedAtMs,closed,closedAtMs,closedByDevice}
     };
     
     // ========== 同步管理器 ==========
@@ -587,6 +589,16 @@
             }
             
             if (currentState.currentPauseStart !== newState.currentPauseStart) {
+                return true;
+            }
+
+            if ((currentState.stopwatchDisplayOffset || 0) !== (newState.stopwatchDisplayOffset || 0)) {
+                return true;
+            }
+
+            const currentEndDialogStr = JSON.stringify(currentState.endDialog || null);
+            const newEndDialogStr = JSON.stringify(newState.endDialog || null);
+            if (currentEndDialogStr !== newEndDialogStr) {
                 return true;
             }
             
@@ -1072,9 +1084,11 @@
                 st.mode,
                 String(st.startTime || ''),
                 String(st.stopwatchStartTimeMs || ''),
+                String(st.stopwatchDisplayOffset ?? ''),
                 String(st.duration || ''),
                 String(st.currentPauseStart || ''),
                 String(st.pausedElapsedSeconds ?? ''),
+                JSON.stringify(st.endDialog || null),
                 String(st.sequenceId || 0),
                 String(st.lastModifiedTime || 0),
                 String(st.taskBlockId || ''),
@@ -1255,6 +1269,13 @@
                 currentPauseStart = syncState.currentPauseStart;
             }
         }
+
+        try {
+            const offset = Number(syncState.stopwatchDisplayOffset);
+            if (Number.isFinite(offset) && offset >= 0) {
+                stopwatchDisplayOffset = Math.floor(offset);
+            }
+        } catch (e) {}
         
         // 更新任务关联（开启同步时，避免被更旧的云端状态反向覆盖）
         if (isTaskAssociationSyncEnabled()) {
@@ -2253,12 +2274,90 @@
     let lastTomatoConfig = { duration: 30, mode: 'countdown' };
     let pausedRemainingSeconds = null;
     let reminderIntervalId = null;
+    let activeEndDialog = null;
+    let activeEndDialogClose = null;
     let currentStartTimestamp = null;
     let currentStartTimeMs = 0;
     let isFreshTomatoStart = false;
     let startTime = 0;
     let currentDistractionCount = 0;
     let lastSavedDistractionCount = 0;
+
+    function buildEndDialogId(type, startAtMs, durationSec) {
+        return `${String(type || '')}:${String(startAtMs || 0)}:${String(durationSec || 0)}`;
+    }
+
+    function ensureSyncEndDialogOpen(type, startAtMs, durationSec) {
+        try {
+            const startMs = Number(startAtMs) || 0;
+            const durSec = Number(durationSec) || 0;
+            if (!startMs || !durSec) return null;
+            const id = buildEndDialogId(type, startMs, durSec);
+            const existing = syncState?.endDialog;
+            if (!existing || existing.id !== id) {
+                syncState.endDialog = {
+                    id,
+                    type,
+                    startAtMs: startMs,
+                    durationSec: durSec,
+                    endedAtMs: startMs + durSec * 1000,
+                    closed: false,
+                    closedAtMs: 0,
+                    closedByDevice: '',
+                };
+            } else if (existing && existing.id === id && existing.type !== type) {
+                syncState.endDialog.type = type;
+            }
+            return syncState.endDialog;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function applyEndDialogCloseFromSync(state) {
+        try {
+            const endDialog = state?.endDialog;
+            if (!endDialog || endDialog.closed !== true || !endDialog.id) return false;
+            if (!activeEndDialog || activeEndDialog.id !== endDialog.id) return false;
+            if (typeof activeEndDialogClose === 'function') {
+                activeEndDialogClose();
+            } else {
+                try { removeById('tomy-tomato-toast', 'tomy-tomato-backdrop'); } catch (e) {}
+                try { if (reminderIntervalId) clearInterval(reminderIntervalId); } catch (e) {}
+                reminderIntervalId = null;
+            }
+            activeEndDialog = null;
+            activeEndDialogClose = null;
+            try {
+                syncState = state;
+                updateFromSyncState();
+            } catch (e) {}
+            try { if (timeDisplay) updateDisplay(true); } catch (e) {}
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async function syncAcknowledgeEndDialogClose(dialogId) {
+        try {
+            if (!dialogId) return;
+            if (!isSyncEnabled()) return;
+            if (!SyncManager || typeof SyncManager.updateLocal !== 'function') return;
+            if (!syncState?.endDialog || syncState.endDialog.id !== dialogId) return;
+            if (syncState.endDialog.closed === true) return;
+            syncState.endDialog = {
+                ...syncState.endDialog,
+                closed: true,
+                closedAtMs: Date.now(),
+                closedByDevice: SYNC_DEVICE_ID,
+            };
+            await SyncManager.updateLocal(syncState, true);
+            if (typeof SyncManager.triggerSiyuanSync === 'function') {
+                try { await SyncManager.triggerSiyuanSync(true); } catch (e) {}
+            }
+        } catch (e) {}
+    }
     
     // 🔧 性能优化：存储 MutationObserver 引用，用于页面卸载时清理
     const mutationObservers = [];
@@ -4114,6 +4213,44 @@
         // 避免在 UI 操作中产生同步写入导致的卡顿
     }
 
+    async function resetToBreakDurationAfterEnd() {
+        try {
+            await stopTimer();
+        } catch (e) {}
+        pausedRemainingSeconds = null;
+        isRunning = false;
+        isTimerPaused = false;
+        timerMode = 'break';
+        syncState.mode = 'break';
+        const durationMin = Number(currentDuration);
+        const safeMin = Number.isFinite(durationMin) && durationMin > 0 ? durationMin : Math.max(1, Math.round(Number(syncState?.duration || 300) / 60));
+        currentDuration = safeMin;
+        remainingSeconds = safeMin * 60;
+        elapsedSeconds = 0;
+        stopwatchDisplayOffset = 0;
+        currentStartTimestamp = null;
+        currentStartTimeMs = 0;
+        preBreakState = null;
+        lastTickTime = 0;
+        isFreshTomatoStart = false;
+        if (controlButton) controlButton.innerHTML = '▶️';
+        updateDisplay();
+
+        if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
+            syncState.mode = 'break';
+            syncState.duration = safeMin * 60;
+            syncState.status = 'IDLE';
+            syncState.startTime = null;
+            syncState.stopwatchStartTimeMs = null;
+            syncState.pausedIntervals = [];
+            syncState.currentPauseStart = null;
+            syncState.pausedElapsedSeconds = null;
+            syncState.distractionCount = 0;
+            syncState.distractionSavedCount = 0;
+            await SyncManager.updateLocal(syncState, true);
+        }
+    }
+
     // 简单的提示消息函数
     function showToast(message, duration = 1600) {
         const existing = document.getElementById('tomato-simple-toast');
@@ -4161,6 +4298,9 @@
         // 保存任务块信息供弹窗按钮使用
         const savedTaskBlockId = taskBlockId;
         const savedTaskBlockName = taskBlockName;
+        const endDialogId = (type === 'tomato-end' || type === 'break-end')
+            ? (syncState?.endDialog?.type === type ? syncState.endDialog.id : (syncState?.endDialog?.id || null))
+            : null;
 
         const backdrop = document.createElement('div');
         backdrop.id = 'tomy-tomato-backdrop';
@@ -4203,7 +4343,18 @@
                 clearInterval(reminderIntervalId);
                 reminderIntervalId = null;
             }
+            if (activeEndDialog && endDialogId && activeEndDialog.id === endDialogId) {
+                activeEndDialog = null;
+            }
+            if (activeEndDialogClose === closeDialog) {
+                activeEndDialogClose = null;
+            }
         };
+
+        if (endDialogId) {
+            activeEndDialog = { id: endDialogId, type };
+            activeEndDialogClose = closeDialog;
+        }
 
         if (type === 'tomato-end') {
             // 休息按钮行（只保留休息计时）
@@ -4218,6 +4369,7 @@
                     border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 60px;`;
                 btn.onclick = async () => {
                     if (isRunning) await recordEndTime();
+                    await syncAcknowledgeEndDialogClose(endDialogId);
                     closeDialog();
                     startBreakMode(min);
                 };
@@ -4230,6 +4382,7 @@
                 border-radius: 8px; cursor: pointer; font-size: 13px; min-width: 40px;`;
             stopwatchRestBtn.onclick = async () => {
                 if (isRunning) await recordEndTime();
+                await syncAcknowledgeEndDialogClose(endDialogId);
                 closeDialog();
                 try {
                     await startStopwatchBreakMode();
@@ -4255,6 +4408,7 @@
                         border: 1px solid rgba(0,0,0,0.2); border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 60px;`;
                     btn.onclick = async () => {
                         if (isRunning) await recordEndTime();
+                        await syncAcknowledgeEndDialogClose(endDialogId);
                         closeDialog();
                         // 使用保存的任务块信息
                         if (savedTaskBlockId) {
@@ -4273,6 +4427,7 @@
                     border-radius: 8px; cursor: pointer; font-size: 13px; min-width: 60px;`;
                 stopwatchBtn.onclick = async () => {
                     if (isRunning) await recordEndTime();
+                    await syncAcknowledgeEndDialogClose(endDialogId);
                     closeDialog();
                     // 使用保存的任务块信息
                     if (savedTaskBlockId) {
@@ -4290,6 +4445,7 @@
                         border: 1px solid rgba(0,0,0,0.2); border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 60px;`;
                     btn.onclick = async () => {
                         if (isRunning) await recordEndTime();
+                        await syncAcknowledgeEndDialogClose(endDialogId);
                         closeDialog();
                         if (savedTaskBlockId) {
                             switchToCountdownAndStartWithTask(min, savedTaskBlockId, savedTaskBlockName);
@@ -4306,6 +4462,7 @@
                     border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 80px;`;
                 continueBtn.onclick = async () => {
                     if (isRunning) await recordEndTime();
+                    await syncAcknowledgeEndDialogClose(endDialogId);
                     closeDialog();
                     if (preBreakState && preBreakState.mode === 'stopwatch') {
                         timerMode = 'stopwatch';
@@ -4342,7 +4499,28 @@
         if (type === 'tomato-end' || type === 'break-end') {
             dialog.appendChild(buttonContainer);
             if (!isMobileDevice() && userSettings?.main?.enableSystemDialogRepeatReminder !== false) {
-                reminderIntervalId = setInterval(() => showSystemNotification(title, message), 60 * 1000);
+                let reminderSyncing = false;
+                reminderIntervalId = setInterval(() => {
+                    showSystemNotification(title, message);
+                    if (!isSyncEnabled() || !SyncManager || typeof SyncManager.poll !== 'function') return;
+                    if (reminderSyncing) return;
+                    reminderSyncing = true;
+                    (async () => {
+                        try {
+                            if (typeof SyncManager.triggerSiyuanSync === 'function') {
+                                await SyncManager.triggerSiyuanSync(false);
+                            }
+                        } catch (e) {}
+                        await new Promise(resolve => setTimeout(resolve, 800));
+                        try { await SyncManager.poll(true); } catch (e) {}
+                        try {
+                            const st = typeof SyncManager.getState === 'function' ? SyncManager.getState() : null;
+                            if (st) applyEndDialogCloseFromSync(st);
+                        } catch (e) {}
+                    })().finally(() => {
+                        reminderSyncing = false;
+                    });
+                }, 60 * 1000);
             }
         }
 
@@ -4405,15 +4583,26 @@
                         syncState.distractionCount = 0;
                         syncState.distractionSavedCount = 0;
                         preBreakState = null;
+                        if (endDialogId) {
+                            syncState.endDialog = {
+                                ...(syncState.endDialog || { id: endDialogId, type }),
+                                id: endDialogId,
+                                type,
+                                closed: true,
+                                closedAtMs: Date.now(),
+                                closedByDevice: SYNC_DEVICE_ID,
+                            };
+                        }
                         await SyncManager.updateLocal(syncState, true);
                         Logger.info('🔄 休息完成后状态已同步到云端');
                     }
                 } else {
-                    await resetToLastTomato();
+                    await resetToBreakDurationAfterEnd();
                 }
             } else if (type === 'tomato-end') {
                 await resetToLastTomato();
             }
+            await syncAcknowledgeEndDialogClose(endDialogId);
             closeDialog();
         };
 
@@ -4469,11 +4658,12 @@
                             });
                         }
                     } else {
-                        resetToLastTomato();
+                        resetToBreakDurationAfterEnd();
                     }
                 } else if (type === 'tomato-end') {
                     resetToLastTomato();
                 }
+                syncAcknowledgeEndDialogClose(endDialogId);
                 closeDialog();
             }
         };
@@ -6754,6 +6944,7 @@
         stopwatchStartTimestamp = new Date().toISOString();
         stopwatchPausedIntervals = [];
         elapsedSeconds = 0;
+        stopwatchDisplayOffset = 0;
         
         // 清除暂停状态
         currentPauseStart = null;
@@ -6778,6 +6969,7 @@
             syncState.mode = 'stopwatch';
             syncState.startTime = stopwatchStartTimeMs;
             syncState.stopwatchStartTimeMs = stopwatchStartTimeMs;
+            syncState.stopwatchDisplayOffset = 0;
             syncState.duration = 0;
             syncState.taskBlockId = currentTaskBlockId;
             syncState.taskBlockName = taskName;
@@ -9466,6 +9658,8 @@
                 Logger.info('🍅 timerMode:', timerMode);
                 Logger.info('🍅 workEndAudio:', workEndAudio);
                 Logger.info('🍅 breakEndAudio:', breakEndAudio);
+                const endType = timerMode === 'break' ? 'break-end' : 'tomato-end';
+                ensureSyncEndDialogOpen(endType, syncState?.startTime || startTime, Math.max(1, Math.round(currentDuration * 60)));
                 
                 // 日志移除：避免高频调用消耗 CPU
                 await recordEndTime(false, false, { isCompleted: timerMode === 'countdown' });
@@ -9505,6 +9699,8 @@
     }
 
     async function handleTimerEndFromSyncOrLocal() {
+        const endType = timerMode === 'break' ? 'break-end' : 'tomato-end';
+        ensureSyncEndDialogOpen(endType, syncState?.startTime || startTime, Math.max(1, Math.round(currentDuration * 60)));
         await recordEndTime(false, false, { isCompleted: timerMode === 'countdown' });
         
         // 🔧 v9.5：番茄钟完成后，恢复 sessionId 供休息记录使用
@@ -9798,6 +9994,7 @@
                     syncState.databaseBlockId = null;
                 }
                 syncState.stopwatchStartTimeMs = stopwatchStartTimeMs;
+                syncState.stopwatchDisplayOffset = Math.max(0, Math.floor(Number(stopwatchDisplayOffset) || 0));
                 syncState.pausedIntervals = [];
                 syncState.currentPauseStart = null;
                 syncState.pausedElapsedSeconds = null;
@@ -9896,6 +10093,7 @@
             syncState.currentPauseStart = now;
             if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
                 syncState.pausedElapsedSeconds = elapsedSeconds;
+                syncState.stopwatchDisplayOffset = Math.max(0, Math.floor(Number(stopwatchDisplayOffset) || 0));
             }
             syncState.distractionCount = currentDistractionCount || 0;
             Logger.info('🔄 pauseTimer: 同步暂停状态到云端');
@@ -9942,6 +10140,8 @@
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             syncState.status = 'IDLE';
             syncState.startTime = null;
+            syncState.stopwatchStartTimeMs = null;
+            syncState.stopwatchDisplayOffset = 0;
             syncState.pausedIntervals = [];
             syncState.currentPauseStart = null;
             syncState.pausedElapsedSeconds = null;
@@ -10462,8 +10662,11 @@
             } else {
                 actualRemaining = remainingSeconds;
             }
-            
-            if (actualRemaining > 0) {
+
+            const fullSeconds = Math.max(0, Math.round(currentDuration * 60));
+            const shouldSavePreBreak = actualRemaining > 0
+                && (isRunning || isTimerPaused || (actualRemaining < fullSeconds) || !!currentStartTimestamp);
+            if (shouldSavePreBreak) {
                 preBreakState = {
                     mode: 'countdown',
                     currentDuration: currentDuration,
@@ -10482,12 +10685,17 @@
             }
             
             // 🔧 修复：保存原始开始时间，以便恢复后记录正确的开始时间
-            preBreakState = { 
-                mode: 'stopwatch', 
-                elapsedSeconds: actualElapsed,
-                originalStartTimestamp: stopwatchStartTimestamp,
-                originalStartTimeMs: stopwatchStartTimeMs
-            };
+            const totalElapsed = Math.max(0, Math.floor(Number(actualElapsed) || 0)) + Math.max(0, Math.floor(Number(stopwatchDisplayOffset) || 0));
+            const shouldSavePreBreak = (totalElapsed > 0) && (isRunning || isTimerPaused || !!stopwatchStartTimestamp || (stopwatchDisplayOffset > 0));
+            if (shouldSavePreBreak) {
+                preBreakState = { 
+                    mode: 'stopwatch', 
+                    elapsedSeconds: totalElapsed,
+                    originalStartTimestamp: stopwatchStartTimestamp,
+                    originalStartTimeMs: stopwatchStartTimeMs
+                };
+            }
+            syncState.stopwatchDisplayOffset = totalElapsed;
         }
 
         // 🔧 修复：正计时进入休息时保存当前记录，休息后继续计时会产生新记录
@@ -10558,12 +10766,17 @@
             }
             
             // 🔧 修复：保存原始开始时间，以便恢复后记录正确的开始时间
-            preBreakState = { 
-                mode: 'stopwatch', 
-                elapsedSeconds: actualElapsed,
-                originalStartTimestamp: stopwatchStartTimestamp,
-                originalStartTimeMs: stopwatchStartTimeMs
-            };
+            const totalElapsed = Math.max(0, Math.floor(Number(actualElapsed) || 0)) + Math.max(0, Math.floor(Number(stopwatchDisplayOffset) || 0));
+            const shouldSavePreBreak = (totalElapsed > 0) && (isRunning || isTimerPaused || !!stopwatchStartTimestamp || (stopwatchDisplayOffset > 0));
+            if (shouldSavePreBreak) {
+                preBreakState = { 
+                    mode: 'stopwatch', 
+                    elapsedSeconds: totalElapsed,
+                    originalStartTimestamp: stopwatchStartTimestamp,
+                    originalStartTimeMs: stopwatchStartTimeMs
+                };
+            }
+            syncState.stopwatchDisplayOffset = totalElapsed;
         }
 
         // 🔧 修复：正计时进入休息时保存当前记录，休息后继续计时会产生新记录
@@ -10664,19 +10877,35 @@
                     updateDisplay();
                 }
             } else {
-                timerMode = 'countdown';
-                // 🔧 修复：同步更新 syncState.mode
-                syncState.mode = 'countdown';
-                remainingSeconds = currentDuration * 60;
-                isRunning = false;
-                pausedRemainingSeconds = null;
-                currentStartTimestamp = null;
-                currentStartTimeMs = 0;
-                lastTickTime = 0;
-                isFreshTomatoStart = true;
-                // 🔧 修复：重置时保持高亮
-                if (controlButton) controlButton.innerHTML = '▶️';
-                updateDisplay();
+                if (timerMode === 'break') {
+                    timerMode = 'break';
+                    syncState.mode = 'break';
+                    syncState.duration = Math.max(1, Math.round(currentDuration * 60));
+                    remainingSeconds = currentDuration * 60;
+                    isRunning = false;
+                    isTimerPaused = false;
+                    pausedRemainingSeconds = null;
+                    currentStartTimestamp = null;
+                    currentStartTimeMs = 0;
+                    lastTickTime = 0;
+                    isFreshTomatoStart = false;
+                    if (controlButton) controlButton.innerHTML = '▶️';
+                    updateDisplay();
+                } else {
+                    timerMode = 'stopwatch-break';
+                    syncState.mode = 'stopwatch-break';
+                    elapsedSeconds = 0;
+                    isRunning = false;
+                    isTimerPaused = false;
+                    pausedRemainingSeconds = null;
+                    lastTickTime = 0;
+                    startTime = 0;
+                    stopwatchStartTimestamp = null;
+                    stopwatchStartTimeMs = 0;
+                    isFreshTomatoStart = false;
+                    if (controlButton) controlButton.innerHTML = '▶️';
+                    updateDisplay();
+                }
             }
             
             // 🔧 v9.0 修复：休息模式重置后必须同步状态到云端，否则轮询会覆盖本地状态
@@ -23197,7 +23426,37 @@ function calculateWeeklyStats(dailyStatsArray) {
                     const now = Date.now();
 
                     const MIN_STATE_UPDATE_INTERVAL = 500;
-                    if (handleStateChange._lastTime && now - handleStateChange._lastTime < MIN_STATE_UPDATE_INTERVAL) {
+                    const shouldHandleEndDialogClose = !!(activeEndDialog?.id && newState?.endDialog?.closed === true && newState.endDialog.id === activeEndDialog.id);
+                    if (shouldHandleEndDialogClose) {
+                        try { applyEndDialogCloseFromSync(newState); } catch (e) {}
+                    }
+
+                    const prevSig = buildSyncSignature(syncState);
+                    const nextSig = buildSyncSignature(newState);
+                    const shouldRefreshHistoryFromRemote = !!(nextSig && prevSig !== nextSig && newState?.lastModifiedDevice && newState.lastModifiedDevice !== SYNC_DEVICE_ID);
+                    const maybeRefreshHistoryFromRemote = () => {
+                        try {
+                            if (!shouldRefreshHistoryFromRemote) return;
+                            const lastAt = handleStateChange._lastHistoryRefreshAt || 0;
+                            if (now - lastAt < 1200) return;
+                            handleStateChange._lastHistoryRefreshAt = now;
+                            invalidateHistoryReadCache();
+                            if (userSettings?.timeline?.enabled) {
+                                try { markTimelineHistoryDirty(); } catch (e) {}
+                                try { updateTimelineBar(true); } catch (e) {}
+                            }
+                            refreshHistoryDialogIfOpen();
+                            const lastSyncAt = handleStateChange._lastHistorySiyuanSyncAt || 0;
+                            if (!document.hidden && SyncManager && typeof SyncManager.triggerSiyuanSync === 'function' && now - lastSyncAt > 12000) {
+                                handleStateChange._lastHistorySiyuanSyncAt = now;
+                                (async () => {
+                                    try { await SyncManager.triggerSiyuanSync(false); } catch (e) {}
+                                })();
+                            }
+                        } catch (e) {}
+                    };
+
+                    if (handleStateChange._lastTime && now - handleStateChange._lastTime < MIN_STATE_UPDATE_INTERVAL && !shouldHandleEndDialogClose) {
                         Logger.debug('🔄 handleStateChange: 状态更新过于频繁，跳过');
                         return;
                     }
@@ -23223,6 +23482,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
                     if (isLocalStateInitial && newState.status === 'IDLE') {
                         Logger.info('🔄 SyncManager: 首次初始化且云端为空闲，跳过更新');
+                        try { applyEndDialogCloseFromSync(newState); } catch (e) {}
                         syncState = newState;
                         return;
                     }
@@ -23298,6 +23558,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                         startLocalTimerLoop();
                     }
 
+                    try { maybeRefreshHistoryFromRemote(); } catch (e) {}
+                    try { applyEndDialogCloseFromSync(newState); } catch (e) {}
                     return;
                 }
 
@@ -23350,6 +23612,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         }
                         
                         Logger.info('🔄 SyncManager: 已同步新的开始时间并重启计时器');
+                        try { maybeRefreshHistoryFromRemote(); } catch (e) {}
                         return;
                     }
                     
@@ -23417,6 +23680,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                     if (timeDisplay) updateDisplay(true);
 
                     Logger.info('🔄 SyncManager: 已同步暂停状态');
+                    try { maybeRefreshHistoryFromRemote(); } catch (e) {}
                     return;
                 }
 
@@ -23482,6 +23746,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         hideProgressBar();
                         
                         Logger.info('🔄 SyncManager: 已同步重置状态');
+                        try { maybeRefreshHistoryFromRemote(); } catch (e) {}
                         return;
                     }
                 }
@@ -23522,6 +23787,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         startLocalTimerLoop();
                     }
 
+                    try { maybeRefreshHistoryFromRemote(); } catch (e) {}
                     return;
                 }
 
@@ -23546,6 +23812,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                     clearInterval(timerId);
                     timerId = null;
                 }
+                try { maybeRefreshHistoryFromRemote(); } catch (e) {}
             };
             
             const initResult = await SyncManager.init(syncState, handleStateChange);
@@ -24201,5 +24468,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         Logger.info('🍅 番茄钟已清理完成');
     });
 
-    Logger.info('🍅 思源笔记番茄钟 v1.3.8 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.4.0 已加载');
 })();
