@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.5.1
+// @version      1.5.2
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -19923,7 +19923,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     // ========== 通用菜单显示/隐藏逻辑 ==========
-    function setupSubMenuBehavior(menuItem, subMenu, onItemClick) {
+    function setupSubMenuBehavior(menuItem, subMenu, onItemClick, blockInfo) {
         const isMobile = isMobileDevice();
 
         if (isMobile) {
@@ -19950,7 +19950,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 document.getElementById('tomato-task-submenu')?.remove();
                 document.getElementById('tomato-db-submenu')?.remove();
                 // 显示时间选择对话框
-                showTomatoTimeSelectionDialog(onItemClick);
+                showTomatoTimeSelectionDialog(onItemClick, blockInfo);
             };
         } else {
             // 桌面端：鼠标悬停显示子菜单
@@ -19998,7 +19998,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     // ========== 移动端时间选择对话框 ==========
-    function showTomatoTimeSelectionDialog(onItemClick) {
+    function showTomatoTimeSelectionDialog(onItemClick, blockInfo) {
         removeById('tomato-time-select-dialog', 'tomato-time-select-backdrop');
         ensureTomatoCommonStyles();
 
@@ -20098,6 +20098,41 @@ function calculateWeeklyStats(dailyStatsArray) {
             onItemClick(null, 'stopwatch');
         };
         dialog.appendChild(stopwatchOption);
+
+        if (blockInfo?.id && isRemindersGloballyEnabled()) {
+            const reminderOption = document.createElement('button');
+            reminderOption.style.cssText = `
+                width: 100%;
+                padding: 16px;
+                margin-top: 12px;
+                background: var(--b3-theme-surface);
+                border: 2px solid var(--b3-theme-surface-light);
+                border-radius: 12px;
+                color: var(--b3-theme-on-background);
+                font-size: 15px;
+                cursor: pointer;
+                transition: all 0.2s;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
+            `;
+            reminderOption.innerHTML = `<span style="font-size:20px;">⏰</span><span>添加提醒</span>`;
+            reminderOption.onmouseenter = () => {
+                reminderOption.style.background = 'var(--b3-theme-surface-light)';
+                reminderOption.style.borderColor = 'var(--b3-theme-primary)';
+            };
+            reminderOption.onmouseleave = () => {
+                reminderOption.style.background = 'var(--b3-theme-surface)';
+                reminderOption.style.borderColor = 'var(--b3-theme-surface-light)';
+            };
+            reminderOption.onclick = async () => {
+                closeDialog();
+                const existingReminder = await getBlockReminder(blockInfo.id);
+                showReminderDialog(blockInfo.id, blockInfo?.name || '任务', existingReminder);
+            };
+            dialog.appendChild(reminderOption);
+        }
 
         // 取消按钮
         const cancelBtn = document.createElement('button');
@@ -20311,7 +20346,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                     document.body.appendChild(subMenu);
 
                     // 设置子菜单行为
-                    setupSubMenuBehavior(tomatoMenu, subMenu, taskBlockCallback);
+                    setupSubMenuBehavior(tomatoMenu, subMenu, taskBlockCallback, blockInfo);
 
                     // 主菜单关闭时清理子菜单
                     const originalRemove = window.siyuan.menus.menu.remove.bind(window.siyuan.menus.menu);
@@ -20361,7 +20396,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 document.body.appendChild(subMenu);
 
                 // 设置子菜单行为
-                setupSubMenuBehavior(tomatoMenu, subMenu, taskBlockCallback);
+                setupSubMenuBehavior(tomatoMenu, subMenu, taskBlockCallback, blockInfo);
 
                 // 主菜单关闭时清理子菜单
                 const originalRemove = window.siyuan.menus.menu.remove.bind(window.siyuan.menus.menu);
@@ -20807,7 +20842,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         document.body.appendChild(subMenu);
 
         // 设置子菜单行为（使用通用函数）
-        setupSubMenuBehavior(tomatoMenu, subMenu, dbCallback);
+        setupSubMenuBehavior(tomatoMenu, subMenu, dbCallback, dbBlockInfo);
 
         // 主菜单关闭时清理子菜单
         const originalRemove = window.siyuan.menus.menu.remove.bind(window.siyuan.menus.menu);
@@ -26045,5 +26080,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.5.1 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.5.2 已加载');
 })();
