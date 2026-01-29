@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.5.2
+// @version      1.5.3
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -24913,6 +24913,27 @@ function calculateWeeklyStats(dailyStatsArray) {
         monthly: { label: '每月', value: 'monthly' },
         yearly: { label: '每年', value: 'yearly' },
     };
+    
+    const __getReminderEvery = (reminder) => {
+        try {
+            const raw = reminder?.every ?? reminder?.intervalEvery ?? reminder?.repeatEvery;
+            const n = parseInt(raw, 10);
+            if (!Number.isFinite(n) || n <= 0) return 1;
+            return Math.min(3650, Math.max(1, n));
+        } catch (e) {
+            return 1;
+        }
+    };
+
+    const __getReminderIntervalLabel = (reminder) => {
+        const interval = reminder?.interval || 'daily';
+        const every = __getReminderEvery(reminder);
+        if (interval === 'daily') return every > 1 ? `每${every}天` : '每天';
+        if (interval === 'weekly') return every > 1 ? `每${every}周` : '每周';
+        if (interval === 'monthly') return every > 1 ? `每${every}月` : '每月';
+        if (interval === 'yearly') return every > 1 ? `每${every}年` : '每年';
+        return REMINDER_INTERVAL_TYPES[interval]?.label || interval;
+    };
 
     const isRemindersGloballyEnabled = () => {
         try {
@@ -25007,6 +25028,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const intervalGrid = document.createElement('div');
         intervalGrid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:8px;';
         let selectedInterval = existingReminder?.interval || 'once';
+        let intervalEvery = __getReminderEvery(existingReminder);
         
         Object.values(REMINDER_INTERVAL_TYPES).forEach(type => {
             const btn = document.createElement('button');
@@ -25023,17 +25045,49 @@ function calculateWeeklyStats(dailyStatsArray) {
                     child.style.color = sel ? 'var(--b3-theme-primary)' : 'var(--b3-theme-on-surface)';
                     child.style.fontWeight = sel ? '600' : '400';
                 });
+                try { syncEveryVisibility(); } catch (e) {}
                 try { updateNextInfo(); } catch (e) {}
             };
             intervalGrid.appendChild(btn);
         });
         intervalSection.appendChild(intervalGrid);
+
+        const everySection = document.createElement('div');
+        everySection.style.cssText = 'margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;';
+        const everyLabel = document.createElement('div');
+        everyLabel.textContent = '每隔';
+        everyLabel.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);';
+        const everyInput = document.createElement('input');
+        everyInput.type = 'number';
+        everyInput.min = '1';
+        everyInput.max = '3650';
+        everyInput.value = String(intervalEvery || 1);
+        everyInput.style.cssText = 'width:86px;padding:8px 10px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:13px;box-sizing:border-box;';
+        const everyUnit = document.createElement('div');
+        everyUnit.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);';
+        const syncEveryVisibility = () => {
+            const show = selectedInterval !== 'once';
+            everySection.style.display = show ? 'flex' : 'none';
+            if (!show) return;
+            const unit = selectedInterval === 'daily' ? '天' : selectedInterval === 'weekly' ? '周' : selectedInterval === 'monthly' ? '月' : selectedInterval === 'yearly' ? '年' : '';
+            everyUnit.textContent = unit || '';
+        };
+        everyInput.oninput = () => {
+            const n = parseInt(everyInput.value, 10);
+            intervalEvery = Number.isFinite(n) && n > 0 ? Math.min(3650, Math.max(1, n)) : 1;
+            try { updateNextInfo(); } catch (e) {}
+        };
+        everySection.appendChild(everyLabel);
+        everySection.appendChild(everyInput);
+        everySection.appendChild(everyUnit);
+        intervalSection.appendChild(everySection);
         content.appendChild(intervalSection);
+        syncEveryVisibility();
 
         const dateSection = document.createElement('div');
         dateSection.style.cssText = 'margin-bottom:20px;';
         const dateLabel = document.createElement('div');
-        dateLabel.textContent = '日期（仅一次/每周/每月参考）';
+        dateLabel.textContent = '日期（仅一次/每周/每月/每年参考）';
         dateLabel.style.cssText = 'font-size:14px;font-weight:500;margin-bottom:8px;';
         dateSection.appendChild(dateLabel);
         const dateInput = document.createElement('input');
@@ -25042,7 +25096,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         dateInput.style.cssText = 'width:100%;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
         dateSection.appendChild(dateInput);
         const dateHint = document.createElement('div');
-        dateHint.textContent = '“仅一次”：在该日期提醒；“每周/每月”：以该日期的周几/日号为基准';
+        dateHint.textContent = '“仅一次”：在该日期提醒；“每周”：以该日期的周几为基准；“每月/每年”：以该日期的日号/年月日为基准';
         dateHint.style.cssText = 'margin-top:6px;font-size:11px;color:var(--b3-theme-on-surface-light);line-height:1.4;';
         dateSection.appendChild(dateHint);
         content.appendChild(dateSection);
@@ -25070,6 +25124,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const reminderPreview = {
                     blockId: blockId,
                     interval: selectedInterval,
+                    every: selectedInterval === 'once' ? 1 : intervalEvery,
                     times: normalizedTimes,
                     startDate: String(dateInput.value || '').trim(),
                     createdAt: existingReminder?.createdAt || new Date().toISOString(),
@@ -25157,6 +25212,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 blockId,
                 blockName: customName || blockName,
                 interval: selectedInterval,
+                every: selectedInterval === 'once' ? 1 : intervalEvery,
                 times: normalizedTimes,
                 startDate,
                 note: noteInput.value.trim(),
@@ -25225,6 +25281,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const nowMinutes = from.getHours() * 60 + from.getMinutes();
         const startKey = __getStartDateKey(reminder);
         const interval = reminder.interval || 'daily';
+        const every = interval === 'once' ? 1 : __getReminderEvery(reminder);
 
         const pickOnDate = (dateKey, requireFutureTime) => {
             const base = new Date(dateKey + 'T00:00:00');
@@ -25250,56 +25307,89 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
 
         if (interval === 'daily') {
-            const today = pickOnDate(nowKey, true);
-            if (today) return today;
-            const tomorrow = new Date(from);
-            tomorrow.setDate(tomorrow.getDate() + 1);
-            return pickEarliest(formatDateKey(tomorrow));
+            const anchor = new Date(startKey + 'T00:00:00');
+            if (isNaN(anchor.getTime())) return null;
+            const fromDay = new Date(from);
+            fromDay.setHours(0, 0, 0, 0);
+            const dayMs = 86400000;
+            let diffDays = Math.floor((fromDay.getTime() - anchor.getTime()) / dayMs);
+            if (!Number.isFinite(diffDays)) diffDays = 0;
+            if (diffDays < 0) diffDays = 0;
+            let offset = diffDays % every;
+            if (offset < 0) offset += every;
+            let candidateDay = new Date(fromDay);
+            if (offset !== 0) candidateDay.setDate(candidateDay.getDate() + (every - offset));
+            const candidateKey = formatDateKey(candidateDay);
+            if (candidateKey === nowKey) {
+                const at = pickOnDate(nowKey, true);
+                if (at) return at;
+                candidateDay.setDate(candidateDay.getDate() + every);
+                return pickEarliest(formatDateKey(candidateDay));
+            }
+            return pickEarliest(candidateKey);
         }
 
         if (interval === 'weekly') {
             const anchor = new Date(startKey + 'T00:00:00');
             if (isNaN(anchor.getTime())) return null;
             const targetDow = anchor.getDay();
-            for (let i = 0; i < 14; i++) {
-                const d = new Date(from);
-                d.setHours(0, 0, 0, 0);
-                d.setDate(d.getDate() + i);
-                if (d.getDay() !== targetDow) continue;
-                const dk = formatDateKey(d);
-                if (dk === nowKey) {
-                    const at = pickOnDate(dk, true);
-                    if (at) return at;
-                    continue;
-                }
-                return pickEarliest(dk);
+            const fromDay = new Date(from);
+            fromDay.setHours(0, 0, 0, 0);
+            const dayMs = 86400000;
+            const dowOffset = (targetDow - fromDay.getDay() + 7) % 7;
+            let candidate = new Date(fromDay);
+            candidate.setDate(candidate.getDate() + dowOffset);
+            if (candidate.getTime() < anchor.getTime()) candidate = new Date(anchor);
+            let diffWeeks = Math.floor((candidate.getTime() - anchor.getTime()) / (dayMs * 7));
+            if (!Number.isFinite(diffWeeks)) diffWeeks = 0;
+            if (diffWeeks < 0) diffWeeks = 0;
+            let offsetWeeks = diffWeeks % every;
+            if (offsetWeeks < 0) offsetWeeks += every;
+            if (offsetWeeks !== 0) candidate.setDate(candidate.getDate() + (every - offsetWeeks) * 7);
+            const dk = formatDateKey(candidate);
+            if (dk === nowKey) {
+                const at = pickOnDate(dk, true);
+                if (at) return at;
+                candidate.setDate(candidate.getDate() + every * 7);
+                return pickEarliest(formatDateKey(candidate));
             }
-            return null;
+            return pickEarliest(dk);
         }
 
         if (interval === 'monthly') {
             const anchor = new Date(startKey + 'T00:00:00');
             if (isNaN(anchor.getTime())) return null;
             const targetDay = anchor.getDate();
-            for (let i = 0; i < 24; i++) {
-                const d = new Date(from);
-                d.setHours(0, 0, 0, 0);
-                d.setMonth(d.getMonth() + i, 1);
+            const anchorY = anchor.getFullYear();
+            const anchorM = anchor.getMonth();
+            const fromY = from.getFullYear();
+            const fromM = from.getMonth();
+            let monthsFromAnchor = (fromY - anchorY) * 12 + (fromM - anchorM);
+            if (!Number.isFinite(monthsFromAnchor)) monthsFromAnchor = 0;
+            if (monthsFromAnchor < 0) monthsFromAnchor = 0;
+            const mod = monthsFromAnchor % every;
+            if (mod !== 0) monthsFromAnchor += (every - mod);
+            const buildCandidate = (mOffset) => {
+                const d = new Date(anchorY, anchorM + mOffset, 1, 0, 0, 0, 0);
                 const y = d.getFullYear();
                 const m = d.getMonth();
                 const lastDay = new Date(y, m + 1, 0).getDate();
-                const day = Math.min(targetDay, lastDay);
-                d.setDate(day);
-                const dk = formatDateKey(d);
-                if (dk < nowKey) continue;
-                if (dk === nowKey) {
-                    const at = pickOnDate(dk, true);
-                    if (at) return at;
-                    continue;
-                }
-                return pickEarliest(dk);
+                d.setDate(Math.min(targetDay, lastDay));
+                return d;
+            };
+            let candidate = buildCandidate(monthsFromAnchor);
+            let dk = formatDateKey(candidate);
+            if (dk < nowKey) {
+                candidate = buildCandidate(monthsFromAnchor + every);
+                dk = formatDateKey(candidate);
             }
-            return null;
+            if (dk === nowKey) {
+                const at = pickOnDate(dk, true);
+                if (at) return at;
+                candidate = buildCandidate(monthsFromAnchor + every);
+                return pickEarliest(formatDateKey(candidate));
+            }
+            return pickEarliest(dk);
         }
 
         if (interval === 'yearly') {
@@ -25307,21 +25397,31 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (isNaN(anchor.getTime())) return null;
             const targetMonth = anchor.getMonth();
             const targetDay = anchor.getDate();
-            for (let i = 0; i < 10; i++) {
-                const y = from.getFullYear() + i;
+            const anchorY = anchor.getFullYear();
+            const fromY = from.getFullYear();
+            let yearsFromAnchor = fromY - anchorY;
+            if (!Number.isFinite(yearsFromAnchor)) yearsFromAnchor = 0;
+            if (yearsFromAnchor < 0) yearsFromAnchor = 0;
+            const mod = yearsFromAnchor % every;
+            if (mod !== 0) yearsFromAnchor += (every - mod);
+            const buildCandidate = (yOffset) => {
+                const y = anchorY + yOffset;
                 const lastDay = new Date(y, targetMonth + 1, 0).getDate();
-                const day = Math.min(targetDay, lastDay);
-                const d = new Date(y, targetMonth, day, 0, 0, 0, 0);
-                const dk = formatDateKey(d);
-                if (dk < nowKey) continue;
-                if (dk === nowKey) {
-                    const at = pickOnDate(dk, true);
-                    if (at) return at;
-                    continue;
-                }
-                return pickEarliest(dk);
+                return new Date(y, targetMonth, Math.min(targetDay, lastDay), 0, 0, 0, 0);
+            };
+            let candidate = buildCandidate(yearsFromAnchor);
+            let dk = formatDateKey(candidate);
+            if (dk < nowKey) {
+                candidate = buildCandidate(yearsFromAnchor + every);
+                dk = formatDateKey(candidate);
             }
-            return null;
+            if (dk === nowKey) {
+                const at = pickOnDate(dk, true);
+                if (at) return at;
+                candidate = buildCandidate(yearsFromAnchor + every);
+                return pickEarliest(formatDateKey(candidate));
+            }
+            return pickEarliest(dk);
         }
 
         return null;
@@ -25381,14 +25481,48 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
     
     function checkShouldRemindToday(reminder, currentDate) {
-        const today = new Date(currentDate);
-        const created = new Date(__getStartDateKey(reminder));
+        const today = new Date(currentDate + 'T00:00:00');
+        const created = new Date(__getStartDateKey(reminder) + 'T00:00:00');
+        const every = reminder.interval === 'once' ? 1 : __getReminderEvery(reminder);
+        const dayMs = 86400000;
         switch (reminder.interval) {
             case 'once': return formatDateKey(created) === currentDate;
-            case 'daily': return true;
-            case 'weekly': return today.getDay() === created.getDay();
-            case 'monthly': return today.getDate() === created.getDate();
-            case 'yearly': return today.getMonth() === created.getMonth() && today.getDate() === created.getDate();
+            case 'daily': {
+                const t = new Date(today); t.setHours(0, 0, 0, 0);
+                const c = new Date(created); c.setHours(0, 0, 0, 0);
+                const diffDays = Math.floor((t.getTime() - c.getTime()) / dayMs);
+                return diffDays >= 0 && (diffDays % every === 0);
+            }
+            case 'weekly': {
+                if (today.getDay() !== created.getDay()) return false;
+                const t = new Date(today); t.setHours(0, 0, 0, 0);
+                const c = new Date(created); c.setHours(0, 0, 0, 0);
+                const diffWeeks = Math.floor((t.getTime() - c.getTime()) / (dayMs * 7));
+                return diffWeeks >= 0 && (diffWeeks % every === 0);
+            }
+            case 'monthly': {
+                const ty = today.getFullYear();
+                const tm = today.getMonth();
+                const cy = created.getFullYear();
+                const cm = created.getMonth();
+                const diffMonths = (ty - cy) * 12 + (tm - cm);
+                if (diffMonths < 0) return false;
+                if (diffMonths % every !== 0) return false;
+                const lastDay = new Date(ty, tm + 1, 0).getDate();
+                const day = Math.min(created.getDate(), lastDay);
+                return today.getDate() === day;
+            }
+            case 'yearly': {
+                const ty = today.getFullYear();
+                const cy = created.getFullYear();
+                const diffYears = ty - cy;
+                if (diffYears < 0) return false;
+                if (diffYears % every !== 0) return false;
+                if (today.getMonth() !== created.getMonth()) return false;
+                const lastDay = new Date(ty, created.getMonth() + 1, 0).getDate();
+                const day = Math.min(created.getDate(), lastDay);
+                return today.getDate() === day;
+            }
             default: return true;
         }
     }
@@ -25959,7 +26093,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             name.style.cssText = 'font-weight:500;font-size:13px;margin-bottom:6px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.35;max-height:calc(1.35em * 2);';
             item.appendChild(name);
             const info = document.createElement('div');
-            const ivl = REMINDER_INTERVAL_TYPES[reminder.interval]?.label || reminder.interval;
+            const ivl = __getReminderIntervalLabel(reminder);
             info.textContent = ivl + ' ' + (reminder.times?.join(', ') || '');
             info.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);';
             item.appendChild(info);
@@ -26080,5 +26214,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.5.2 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.5.3 已加载');
 })();
