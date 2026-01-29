@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.5.3
+// @version      1.5.5
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -4522,7 +4522,7 @@
         }, duration);
     }
 
-    function showToastDialog(title, message, type = 'info', taskBlockId = null, taskBlockName = null) {
+    function showToastDialog(title, message, type = 'info', taskBlockId = null, taskBlockName = null, reminderDateKey = null, reminderTimeKey = null) {
         if (type === 'tomato-end' || type === 'break-end') {
             showSystemNotification(title, message, { icon: '/favicon.ico', requireInteraction: true, tag: 'docktomato-' + type });
         }
@@ -4595,7 +4595,27 @@
             activeEndDialogClose = closeDialog;
         }
 
-        if (type === 'tomato-end') {
+        if (type === 'reminder') {
+            const doneBtn = document.createElement('button');
+            doneBtn.textContent = '✅ 完成提醒';
+            doneBtn.style.cssText = `padding: 8px 12px; background: var(--b3-theme-primary); color: white;
+                border: 1px solid rgba(0,0,0,0.2); border-radius: 8px; cursor: pointer; font-size: 13px; min-width: 90px;`;
+            doneBtn.onclick = async () => {
+                const blockId = savedTaskBlockId;
+                const dateKey = String(reminderDateKey || '').trim();
+                const timeKey = String(reminderTimeKey || '').trim();
+                if (!blockId || !dateKey || !timeKey) {
+                    showMiniToast('无法标记完成');
+                    closeDialog();
+                    return;
+                }
+                const ok = await __markReminderOccurrenceCompleted(blockId, dateKey, timeKey);
+                showMiniToast(ok ? '已标记完成' : '标记失败');
+                closeDialog();
+            };
+            buttonContainer.appendChild(doneBtn);
+            dialog.appendChild(buttonContainer);
+        } else if (type === 'tomato-end') {
             // 休息按钮行（只保留休息计时）
             const breakRow = document.createElement('div');
             breakRow.style.cssText = `
@@ -4762,7 +4782,7 @@
         }
 
         const okBtn = document.createElement('button');
-        okBtn.textContent = type === 'info' ? '确定' : '我知道了';
+        okBtn.textContent = type === 'reminder' ? '关闭' : (type === 'info' ? '确定' : '我知道了');
         okBtn.style.cssText = `
             padding: 8px 16px; background: var(--b3-theme-surface-light); color: var(--b3-theme-on-background);
             border: 1px solid var(--b3-theme-on-surface-light); border-radius: 8px; cursor: pointer; font-size: 14px;
@@ -24914,6 +24934,39 @@ function calculateWeeklyStats(dailyStatsArray) {
         yearly: { label: '每年', value: 'yearly' },
     };
     
+    const __reminderOccurrenceKey = (dateKey, timeKey) => `${String(dateKey || '').trim()} ${String(timeKey || '').trim()}`.trim();
+
+    const __getReminderCompletedSet = (reminder) => {
+        const set = new Set();
+        try {
+            const arr = reminder?.completedOccurrences || reminder?.completed || reminder?.done || [];
+            if (Array.isArray(arr)) {
+                for (const it of arr) {
+                    if (!it) continue;
+                    if (typeof it === 'string') {
+                        const k = it.trim();
+                        if (k) set.add(k);
+                        continue;
+                    }
+                    const k = __reminderOccurrenceKey(it.date || it.dateKey || it.day, it.time || it.timeKey);
+                    if (k) set.add(k);
+                }
+            }
+        } catch (e) {}
+        return set;
+    };
+
+    const __isReminderOccurrenceCompleted = (reminder, dateKey, timeKey) => {
+        try {
+            const key = __reminderOccurrenceKey(dateKey, timeKey);
+            if (!key) return false;
+            const set = __getReminderCompletedSet(reminder);
+            return set.has(key);
+        } catch (e) {
+            return false;
+        }
+    };
+
     const __getReminderEvery = (reminder) => {
         try {
             const raw = reminder?.every ?? reminder?.intervalEvery ?? reminder?.repeatEvery;
@@ -24934,6 +24987,106 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (interval === 'yearly') return every > 1 ? `每${every}年` : '每年';
         return REMINDER_INTERVAL_TYPES[interval]?.label || interval;
     };
+    
+    let __reminderCompletedPruneRunning = false;
+    const __pruneCompletedOccurrencesGlobal = async (limit = 30) => {
+        if (__reminderCompletedPruneRunning) return;
+        __reminderCompletedPruneRunning = true;
+        try {
+            const reminders = await queryAllReminderBlocks();
+            const entries = [];
+            for (const r of (reminders || [])) {
+                const blockId = String(r?.blockId || '').trim();
+                if (!blockId) continue;
+                const arr = Array.isArray(r?.completedOccurrences) ? r.completedOccurrences : [];
+                for (const it of arr) {
+                    if (!it) continue;
+                    const dateKey = String(it.date || '').trim();
+                    const timeKey = String(it.time || '').trim();
+                    const key = __reminderOccurrenceKey(dateKey, timeKey);
+                    if (!key) continue;
+                    const doneAtMs = Date.parse(it.doneAt || '') || 0;
+                    entries.push({ blockId, key, doneAtMs });
+                }
+            }
+            entries.sort((a, b) => (b.doneAtMs || 0) - (a.doneAtMs || 0));
+            const keep = entries.slice(0, Math.max(0, parseInt(limit, 10) || 0));
+            const keepMap = new Map();
+            for (const e of keep) {
+                if (!keepMap.has(e.blockId)) keepMap.set(e.blockId, new Set());
+                keepMap.get(e.blockId).add(e.key);
+            }
+            const touched = new Set(entries.map(e => e.blockId));
+            for (const blockId of touched) {
+                const existing = await getBlockReminder(blockId);
+                if (!existing) continue;
+                const arr = Array.isArray(existing.completedOccurrences) ? existing.completedOccurrences : [];
+                if (arr.length === 0) continue;
+                const keepSet = keepMap.get(blockId) || new Set();
+                const nextArr = arr.filter(it => {
+                    const dateKey = String(it?.date || '').trim();
+                    const timeKey = String(it?.time || '').trim();
+                    const key = __reminderOccurrenceKey(dateKey, timeKey);
+                    return key && keepSet.has(key);
+                });
+                if (nextArr.length === arr.length) continue;
+                const next = { ...existing, completedOccurrences: nextArr, updatedAt: new Date().toISOString() };
+                await saveBlockReminder(blockId, next);
+            }
+        } catch (e) {
+        } finally {
+            __reminderCompletedPruneRunning = false;
+        }
+    };
+
+    const __markReminderOccurrenceCompleted = async (blockId, dateKey, timeKey) => {
+        const k = __reminderOccurrenceKey(dateKey, timeKey);
+        if (!blockId || !k) return false;
+        try {
+            const existing = await getBlockReminder(blockId);
+            if (!existing) return false;
+            const next = { ...existing };
+            const arr = Array.isArray(next.completedOccurrences) ? next.completedOccurrences.slice() : [];
+            const set = __getReminderCompletedSet(next);
+            if (!set.has(k)) {
+                arr.unshift({ date: String(dateKey || '').trim(), time: String(timeKey || '').trim(), doneAt: new Date().toISOString() });
+            }
+            next.completedOccurrences = arr.slice(0, 30);
+            next.updatedAt = new Date().toISOString();
+            const ok = await saveBlockReminder(blockId, next);
+            if (ok) {
+                try { __pruneCompletedOccurrencesGlobal(30); } catch (e) {}
+                try { refreshReminderDockPanel(); } catch (e) {}
+            }
+            return ok;
+        } catch (e) {
+            try { Logger.warn('标记提醒已完成失败:', e?.message || e); } catch (e2) {}
+            return false;
+        }
+    };
+
+    const __unmarkReminderOccurrenceCompleted = async (blockId, dateKey, timeKey) => {
+        const k = __reminderOccurrenceKey(dateKey, timeKey);
+        if (!blockId || !k) return false;
+        try {
+            const existing = await getBlockReminder(blockId);
+            if (!existing) return false;
+            const arr = Array.isArray(existing.completedOccurrences) ? existing.completedOccurrences : [];
+            if (arr.length === 0) return true;
+            const nextArr = arr.filter(it => __reminderOccurrenceKey(it?.date, it?.time) !== k);
+            if (nextArr.length === arr.length) return true;
+            const next = { ...existing, completedOccurrences: nextArr, updatedAt: new Date().toISOString() };
+            const ok = await saveBlockReminder(blockId, next);
+            if (ok) {
+                try { refreshReminderDockPanel(); } catch (e) {}
+            }
+            return ok;
+        } catch (e) {
+            try { Logger.warn('撤销提醒完成状态失败:', e?.message || e); } catch (e2) {}
+            return false;
+        }
+    };
+
 
     const isRemindersGloballyEnabled = () => {
         try {
@@ -25289,6 +25442,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             for (const t of times) {
                 const p = __parseTime(t);
                 if (!p) continue;
+                if (__isReminderOccurrenceCompleted(reminder, dateKey, p.key)) continue;
                 const minutes = p.hh * 60 + p.mm;
                 if (requireFutureTime && minutes < nowMinutes) continue;
                 const dt = new Date(base);
@@ -25319,14 +25473,18 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (offset < 0) offset += every;
             let candidateDay = new Date(fromDay);
             if (offset !== 0) candidateDay.setDate(candidateDay.getDate() + (every - offset));
-            const candidateKey = formatDateKey(candidateDay);
-            if (candidateKey === nowKey) {
-                const at = pickOnDate(nowKey, true);
-                if (at) return at;
+            for (let i = 0; i < 366; i++) {
+                const candidateKey = formatDateKey(candidateDay);
+                if (candidateKey === nowKey) {
+                    const at = pickOnDate(nowKey, true);
+                    if (at) return at;
+                } else {
+                    const at = pickEarliest(candidateKey);
+                    if (at) return at;
+                }
                 candidateDay.setDate(candidateDay.getDate() + every);
-                return pickEarliest(formatDateKey(candidateDay));
             }
-            return pickEarliest(candidateKey);
+            return null;
         }
 
         if (interval === 'weekly') {
@@ -25346,14 +25504,18 @@ function calculateWeeklyStats(dailyStatsArray) {
             let offsetWeeks = diffWeeks % every;
             if (offsetWeeks < 0) offsetWeeks += every;
             if (offsetWeeks !== 0) candidate.setDate(candidate.getDate() + (every - offsetWeeks) * 7);
-            const dk = formatDateKey(candidate);
-            if (dk === nowKey) {
-                const at = pickOnDate(dk, true);
-                if (at) return at;
+            for (let i = 0; i < 104; i++) {
+                const dk = formatDateKey(candidate);
+                if (dk === nowKey) {
+                    const at = pickOnDate(dk, true);
+                    if (at) return at;
+                } else {
+                    const at = pickEarliest(dk);
+                    if (at) return at;
+                }
                 candidate.setDate(candidate.getDate() + every * 7);
-                return pickEarliest(formatDateKey(candidate));
             }
-            return pickEarliest(dk);
+            return null;
         }
 
         if (interval === 'monthly') {
@@ -25377,19 +25539,24 @@ function calculateWeeklyStats(dailyStatsArray) {
                 d.setDate(Math.min(targetDay, lastDay));
                 return d;
             };
-            let candidate = buildCandidate(monthsFromAnchor);
-            let dk = formatDateKey(candidate);
-            if (dk < nowKey) {
-                candidate = buildCandidate(monthsFromAnchor + every);
-                dk = formatDateKey(candidate);
+            let offset = monthsFromAnchor;
+            for (let i = 0; i < 120; i++) {
+                const candidate = buildCandidate(offset);
+                const dk = formatDateKey(candidate);
+                if (dk < nowKey) {
+                    offset += every;
+                    continue;
+                }
+                if (dk === nowKey) {
+                    const at = pickOnDate(dk, true);
+                    if (at) return at;
+                } else {
+                    const at = pickEarliest(dk);
+                    if (at) return at;
+                }
+                offset += every;
             }
-            if (dk === nowKey) {
-                const at = pickOnDate(dk, true);
-                if (at) return at;
-                candidate = buildCandidate(monthsFromAnchor + every);
-                return pickEarliest(formatDateKey(candidate));
-            }
-            return pickEarliest(dk);
+            return null;
         }
 
         if (interval === 'yearly') {
@@ -25409,23 +25576,186 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const lastDay = new Date(y, targetMonth + 1, 0).getDate();
                 return new Date(y, targetMonth, Math.min(targetDay, lastDay), 0, 0, 0, 0);
             };
-            let candidate = buildCandidate(yearsFromAnchor);
-            let dk = formatDateKey(candidate);
-            if (dk < nowKey) {
-                candidate = buildCandidate(yearsFromAnchor + every);
-                dk = formatDateKey(candidate);
+            let offset = yearsFromAnchor;
+            for (let i = 0; i < 30; i++) {
+                const candidate = buildCandidate(offset);
+                const dk = formatDateKey(candidate);
+                if (dk < nowKey) {
+                    offset += every;
+                    continue;
+                }
+                if (dk === nowKey) {
+                    const at = pickOnDate(dk, true);
+                    if (at) return at;
+                } else {
+                    const at = pickEarliest(dk);
+                    if (at) return at;
+                }
+                offset += every;
             }
-            if (dk === nowKey) {
-                const at = pickOnDate(dk, true);
-                if (at) return at;
-                candidate = buildCandidate(yearsFromAnchor + every);
-                return pickEarliest(formatDateKey(candidate));
-            }
-            return pickEarliest(dk);
+            return null;
         }
 
         return null;
     };
+
+    const __getLastDueReminderDateTime = (reminder, toDate) => {
+        try {
+            if (!reminder?.enabled) return null;
+            const times = Array.from(new Set((reminder.times || [])
+                .map(__parseTime)
+                .filter(Boolean)
+                .map(x => x.key))).sort();
+            if (times.length === 0) return null;
+            const to = toDateSafe(toDate || new Date());
+            if (!(to instanceof Date) || isNaN(to.getTime())) return null;
+            const nowKey = formatDateKey(to);
+            const nowMinutes = to.getHours() * 60 + to.getMinutes();
+            const startKey = __getStartDateKey(reminder);
+            const interval = reminder.interval || 'daily';
+            const every = interval === 'once' ? 1 : __getReminderEvery(reminder);
+
+            const pickLatestOnDate = (dateKey, requirePastTime) => {
+                const base = new Date(dateKey + 'T00:00:00');
+                if (isNaN(base.getTime())) return null;
+                for (let i = times.length - 1; i >= 0; i--) {
+                    const p = __parseTime(times[i]);
+                    if (!p) continue;
+                    if (__isReminderOccurrenceCompleted(reminder, dateKey, p.key)) continue;
+                    const minutes = p.hh * 60 + p.mm;
+                    if (requirePastTime && minutes > nowMinutes) continue;
+                    const dt = new Date(base);
+                    dt.setHours(p.hh, p.mm, 0, 0);
+                    if (dt.getTime() > to.getTime()) continue;
+                    return dt;
+                }
+                return null;
+            };
+
+            if (interval === 'once') {
+                if (startKey > nowKey) return null;
+                return pickLatestOnDate(startKey, startKey === nowKey);
+            }
+
+            if (interval === 'daily') {
+                const anchor = new Date(startKey + 'T00:00:00');
+                if (isNaN(anchor.getTime())) return null;
+                const today0 = new Date(to);
+                today0.setHours(0, 0, 0, 0);
+                const dayMs = 86400000;
+                let diffDays = Math.floor((today0.getTime() - anchor.getTime()) / dayMs);
+                if (!Number.isFinite(diffDays) || diffDays < 0) return null;
+                diffDays = diffDays - (diffDays % every);
+                let candidate = new Date(anchor);
+                candidate.setDate(candidate.getDate() + diffDays);
+                for (let i = 0; i < 366; i++) {
+                    const dk = formatDateKey(candidate);
+                    if (dk < startKey) return null;
+                    const at = pickLatestOnDate(dk, dk === nowKey);
+                    if (at) return at;
+                    candidate.setDate(candidate.getDate() - every);
+                }
+                return null;
+            }
+
+            if (interval === 'weekly') {
+                const anchor = new Date(startKey + 'T00:00:00');
+                if (isNaN(anchor.getTime())) return null;
+                const targetDow = anchor.getDay();
+                const today0 = new Date(to);
+                today0.setHours(0, 0, 0, 0);
+                const back = (today0.getDay() - targetDow + 7) % 7;
+                let candidate = new Date(today0);
+                candidate.setDate(candidate.getDate() - back);
+                if (candidate.getTime() < anchor.getTime()) return null;
+                const dayMs = 86400000;
+                let diffWeeks = Math.floor((candidate.getTime() - anchor.getTime()) / (dayMs * 7));
+                if (!Number.isFinite(diffWeeks) || diffWeeks < 0) return null;
+                diffWeeks = diffWeeks - (diffWeeks % every);
+                candidate = new Date(anchor);
+                candidate.setDate(candidate.getDate() + diffWeeks * 7);
+                for (let i = 0; i < 104; i++) {
+                    const dk = formatDateKey(candidate);
+                    const at = pickLatestOnDate(dk, dk === nowKey);
+                    if (at) return at;
+                    candidate.setDate(candidate.getDate() - every * 7);
+                    if (candidate.getTime() < anchor.getTime()) break;
+                }
+                return null;
+            }
+
+            if (interval === 'monthly') {
+                const anchor = new Date(startKey + 'T00:00:00');
+                if (isNaN(anchor.getTime())) return null;
+                const targetDay = anchor.getDate();
+                const anchorY = anchor.getFullYear();
+                const anchorM = anchor.getMonth();
+                const toY = to.getFullYear();
+                const toM = to.getMonth();
+                let monthsFromAnchor = (toY - anchorY) * 12 + (toM - anchorM);
+                if (!Number.isFinite(monthsFromAnchor) || monthsFromAnchor < 0) return null;
+                monthsFromAnchor = monthsFromAnchor - (monthsFromAnchor % every);
+                const buildCandidate = (mOffset) => {
+                    const d = new Date(anchorY, anchorM + mOffset, 1, 0, 0, 0, 0);
+                    const y = d.getFullYear();
+                    const m = d.getMonth();
+                    const lastDay = new Date(y, m + 1, 0).getDate();
+                    d.setDate(Math.min(targetDay, lastDay));
+                    return d;
+                };
+                let offset = monthsFromAnchor;
+                for (let i = 0; i < 120; i++) {
+                    const candidate = buildCandidate(offset);
+                    if (candidate.getTime() > to.getTime()) {
+                        offset -= every;
+                        continue;
+                    }
+                    const dk = formatDateKey(candidate);
+                    const at = pickLatestOnDate(dk, dk === nowKey);
+                    if (at) return at;
+                    offset -= every;
+                    if (offset < 0) break;
+                }
+                return null;
+            }
+
+            if (interval === 'yearly') {
+                const anchor = new Date(startKey + 'T00:00:00');
+                if (isNaN(anchor.getTime())) return null;
+                const targetMonth = anchor.getMonth();
+                const targetDay = anchor.getDate();
+                const anchorY = anchor.getFullYear();
+                const toY = to.getFullYear();
+                let yearsFromAnchor = toY - anchorY;
+                if (!Number.isFinite(yearsFromAnchor) || yearsFromAnchor < 0) return null;
+                yearsFromAnchor = yearsFromAnchor - (yearsFromAnchor % every);
+                const buildCandidate = (yOffset) => {
+                    const y = anchorY + yOffset;
+                    const lastDay = new Date(y, targetMonth + 1, 0).getDate();
+                    return new Date(y, targetMonth, Math.min(targetDay, lastDay), 0, 0, 0, 0);
+                };
+                let offset = yearsFromAnchor;
+                for (let i = 0; i < 30; i++) {
+                    const candidate = buildCandidate(offset);
+                    if (candidate.getTime() > to.getTime()) {
+                        offset -= every;
+                        continue;
+                    }
+                    const dk = formatDateKey(candidate);
+                    const at = pickLatestOnDate(dk, dk === nowKey);
+                    if (at) return at;
+                    offset -= every;
+                    if (offset < 0) break;
+                }
+                return null;
+            }
+
+            return null;
+        } catch (e) {
+            return null;
+        }
+    };
+
     const __getSessionNotifiedSet = (currentDate) => {
         try {
             if (__reminderSessionNotified.date !== currentDate) {
@@ -25469,12 +25799,16 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (!reminder.enabled) continue;
             if (!checkShouldRemindToday(reminder, currentDate)) continue;
             reminder.times?.forEach(time => {
-                const k = reminder.blockId + '-' + time;
-                if (time === currentTime && !notifiedReminders.has(k) && !sessionNotified.has(k)) {
+                const p = __parseTime(time);
+                const timeKey = p?.key || String(time || '').trim();
+                if (!timeKey) return;
+                const k = reminder.blockId + '-' + timeKey;
+                if (timeKey === currentTime && !notifiedReminders.has(k) && !sessionNotified.has(k)) {
+                    if (__isReminderOccurrenceCompleted(reminder, currentDate, timeKey)) return;
                     notifiedReminders.add(k);
                     sessionNotified.add(k);
                     __persistSessionNotified();
-                    showReminderNotification(reminder, time, currentDate);
+                    showReminderNotification(reminder, timeKey, currentDate);
                 }
             });
         }
@@ -25539,7 +25873,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             showMiniToast(title + ': ' + fullMessage, 8000);
             // 同时显示对话框
             setTimeout(() => {
-                showToastDialog(title, fullMessage, 'info', reminder.blockId, reminder.blockName);
+                showToastDialog(title, fullMessage, 'reminder', reminder.blockId, reminder.blockName, currentDate, time);
             }, 100);
         }
         
@@ -25807,6 +26141,15 @@ function calculateWeeklyStats(dailyStatsArray) {
     let reminderDockTodayOnly = (() => {
         try { return localStorage.getItem(REMINDER_DOCK_TODAY_ONLY_STORAGE_KEY) === '1'; } catch (e) { return false; }
     })();
+    const REMINDER_DOCK_VIEW_STORAGE_KEY = 'tomato-reminder-dock-view';
+    let reminderDockView = (() => {
+        try {
+            const v = String(localStorage.getItem(REMINDER_DOCK_VIEW_STORAGE_KEY) || '').trim();
+            return v === 'completed' ? 'completed' : 'unfinished';
+        } catch (e) {
+            return 'unfinished';
+        }
+    })();
     
     // 尝试通过 eventBus 监听布局事件来注册 Dock
     function tryRegisterDockViaEventBus() {
@@ -26013,60 +26356,50 @@ function calculateWeeklyStats(dailyStatsArray) {
     async function renderReminderDockList(sortBy) {
         sortBy = sortBy || 'time';
         if (!reminderDockPanel) return;
-        let reminders = await queryAllReminderBlocks();
+        const allReminders = await queryAllReminderBlocks();
         const now = new Date();
-        if (reminderDockTodayOnly) {
+        const view = reminderDockView === 'completed' ? 'completed' : 'unfinished';
+        let reminders = allReminders || [];
+        if (view === 'unfinished' && reminderDockTodayOnly) {
             const todayKey = formatDateKey(now);
-            reminders = (reminders || []).filter(r => {
+            reminders = reminders.filter(r => {
                 if (!r || r.enabled === false) return false;
                 if (!Array.isArray(r.times) || r.times.length === 0) return false;
                 return checkShouldRemindToday(r, todayKey);
             });
         }
-        const nextAtMsCache = new Map();
-        const getNextAtMs = (r) => {
-            const k = r?.blockId || r?.id || r;
-            if (nextAtMsCache.has(k)) return nextAtMsCache.get(k);
-            const nextAt = getNextReminderDateTime(r, now);
-            const ms = nextAt ? nextAt.getTime() : Number.POSITIVE_INFINITY;
-            nextAtMsCache.set(k, ms);
-            return ms;
-        };
-        if (sortBy === 'time') {
-            reminders.sort((a, b) => {
-                const ta = getNextAtMs(a);
-                const tb = getNextAtMs(b);
-                if (ta !== tb) return ta - tb;
-                return String(a.blockName || '').localeCompare(String(b.blockName || ''));
-            });
-        } else if (sortBy === 'updated') {
-            reminders.sort((a, b) => {
-                const ta = Date.parse(a.updatedAt || a.createdAt || 0) || 0;
-                const tb = Date.parse(b.updatedAt || b.createdAt || 0) || 0;
-                if (ta !== tb) return tb - ta;
-                return getNextAtMs(a) - getNextAtMs(b);
-            });
-        }
+        sortBy = 'time';
+
         reminderDockPanel.innerHTML = '';
-        if (reminders.length === 0) {
-            const empty = document.createElement('div');
-            empty.textContent = reminderDockTodayOnly ? '今天暂无任务提醒' : '暂无任务提醒，右键块或数据库选择添加提醒';
-            empty.style.cssText = 'text-align:center;color:var(--b3-theme-on-surface-light);padding:40px 20px;font-size:13px;line-height:1.6;';
-            reminderDockPanel.appendChild(empty);
-            return;
-        }
+
         const sortBar = document.createElement('div');
-        sortBar.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;padding:0 4px;';
-        const sortOptions = [{key:'time',label:'提醒时间'},{key:'updated',label:'最近更新'}];
-        sortOptions.forEach(opt => {
+        sortBar.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;padding:0 4px;flex-wrap:wrap;';
+
+        const viewOptions = [{ key: 'unfinished', label: '未完成' }, { key: 'completed', label: '已完成' }];
+        viewOptions.forEach(opt => {
             const btn = document.createElement('button');
             btn.textContent = opt.label;
-            btn.style.cssText = `padding:4px 10px;border:1px solid ${sortBy===opt.key?'var(--b3-theme-primary)':'var(--b3-theme-surface-light)'};border-radius:4px;background:${sortBy===opt.key?'var(--b3-theme-primary-light)':'transparent'};color:${sortBy===opt.key?'var(--b3-theme-primary)':'var(--b3-theme-on-surface)'};cursor:pointer;font-size:11px;`;
-            btn.onclick = () => renderReminderDockList(opt.key);
+            const selected = view === opt.key;
+            btn.style.cssText = `padding:4px 10px;border:1px solid ${selected ? 'var(--b3-theme-primary)' : 'var(--b3-theme-surface-light)'};border-radius:4px;background:${selected ? 'var(--b3-theme-primary-light)' : 'transparent'};color:${selected ? 'var(--b3-theme-primary)' : 'var(--b3-theme-on-surface)'};cursor:pointer;font-size:11px;`;
+            btn.onclick = () => {
+                reminderDockView = opt.key;
+                try { localStorage.setItem(REMINDER_DOCK_VIEW_STORAGE_KEY, reminderDockView); } catch (e) {}
+                renderReminderDockList(sortBy);
+            };
             sortBar.appendChild(btn);
         });
+
+        if (view === 'unfinished') {
+            reminders.sort((a, b) => {
+                const ta = (getNextReminderDateTime(a, now)?.getTime?.() ?? Number.POSITIVE_INFINITY);
+                const tb = (getNextReminderDateTime(b, now)?.getTime?.() ?? Number.POSITIVE_INFINITY);
+                if (ta !== tb) return ta - tb;
+                return String(a?.blockName || '').localeCompare(String(b?.blockName || ''));
+            });
+        }
+
         const todayToggle = document.createElement('label');
-        todayToggle.style.cssText = 'display:flex;align-items:center;gap:4px;margin-left:4px;font-size:11px;color:var(--b3-theme-on-surface-light);user-select:none;';
+        todayToggle.style.cssText = `display:${view === 'unfinished' ? 'flex' : 'none'};align-items:center;gap:4px;margin-left:4px;font-size:11px;color:var(--b3-theme-on-surface-light);user-select:none;`;
         const todayInput = document.createElement('input');
         todayInput.type = 'checkbox';
         todayInput.checked = reminderDockTodayOnly;
@@ -26082,40 +26415,136 @@ function calculateWeeklyStats(dailyStatsArray) {
         todayToggle.appendChild(todayText);
         sortBar.appendChild(todayToggle);
         reminderDockPanel.appendChild(sortBar);
-        reminders.forEach(reminder => {
+
+        if (view === 'completed') {
+            const completedEntries = [];
+            for (const r of (allReminders || [])) {
+                const arr = Array.isArray(r?.completedOccurrences) ? r.completedOccurrences : [];
+                for (const it of arr) {
+                    if (!it) continue;
+                    const dateKey = String(it.date || '').trim();
+                    const timeKey = String(it.time || '').trim();
+                    const doneAtMs = Date.parse(it.doneAt || '') || 0;
+                    if (!dateKey || !timeKey) continue;
+                    completedEntries.push({ reminder: r, dateKey, timeKey, doneAtMs });
+                }
+            }
+            completedEntries.sort((a, b) => (b.doneAtMs || 0) - (a.doneAtMs || 0));
+            if (completedEntries.length === 0) {
+                const empty = document.createElement('div');
+                empty.textContent = '暂无已完成提醒';
+                empty.style.cssText = 'text-align:center;color:var(--b3-theme-on-surface-light);padding:40px 20px;font-size:13px;line-height:1.6;';
+                reminderDockPanel.appendChild(empty);
+                return;
+            }
+            const showEntries = completedEntries.slice(0, 30);
+            if (completedEntries.length > 30) {
+                try { __pruneCompletedOccurrencesGlobal(30); } catch (e) {}
+            }
+            showEntries.forEach(entry => {
+                const r = entry.reminder || {};
+                const item = document.createElement('div');
+                item.style.cssText = 'padding:12px 86px 12px 12px;margin-bottom:8px;background:var(--b3-theme-surface-light);border-radius:8px;cursor:pointer;transition:background 0.2s;position:relative;';
+                item.onmouseover = () => { item.style.background = 'var(--b3-theme-surface)'; };
+                item.onmouseout = () => { item.style.background = 'var(--b3-theme-surface-light)'; };
+                item.onclick = (e) => { if (e.target.closest('.reminder-actions')) return; navigateToBlock(r.blockId); };
+                const name = document.createElement('div');
+                name.textContent = r.blockName || r.blockContent || '未命名任务';
+                name.style.cssText = 'font-weight:500;font-size:13px;margin-bottom:6px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.35;max-height:calc(1.35em * 2);';
+                item.appendChild(name);
+                const info = document.createElement('div');
+                info.textContent = '完成：' + entry.dateKey + ' ' + entry.timeKey;
+                info.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);';
+                item.appendChild(info);
+                const actions = document.createElement('div');
+                actions.className = 'reminder-actions';
+                actions.style.cssText = 'position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:4px;';
+                const undoBtn = document.createElement('button');
+                undoBtn.innerHTML = '撤销';
+                undoBtn.title = '撤销';
+                undoBtn.style.cssText = 'padding:4px 8px;border:none;border-radius:4px;background:rgba(33,150,243,0.12);cursor:pointer;font-size:11px;color:#1565c0;';
+                undoBtn.onclick = async () => {
+                    const ok = await __unmarkReminderOccurrenceCompleted(r.blockId, entry.dateKey, entry.timeKey);
+                    showMiniToast(ok ? '已撤销' : '撤销失败');
+                    renderReminderDockList();
+                };
+                actions.appendChild(undoBtn);
+                item.appendChild(actions);
+                reminderDockPanel.appendChild(item);
+            });
+            return;
+        }
+
+        const entries = [];
+        for (const r of reminders) {
+            if (!r || r.enabled === false) continue;
+            const nextAt = getNextReminderDateTime(r, now);
+            if (nextAt && Number.isFinite(nextAt.getTime())) {
+                entries.push({ kind: 'pending', reminder: r, at: nextAt });
+            }
+            const lastDueAt = __getLastDueReminderDateTime(r, now);
+            if (lastDueAt && Number.isFinite(lastDueAt.getTime()) && lastDueAt.getTime() < now.getTime()) {
+                if (!nextAt || lastDueAt.getTime() !== nextAt.getTime()) {
+                    entries.push({ kind: 'expired', reminder: r, at: lastDueAt });
+                }
+            }
+        }
+
+        entries.sort((a, b) => {
+            if (a.kind !== b.kind) return a.kind === 'expired' ? -1 : 1;
+            const ta = a.at?.getTime?.() || 0;
+            const tb = b.at?.getTime?.() || 0;
+            return a.kind === 'expired' ? (tb - ta) : (ta - tb);
+        });
+
+        if (entries.length === 0) {
+            const empty = document.createElement('div');
+            empty.textContent = reminderDockTodayOnly ? '今天暂无任务提醒' : '暂无任务提醒，右键块或数据库选择添加提醒';
+            empty.style.cssText = 'text-align:center;color:var(--b3-theme-on-surface-light);padding:40px 20px;font-size:13px;line-height:1.6;';
+            reminderDockPanel.appendChild(empty);
+            return;
+        }
+
+        entries.forEach(entry => {
+            const reminder = entry.reminder || {};
+            const at = entry.at;
+            const dateKey = formatDateKey(at);
+            const timeKey = String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0');
             const item = document.createElement('div');
-            item.style.cssText = 'padding:12px 96px 12px 12px;margin-bottom:8px;background:var(--b3-theme-surface-light);border-radius:8px;cursor:pointer;transition:background 0.2s;position:relative;';
+            item.style.cssText = 'padding:12px 88px 12px 12px;min-height:70px;margin-bottom:8px;background:var(--b3-theme-surface-light);border-radius:8px;cursor:pointer;transition:background 0.2s;position:relative;';
             item.onmouseover = () => { item.style.background = 'var(--b3-theme-surface)'; };
             item.onmouseout = () => { item.style.background = 'var(--b3-theme-surface-light)'; };
             item.onclick = (e) => { if (e.target.closest('.reminder-actions')) return; navigateToBlock(reminder.blockId); };
+
             const name = document.createElement('div');
             name.textContent = reminder.blockName || reminder.blockContent || '未命名任务';
             name.style.cssText = 'font-weight:500;font-size:13px;margin-bottom:6px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.35;max-height:calc(1.35em * 2);';
             item.appendChild(name);
-            const info = document.createElement('div');
-            const ivl = __getReminderIntervalLabel(reminder);
-            info.textContent = ivl + ' ' + (reminder.times?.join(', ') || '');
-            info.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);';
-            item.appendChild(info);
-            const nextAt = getNextReminderDateTime(reminder, now);
-            const nextLine = document.createElement('div');
-            nextLine.textContent = '下次：' + (nextAt ? formatDateTimeKey(nextAt) : (reminder.interval === 'once' ? '无（已过期或未设置）' : '—'));
-            nextLine.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);margin-top:4px;';
-            item.appendChild(nextLine);
-            if (reminder.note) {
-                const note = document.createElement('div');
-                note.textContent = reminder.note;
-                note.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-                item.appendChild(note);
+
+            const statusLine = document.createElement('div');
+            statusLine.textContent = (entry.kind === 'expired' ? '已过期：' : '未完成：') + dateKey + ' ' + timeKey;
+            statusLine.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);margin-top:2px;';
+            item.appendChild(statusLine);
+
+            if (entry.kind === 'pending') {
+                const afterMs = (at instanceof Date && !isNaN(at.getTime())) ? (at.getTime() + 60 * 1000) : (now.getTime() + 60 * 1000);
+                const nextAt = getNextReminderDateTime(reminder, new Date(afterMs));
+                const nextLine = document.createElement('div');
+                nextLine.textContent = '下次：' + (nextAt ? formatDateTimeKey(nextAt) : (reminder.interval === 'once' ? '无（已过期或未设置）' : '—'));
+                nextLine.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);margin-top:4px;';
+                item.appendChild(nextLine);
             }
+
             const actions = document.createElement('div');
             actions.className = 'reminder-actions';
-            actions.style.cssText = 'position:absolute;top:8px;right:8px;display:flex;gap:4px;';
+            actions.style.cssText = 'position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:4px;';
+
             const editBtn = document.createElement('button');
             editBtn.innerHTML = '编辑';
             editBtn.title = '编辑';
             editBtn.style.cssText = 'padding:4px 8px;border:none;border-radius:4px;background:var(--b3-theme-surface);color:var(--b3-theme-on-surface);cursor:pointer;font-size:11px;';
             editBtn.onclick = () => showReminderDialog(reminder.blockId, reminder.blockName, reminder);
+
             const deleteBtn = document.createElement('button');
             deleteBtn.innerHTML = '删除';
             deleteBtn.title = '删除';
@@ -26126,9 +26555,30 @@ function calculateWeeklyStats(dailyStatsArray) {
                     if (success) { showMiniToast('提醒已删除'); renderReminderDockList(sortBy); }
                 }
             };
+
+            const doneBtn = document.createElement('button');
+            doneBtn.innerHTML = '完成';
+            doneBtn.title = '完成';
+            doneBtn.style.cssText = 'padding:4px 8px;border:none;border-radius:4px;background:rgba(76,175,80,0.12);cursor:pointer;font-size:11px;color:#2e7d32;';
+            doneBtn.onclick = async () => {
+                const ok = await __markReminderOccurrenceCompleted(reminder.blockId, dateKey, timeKey);
+                showMiniToast(ok ? '已标记完成' : '标记失败');
+                renderReminderDockList(sortBy);
+            };
+
             actions.appendChild(editBtn);
             actions.appendChild(deleteBtn);
+            actions.appendChild(doneBtn);
             item.appendChild(actions);
+            try {
+                requestAnimationFrame(() => {
+                    try {
+                        const w = actions.getBoundingClientRect().width || 0;
+                        const pr = Math.max(56, Math.ceil(w + 20));
+                        item.style.paddingRight = pr + 'px';
+                    } catch (e) {}
+                });
+            } catch (e) {}
             reminderDockPanel.appendChild(item);
         });
     }
@@ -26214,5 +26664,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.5.3 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.5.5 已加载');
 })();
