@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.5.0
+// @version      1.5.1
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -3636,6 +3636,20 @@
             @keyframes tomatoSlideUp {
                 from { transform: translateY(100%); }
                 to { transform: translateY(0); }
+            }
+
+            #tomato-task-submenu,
+            #tomato-db-submenu {
+                scrollbar-width: none;
+                -ms-overflow-style: none;
+                overflow: hidden !important;
+                max-height: none !important;
+            }
+
+            #tomato-task-submenu::-webkit-scrollbar,
+            #tomato-db-submenu::-webkit-scrollbar {
+                width: 0;
+                height: 0;
             }
 
             .tomato-backdrop {
@@ -19841,7 +19855,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     // 减少重复的菜单创建代码
     function createTomatoSubMenu(onItemClick, blockInfo) {
         const subMenu = document.createElement('div');
-        subMenu.className = 'b3-menu b3-list';
+        subMenu.className = 'b3-menu';
         subMenu.style.cssText = `
             display: none;
             position: fixed;
@@ -19852,9 +19866,9 @@ function calculateWeeklyStats(dailyStatsArray) {
             z-index: 2147483647;
             font-size: 13px;
             min-width: 140px;
-            max-height: 400px;
-            overflow-y: auto;
+            overflow: hidden;
             padding: 6px 0;
+            box-sizing: border-box;
         `;
         
         // 添加番茄钟时长选项
@@ -19862,6 +19876,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             const item = document.createElement('button');
             item.className = 'b3-menu__item';
             item.innerHTML = `<span class="b3-menu__label">🍅 ${min}分钟</span>`;
+            item.style.cssText = 'width:100%;box-sizing:border-box;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
             item.onclick = () => onItemClick(min, 'countdown');
             // 🔧 修复：添加 hover 样式
             item.onmouseenter = () => item.style.backgroundColor = 'var(--b3-menu-background-hover, var(--b3-theme-surface-light))';
@@ -19873,6 +19888,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const stopwatchItem = document.createElement('button');
         stopwatchItem.className = 'b3-menu__item';
         stopwatchItem.innerHTML = `<span class="b3-menu__label">⏱️ 正计时</span>`;
+        stopwatchItem.style.cssText = 'width:100%;box-sizing:border-box;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
         stopwatchItem.onclick = () => onItemClick(null, 'stopwatch');
         // 🔧 修复：添加 hover 样式
         stopwatchItem.onmouseenter = () => stopwatchItem.style.backgroundColor = 'var(--b3-menu-background-hover, var(--b3-theme-surface-light))';
@@ -19890,6 +19906,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             const reminderBtn = document.createElement('button');
             reminderBtn.className = 'b3-menu__item';
             reminderBtn.innerHTML = `<span class="b3-menu__label">⏰ 添加提醒</span>`;
+            reminderBtn.style.cssText = 'width:100%;box-sizing:border-box;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
             reminderBtn.onmouseenter = () => reminderBtn.style.backgroundColor = 'var(--b3-menu-background-hover, var(--b3-theme-surface-light))';
             reminderBtn.onmouseleave = () => reminderBtn.style.backgroundColor = 'transparent';
             reminderBtn.onclick = async () => {
@@ -25617,7 +25634,10 @@ function calculateWeeklyStats(dailyStatsArray) {
     
     // 监听布局准备就绪事件
     let reminderDockRegistered = false;
-    let reminderDockTodayOnly = false;
+    const REMINDER_DOCK_TODAY_ONLY_STORAGE_KEY = 'tomato-reminder-dock-today-only';
+    let reminderDockTodayOnly = (() => {
+        try { return localStorage.getItem(REMINDER_DOCK_TODAY_ONLY_STORAGE_KEY) === '1'; } catch (e) { return false; }
+    })();
     
     // 尝试通过 eventBus 监听布局事件来注册 Dock
     function tryRegisterDockViaEventBus() {
@@ -25884,6 +25904,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         todayInput.style.cssText = 'width:14px;height:14px;cursor:pointer;';
         todayInput.onchange = () => {
             reminderDockTodayOnly = !!todayInput.checked;
+            try { localStorage.setItem(REMINDER_DOCK_TODAY_ONLY_STORAGE_KEY, reminderDockTodayOnly ? '1' : '0'); } catch (e) {}
             renderReminderDockList(sortBy);
         };
         const todayText = document.createElement('span');
@@ -26024,5 +26045,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.5.0 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.5.1 已加载');
 })();
