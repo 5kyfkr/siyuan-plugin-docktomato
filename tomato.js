@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.5.5
+// @version      1.5.6
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -26664,5 +26664,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.5.5 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.5.6 已加载');
 })();
