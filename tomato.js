@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.5.8
+// @version      1.5.9
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -2946,8 +2946,11 @@
 
     // 删除单条记录
     async function deleteRecord(record) {
-        // 如果开启了删除无需确认，直接删除；否则弹出确认对话框
-        if (!userSettings.deleteWithoutConfirm) {
+        // 移动端直接删除，无需确认
+        const isMobile = isMobileDevice();
+
+        // 如果不是移动端且没有开启无需确认，则弹出确认对话框
+        if (!isMobile && !userSettings.deleteWithoutConfirm) {
             if (!confirm(`确定要删除这条记录吗？\n${new Date(record.start).toLocaleString('zh-CN')} - ${formatFocusTime(record.durationMin)}`)) {
                 return false;
             }
@@ -2974,9 +2977,669 @@
         } catch (e) {
             Logger.error('删除记录时出错:', e);
         }
-        
+
         return false;
     }
+
+    // ========== 辅助函数（需要在使用前定义） ==========
+
+    // HTML转义，防止XSS
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // 从本地存储获取提醒事项
+    function getReminders() {
+        try {
+            const data = localStorage.getItem('siyuan-reminders');
+            return data ? JSON.parse(data) : [];
+        } catch (e) {
+            console.error('获取提醒事项失败：', e);
+            return [];
+        }
+    }
+
+    // ========== 移动端确认对话框 ==========
+    function showMobileConfirmDialog(message, title = '确认') {
+        return new Promise((resolve) => {
+            // 移除已存在的弹窗
+            const existingModal = document.querySelector('.tomy-mobile-confirm-modal');
+            if (existingModal) {
+                existingModal.remove();
+            }
+
+            // 创建弹窗容器
+            const modal = document.createElement('div');
+            modal.className = 'tomy-mobile-confirm-modal';
+            modal.innerHTML = `
+                <div class="tomy-mobile-confirm-dialog">
+                    <div class="tomy-mobile-confirm-header">
+                        <h3 class="tomy-mobile-confirm-title">${escapeHtml(title)}</h3>
+                    </div>
+                    <div class="tomy-mobile-confirm-body">
+                        <p class="tomy-mobile-confirm-message">${escapeHtml(message).replace(/\n/g, '<br>')}</p>
+                    </div>
+                    <div class="tomy-mobile-confirm-actions">
+                        <button class="tomy-mobile-confirm-btn cancel" data-action="cancel">取消</button>
+                        <button class="tomy-mobile-confirm-btn confirm" data-action="confirm">确定</button>
+                    </div>
+                </div>
+            `;
+
+            // 添加样式
+            if (!document.getElementById('tomy-mobile-confirm-styles')) {
+                const style = document.createElement('style');
+                style.id = 'tomy-mobile-confirm-styles';
+                style.textContent = `
+                    .tomy-mobile-confirm-modal {
+                        position: fixed;
+                        top: 0;
+                        left: 0;
+                        right: 0;
+                        bottom: 0;
+                        background: rgba(0, 0, 0, 0.5);
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        z-index: 2147483648;
+                        opacity: 0;
+                        visibility: hidden;
+                        transition: opacity 0.3s, visibility 0.3s;
+                    }
+
+                    .tomy-mobile-confirm-modal.active {
+                        opacity: 1;
+                        visibility: visible;
+                    }
+
+                    .tomy-mobile-confirm-dialog {
+                        background: var(--b3-theme-background, #fff);
+                        border-radius: 16px;
+                        width: 85%;
+                        max-width: 320px;
+                        overflow: hidden;
+                        transform: scale(0.9);
+                        transition: transform 0.3s;
+                        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+                    }
+
+                    .tomy-mobile-confirm-modal.active .tomy-mobile-confirm-dialog {
+                        transform: scale(1);
+                    }
+
+                    .tomy-mobile-confirm-header {
+                        padding: 20px 20px 12px;
+                        text-align: center;
+                    }
+
+                    .tomy-mobile-confirm-title {
+                        font-size: 18px;
+                        font-weight: 600;
+                        color: var(--b3-theme-on-background, #333);
+                        margin: 0;
+                    }
+
+                    .tomy-mobile-confirm-body {
+                        padding: 8px 20px 20px;
+                        text-align: center;
+                    }
+
+                    .tomy-mobile-confirm-message {
+                        font-size: 15px;
+                        color: var(--b3-theme-on-surface, #666);
+                        line-height: 1.5;
+                        margin: 0;
+                    }
+
+                    .tomy-mobile-confirm-actions {
+                        display: flex;
+                        border-top: 1px solid var(--b3-theme-surface-light, #eee);
+                    }
+
+                    .tomy-mobile-confirm-btn {
+                        flex: 1;
+                        padding: 16px;
+                        border: none;
+                        background: transparent;
+                        font-size: 16px;
+                        font-weight: 500;
+                        cursor: pointer;
+                        transition: background 0.2s;
+                    }
+
+                    .tomy-mobile-confirm-btn:first-child {
+                        border-right: 1px solid var(--b3-theme-surface-light, #eee);
+                    }
+
+                    .tomy-mobile-confirm-btn.cancel {
+                        color: #999;
+                    }
+
+                    .tomy-mobile-confirm-btn.cancel:hover {
+                        background: var(--b3-theme-surface, #f5f5f5);
+                    }
+
+                    .tomy-mobile-confirm-btn.confirm {
+                        color: var(--b3-theme-primary, #2196F3);
+                    }
+
+                    .tomy-mobile-confirm-btn.confirm:hover {
+                        background: rgba(33, 150, 243, 0.1);
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+
+            document.body.appendChild(modal);
+
+            // 触发显示动画
+            requestAnimationFrame(() => {
+                modal.classList.add('active');
+            });
+
+            // 取消按钮
+            modal.querySelector('[data-action="cancel"]').addEventListener('click', () => {
+                closeMobileModal(modal);
+                resolve(false);
+            });
+
+            // 确认按钮
+            modal.querySelector('[data-action="confirm"]').addEventListener('click', () => {
+                closeMobileModal(modal);
+                resolve(true);
+            });
+
+            // 点击遮罩层关闭
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    closeMobileModal(modal);
+                    resolve(false);
+                }
+            });
+
+            // ESC键关闭
+            const escHandler = (e) => {
+                if (e.key === 'Escape') {
+                    closeMobileModal(modal);
+                    resolve(false);
+                    document.removeEventListener('keydown', escHandler);
+                }
+            };
+            document.addEventListener('keydown', escHandler);
+        });
+    }
+
+    // 关闭移动端弹窗
+    function closeMobileModal(modal) {
+        modal.classList.remove('active');
+
+        setTimeout(() => {
+            if (modal.parentNode) {
+                modal.parentNode.removeChild(modal);
+            }
+        }, 300);
+    }
+
+    // ========== 过期事项提醒功能 ==========
+
+    // 关闭过期通知
+    function closeExpiredNotification(notification) {
+        notification.style.animation = 'slideOutRight 0.3s ease-in forwards';
+
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.parentNode.removeChild(notification);
+            }
+        }, 300);
+    }
+
+    // 显示过期事项通知（右上角，5秒后自动消失）
+    function showExpiredRemindersNotification(expiredItems) {
+        // 移除已存在的通知
+        const existingNotification = document.querySelector('.tomy-expired-notification');
+        if (existingNotification) {
+            existingNotification.remove();
+        }
+
+        const count = expiredItems.length;
+
+        // 生成过期事项列表HTML（简化版）
+        let itemsHtml = '';
+        const displayItems = expiredItems.slice(0, 10); // 最多显示10个
+
+        displayItems.forEach((item) => {
+            const blockName = item.blockName || '未命名任务';
+            itemsHtml += `
+                <div class="tomy-expired-item">${escapeHtml(blockName)}</div>
+            `;
+        });
+
+        if (expiredItems.length > 10) {
+            itemsHtml += `<div class="tomy-expired-more">...共 ${count} 个</div>`;
+        }
+
+        const notification = document.createElement('div');
+        notification.className = 'tomy-expired-notification';
+        notification.innerHTML = `
+            <div class="tomy-notification-icon">⚠️</div>
+            <div class="tomy-notification-content">
+                <div class="tomy-notification-title"><span style="color:#e74c3c">已过期</span> · ${count}</div>
+                <div class="tomy-expired-list">${itemsHtml}</div>
+            </div>
+            <button class="tomy-notification-close" data-action="close-notification">×</button>
+        `;
+
+        // 添加样式（如果还没有添加）
+        if (!document.getElementById('tomy-expired-notification-styles')) {
+            const style = document.createElement('style');
+            style.id = 'tomy-expired-notification-styles';
+            style.textContent = `
+                .tomy-expired-notification {
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    background: var(--b3-theme-background, #fff);
+                    border-radius: 8px;
+                    padding: 12px 16px;
+                    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+                    z-index: 9999;
+                    max-width: 240px;
+                    display: flex;
+                    align-items: flex-start;
+                    gap: 10px;
+                    animation: slideInRight 0.3s ease-out;
+                }
+
+                @keyframes slideInRight {
+                    from {
+                        transform: translateX(100%);
+                        opacity: 0;
+                    }
+                    to {
+                        transform: translateX(0);
+                        opacity: 1;
+                    }
+                }
+
+                @keyframes slideOutRight {
+                    from {
+                        transform: translateX(0);
+                        opacity: 1;
+                    }
+                    to {
+                        transform: translateX(100%);
+                        opacity: 0;
+                    }
+                }
+
+                .tomy-notification-icon {
+                    font-size: 24px;
+                    line-height: 1;
+                }
+
+                .tomy-notification-content {
+                    flex: 1;
+                }
+
+                .tomy-notification-title {
+                    font-size: 15px;
+                    font-weight: 600;
+                    color: var(--b3-theme-on-background, #333);
+                    margin-bottom: 4px;
+                }
+
+                .tomy-notification-text {
+                    font-size: 13px;
+                    color: var(--b3-theme-on-surface, #666);
+                    line-height: 1.4;
+                }
+
+                .tomy-count-badge {
+                    display: inline-block;
+                    background: #e74c3c;
+                    color: #fff;
+                    font-size: 12px;
+                    padding: 2px 6px;
+                    border-radius: 10px;
+                    margin-left: 4px;
+                }
+
+                .tomy-notification-close {
+                    background: none;
+                    border: none;
+                    font-size: 20px;
+                    color: #999;
+                    cursor: pointer;
+                    padding: 0;
+                    line-height: 1;
+                    margin-left: 8px;
+                }
+
+                .tomy-notification-close:hover {
+                    color: #666;
+                }
+
+                .tomy-expired-list {
+                    margin-top: 6px;
+                }
+
+                .tomy-expired-item {
+                    font-size: 13px;
+                    color: var(--b3-theme-on-background, #333);
+                    padding: 3px 0;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }
+
+                .tomy-expired-more {
+                    font-size: 12px;
+                    color: var(--b3-theme-on-surface-light, #999);
+                    padding: 4px 0 0;
+                }
+
+                @media (max-width: 768px) {
+                    .tomy-expired-notification {
+                        left: 16px;
+                        right: 16px;
+                        top: 16px;
+                        max-width: none;
+                    }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        // 设置位置
+        notification.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+        `;
+
+        document.body.appendChild(notification);
+
+        // 关闭按钮事件
+        notification.querySelector('[data-action="close-notification"]').addEventListener('click', () => {
+            closeExpiredNotification(notification);
+        });
+
+        // 5秒后自动消失
+        setTimeout(() => {
+            closeExpiredNotification(notification);
+        }, 5000);
+    }
+
+    // 检测并显示过期提醒事项通知
+    async function checkAndShowExpiredReminders() {
+        try {
+            // 获取所有提醒事项
+            const reminders = await queryAllReminderBlocks();
+
+            if (!reminders || reminders.length === 0) {
+                return;
+            }
+
+            const now = new Date();
+            const nowDateKey = formatDateKey(now);
+            const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+            // 找出所有过期的提醒（任何类型，只要时间已过且未完成）
+            const expiredReminders = reminders.filter(item => {
+                // 只检查启用的提醒
+                if (!item.enabled) {
+                    return false;
+                }
+
+                const times = item.times || [];
+                if (times.length === 0) {
+                    return false;
+                }
+
+                const interval = item.interval || 'once';
+                const startDate = item.startDate || formatDateKey(item.createdAt);
+                const start = toDateSafe(startDate);
+
+                if (!(start instanceof Date) || isNaN(start.getTime())) {
+                    return false;
+                }
+
+                if (interval === 'once') {
+                    // 一次性提醒：检查开始日期
+                    if (startDate > nowDateKey) {
+                        return false; // 还没到提醒时间
+                    }
+
+                    // 检查所有时间点
+                    for (const time of times) {
+                        const timeParsed = __parseTime(time);
+                        if (!timeParsed) continue;
+
+                        const reminderDateTime = new Date(startDate + 'T' + timeParsed.key);
+                        const reminderKey = __reminderOccurrenceKey(startDate, timeParsed.key);
+
+                        // 如果提醒时间已过，且未完成
+                        if (reminderDateTime < now) {
+                            const completedSet = __getReminderCompletedSet(item);
+                            if (!completedSet.has(reminderKey)) {
+                                return true; // 有过期未完成的
+                            }
+                        }
+                    }
+                } else {
+                    // 重复提醒：从startDate开始检查到今天
+                    const current = new Date(start);
+                    while (current <= now) {
+                        const currentDateKey = formatDateKey(current);
+
+                        // 检查这一天的所有时间点
+                        for (const time of times) {
+                            const timeParsed = __parseTime(time);
+                            if (!timeParsed) continue;
+
+                            const reminderDateTime = new Date(currentDateKey + 'T' + timeParsed.key);
+                            const reminderKey = __reminderOccurrenceKey(currentDateKey, timeParsed.key);
+
+                            // 如果提醒时间已过
+                            if (reminderDateTime < now) {
+                                // 今天的还没到时间不算过期
+                                const isToday = currentDateKey === nowDateKey;
+                                const isTimePassed = timeParsed.key <= nowTime;
+                                if (isToday && !isTimePassed) {
+                                    continue;
+                                }
+                                const completedSet = __getReminderCompletedSet(item);
+                                if (!completedSet.has(reminderKey)) {
+                                    return true; // 有过期未完成的
+                                }
+                            }
+                        }
+
+                        // 移动到下一天
+                        current.setDate(current.getDate() + 1);
+                    }
+                }
+
+                return false;
+            });
+
+            if (expiredReminders.length > 0) {
+                // 延迟显示，让页面先渲染完成
+                setTimeout(() => {
+                    showExpiredRemindersNotification(expiredReminders);
+                }, 500);
+            }
+        } catch (e) {
+            console.error('检查过期提醒失败:', e);
+        }
+    }
+
+    // ========== 统计提醒数量功能 ==========
+
+    /**
+     * 统计今日未过期的提醒数量（还没到的提醒）
+     */
+    async function countTodayReminders() {
+        try {
+            const reminders = await queryAllReminderBlocks();
+            if (!reminders || reminders.length === 0) {
+                return 0;
+            }
+
+            const now = new Date();
+            const nowDateKey = formatDateKey(now);
+            const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+            let count = 0;
+            for (const item of reminders) {
+                if (!item.enabled) continue;
+                if (!checkShouldRemindToday(item, nowDateKey)) continue;
+
+                const times = item.times || [];
+                for (const time of times) {
+                    const timeParsed = __parseTime(time);
+                    if (!timeParsed) continue;
+
+                    // 检查是否已完成
+                    const reminderKey = __reminderOccurrenceKey(nowDateKey, timeParsed.key);
+                    const completedSet = __getReminderCompletedSet(item);
+                    if (completedSet.has(reminderKey)) continue;
+
+                    // 只统计未过期的（还没到的）提醒
+                    if (timeParsed.key > nowTime) {
+                        count++; // 未过期，还在今天的时间范围内
+                    }
+                }
+            }
+
+            return count;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    /**
+     * 统计所有已过期的提醒数量（包括今日及之前的所有过期）
+     */
+    async function countExpiredReminders() {
+        try {
+            const reminders = await queryAllReminderBlocks();
+            if (!reminders || reminders.length === 0) {
+                return 0;
+            }
+
+            const now = new Date();
+            const nowDateKey = formatDateKey(now);
+            const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+            let count = 0;
+            for (const item of reminders) {
+                if (!item.enabled) continue;
+
+                const times = item.times || [];
+                if (times.length === 0) continue;
+
+                const interval = item.interval || 'once';
+                const startDate = item.startDate || formatDateKey(item.createdAt);
+                const start = toDateSafe(startDate);
+
+                if (!(start instanceof Date) || isNaN(start.getTime())) continue;
+
+                for (const time of times) {
+                    const timeParsed = __parseTime(time);
+                    if (!timeParsed) continue;
+
+                    if (interval === 'once') {
+                        // 一次性提醒
+                        if (startDate > nowDateKey) continue;
+
+                        const reminderDateTime = new Date(startDate + 'T' + timeParsed.key);
+                        if (reminderDateTime < now) {
+                            const reminderKey = __reminderOccurrenceKey(startDate, timeParsed.key);
+                            const completedSet = __getReminderCompletedSet(item);
+                            if (!completedSet.has(reminderKey)) {
+                                count++;
+                            }
+                        }
+                    } else {
+                        // 重复提醒
+                        const current = new Date(start);
+                        while (current <= now) {
+                            const currentDateKey = formatDateKey(current);
+                            const reminderDateTime = new Date(currentDateKey + 'T' + timeParsed.key);
+
+                            if (reminderDateTime < now) {
+                                // 排除今日未过期的（今日还没到的提醒不算过期）
+                                const isToday = currentDateKey === nowDateKey;
+                                const isTimePassed = timeParsed.key <= nowTime;
+                                if (isToday && !isTimePassed) {
+                                    current.setDate(current.getDate() + 1);
+                                    continue;
+                                }
+
+                                const reminderKey = __reminderOccurrenceKey(currentDateKey, timeParsed.key);
+                                const completedSet = __getReminderCompletedSet(item);
+                                if (!completedSet.has(reminderKey)) {
+                                    count++;
+                                }
+                            }
+
+                            current.setDate(current.getDate() + 1);
+                        }
+                    }
+                }
+            }
+
+            return count;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    /**
+     * 更新Dock图标上的角标
+     */
+    async function updateReminderBadge() {
+        try {
+            const todayCount = await countTodayReminders();
+            const expiredCount = await countExpiredReminders();
+            const totalCount = todayCount + expiredCount;
+
+            // 存储到全局变量，供index.js使用
+            globalThis.__tomatoReminderBadge = {
+                today: todayCount,
+                expired: expiredCount,
+                total: totalCount
+            };
+
+            // 暴露到全局，供index.js调用
+            globalThis.__tomatoUpdateReminderBadge = updateReminderBadge;
+
+            // 触发自定义事件通知index.js更新角标
+            if (typeof Event === 'function') {
+                window.dispatchEvent(new CustomEvent('tomato-reminder-badge-update', {
+                    detail: { today: todayCount, expired: expiredCount, total: totalCount }
+                }));
+            }
+        } catch (e) {
+            console.error('更新提醒角标失败:', e);
+        }
+    }
+
+    // 插件加载时检查过期事项
+    // 在初始化完成后调用
+    setTimeout(async () => {
+        await checkAndShowExpiredReminders();
+        await updateReminderBadge();
+    }, 1000);
+
+    // 定期更新角标（每30秒）
+    setInterval(async () => {
+        await updateReminderBadge();
+    }, 30000);
 
     function recordStartTime() {
         currentStartTimestamp = new Date().toISOString();
@@ -16905,8 +17568,10 @@ function calculateWeeklyStats(dailyStatsArray) {
             deleteBtn.style.opacity = '0.7';
             deleteBtn.style.backgroundColor = 'transparent';
         };
-        
-        deleteBtn.onclick = async (e) => {
+
+        // 移动端使用触摸事件直接删除，桌面端使用点击事件
+        const isMobile = isMobileDevice();
+        const deleteHandler = async (e) => {
             e.stopPropagation();
 
             // 禁用按钮防止重复点击
@@ -16941,6 +17606,17 @@ function calculateWeeklyStats(dailyStatsArray) {
                 deleteBtn.style.opacity = '0.7';
             }
         };
+
+        if (isMobile) {
+            // 移动端使用 touchend 事件
+            deleteBtn.addEventListener('touchend', deleteHandler);
+            // 阻止触摸事件的默认行为，防止产生 click 事件
+            deleteBtn.addEventListener('touchstart', (e) => {
+                e.stopPropagation();
+            }, { passive: true });
+        } else {
+            deleteBtn.onclick = deleteHandler;
+        }
         
         rightContent.appendChild(timerInfo);
         rightContent.appendChild(deleteBtn);
@@ -24761,6 +25437,10 @@ function calculateWeeklyStats(dailyStatsArray) {
         try { currentPauseStart = null; } catch (e) {}
         try { floatBarHiddenByUser = true; } catch (e) {}
         try { isUsingFloatBar = false; } catch (e) {}
+        try { isTimelineExpanded = false; } catch (e) {}
+        try { isTimelineUserDragging = false; } catch (e) {}
+        try { timelineFullDayLocked = false; } catch (e) {}
+        try { timelineExpandedByClick = false; } catch (e) {}
         try { if (syncState) { syncState.status = 'IDLE'; syncState.startTime = null; syncState.stopwatchStartTimeMs = null; syncState.distractionCount = 0; syncState.distractionSavedCount = 0; } } catch (e) {}
         try { EventManager.removeAll(); } catch (e) {}
         try { ObserverManager.disconnectAll(); } catch (e) {}
@@ -25057,10 +25737,10 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (ok) {
                 try { __pruneCompletedOccurrencesGlobal(30); } catch (e) {}
                 try { refreshReminderDockPanel(); } catch (e) {}
+                try { updateReminderBadge(); } catch (e) {}
             }
             return ok;
         } catch (e) {
-            try { Logger.warn('标记提醒已完成失败:', e?.message || e); } catch (e2) {}
             return false;
         }
     };
@@ -25079,10 +25759,10 @@ function calculateWeeklyStats(dailyStatsArray) {
             const ok = await saveBlockReminder(blockId, next);
             if (ok) {
                 try { refreshReminderDockPanel(); } catch (e) {}
+                try { updateReminderBadge(); } catch (e) {}
             }
             return ok;
         } catch (e) {
-            try { Logger.warn('撤销提醒完成状态失败:', e?.message || e); } catch (e2) {}
             return false;
         }
     };
@@ -25974,17 +26654,17 @@ function calculateWeeklyStats(dailyStatsArray) {
     async function saveBlockReminder(blockId, reminderData) {
         try {
             const getRes = await postJSON('/api/attr/getBlockAttrs', { id: blockId });
-            if (!getRes.ok) { Logger.warn('获取块属性失败'); return false; }
+            if (!getRes.ok) { return false; }
             const currentAttrs = getRes.data?.data || {};
             const attrs = { ...currentAttrs, 'custom-tomato-reminder': JSON.stringify(reminderData) };
             const setRes = await postJSON('/api/attr/setBlockAttrs', { id: blockId, attrs });
             if (setRes.ok && setRes.data?.code === 0) {
-                Logger.info('块提醒设置已保存:', blockId);
                 try { await postJSON('/api/sqlite/flushTransaction', {}); } catch (e) {}
                 try { refreshReminderDockPanel(); } catch (e) {}
+                try { updateReminderBadge(); } catch (e) {}
                 return true;
             }
-        } catch (e) { Logger.error('保存块提醒设置失败:', e); }
+        } catch (e) {}
         return false;
     }
     
@@ -26004,12 +26684,12 @@ function calculateWeeklyStats(dailyStatsArray) {
         try {
             const setRes = await postJSON('/api/attr/setBlockAttrs', { id: blockId, attrs: { 'custom-tomato-reminder': '' } });
             if (setRes.ok && setRes.data?.code === 0) {
-                Logger.info('块提醒已删除:', blockId);
                 try { await postJSON('/api/sqlite/flushTransaction', {}); } catch (e) {}
                 try { refreshReminderDockPanel(); } catch (e) {}
+                try { updateReminderBadge(); } catch (e) {}
                 return true;
             }
-        } catch (e) { Logger.error('删除块提醒失败:', e); }
+        } catch (e) {}
         return false;
     }
     
@@ -26522,7 +27202,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             item.appendChild(name);
 
             const statusLine = document.createElement('div');
-            statusLine.textContent = (entry.kind === 'expired' ? '已过期：' : '未完成：') + dateKey + ' ' + timeKey;
+            statusLine.innerHTML = (entry.kind === 'expired' ? '<span style="color:#e74c3c">已过期</span>：' : '未完成：') + dateKey + ' ' + timeKey;
             statusLine.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);margin-top:2px;';
             item.appendChild(statusLine);
 
@@ -26550,10 +27230,9 @@ function calculateWeeklyStats(dailyStatsArray) {
             deleteBtn.title = '删除';
             deleteBtn.style.cssText = 'padding:4px 8px;border:none;border-radius:4px;background:rgba(244,67,54,0.1);cursor:pointer;font-size:11px;color:#f44336;';
             deleteBtn.onclick = async () => {
-                if (confirm('确定要删除这个提醒吗？')) {
-                    const success = await deleteBlockReminder(reminder.blockId);
-                    if (success) { showMiniToast('提醒已删除'); renderReminderDockList(sortBy); }
-                }
+                // 移动端直接删除，无需确认
+                const success = await deleteBlockReminder(reminder.blockId);
+                if (success) { showMiniToast('提醒已删除'); renderReminderDockList(sortBy); }
             };
 
             const doneBtn = document.createElement('button');
@@ -26664,5 +27343,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.5.8 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.5.9 已加载');
 })();
