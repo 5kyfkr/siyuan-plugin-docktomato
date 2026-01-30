@@ -1,6 +1,6 @@
 // @name         思源笔记简易番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.5.9
+// @version      1.6.0
 // @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
 
 (function () {
@@ -24567,12 +24567,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                             }
                             refreshHistoryDialogIfOpen();
                             const lastSyncAt = handleStateChange._lastHistorySiyuanSyncAt || 0;
+                            // 🔧 修复：移除重复的 triggerSiyuanSync 调用，避免与 saveToCloud 中的 500ms 延迟触发冲突
+                            // 同步由 saveToCloud 中的 triggerSiyuanSync 处理，这里只记录日志
                             if (!document.hidden && SyncManager && typeof SyncManager.triggerSiyuanSync === 'function' && now - lastSyncAt > 12000) {
                                 handleStateChange._lastHistorySiyuanSyncAt = now;
-                                // 延迟500ms再同步，避免状态文件还未写入就触发同步
-                                (async () => {
-                                    try { setTimeout(() => { SyncManager.triggerSiyuanSync(false); }, 500); } catch (e) {}
-                                })();
+                                Logger.debug('🔄 handleStateChange: 远程状态变化，跳过 triggerSiyuanSync（由 saveToCloud 处理）');
                             }
                         } catch (e) {}
                     };
@@ -26704,7 +26703,12 @@ function calculateWeeklyStats(dailyStatsArray) {
             const getRes = await postJSON('/api/attr/getBlockAttrs', { id: blockId });
             if (!getRes.ok) { return false; }
             const currentAttrs = getRes.data?.data || {};
-            const attrs = { ...currentAttrs, 'custom-tomato-reminder': JSON.stringify(reminderData) };
+            // 添加提醒时，同时设置书签属性为⏰
+            const attrs = {
+                ...currentAttrs,
+                'custom-tomato-reminder': JSON.stringify(reminderData),
+                'bookmark': '⏰'
+            };
             const setRes = await postJSON('/api/attr/setBlockAttrs', { id: blockId, attrs });
             if (setRes.ok && setRes.data?.code === 0) {
                 try { await postJSON('/api/sqlite/flushTransaction', {}); } catch (e) {}
@@ -26730,7 +26734,14 @@ function calculateWeeklyStats(dailyStatsArray) {
     
     async function deleteBlockReminder(blockId) {
         try {
-            const setRes = await postJSON('/api/attr/setBlockAttrs', { id: blockId, attrs: { 'custom-tomato-reminder': '' } });
+            // 删除提醒时，同时移除书签属性
+            const setRes = await postJSON('/api/attr/setBlockAttrs', {
+                id: blockId,
+                attrs: {
+                    'custom-tomato-reminder': '',
+                    'bookmark': ''
+                }
+            });
             if (setRes.ok && setRes.data?.code === 0) {
                 try { await postJSON('/api/sqlite/flushTransaction', {}); } catch (e) {}
                 try { refreshReminderDockPanel(); } catch (e) {}
@@ -27391,5 +27402,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.5.9 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.6.0 已加载');
 })();
