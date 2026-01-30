@@ -3629,17 +3629,65 @@
         }
     }
 
+    // 记录上次检查过期提醒的日期，避免同一天内重复提醒
+    let lastExpiredCheckDate = null;
+
     // 插件加载时检查过期事项
     // 在初始化完成后调用
     setTimeout(async () => {
         await checkAndShowExpiredReminders();
         await updateReminderBadge();
+
+        // 启动定时检查：每天早上8点检查过期事项
+        scheduleExpiredReminderCheck();
     }, 1000);
 
-    // 定期更新角标（每30秒）
+    /**
+     * 定时检查过期提醒（每天8点）
+     */
+    function scheduleExpiredReminderCheck() {
+        const checkExpired = async () => {
+            const now = new Date();
+            const todayKey = formatDateKey(now);
+
+            // 如果今天已经检查过，就不再检查
+            if (lastExpiredCheckDate === todayKey) {
+                return;
+            }
+
+            // 检查并显示过期提醒
+            await checkAndShowExpiredReminders();
+            lastExpiredCheckDate = todayKey;
+        };
+
+        // 立即执行一次检查（插件加载时）
+        checkExpired();
+
+        // 设置定时器：每分钟检查一次是否需要执行8点检查
+        setInterval(() => {
+            const now = new Date();
+            const currentHour = now.getHours();
+            const currentMinute = now.getMinutes();
+
+            // 在8:00-8:05之间执行检查
+            if (currentHour === 8 && currentMinute <= 5) {
+                checkExpired();
+            }
+
+            // 🔧 修复：检查是否错过了今天的8点检查（适用于休眠后唤醒的情况）
+            // 如果当前时间超过8:05，且今天还没检查过，则在唤醒后立即检查一次
+            if (currentHour > 8 || (currentHour === 8 && currentMinute > 5)) {
+                if (lastExpiredCheckDate !== formatDateKey(now)) {
+                    checkExpired();
+                }
+            }
+        }, 60000); // 每分钟检查一次
+    }
+
+    // 定期更新角标（每1分钟）
     setInterval(async () => {
         await updateReminderBadge();
-    }, 30000);
+    }, 60000);
 
     function recordStartTime() {
         currentStartTimestamp = new Date().toISOString();
