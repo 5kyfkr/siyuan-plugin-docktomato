@@ -270,7 +270,12 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             const mainSettings = globalThis.__dockTomatoMainSettings || DEFAULT_MAIN_SETTINGS;
             if (!mainSettings.remindersEnabled) return;
             const existingPlacement = inferDockPlacementFromUiLayout(REMINDER_DOCK_TYPE);
-            const dock = this.addDock({
+
+            // 查找或创建dock图标容器
+            let dockElement = null;
+            let badgeElement = null;
+
+            this.addDock({
                 type: REMINDER_DOCK_TYPE,
                 config: {
                     position: existingPlacement?.position || "RightBottom",
@@ -285,11 +290,148 @@ module.exports = class TomatoTimerPlugin extends Plugin {
                     if (typeof mount === "function") {
                         mount(this.element);
                     }
+
+                    // 延迟查找dock图标并添加角标
+                    setTimeout(() => {
+                        findAndCreateDockBadge();
+                    }, 1000);
                 },
             });
-        } catch (e) {
-            console.error("[tomato] addDock failed", e);
-        }
+
+            // 查找并创建Dock图标角标
+            const findAndCreateDockBadge = async () => {
+                try {
+                    // 尝试获取全局角标数据
+                    const badgeData = globalThis.__tomatoReminderBadge;
+                    const count = badgeData?.total || 0;
+
+                    // 多种方式查找Dock图标
+                    let container = null;
+
+                    // 方式1：通过data-type属性查找
+                    const typeIcons = document.querySelectorAll('[data-type="::tomato-reminder"]');
+                    for (const icon of typeIcons) {
+                        const found = icon.closest('.dock__item') || icon.closest('.dock__panel') || icon;
+                        if (found) {
+                            container = found;
+                            break;
+                        }
+                    }
+
+                    // 方式2：通过图标SVG查找（iconClock）
+                    if (!container) {
+                        const svgIcons = document.querySelectorAll('svg.iconClock');
+                        for (const svg of svgIcons) {
+                            const found = svg.closest('.dock__item') || svg.closest('.dock__panel') || svg;
+                            if (found) {
+                                container = found;
+                                break;
+                            }
+                        }
+                    }
+
+                    // 方式3：查找所有dock项，查找包含"提醒"或"clock"图标的
+                    if (!container) {
+                        const dockItems = document.querySelectorAll('.dock__item, .dock__panel');
+                        for (const item of dockItems) {
+                            const title = item.title || item.getAttribute('aria-label') || '';
+                            if (title.includes('提醒') || title.includes('Clock')) {
+                                container = item;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!container) {
+                        // 5秒后重试
+                        setTimeout(findAndCreateDockBadge, 5000);
+                        return;
+                    }
+
+                    // 检查是否已经存在角标
+                    const existingBadge = container.querySelector('.tomato-reminder-badge');
+                    if (existingBadge) {
+                        badgeElement = existingBadge;
+                    } else {
+                        // 创建角标
+                        badgeElement = document.createElement('div');
+                        badgeElement.className = 'tomato-reminder-badge';
+
+                        // 设置容器为相对定位
+                        container.style.position = 'relative';
+
+                        // 添加角标样式
+                        badgeElement.style.cssText = `
+                            position: absolute;
+                            top: -4px;
+                            right: -4px;
+                            min-width: 18px;
+                            height: 18px;
+                            line-height: 18px;
+                            text-align: center;
+                            font-size: 10px;
+                            font-weight: bold;
+                            color: white;
+                            background: #f44336;
+                            border-radius: 9px;
+                            padding: 0 4px;
+                            box-sizing: border-box;
+                            z-index: 1000;
+                            display: ${count > 0 ? 'flex' : 'none'};
+                            align-items: center;
+                            justify-content: center;
+                        `;
+
+                        badgeElement.textContent = count > 99 ? '99+' : (count > 0 ? count : '');
+                        container.appendChild(badgeElement);
+                    }
+
+                    // 存储引用
+                    globalThis.__tomatoReminderBadgeElement = badgeElement;
+
+                } catch (e) {
+                    // 5秒后重试
+                    setTimeout(findAndCreateDockBadge, 5000);
+                }
+            };
+
+            // 更新角标数量
+            const updateBadgeCount = async () => {
+                try {
+                    const badgeData = globalThis.__tomatoReminderBadge;
+                    const count = badgeData?.total || 0;
+
+                    if (badgeElement) {
+                        badgeElement.textContent = count > 99 ? '99+' : (count > 0 ? count : '');
+                        badgeElement.style.display = count > 0 ? 'flex' : 'none';
+                    }
+
+                    // 存储引用
+                    globalThis.__tomatoReminderBadgeElement = badgeElement;
+                } catch (e) {}
+            };
+
+            // 监听自定义事件更新角标
+            if (typeof Event === "function") {
+                window.addEventListener("tomato-reminder-badge-update", (e) => {
+                    const count = e.detail?.total || 0;
+                    if (badgeElement) {
+                        badgeElement.textContent = count > 99 ? '99+' : (count > 0 ? count : '');
+                        badgeElement.style.display = count > 0 ? 'flex' : 'none';
+                    }
+                });
+            }
+
+            // 定期刷新角标（每30秒）
+            setInterval(async () => {
+                // 重新计算角标数据
+                if (typeof globalThis.__tomatoUpdateReminderBadge === 'function') {
+                    await globalThis.__tomatoUpdateReminderBadge();
+                }
+                await updateBadgeCount();
+            }, 30000);
+
+        } catch (e) {}
     }
 
     onunload() {
