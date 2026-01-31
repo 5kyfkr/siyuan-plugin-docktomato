@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.6.6
+// @version      1.6.8
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录
 
 (function () {
@@ -2088,6 +2088,8 @@
             breakDurations: DEFAULT_BREAK_DURATIONS,
             debugMode: DEFAULT_DEBUG_MODE,
             enableMobileSupport: DEFAULT_ENABLE_MOBILE_SUPPORT,
+            enableFocusMode: true,
+            focusModeDimOpacity: 0.5,
             extendTomatoOnDistraction: true,
             defaultTomatoTime: DEFAULT_TOMATO_TIME, // 默认番茄时间（分钟）
             showHoursInTimerFormat: false, // 超过60分钟时显示"X小时Y分Z秒"格式，默认关闭
@@ -2198,6 +2200,12 @@
         userSettings.main.breakDurations = normalizeMinuteList(userSettings.main.breakDurations, DEFAULT_BREAK_DURATIONS);
         userSettings.main.debugMode = userSettings.main.debugMode === true;
         userSettings.main.enableMobileSupport = userSettings.main.enableMobileSupport !== false;
+        if (typeof userSettings.main.enableFocusMode !== 'boolean') userSettings.main.enableFocusMode = true;
+        {
+            const v = Number(userSettings.main.focusModeDimOpacity);
+            if (!Number.isFinite(v)) userSettings.main.focusModeDimOpacity = 0.5;
+            else userSettings.main.focusModeDimOpacity = Math.max(0, Math.min(1, v));
+        }
         userSettings.main.extendTomatoOnDistraction = userSettings.main.extendTomatoOnDistraction !== false;
         if (typeof userSettings.main.distractionToastText !== 'string') userSettings.main.distractionToastText = '已记录一次分心（{count} 次）';
         if (typeof userSettings.main.enableSystemDialogRepeatReminder !== 'boolean') userSettings.main.enableSystemDialogRepeatReminder = true;
@@ -2666,6 +2674,7 @@
             } catch (localError) {}
         }
         try { ensureUserSettings(); } catch (e) {}
+        try { applyFocusModeDimOpacity(); } catch (e) {}
         try { Logger.setDebugEnabled(isDebugMode()); } catch (e) {}
         return userSettings;
     }
@@ -19233,9 +19242,23 @@ function calculateWeeklyStats(dailyStatsArray) {
                 0%, 100% {
                     opacity: 0.4;  // 较暗
                 }
-                50% {
-                    opacity: 1;   // 最亮
+                50% { 
+                    opacity: 1;    // 最亮
                 }
+            }
+
+            /* 聚焦模式样式：降低非高亮内容的透明度（但保留任务块/高亮块） */
+            .tomato-focus-mode > [data-node-id]:not(.tomato-task-highlight):not(.tomato-keep-opaque) {
+                opacity: var(--tomato-focus-dim-opacity, 0.5) !important;
+                transition: opacity 0.5s ease !important;
+            }
+            
+            /* 保持高亮块/任务块清晰 */
+            .tomato-focus-mode .tomato-task-highlight,
+            .tomato-focus-mode .tomato-db-row-highlight,
+            .tomato-focus-mode .tomato-keep-opaque {
+                opacity: 1 !important;
+                transition: opacity 0.5s ease !important;
             }
 
             .tomato-preview-bar--completing {
@@ -19743,6 +19766,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                 document.querySelectorAll('.tomato-db-row-highlight').forEach(el => {
                     el.classList.remove('tomato-db-row-highlight');
                 });
+                applyFocusMode(false);
+                applyDatabaseFocusMode(false);
             }
         }
     }
@@ -20020,6 +20045,120 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
     }
 
+    function getActiveEditorArea() {
+        return document.querySelector('.protyle--focus .protyle-wysiwyg, .protyle--focus .protyle-content') ||
+            document.querySelector('.protyle-wysiwyg, .protyle-content');
+    }
+
+    function getEditorAreaForElement(anchorEl) {
+        return anchorEl?.closest?.('.protyle-wysiwyg, .protyle-content') || getActiveEditorArea();
+    }
+
+    function getTopLevelBlockInEditor(editorArea, el) {
+        if (!editorArea || !el) return null;
+        let current = el;
+        while (current && current !== editorArea) {
+            if (current.parentElement === editorArea) return current;
+            current = current.parentElement;
+        }
+        return null;
+    }
+
+    function clearFocusKeepOpaque(editorArea) {
+        if (!editorArea) return;
+        editorArea.querySelectorAll('.tomato-keep-opaque').forEach(el => el.classList.remove('tomato-keep-opaque'));
+    }
+
+    function getFocusModeDimOpacity() {
+        const v = Number(userSettings?.main?.focusModeDimOpacity);
+        if (!Number.isFinite(v)) return 0.5;
+        return Math.max(0, Math.min(1, v));
+    }
+
+    function applyFocusModeDimOpacity() {
+        try {
+            document.documentElement.style.setProperty('--tomato-focus-dim-opacity', String(getFocusModeDimOpacity()));
+        } catch (e) {}
+    }
+
+    function refreshFocusKeepOpaque(editorArea, anchorEl) {
+        if (!editorArea) return;
+
+        clearFocusKeepOpaque(editorArea);
+
+        const taskBlocks = editorArea.querySelectorAll('.li[data-subtype="t"][data-node-id], [data-type="NodeListItem"][data-subtype="t"][data-node-id]');
+        taskBlocks.forEach(taskEl => {
+            const topLevel = getTopLevelBlockInEditor(editorArea, taskEl);
+            if (topLevel?.hasAttribute?.('data-node-id')) {
+                topLevel.classList.add('tomato-keep-opaque');
+            }
+        });
+
+        if (anchorEl) {
+            const topLevel = getTopLevelBlockInEditor(editorArea, anchorEl) || anchorEl.closest?.('[data-node-id]');
+            if (topLevel && editorArea.contains(topLevel) && topLevel.hasAttribute?.('data-node-id')) {
+                topLevel.classList.add('tomato-keep-opaque');
+            }
+        }
+    }
+
+    // 🔧 新增：聚焦模式，降低非高亮元素的透明度
+    function applyFocusMode(enable, anchorEl = null) {
+        if (isMobileDevice()) return; // 移动端不应用
+
+        const focusModeEnabled = userSettings?.main?.enableFocusMode !== false;
+        if (!focusModeEnabled) enable = false;
+
+        if (!enable) {
+            document.querySelectorAll('.protyle-wysiwyg.tomato-focus-mode, .protyle-content.tomato-focus-mode').forEach(area => {
+                area.classList.remove('tomato-focus-mode');
+                clearFocusKeepOpaque(area);
+            });
+            return;
+        }
+
+        const editorArea = getEditorAreaForElement(anchorEl);
+        if (!editorArea) return;
+
+        editorArea.classList.add('tomato-focus-mode');
+        refreshFocusKeepOpaque(editorArea, anchorEl);
+    }
+
+    function clearDatabaseFocusKeepOpaque(av) {
+        if (!av) return;
+        av.querySelectorAll('.tomato-av-keep-opaque').forEach(el => el.classList.remove('tomato-av-keep-opaque'));
+    }
+
+    function applyDatabaseFocusMode(enable, anchorEl = null) {
+        if (isMobileDevice()) return;
+
+        const focusModeEnabled = userSettings?.main?.enableFocusMode !== false;
+        if (!focusModeEnabled) enable = false;
+
+        if (!enable) {
+            document.querySelectorAll('.av.tomato-av-focus-mode').forEach(av => {
+                av.classList.remove('tomato-av-focus-mode');
+                clearDatabaseFocusKeepOpaque(av);
+            });
+            return;
+        }
+
+        const av = anchorEl?.closest?.('.av');
+        if (!av) return;
+
+        document.querySelectorAll('.av.tomato-av-focus-mode').forEach(otherAv => {
+            if (otherAv === av) return;
+            otherAv.classList.remove('tomato-av-focus-mode');
+            clearDatabaseFocusKeepOpaque(otherAv);
+        });
+
+        av.classList.add('tomato-av-focus-mode');
+        clearDatabaseFocusKeepOpaque(av);
+
+        const keepEl = anchorEl.closest?.('.av__row, .av__gallery-item, .av__kanban-item') || anchorEl;
+        keepEl?.classList?.add('tomato-av-keep-opaque');
+    }
+
     // 高亮显示当前计时关联的任务块
     // ✅ 修复：添加 quiet 参数以减少日志输出（保持高亮时不需要日志）
     // 🔧 扩展：支持数据库块引用高亮
@@ -20032,6 +20171,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         if (!blockId) {
             if (!quiet) Logger.info('🔍 高亮任务块: 未提供 blockId');
+            applyFocusMode(false); // 取消聚焦模式
+            applyDatabaseFocusMode(false);
             return;
         }
 
@@ -20055,6 +20196,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         // 面包屑的父容器是 .protyle-breadcrumb，需要排除
         const editorArea = document.querySelector('.protyle-wysiwyg, .protyle-content');
         let foundTaskBlock = false;
+        let highlightedElement = null;
         
         if (editorArea) {
             // 在编辑器区域内查找.li元素（任务块）
@@ -20071,6 +20213,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                     } catch (e) {}
                 }
                 foundTaskBlock = true;
+                highlightedElement = liElement;
             } else {
                 // 如果没找到.li，查找.p元素
                 const pElement = editorArea.querySelector(`.p[data-node-id="${blockId}"]`);
@@ -20086,6 +20229,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         } catch (e) {}
                     }
                     foundTaskBlock = true;
+                    highlightedElement = pElement;
                 }
             }
         }
@@ -20108,9 +20252,13 @@ function calculateWeeklyStats(dailyStatsArray) {
                     } catch (e) {}
                 }
                 foundTaskBlock = true;
+                highlightedElement = el;
                 break;
             }
         }
+
+        // 应用聚焦模式（如果有找到高亮块）
+        applyFocusMode(foundTaskBlock, highlightedElement);
 
         // 无论是否找到任务块，都尝试高亮数据库行（如果存在）
         // 检查是否已经有对应的数据库高亮
@@ -20127,6 +20275,11 @@ function calculateWeeklyStats(dailyStatsArray) {
             // 尝试高亮数据库行（不重试，避免性能问题）
             // 注意：highlightDatabaseRow 是异步的，但在同一帧内执行 DOM 查找
             highlightDatabaseRow(blockId, 1, 0);
+        } else if (!foundTaskBlock) {
+            const existingDbHighlight = [...document.querySelectorAll('.tomato-db-row-highlight')].find(el => el.querySelector?.(`[data-id="${blockId}"]`));
+            if (existingDbHighlight && existingDbHighlight.closest?.('.protyle-wysiwyg, .protyle-content')) {
+                applyFocusMode(true, existingDbHighlight);
+            }
         }
 
         if (!foundTaskBlock && !hasCurrentDbRef && !quiet && !document.querySelector('.tomato-db-row-highlight')) {
@@ -20202,6 +20355,9 @@ function calculateWeeklyStats(dailyStatsArray) {
         document.querySelectorAll('.tomato-db-row-highlight').forEach(el => {
             el.classList.remove('tomato-db-row-highlight');
         });
+        // 清除聚焦模式
+        applyFocusMode(false);
+        applyDatabaseFocusMode(false);
     }
 
     /**
@@ -20313,6 +20469,12 @@ function calculateWeeklyStats(dailyStatsArray) {
                 blockRef.classList.add('tomato-db-row-highlight');
                 Logger.info('✅ 高亮 block-ref 本身');
             }
+
+            const focusAnchor = highlightTarget || blockRef;
+            if (focusAnchor.closest?.('.protyle-wysiwyg, .protyle-content')) {
+                applyFocusMode(true, focusAnchor);
+            }
+            applyDatabaseFocusMode(true, focusAnchor);
 
             // 滚动到可见区域
             try {
@@ -22830,6 +22992,54 @@ function calculateWeeklyStats(dailyStatsArray) {
                 }
             } catch (e) {}
         });
+
+        mkToggleRow('聚焦模式（高亮任务/数据库时淡化其它内容）', userSettings?.main?.enableFocusMode !== false, async (e) => {
+            userSettings.main.enableFocusMode = e.target.checked;
+            await saveUserSettings();
+            if (!userSettings.main.enableFocusMode) {
+                applyFocusMode(false);
+                applyDatabaseFocusMode(false);
+            }
+        });
+
+        {
+            const row = document.createElement('div');
+            row.style.cssText = 'padding: 10px 0;';
+            const label = document.createElement('div');
+            label.textContent = '聚焦模式淡化透明度（0-1）';
+            label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.min = '0';
+            input.max = '1';
+            input.step = '0.05';
+            input.value = String(getFocusModeDimOpacity());
+            input.style.cssText = `
+                width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px;
+                border: 1px solid var(--b3-border-color); font-size: 13px;
+                background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+            `;
+            input.oninput = (e) => {
+                const v = Number(e.target.value);
+                if (!Number.isFinite(v)) return;
+                userSettings.main.focusModeDimOpacity = Math.max(0, Math.min(1, v));
+                applyFocusModeDimOpacity();
+            };
+            input.onchange = async (e) => {
+                const v = Number(e.target.value);
+                if (!Number.isFinite(v)) {
+                    e.target.value = String(getFocusModeDimOpacity());
+                    return;
+                }
+                userSettings.main.focusModeDimOpacity = Math.max(0, Math.min(1, v));
+                e.target.value = String(userSettings.main.focusModeDimOpacity);
+                applyFocusModeDimOpacity();
+                await saveUserSettings();
+            };
+            row.appendChild(label);
+            row.appendChild(input);
+            togglesSection.appendChild(row);
+        }
 
         mkToggleRow('分心记录延长番茄时间（每次+1分钟）', userSettings?.main?.extendTomatoOnDistraction !== false, async (e) => {
             userSettings.main.extendTomatoOnDistraction = e.target.checked;
@@ -25594,6 +25804,31 @@ function calculateWeeklyStats(dailyStatsArray) {
                     border-left: 3px solid var(--b3-theme-primary, #1E88E5) !important;
                     transition: all 0.3s ease;
                 }
+                .av.tomato-av-focus-mode .av__row:not(.tomato-av-keep-opaque),
+                .av.tomato-av-focus-mode .av__gallery-item:not(.tomato-av-keep-opaque),
+                .av.tomato-av-focus-mode .av__kanban-item:not(.tomato-av-keep-opaque) {
+                    opacity: var(--tomato-focus-dim-opacity, 0.5) !important;
+                    transition: opacity 0.5s ease !important;
+                }
+                .av.tomato-av-focus-mode .av__views,
+                .av.tomato-av-focus-mode .av__view,
+                .av.tomato-av-focus-mode .av__toolbar,
+                .av.tomato-av-focus-mode .av__header,
+                .av.tomato-av-focus-mode .av__top,
+                .av.tomato-av-focus-mode .av__title,
+                .av.tomato-av-focus-mode .av__nav,
+                .av.tomato-av-focus-mode .av__filter,
+                .av.tomato-av-focus-mode .av__sort,
+                .av.tomato-av-focus-mode .av__group,
+                .av.tomato-av-focus-mode .av__group-name {
+                    opacity: var(--tomato-focus-dim-opacity, 0.5) !important;
+                    transition: opacity 0.5s ease !important;
+                }
+                .av.tomato-av-focus-mode .tomato-av-keep-opaque,
+                .av.tomato-av-focus-mode .tomato-av-keep-opaque * {
+                    opacity: 1 !important;
+                    transition: opacity 0.5s ease !important;
+                }
                 .tomato-task-link {
                     cursor: pointer;
                     transition: text-decoration 0.2s;
@@ -28057,5 +28292,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.6.6 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.6.8 已加载');
 })();
