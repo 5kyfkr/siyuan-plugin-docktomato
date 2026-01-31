@@ -25820,6 +25820,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 .av.tomato-av-focus-mode .av__filter,
                 .av.tomato-av-focus-mode .av__sort,
                 .av.tomato-av-focus-mode .av__group,
+                .av.tomato-av-focus-mode .av__group-title,
                 .av.tomato-av-focus-mode .av__group-name {
                     opacity: var(--tomato-focus-dim-opacity, 0.5) !important;
                     transition: opacity 0.5s ease !important;
