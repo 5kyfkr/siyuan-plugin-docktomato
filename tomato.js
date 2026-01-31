@@ -1,7 +1,7 @@
-// @name         思源笔记简易番茄钟
+// @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.6.0
-// @description  增加进度条霓虹风格，支持自定义颜色、呼吸效果、平滑效果等
+// @version      1.6.1
+// @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录
 
 (function () {
     'use strict';
@@ -3423,6 +3423,13 @@
 
                         // 如果提醒时间已过，且未完成
                         if (reminderDateTime < now) {
+                            // 排除今日未过期的（今日还没到的提醒不算过期）
+                            const isToday = startDate === nowDateKey;
+                            const isTimePassed = timeParsed.key <= nowTime;
+                            if (isToday && !isTimePassed) {
+                                continue;
+                            }
+
                             const completedSet = __getReminderCompletedSet(item);
                             if (!completedSet.has(reminderKey)) {
                                 return true; // 有过期未完成的
@@ -3430,36 +3437,29 @@
                         }
                     }
                 } else {
-                    // 重复提醒：从startDate开始检查到今天
-                    const current = new Date(start);
-                    while (current <= now) {
-                        const currentDateKey = formatDateKey(current);
+                    // 重复提醒
+                    // 如果 startDate 在今天之后，说明任务还没开始
+                    if (startDate > nowDateKey) {
+                        return false; // 还没到提醒时间
+                    }
 
-                        // 检查这一天的所有时间点
-                        for (const time of times) {
-                            const timeParsed = __parseTime(time);
-                            if (!timeParsed) continue;
+                    // 对于每个时间点单独处理
+                    for (const time of times) {
+                        const timeParsed = __parseTime(time);
+                        if (!timeParsed) continue;
 
-                            const reminderDateTime = new Date(currentDateKey + 'T' + timeParsed.key);
-                            const reminderKey = __reminderOccurrenceKey(currentDateKey, timeParsed.key);
+                        // 找到从 startDate 开始最近的一个提醒时间点
+                        const reminderDateTime = new Date(startDate + 'T' + timeParsed.key);
 
-                            // 如果提醒时间已过
-                            if (reminderDateTime < now) {
-                                // 今天的还没到时间不算过期
-                                const isToday = currentDateKey === nowDateKey;
-                                const isTimePassed = timeParsed.key <= nowTime;
-                                if (isToday && !isTimePassed) {
-                                    continue;
-                                }
-                                const completedSet = __getReminderCompletedSet(item);
-                                if (!completedSet.has(reminderKey)) {
-                                    return true; // 有过期未完成的
-                                }
+                        // 如果这个提醒时间在现在之前，说明它已经过期
+                        if (reminderDateTime < now) {
+                            // 检查是否已完成
+                            const reminderKey = __reminderOccurrenceKey(startDate, timeParsed.key);
+                            const completedSet = __getReminderCompletedSet(item);
+                            if (!completedSet.has(reminderKey)) {
+                                return true; // 有过期未完成的
                             }
                         }
-
-                        // 移动到下一天
-                        current.setDate(current.getDate() + 1);
                     }
                 }
 
@@ -3558,36 +3558,55 @@
 
                         const reminderDateTime = new Date(startDate + 'T' + timeParsed.key);
                         if (reminderDateTime < now) {
+                            // 排除今日未过期的（今日还没到的提醒不算过期）
+                            const isToday = startDate === nowDateKey;
+                            const isTimePassed = timeParsed.key <= nowTime;
+                            if (isToday && !isTimePassed) {
+                                continue;
+                            }
+
                             const reminderKey = __reminderOccurrenceKey(startDate, timeParsed.key);
-                            const completedSet = __getReminderCompletedSet(item);
+
+                            // 保护性检查：确保 completedOccurrences 数组存在
+                            const safeItem = item.completedOccurrences && Array.isArray(item.completedOccurrences)
+                                ? item
+                                : { ...item, completedOccurrences: [] };
+
+                            const completedSet = __getReminderCompletedSet(safeItem);
                             if (!completedSet.has(reminderKey)) {
                                 count++;
                             }
                         }
                     } else {
                         // 重复提醒
-                        const current = new Date(start);
-                        while (current <= now) {
-                            const currentDateKey = formatDateKey(current);
-                            const reminderDateTime = new Date(currentDateKey + 'T' + timeParsed.key);
+                        // 如果 startDate 在今天之后，说明任务还没开始
+                        if (startDate > nowDateKey) {
+                            continue; // 还没到提醒时间，跳过
+                        }
 
+                        // 对于每个时间点单独处理
+                        for (const time of times) {
+                            const timeParsed = __parseTime(time);
+                            if (!timeParsed) continue;
+
+                            // 找到从 startDate 开始最近的一个提醒时间点
+                            const reminderDateTime = new Date(startDate + 'T' + timeParsed.key);
+
+                            // 如果这个提醒时间在现在之前，说明它已经过期
                             if (reminderDateTime < now) {
-                                // 排除今日未过期的（今日还没到的提醒不算过期）
-                                const isToday = currentDateKey === nowDateKey;
-                                const isTimePassed = timeParsed.key <= nowTime;
-                                if (isToday && !isTimePassed) {
-                                    current.setDate(current.getDate() + 1);
-                                    continue;
-                                }
+                                // 检查是否已完成
+                                const reminderKey = __reminderOccurrenceKey(startDate, timeParsed.key);
 
-                                const reminderKey = __reminderOccurrenceKey(currentDateKey, timeParsed.key);
-                                const completedSet = __getReminderCompletedSet(item);
+                                // 保护性检查：确保 completedOccurrences 数组存在
+                                const safeItem = item.completedOccurrences && Array.isArray(item.completedOccurrences)
+                                    ? item
+                                    : { ...item, completedOccurrences: [] };
+
+                                const completedSet = __getReminderCompletedSet(safeItem);
                                 if (!completedSet.has(reminderKey)) {
                                     count++;
                                 }
                             }
-
-                            current.setDate(current.getDate() + 1);
                         }
                     }
                 }
@@ -3640,6 +3659,11 @@
 
         // 启动定时检查：每天早上8点检查过期事项
         scheduleExpiredReminderCheck();
+        // 立即显示过期提醒数量（如果有的话）
+        const expiredCount = await countExpiredReminders();
+        if (expiredCount > 0) {
+            Logger.info('📅 检测到 ' + expiredCount + ' 个过期提醒');
+        }
     }, 1000);
 
     /**
@@ -3661,6 +3685,7 @@
         };
 
         // 立即执行一次检查（插件加载时）
+        // 注意：这里不等待，因为初始化时已经调用过了
         checkExpired();
 
         // 设置定时器：每分钟检查一次是否需要执行8点检查
@@ -3668,20 +3693,21 @@
             const now = new Date();
             const currentHour = now.getHours();
             const currentMinute = now.getMinutes();
+            const todayKey = formatDateKey(now);
 
             // 在8:00-8:05之间执行检查
             if (currentHour === 8 && currentMinute <= 5) {
                 checkExpired();
             }
 
-            // 🔧 修复：检查是否错过了今天的8点检查（适用于休眠后唤醒的情况）
+            // 检查是否错过了今天的8点检查（适用于休眠后唤醒的情况）
             // 如果当前时间超过8:05，且今天还没检查过，则在唤醒后立即检查一次
             if (currentHour > 8 || (currentHour === 8 && currentMinute > 5)) {
-                if (lastExpiredCheckDate !== formatDateKey(now)) {
+                if (lastExpiredCheckDate !== todayKey) {
                     checkExpired();
                 }
             }
-        }, 60000); // 每分钟检查一次
+        }, 60000);
     }
 
     // 定期更新角标（每1分钟）
@@ -25951,6 +25977,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (!show) return;
             const unit = selectedInterval === 'daily' ? '天' : selectedInterval === 'weekly' ? '周' : selectedInterval === 'monthly' ? '月' : selectedInterval === 'yearly' ? '年' : '';
             everyUnit.textContent = unit || '';
+            try { syncEndDateVisibility(); } catch (e) {}
         };
         everyInput.oninput = () => {
             const n = parseInt(everyInput.value, 10);
@@ -25961,6 +25988,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         everySection.appendChild(everyInput);
         everySection.appendChild(everyUnit);
         intervalSection.appendChild(everySection);
+
         content.appendChild(intervalSection);
         syncEveryVisibility();
 
@@ -25981,17 +26009,13 @@ function calculateWeeklyStats(dailyStatsArray) {
         dateSection.appendChild(dateHint);
         content.appendChild(dateSection);
 
-        const nextInfo = document.createElement('div');
-        nextInfo.style.cssText = 'margin:-6px 0 18px 0;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:12px;line-height:1.5;';
-        content.appendChild(nextInfo);
-        
         const timeSection = document.createElement('div');
         timeSection.style.cssText = 'margin-bottom:20px;';
         const timeLabel = document.createElement('div');
         timeLabel.textContent = '提醒时间（可添加多个）';
         timeLabel.style.cssText = 'font-size:14px;font-weight:500;margin-bottom:10px;';
         timeSection.appendChild(timeLabel);
-        
+
         const timeListContainer = document.createElement('div');
         timeListContainer.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-bottom:12px;';
         let reminderTimes = existingReminder?.times || ['09:00'];
@@ -26001,12 +26025,14 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const normalizedTimes = Array.from(new Set((reminderTimes || [])
                     .map(t => String(t || '').trim())
                     .filter(Boolean))).sort();
+                const endDate = String(endDateInput.value || '').trim();
                 const reminderPreview = {
                     blockId: blockId,
                     interval: selectedInterval,
                     every: selectedInterval === 'once' ? 1 : intervalEvery,
                     times: normalizedTimes,
                     startDate: String(dateInput.value || '').trim(),
+                    endDate: endDate || undefined,
                     createdAt: existingReminder?.createdAt || new Date().toISOString(),
                     enabled: true,
                 };
@@ -26049,14 +26075,44 @@ function calculateWeeklyStats(dailyStatsArray) {
         };
         renderTimeInputs();
         timeSection.appendChild(timeListContainer);
-        
+
         const addTimeBtn = document.createElement('button');
         addTimeBtn.textContent = '+ 添加提醒时间';
         addTimeBtn.style.cssText = 'width:100%;padding:10px;border:1px dashed var(--b3-theme-surface-light);border-radius:6px;background:transparent;color:var(--b3-theme-primary);cursor:pointer;font-size:13px;';
         addTimeBtn.onclick = () => { reminderTimes.push('12:00'); renderTimeInputs(); updateNextInfo(); };
         timeSection.appendChild(addTimeBtn);
         content.appendChild(timeSection);
-        
+
+        const nextInfo = document.createElement('div');
+        nextInfo.style.cssText = 'margin:-6px 0 18px 0;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:12px;line-height:1.5;';
+        content.appendChild(nextInfo);
+
+        // 截止日期设置（仅重复提醒显示）
+        const endDateSection = document.createElement('div');
+        endDateSection.style.cssText = 'margin-bottom:20px;display:none;'; // 默认隐藏
+        const endDateLabel = document.createElement('div');
+        endDateLabel.textContent = '截止日期（可选，设置后提醒将在此日期停止）';
+        endDateLabel.style.cssText = 'font-size:14px;font-weight:500;margin-bottom:8px;';
+        endDateSection.appendChild(endDateLabel);
+        const endDateInput = document.createElement('input');
+        endDateInput.type = 'date';
+        endDateInput.value = existingReminder?.endDate || '';
+        endDateInput.style.cssText = 'width:100%;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
+        const syncEndDateVisibility = () => {
+            const show = selectedInterval !== 'once';
+            endDateSection.style.display = show ? 'block' : 'none';
+        };
+        endDateInput.onchange = () => {
+            try { updateNextInfo(); } catch (e) {}
+        };
+        endDateSection.appendChild(endDateInput);
+        const endDateHint = document.createElement('div');
+        endDateHint.textContent = '留空表示永久重复提醒';
+        endDateHint.style.cssText = 'margin-top:6px;font-size:11px;color:var(--b3-theme-on-surface-light);';
+        endDateSection.appendChild(endDateHint);
+        content.appendChild(endDateSection);
+        syncEndDateVisibility();
+
         const noteSection = document.createElement('div');
         noteSection.style.cssText = 'margin-bottom:20px;';
         const noteLabel = document.createElement('div');
@@ -26087,6 +26143,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 .filter(Boolean)));
             if (normalizedTimes.length === 0) normalizedTimes.push('09:00');
             const startDate = String(dateInput.value || '').trim() || formatDateKey(new Date());
+            const endDate = String(endDateInput.value || '').trim();
             const customName = String(nameInput.value || '').trim();
             const reminderData = {
                 blockId,
@@ -26095,6 +26152,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 every: selectedInterval === 'once' ? 1 : intervalEvery,
                 times: normalizedTimes,
                 startDate,
+                endDate: endDate || undefined, // 只保存非空截止日期
                 note: noteInput.value.trim(),
                 createdAt: existingReminder?.createdAt || new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
@@ -26162,6 +26220,13 @@ function calculateWeeklyStats(dailyStatsArray) {
         const startKey = __getStartDateKey(reminder);
         const interval = reminder.interval || 'daily';
         const every = interval === 'once' ? 1 : __getReminderEvery(reminder);
+        // 获取截止日期
+        const endDate = reminder?.endDate ? String(reminder.endDate).trim() : null;
+
+        const isBeyondEndDate = (dateKey) => {
+            if (!endDate) return false;
+            return dateKey > endDate;
+        };
 
         const pickOnDate = (dateKey, requireFutureTime) => {
             const base = new Date(dateKey + 'T00:00:00');
@@ -26179,7 +26244,10 @@ function calculateWeeklyStats(dailyStatsArray) {
             return null;
         };
 
-        const pickEarliest = (dateKey) => pickOnDate(dateKey, false);
+        const pickEarliest = (dateKey) => {
+            if (isBeyondEndDate(dateKey)) return null;
+            return pickOnDate(dateKey, false);
+        };
 
         if (interval === 'once') {
             if (startKey < nowKey) return null;
@@ -26202,6 +26270,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (offset !== 0) candidateDay.setDate(candidateDay.getDate() + (every - offset));
             for (let i = 0; i < 366; i++) {
                 const candidateKey = formatDateKey(candidateDay);
+                if (isBeyondEndDate(candidateKey)) return null;
                 if (candidateKey === nowKey) {
                     const at = pickOnDate(nowKey, true);
                     if (at) return at;
@@ -26233,6 +26302,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (offsetWeeks !== 0) candidate.setDate(candidate.getDate() + (every - offsetWeeks) * 7);
             for (let i = 0; i < 104; i++) {
                 const dk = formatDateKey(candidate);
+                if (isBeyondEndDate(dk)) return null;
                 if (dk === nowKey) {
                     const at = pickOnDate(dk, true);
                     if (at) return at;
@@ -26270,6 +26340,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             for (let i = 0; i < 120; i++) {
                 const candidate = buildCandidate(offset);
                 const dk = formatDateKey(candidate);
+                if (isBeyondEndDate(dk)) return null;
                 if (dk < nowKey) {
                     offset += every;
                     continue;
@@ -26307,6 +26378,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             for (let i = 0; i < 30; i++) {
                 const candidate = buildCandidate(offset);
                 const dk = formatDateKey(candidate);
+                if (isBeyondEndDate(dk)) return null;
                 if (dk < nowKey) {
                     offset += every;
                     continue;
@@ -26712,8 +26784,20 @@ function calculateWeeklyStats(dailyStatsArray) {
             const setRes = await postJSON('/api/attr/setBlockAttrs', { id: blockId, attrs });
             if (setRes.ok && setRes.data?.code === 0) {
                 try { await postJSON('/api/sqlite/flushTransaction', {}); } catch (e) {}
-                try { refreshReminderDockPanel(); } catch (e) {}
-                try { updateReminderBadge(); } catch (e) {}
+                // 主动刷新本地数据，确保读取到最新写入的数据
+                try {
+                    const freshData = await getBlockReminder(blockId);
+                    if (freshData) {
+                        try { refreshReminderDockPanel(); } catch (e) {}
+                        try { updateReminderBadge(); } catch (e) {}
+                    }
+                } catch (e) {}
+                // 提醒数据修改后立即触发云端同步，确保多端数据一致
+                try {
+                    if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
+                        await SyncManager.triggerSiyuanSync(true);
+                    }
+                } catch (e) {}
                 return true;
             }
         } catch (e) {}
@@ -26744,55 +26828,72 @@ function calculateWeeklyStats(dailyStatsArray) {
             });
             if (setRes.ok && setRes.data?.code === 0) {
                 try { await postJSON('/api/sqlite/flushTransaction', {}); } catch (e) {}
-                try { refreshReminderDockPanel(); } catch (e) {}
-                try { updateReminderBadge(); } catch (e) {}
+                try {
+                    const freshData = await getBlockReminder(blockId);
+                    try { refreshReminderDockPanel(); } catch (e) {}
+                    try { updateReminderBadge(); } catch (e) {}
+                } catch (e) {}
+                try {
+                    if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
+                        await SyncManager.triggerSiyuanSync(true);
+                    }
+                } catch (e) {}
                 return true;
             }
         } catch (e) {}
         return false;
     }
     
-    async function queryAllReminderBlocks() {
+    async function queryAllReminderBlocks(forceRefresh = false) {
         try {
+            // 强制刷新数据库事务，确保读取到最新数据
+            try { await postJSON('/api/sqlite/flushTransaction', {}); } catch (e) {}
+
+            // 主动触发同步并等待，确保读取到云端最新数据
+            if (forceRefresh && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
+                try {
+                    await SyncManager.triggerSiyuanSync(true);
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                } catch (e) {}
+            }
+
             // 使用思源 SQL 查询 API 获取所有带有 custom-tomato-reminder 属性的块
             const sql = `
-                SELECT b.id, b.content, b.type, b.root_id, a.value as reminder_data 
-                FROM blocks b 
-                JOIN attributes a ON b.id = a.block_id 
-                WHERE a.name = 'custom-tomato-reminder' 
-                AND a.value != '' 
-                AND b.type IN ('p', 'h', 'i', 'l', 'c') 
-                ORDER BY b.updated DESC 
+                SELECT b.id, b.content, b.type, b.root_id, a.value as reminder_data
+                FROM blocks b
+                JOIN attributes a ON b.id = a.block_id
+                WHERE a.name = 'custom-tomato-reminder'
+                AND a.value != ''
+                AND b.type IN ('p', 'h', 'i', 'l', 'c')
+                ORDER BY b.updated DESC
                 LIMIT 200
             `;
-            
-            Logger.debug('🔍 执行提醒块SQL查询...');
+
             const response = await postJSON('/api/query/sql', { stmt: sql });
-            
+
             if (response.ok && response.data?.code === 0) {
                 const blocks = response.data.data || [];
-                Logger.debug(`✅ 查询到 ${blocks.length} 个提醒块`);
-                
+
                 return blocks.map(block => {
                     try {
                         const reminderData = JSON.parse(block.reminder_data);
-                        return { 
-                            blockId: block.id, 
-                            blockContent: block.content, 
-                            blockType: block.type, 
-                            rootId: block.root_id, 
-                            ...reminderData 
+                        return {
+                            blockId: block.id,
+                            blockContent: block.content,
+                            blockType: block.type,
+                            rootId: block.root_id,
+                            ...reminderData
                         };
-                    } catch (e) { 
+                    } catch (e) {
                         Logger.warn('解析提醒数据失败:', e);
-                        return null; 
+                        return null;
                     }
                 }).filter(item => item !== null);
             } else {
                 Logger.warn('SQL查询返回错误:', response.data?.msg);
             }
-        } catch (e) { 
-            Logger.error('查询提醒块失败:', e); 
+        } catch (e) {
+            Logger.error('查询提醒块失败:', e);
         }
         return [];
     }
@@ -26843,16 +26944,10 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         reminderDockPanel = content;
         renderReminderDockList();
-        
-        // 定期刷新列表（每30秒）
-        if (!createReminderPanelContent._refreshTimer) {
-            createReminderPanelContent._refreshTimer = __tomatoTrackInterval(() => {
-                if (reminderDockPanel && document.contains(reminderDockPanel)) {
-                    renderReminderDockList();
-                }
-            }, 30000);
-        }
-        
+
+        // 注意：不再设置定时刷新，任务提醒状态变化时会主动刷新
+        // 刷新时机包括：添加/删除提醒、标记完成/撤销、提醒时间到达等
+
         return container;
     }
 
@@ -27092,10 +27187,10 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
     }
     
-    async function renderReminderDockList(sortBy) {
+    async function renderReminderDockList(sortBy, forceRefresh = false) {
         sortBy = sortBy || 'time';
         if (!reminderDockPanel) return;
-        const allReminders = await queryAllReminderBlocks();
+        const allReminders = await queryAllReminderBlocks(forceRefresh);
         const now = new Date();
         const view = reminderDockView === 'completed' ? 'completed' : 'unfinished';
         let reminders = allReminders || [];
@@ -27321,7 +27416,14 @@ function calculateWeeklyStats(dailyStatsArray) {
         });
     }
     
-    function refreshReminderDockPanel() { if (reminderDockPanel) renderReminderDockList(); }
+    function refreshReminderDockPanel() {
+        if (reminderDockPanel) {
+            if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
+                SyncManager.triggerSiyuanSync(false).catch(() => {});
+            }
+            renderReminderDockList();
+        }
+    }
     
     function showReminderSettingsDialog() {
         document.getElementById('tomato-reminder-settings-dialog')?.remove();
@@ -27402,5 +27504,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.6.0 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.6.1 已加载');
 })();
