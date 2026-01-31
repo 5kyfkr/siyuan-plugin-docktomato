@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.6.1
+// @version      1.6.2
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录
 
 (function () {
@@ -25672,10 +25672,13 @@ function calculateWeeklyStats(dailyStatsArray) {
         popupEnabled: true,
         systemNotificationEnabled: true,
         reminderAudioVolume: 0.8,
-        checkInterval: 60000
+        checkInterval: 60000,
+        dockTodayOnly: false,
+        dockView: 'unfinished'
     };
     
     let reminderSettings = { ...DEFAULT_REMINDER_SETTINGS };
+    let reminderSettingsLoaded = false;
     let reminderCheckTimer = null;
     let reminderAudio = null;
     
@@ -25850,6 +25853,9 @@ function calculateWeeklyStats(dailyStatsArray) {
     };
     
     async function loadReminderSettings() {
+        let shouldSaveMigratedDockPrefs = false;
+        let rawHadDockTodayOnly = false;
+        let rawHadDockView = false;
         try {
             const response = await fetch('/api/file/getFile', {
                 method: 'POST',
@@ -25860,11 +25866,37 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const text = await response.text();
                 if (text && text.trim()) {
                     const settings = JSON.parse(text);
+                    rawHadDockTodayOnly = Object.prototype.hasOwnProperty.call(settings, 'dockTodayOnly');
+                    rawHadDockView = Object.prototype.hasOwnProperty.call(settings, 'dockView');
                     reminderSettings = { ...DEFAULT_REMINDER_SETTINGS, ...settings };
                 }
             }
         } catch (e) {
             Logger.warn('加载提醒设置失败:', e.message);
+        } finally {
+            reminderSettingsLoaded = true;
+        }
+        if (!rawHadDockTodayOnly) {
+            try {
+                const legacy = localStorage.getItem('tomato-reminder-dock-today-only') === '1';
+                if (legacy !== DEFAULT_REMINDER_SETTINGS.dockTodayOnly) {
+                    reminderSettings.dockTodayOnly = legacy;
+                    shouldSaveMigratedDockPrefs = true;
+                }
+            } catch (e) {}
+        }
+        if (!rawHadDockView) {
+            try {
+                const legacy = String(localStorage.getItem('tomato-reminder-dock-view') || '').trim();
+                const normalized = legacy === 'completed' ? 'completed' : 'unfinished';
+                if (normalized !== DEFAULT_REMINDER_SETTINGS.dockView) {
+                    reminderSettings.dockView = normalized;
+                    shouldSaveMigratedDockPrefs = true;
+                }
+            } catch (e) {}
+        }
+        if (shouldSaveMigratedDockPrefs) {
+            try { await saveReminderSettings(); } catch (e) {}
         }
         return reminderSettings;
     }
@@ -26972,18 +27004,49 @@ function calculateWeeklyStats(dailyStatsArray) {
     // 监听布局准备就绪事件
     let reminderDockRegistered = false;
     const REMINDER_DOCK_TODAY_ONLY_STORAGE_KEY = 'tomato-reminder-dock-today-only';
-    let reminderDockTodayOnly = (() => {
-        try { return localStorage.getItem(REMINDER_DOCK_TODAY_ONLY_STORAGE_KEY) === '1'; } catch (e) { return false; }
-    })();
     const REMINDER_DOCK_VIEW_STORAGE_KEY = 'tomato-reminder-dock-view';
-    let reminderDockView = (() => {
+    let reminderDockTodayOnly = false;
+    let reminderDockView = 'unfinished';
+    let __reminderSettingsSaveDebounceTimer = null;
+    const __queueSaveReminderSettings = () => {
+        try { if (__reminderSettingsSaveDebounceTimer) clearTimeout(__reminderSettingsSaveDebounceTimer); } catch (e) {}
+        __reminderSettingsSaveDebounceTimer = setTimeout(() => {
+            try { saveReminderSettings()?.catch?.(() => {}); } catch (e) {}
+        }, 150);
+    };
+    const __getReminderDockTodayOnly = () => {
+        try {
+            if (reminderSettingsLoaded && typeof reminderSettings?.dockTodayOnly === 'boolean') return reminderSettings.dockTodayOnly;
+        } catch (e) {}
+        try { return localStorage.getItem(REMINDER_DOCK_TODAY_ONLY_STORAGE_KEY) === '1'; } catch (e) { return false; }
+    };
+    const __setReminderDockTodayOnly = (next) => {
+        reminderDockTodayOnly = !!next;
+        try { reminderSettings.dockTodayOnly = reminderDockTodayOnly; } catch (e) {}
+        __queueSaveReminderSettings();
+        try { localStorage.setItem(REMINDER_DOCK_TODAY_ONLY_STORAGE_KEY, reminderDockTodayOnly ? '1' : '0'); } catch (e) {}
+    };
+    const __getReminderDockView = () => {
+        try {
+            if (reminderSettingsLoaded) {
+                const v = String(reminderSettings?.dockView || '').trim();
+                if (v === 'completed' || v === 'unfinished') return v;
+            }
+        } catch (e) {}
         try {
             const v = String(localStorage.getItem(REMINDER_DOCK_VIEW_STORAGE_KEY) || '').trim();
             return v === 'completed' ? 'completed' : 'unfinished';
         } catch (e) {
             return 'unfinished';
         }
-    })();
+    };
+    const __setReminderDockView = (next) => {
+        reminderDockView = next === 'completed' ? 'completed' : 'unfinished';
+        try { reminderSettings.dockView = reminderDockView; } catch (e) {}
+        __queueSaveReminderSettings();
+        try { localStorage.setItem(REMINDER_DOCK_VIEW_STORAGE_KEY, reminderDockView); } catch (e) {}
+    };
+    let __reminderDockPrefsSyncScheduled = false;
     
     // 尝试通过 eventBus 监听布局事件来注册 Dock
     function tryRegisterDockViaEventBus() {
@@ -27190,6 +27253,16 @@ function calculateWeeklyStats(dailyStatsArray) {
     async function renderReminderDockList(sortBy, forceRefresh = false) {
         sortBy = sortBy || 'time';
         if (!reminderDockPanel) return;
+        if (!reminderSettingsLoaded && !__reminderDockPrefsSyncScheduled) {
+            __reminderDockPrefsSyncScheduled = true;
+            setTimeout(function poll() {
+                if (!reminderDockPanel) { __reminderDockPrefsSyncScheduled = false; return; }
+                if (reminderSettingsLoaded) { __reminderDockPrefsSyncScheduled = false; renderReminderDockList(sortBy).catch(() => {}); return; }
+                setTimeout(poll, 200);
+            }, 200);
+        }
+        reminderDockTodayOnly = __getReminderDockTodayOnly();
+        reminderDockView = __getReminderDockView();
         const allReminders = await queryAllReminderBlocks(forceRefresh);
         const now = new Date();
         const view = reminderDockView === 'completed' ? 'completed' : 'unfinished';
@@ -27216,8 +27289,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             const selected = view === opt.key;
             btn.style.cssText = `padding:4px 10px;border:1px solid ${selected ? 'var(--b3-theme-primary)' : 'var(--b3-theme-surface-light)'};border-radius:4px;background:${selected ? 'var(--b3-theme-primary-light)' : 'transparent'};color:${selected ? 'var(--b3-theme-primary)' : 'var(--b3-theme-on-surface)'};cursor:pointer;font-size:11px;`;
             btn.onclick = () => {
-                reminderDockView = opt.key;
-                try { localStorage.setItem(REMINDER_DOCK_VIEW_STORAGE_KEY, reminderDockView); } catch (e) {}
+                __setReminderDockView(opt.key);
                 renderReminderDockList(sortBy);
             };
             sortBar.appendChild(btn);
@@ -27239,8 +27311,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         todayInput.checked = reminderDockTodayOnly;
         todayInput.style.cssText = 'width:14px;height:14px;cursor:pointer;';
         todayInput.onchange = () => {
-            reminderDockTodayOnly = !!todayInput.checked;
-            try { localStorage.setItem(REMINDER_DOCK_TODAY_ONLY_STORAGE_KEY, reminderDockTodayOnly ? '1' : '0'); } catch (e) {}
+            __setReminderDockTodayOnly(!!todayInput.checked);
             renderReminderDockList(sortBy);
         };
         const todayText = document.createElement('span');
@@ -27504,5 +27575,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.6.1 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.6.2 已加载');
 })();
