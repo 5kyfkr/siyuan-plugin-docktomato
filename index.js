@@ -113,7 +113,13 @@ const loadTomatoScript = async () => {
     try {
         const code = await fetchText("/api/file/getFile", { path: TOMATO_SCRIPT_PATH });
         if (!code || !code.trim()) throw new Error("empty script");
-        (0, eval)(code);
+        
+        // Use script tag injection instead of eval for better debugging and potential performance
+        const script = document.createElement("script");
+        script.textContent = code + "\n//# sourceURL=tomato.js";
+        document.head.appendChild(script);
+        script.remove(); // Remove tag after execution to keep DOM clean
+        
         return true;
     } catch (e) {
         console.error("[tomato] load script failed", e);
@@ -186,6 +192,11 @@ const removeFile = async (path, isDir) => {
 };
 
 module.exports = class TomatoTimerPlugin extends Plugin {
+    // 用于保存需要清理的资源引用
+    _badgeUpdateInterval = null;
+    _badgeUpdateListener = null;
+    _dockBadgeRetryTimers = [];
+
     async onload() {
         globalThis.__tomatoPluginApp = this.app;
         globalThis.__tomatoPluginInstance = this;
@@ -271,6 +282,9 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             if (!mainSettings.remindersEnabled) return;
             const existingPlacement = inferDockPlacementFromUiLayout(REMINDER_DOCK_TYPE);
 
+            // 保存 this 引用供内部函数使用
+            const plugin = this;
+
             // 查找或创建dock图标容器
             let dockElement = null;
             let badgeElement = null;
@@ -344,7 +358,8 @@ module.exports = class TomatoTimerPlugin extends Plugin {
 
                     if (!container) {
                         // 5秒后重试
-                        setTimeout(findAndCreateDockBadge, 5000);
+                        const retryTimer = setTimeout(findAndCreateDockBadge, 5000);
+                        plugin._dockBadgeRetryTimers.push(retryTimer);
                         return;
                     }
 
@@ -391,7 +406,8 @@ module.exports = class TomatoTimerPlugin extends Plugin {
 
                 } catch (e) {
                     // 5秒后重试
-                    setTimeout(findAndCreateDockBadge, 5000);
+                    const retryTimer = setTimeout(findAndCreateDockBadge, 5000);
+                    plugin._dockBadgeRetryTimers.push(retryTimer);
                 }
             };
 
@@ -413,17 +429,18 @@ module.exports = class TomatoTimerPlugin extends Plugin {
 
             // 监听自定义事件更新角标
             if (typeof Event === "function") {
-                window.addEventListener("tomato-reminder-badge-update", (e) => {
+                plugin._badgeUpdateListener = (e) => {
                     const count = e.detail?.total || 0;
                     if (badgeElement) {
                         badgeElement.textContent = count > 99 ? '99+' : (count > 0 ? count : '');
                         badgeElement.style.display = count > 0 ? 'flex' : 'none';
                     }
-                });
+                };
+                window.addEventListener("tomato-reminder-badge-update", plugin._badgeUpdateListener);
             }
 
             // 定期刷新角标（每30秒）
-            setInterval(async () => {
+            plugin._badgeUpdateInterval = setInterval(async () => {
                 // 重新计算角标数据
                 if (typeof globalThis.__tomatoUpdateReminderBadge === 'function') {
                     await globalThis.__tomatoUpdateReminderBadge();
@@ -435,6 +452,26 @@ module.exports = class TomatoTimerPlugin extends Plugin {
     }
 
     onunload() {
+        // 清理定时器和事件监听器
+        try {
+            if (this._badgeUpdateInterval) {
+                clearInterval(this._badgeUpdateInterval);
+                this._badgeUpdateInterval = null;
+            }
+        } catch (e) {}
+        try {
+            if (this._badgeUpdateListener) {
+                window.removeEventListener("tomato-reminder-badge-update", this._badgeUpdateListener);
+                this._badgeUpdateListener = null;
+            }
+        } catch (e) {}
+        try {
+            for (const timer of this._dockBadgeRetryTimers) {
+                clearTimeout(timer);
+            }
+            this._dockBadgeRetryTimers.length = 0;
+        } catch (e) {}
+
         try {
             if (typeof globalThis.__TomatoTimerCleanup === "function") {
                 globalThis.__TomatoTimerCleanup();
