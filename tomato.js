@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.6.5
+// @version      1.6.6
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录
 
 (function () {
@@ -4978,15 +4978,18 @@
         // 🔧 新增：流光颜色设置
         let shimmerColorControl;
         if (isMobileDevice()) {
-            shimmerColorControl = createMobileColorPickerButton(
-                userSettings.timeline.shimmerColor || '#ffffff',
+            const btnObj = createMobileColorPickerButton(
+                '流光颜色', // labelText
+                userSettings.timeline.shimmerColor || '#ffffff', // initialColor
                 async (newColor) => {
                     ensureTimelineDefaults();
                     userSettings.timeline.shimmerColor = newColor;
                     await saveUserSettings();
                     if (userSettings.timeline.enabled) updateTimelineBar(true);
-                }
+                },
+                { showHexText: false, defaultColor: '#ffffff' }
             );
+            shimmerColorControl = btnObj.element;
         } else {
             shimmerColorControl = document.createElement('input');
             shimmerColorControl.type = 'color';
@@ -28054,5 +28057,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.6.5 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.6.6 已加载');
 })();
