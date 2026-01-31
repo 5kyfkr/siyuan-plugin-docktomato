@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.6.2
+// @version      1.6.5
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录
 
 (function () {
@@ -193,7 +193,13 @@
     async function __tomatoRenamePath(path, newPath) {
         try {
             const r = await postJSON('/api/file/renameFile', { path, newPath });
-            if (r?.data?.code === 0) return true;
+            if (r?.data?.code === 0) {
+                if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
+                    __tomatoFileTextCache.delete(String(path || ''));
+                    __tomatoFileTextCache.delete(String(newPath || ''));
+                }
+                return true;
+            }
         } catch (e) {}
         return false;
     }
@@ -317,9 +323,22 @@
             if (isDir === false) formData.append('isDir', 'false');
             const response = await fetch('/api/file/removeFile', { method: 'POST', body: formData });
             const result = await response.json().catch(() => null);
-            if (result?.code === 0) return true;
+            
+            if (result?.code === 0) {
+                if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
+                    __tomatoFileTextCache.delete(String(path || ''));
+                }
+                return true;
+            }
+            
             const fallback = await postJSON('/api/file/removeFile', { path });
-            return fallback?.data?.code === 0;
+            if (fallback?.data?.code === 0) {
+                if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
+                    __tomatoFileTextCache.delete(String(path || ''));
+                }
+                return true;
+            }
+            return false;
         } catch (e) {
             return false;
         }
@@ -724,13 +743,12 @@
             this.stopPolling();
 
             this.poll(true);
-            this.pollTimer = setInterval(() => this.poll(), SYNC_POLL_INTERVAL);
             Logger.debug('🔄 SyncManager: 轮询已启动');
         },
         
         stopPolling() {
             if (this.pollTimer) {
-                clearInterval(this.pollTimer);
+                clearTimeout(this.pollTimer);
                 this.pollTimer = null;
                 Logger.debug('🔄 SyncManager: 轮询已停止');
             }
@@ -756,7 +774,13 @@
             const pollInterval = isHidden ? SYNC_POLL_INTERVAL * 6 : SYNC_POLL_INTERVAL; // 不可见时 60秒一次
             
             const now = Date.now();
+            
+            // Schedule next poll first to ensure it keeps running even if error occurs
+            if (this.pollTimer) clearTimeout(this.pollTimer);
+            this.pollTimer = setTimeout(() => this.poll(), pollInterval);
+
             if (!force && now - this.lastPollTime < pollInterval) {
+                // If called too early (e.g. manually), skip but timer is already set
                 return;
             }
             this.lastPollTime = now;
@@ -3010,6 +3034,8 @@
                 existingModal.remove();
             }
 
+            ensureTomatoCommonStyles();
+
             // 创建弹窗容器
             const modal = document.createElement('div');
             modal.className = 'tomy-mobile-confirm-modal';
@@ -3047,6 +3073,7 @@
                         opacity: 0;
                         visibility: hidden;
                         transition: opacity 0.3s, visibility 0.3s;
+                        will-change: opacity;
                     }
 
                     .tomy-mobile-confirm-modal.active {
@@ -3063,6 +3090,8 @@
                         transform: scale(0.9);
                         transition: transform 0.3s;
                         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+                        will-change: transform;
+                        contain: layout paint;
                     }
 
                     .tomy-mobile-confirm-modal.active .tomy-mobile-confirm-dialog {
@@ -3128,6 +3157,13 @@
                     .tomy-mobile-confirm-btn.confirm:hover {
                         background: rgba(33, 150, 243, 0.1);
                     }
+
+                    @media (prefers-reduced-motion: reduce) {
+                        .tomy-mobile-confirm-modal,
+                        .tomy-mobile-confirm-dialog {
+                            transition: none !important;
+                        }
+                    }
                 `;
                 document.head.appendChild(style);
             }
@@ -3179,20 +3215,20 @@
             if (modal.parentNode) {
                 modal.parentNode.removeChild(modal);
             }
-        }, 300);
+        }, motionMs(300));
     }
 
     // ========== 过期事项提醒功能 ==========
 
     // 关闭过期通知
     function closeExpiredNotification(notification) {
-        notification.style.animation = 'slideOutRight 0.3s ease-in forwards';
+        notification.classList.add('closing');
 
         setTimeout(() => {
             if (notification.parentNode) {
                 notification.parentNode.removeChild(notification);
             }
-        }, 300);
+        }, motionMs(300));
     }
 
     // 显示过期事项通知（右上角，5秒后自动消失）
@@ -3250,6 +3286,12 @@
                     align-items: flex-start;
                     gap: 10px;
                     animation: slideInRight 0.3s ease-out;
+                    will-change: transform, opacity;
+                    contain: layout paint;
+                }
+
+                .tomy-expired-notification.closing {
+                    animation: slideOutRight 0.3s ease-in forwards;
                 }
 
                 @keyframes slideInRight {
@@ -3348,17 +3390,18 @@
                         max-width: none;
                     }
                 }
+
+                @media (prefers-reduced-motion: reduce) {
+                    .tomy-expired-notification {
+                        animation: none !important;
+                    }
+                    .tomy-expired-notification.closing {
+                        animation: none !important;
+                    }
+                }
             `;
             document.head.appendChild(style);
         }
-
-        // 设置位置
-        notification.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            z-index: 9999;
-        `;
 
         document.body.appendChild(notification);
 
@@ -4407,6 +4450,7 @@
                 border-radius: 16px 16px 0 0;
                 box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.2);
                 animation: tomatoSlideUp 0.3s ease-out;
+                will-change: transform;
             }
 
             .tomato-bottomsheet-title {
@@ -4447,8 +4491,51 @@
                 background: var(--b3-theme-primary);
                 color: #fff;
             }
+
+            .tomato-routine-add-btn:hover {
+                background: var(--b3-theme-primary, #1E88E5) !important;
+                border-color: var(--b3-theme-primary, #1E88E5) !important;
+                color: #fff !important;
+            }
+
+            .tomato-reminder-settings-btn:hover {
+                background: var(--b3-theme-surface-light) !important;
+            }
+
+            .tomy-reminder-item:hover {
+                background: var(--b3-theme-surface) !important;
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                .tomato-bottomsheet,
+                #tomato-settings-dialog {
+                    animation: none !important;
+                }
+                #tomato-timeline-bar,
+                #tomato-routine-toolbar,
+                .tomato-routine-add-btn,
+                .tomy-expired-notification,
+                .tomy-mobile-confirm-modal,
+                .tomy-mobile-confirm-dialog,
+                .tomy-reminder-item {
+                    transition: none !important;
+                    animation: none !important;
+                }
+            }
         `;
         document.head.appendChild(style);
+    }
+
+    function prefersReducedMotion() {
+        try {
+            return !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function motionMs(ms) {
+        return prefersReducedMotion() ? 0 : ms;
     }
 
     function safeJsonParse(text) {
@@ -4652,6 +4739,12 @@
             if (!userSettings.timeline) userSettings.timeline = {};
             if (typeof userSettings.timeline.enabled !== 'boolean') userSettings.timeline.enabled = false;
             if (typeof userSettings.timeline.enableBreathing !== 'boolean') userSettings.timeline.enableBreathing = true;
+            // 🔧 新增：折叠态流光效果配置，默认开启
+            if (typeof userSettings.timeline.enableShimmerFlow !== 'boolean') userSettings.timeline.enableShimmerFlow = true;
+            if (typeof userSettings.timeline.shimmerDuration !== 'number' || !Number.isFinite(userSettings.timeline.shimmerDuration)) userSettings.timeline.shimmerDuration = 8;
+            userSettings.timeline.shimmerDuration = Math.max(5, Math.min(20, Number(userSettings.timeline.shimmerDuration) || 8));
+            if (typeof userSettings.timeline.shimmerWidth !== 'number' || !Number.isFinite(userSettings.timeline.shimmerWidth)) userSettings.timeline.shimmerWidth = 5; // 默认 5%
+            if (!userSettings.timeline.shimmerColor) userSettings.timeline.shimmerColor = '#ffffff'; // 默认白色
             if (typeof userSettings.timeline.enableHighlightGlassEffect !== 'boolean') userSettings.timeline.enableHighlightGlassEffect = true;
             if (typeof userSettings.timeline.enableHighlightRoundedCorners !== 'boolean') userSettings.timeline.enableHighlightRoundedCorners = true;
             if (typeof userSettings.timeline.glassIntensity !== 'number' || !Number.isFinite(userSettings.timeline.glassIntensity)) userSettings.timeline.glassIntensity = 0.7;
@@ -4795,8 +4888,147 @@
             userSettings.timeline.enableBreathing = breathingInput.checked;
             await saveUserSettings();
             updateProgressBar();
+            // 如果开启了呼吸效果，也触发一次时间轴更新，确保折叠态流光效果生效
+            if (userSettings.timeline.enabled) updateTimelineBar(true);
         };
         content.appendChild(row('时间轴呼吸效果', breathingInput));
+
+        // 🔧 新增：折叠态流光效果开关
+        const shimmerFlowInput = document.createElement('input');
+        shimmerFlowInput.type = 'checkbox';
+        shimmerFlowInput.checked = userSettings.timeline.enableShimmerFlow !== false; // 默认开启
+        shimmerFlowInput.style.cssText = `cursor: pointer; transform: scale(1.15);`;
+        shimmerFlowInput.onchange = async () => {
+            ensureTimelineDefaults();
+            userSettings.timeline.enableShimmerFlow = shimmerFlowInput.checked;
+            await saveUserSettings();
+            syncShimmerDurationDisabled();
+            if (userSettings.timeline.enabled) updateTimelineBar(true);
+        };
+        content.appendChild(row('折叠态流光效果', shimmerFlowInput));
+
+        // 🔧 新增：流光滑动时间设置
+        const shimmerDurationWrap = document.createElement('div');
+        shimmerDurationWrap.style.cssText = `display: flex; align-items: center; gap: 8px;`;
+        const shimmerDurationInput = document.createElement('input');
+        shimmerDurationInput.type = 'range';
+        shimmerDurationInput.min = '5';
+        shimmerDurationInput.max = '20';
+        shimmerDurationInput.step = '0.5';
+        shimmerDurationInput.value = String(Number.isFinite(userSettings.timeline.shimmerDuration) ? userSettings.timeline.shimmerDuration : 8);
+        shimmerDurationInput.style.cssText = `width: 160px; cursor: pointer;`;
+        const shimmerDurationText = document.createElement('span');
+        shimmerDurationText.style.cssText = `font-size: 12px; opacity: 0.8; width: 42px; text-align: right;`;
+        const renderShimmerDurationText = () => {
+            const v = Math.max(5, Math.min(20, Number(shimmerDurationInput.value) || 8));
+            shimmerDurationText.textContent = `${v}s`;
+        };
+        renderShimmerDurationText();
+        const syncShimmerDurationDisabled = () => {
+            const disabled = !shimmerFlowInput.checked;
+            shimmerDurationInput.disabled = disabled;
+            shimmerDurationInput.style.opacity = disabled ? '0.6' : '1';
+            shimmerDurationInput.style.cursor = disabled ? 'not-allowed' : 'pointer';
+            shimmerDurationText.style.opacity = disabled ? '0.6' : '0.8';
+        };
+        syncShimmerDurationDisabled();
+        shimmerDurationInput.oninput = () => {
+            renderShimmerDurationText();
+        };
+        shimmerDurationInput.onchange = async () => {
+            ensureTimelineDefaults();
+            userSettings.timeline.shimmerDuration = Math.max(5, Math.min(20, Number(shimmerDurationInput.value) || 8));
+            await saveUserSettings();
+            if (userSettings.timeline.enabled) updateTimelineBar(true);
+        };
+        shimmerDurationWrap.appendChild(shimmerDurationInput);
+        shimmerDurationWrap.appendChild(shimmerDurationText);
+        content.appendChild(rowStack('流光滑动周期', shimmerDurationWrap));
+
+        // 🔧 新增：流光宽度设置
+        const shimmerWidthWrap = document.createElement('div');
+        shimmerWidthWrap.style.cssText = `display: flex; align-items: center; gap: 8px;`;
+        const shimmerWidthInput = document.createElement('input');
+        shimmerWidthInput.type = 'range';
+        shimmerWidthInput.min = '1';
+        shimmerWidthInput.max = '50';
+        shimmerWidthInput.step = '1';
+        shimmerWidthInput.value = String(Number.isFinite(userSettings.timeline.shimmerWidth) ? userSettings.timeline.shimmerWidth : 5);
+        shimmerWidthInput.style.cssText = `width: 160px; cursor: pointer;`;
+        const shimmerWidthText = document.createElement('span');
+        shimmerWidthText.style.cssText = `font-size: 12px; opacity: 0.8; width: 42px; text-align: right;`;
+        const renderShimmerWidthText = () => {
+            const v = Math.max(1, Math.min(50, Number(shimmerWidthInput.value) || 5));
+            shimmerWidthText.textContent = `${v}%`;
+        };
+        renderShimmerWidthText();
+        shimmerWidthInput.oninput = () => {
+            renderShimmerWidthText();
+        };
+        shimmerWidthInput.onchange = async () => {
+            ensureTimelineDefaults();
+            userSettings.timeline.shimmerWidth = Math.max(1, Math.min(50, Number(shimmerWidthInput.value) || 5));
+            await saveUserSettings();
+            if (userSettings.timeline.enabled) updateTimelineBar(true);
+        };
+        shimmerWidthWrap.appendChild(shimmerWidthInput);
+        shimmerWidthWrap.appendChild(shimmerWidthText);
+        content.appendChild(rowStack('流光宽度', shimmerWidthWrap));
+
+        // 🔧 新增：流光颜色设置
+        let shimmerColorControl;
+        if (isMobileDevice()) {
+            shimmerColorControl = createMobileColorPickerButton(
+                userSettings.timeline.shimmerColor || '#ffffff',
+                async (newColor) => {
+                    ensureTimelineDefaults();
+                    userSettings.timeline.shimmerColor = newColor;
+                    await saveUserSettings();
+                    if (userSettings.timeline.enabled) updateTimelineBar(true);
+                }
+            );
+        } else {
+            shimmerColorControl = document.createElement('input');
+            shimmerColorControl.type = 'color';
+            shimmerColorControl.value = userSettings.timeline.shimmerColor || '#ffffff';
+            shimmerColorControl.style.cssText = `cursor: pointer; height: 28px; width: 60px; padding: 0; border: none;`;
+            shimmerColorControl.onchange = async () => {
+                ensureTimelineDefaults();
+                userSettings.timeline.shimmerColor = shimmerColorControl.value;
+                await saveUserSettings();
+                if (userSettings.timeline.enabled) updateTimelineBar(true);
+            };
+        }
+        content.appendChild(row('流光颜色', shimmerColorControl));
+
+        // 同步禁用状态
+        const syncAllShimmerDisabled = () => {
+            const disabled = !shimmerFlowInput.checked;
+            
+            shimmerDurationInput.disabled = disabled;
+            shimmerDurationInput.style.opacity = disabled ? '0.6' : '1';
+            shimmerDurationInput.style.cursor = disabled ? 'not-allowed' : 'pointer';
+            
+            shimmerWidthInput.disabled = disabled;
+            shimmerWidthInput.style.opacity = disabled ? '0.6' : '1';
+            shimmerWidthInput.style.cursor = disabled ? 'not-allowed' : 'pointer';
+            
+            if (isMobileDevice()) {
+                shimmerColorControl.style.opacity = disabled ? '0.6' : '1';
+                shimmerColorControl.style.pointerEvents = disabled ? 'none' : 'auto';
+            } else {
+                shimmerColorControl.disabled = disabled;
+                shimmerColorControl.style.opacity = disabled ? '0.6' : '1';
+                shimmerColorControl.style.cursor = disabled ? 'not-allowed' : 'pointer';
+            }
+        };
+        // 绑定到主开关
+        const originalOnchange = shimmerFlowInput.onchange;
+        shimmerFlowInput.onchange = async () => {
+            await originalOnchange();
+            syncAllShimmerDisabled();
+        };
+        syncAllShimmerDisabled(); // 初始化状态
 
         const glassEffectInput = document.createElement('input');
         glassEffectInput.type = 'checkbox';
@@ -7985,6 +8217,7 @@
         if (timelineBar && timelineBar.parentNode === document.body) return;
         if (timelineBar) timelineBar.remove();
 
+        ensureTomatoCommonStyles();
         ensureTimelineSettings();
 
         const isNeonMode = userSettings.appearance?.enableNeonEffect && userSettings.appearance?.theme !== 'default';
@@ -8030,9 +8263,10 @@
             min-height: 32px;
             background: transparent;
             z-index: 10;
-            transition: all 0.2s ease;
+            transition: opacity 0.2s ease, transform 0.2s ease;
             align-items: center;
             pointer-events: none;  // 初始不可交互，由展开状态控制
+            will-change: opacity, transform;
         `;
         // 初始时隐藏（折叠状态）
         routineToolbar.style.opacity = '0';
@@ -8068,21 +8302,11 @@
             color: var(--b3-theme-icon, #666);
             font-size: 14px;
             font-weight: bold;
-            transition: all 0.2s ease;
+            transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
             pointer-events: auto;
             user-select: none;
             -webkit-user-select: none;
         `;
-        addButton.onmouseenter = () => {
-            addButton.style.background = 'var(--b3-theme-primary, #1E88E5)';
-            addButton.style.borderColor = 'var(--b3-theme-primary, #1E88E5)';
-            addButton.style.color = '#fff';
-        };
-        addButton.onmouseleave = () => {
-            addButton.style.background = 'var(--b3-theme-background-light, #f5f5f5)';
-            addButton.style.borderColor = 'var(--b3-theme-border, #d9d9d9)';
-            addButton.style.color = 'var(--b3-theme-icon, #666)';
-        };
         addButton.oncontextmenu = (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -9776,8 +10000,29 @@
                 && (timerMode === 'countdown' || timerMode === 'stopwatch' || timerMode === 'stopwatch-break' || timerMode === 'break')
                 && isRunning
                 && !isTimerPaused;
-            if (shouldBreathe) timelineVisual.classList.add('breathing');
-            else timelineVisual.classList.remove('breathing');
+            
+            if (shouldBreathe) {
+                timelineVisual.classList.add('breathing');
+                
+                // 🔧 新增：控制折叠态流光效果
+                const shouldShimmer = userSettings.timeline.enableShimmerFlow !== false;
+                if (shouldShimmer) {
+                    timelineVisual.classList.add('shimmering');
+                    // 设置流光周期 CSS 变量
+                    const shimmerDuration = Math.max(5, Math.min(20, Number(userSettings.timeline.shimmerDuration) || 8));
+                    timelineVisual.style.setProperty('--shimmer-duration', `${shimmerDuration}s`);
+                    // 设置流光宽度
+                    const shimmerWidth = Math.max(1, Math.min(50, Number(userSettings.timeline.shimmerWidth) || 5));
+                    timelineVisual.style.setProperty('--shimmer-width', `${shimmerWidth}%`);
+                    // 设置流光颜色
+                    timelineVisual.style.setProperty('--shimmer-color', userSettings.timeline.shimmerColor || '#ffffff');
+                } else {
+                    timelineVisual.classList.remove('shimmering');
+                }
+            } else {
+                timelineVisual.classList.remove('breathing');
+                timelineVisual.classList.remove('shimmering');
+            }
         }
 
         let nowPercent = 0;
@@ -19013,11 +19258,58 @@ function calculateWeeklyStats(dailyStatsArray) {
                 animation: previewBreatheStrong var(--breathing-duration, 3s) ease-in-out infinite;
             }
 
-            @keyframes previewBreatheStrong {
-                0%, 100% { 
-                    opacity: 0.5;   // 较暗
-                    transform: scaleX(1);
+            /* 折叠状态下的流动光效动画 - 从左往右滑动 */
+            @keyframes shimmerFlow {
+                0% {
+                    background-position: 200% 0;
                 }
+                100% {
+                    background-position: -200% 0;
+                }
+            }
+
+            /* 
+             * 🔧 修复：让流光层作为独立元素覆盖在整个时间轴上方
+             * 之前的实现是作为背景图，会被子元素遮挡
+             * 现在改为使用 ::after 伪元素
+             */
+            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.breathing.shimmering::after,
+            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering::after {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-image: linear-gradient(
+                    90deg, 
+                    transparent 0%, 
+                    transparent calc(50% - var(--shimmer-width, 10%)), 
+                    var(--shimmer-color, rgba(255, 255, 255, 0.6)) 50%, 
+                    transparent calc(50% + var(--shimmer-width, 10%)), 
+                    transparent 100%
+                );
+                background-size: 200% 100%;
+                animation: shimmerFlow var(--shimmer-duration, 8s) linear infinite;
+                will-change: background-position;
+                z-index: 2; /* 确保在内容之上 */
+                pointer-events: none; /* 允许点击穿透 */
+            }
+
+            /* 应用呼吸动画到容器本身（保持原样） */
+            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.breathing.shimmering {
+                animation: stopwatchBreathe var(--breathing-duration, 3s) ease-in-out infinite;
+            }
+
+            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering {
+                animation: neonBreatheStrong var(--breathing-duration, 3s) ease-in-out infinite;
+                box-shadow: 0 0 10px var(--neon-glow, #ff6b9d);
+            }
+
+            /* 修复：确保当前时间线在流光层之上 */
+            #tomato-timeline-now-line {
+                z-index: 3 !important;
+            }
                 50% { 
                     opacity: 1;    // 最亮
                     transform: scaleX(1.01);
@@ -19742,17 +20034,24 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         if (!quiet) Logger.info('🔍 尝试高亮任务块:', blockId);
 
-        // 移除之前的高亮（同时清除任务块和数据库行高亮）
+        // 移除之前的高亮（智能清除：只清除不属于当前blockId的高亮）
         document.querySelectorAll('.tomato-task-highlight').forEach(el => {
-            el.classList.remove('tomato-task-highlight');
+            if (el.dataset.nodeId !== blockId) {
+                el.classList.remove('tomato-task-highlight');
+            }
         });
         document.querySelectorAll('.tomato-db-row-highlight').forEach(el => {
-            el.classList.remove('tomato-db-row-highlight');
+            // 检查该高亮元素是否包含当前任务的引用
+            const hasCurrentRef = el.querySelector(`[data-type="block-ref"][data-id="${blockId}"]`);
+            if (!hasCurrentRef) {
+                el.classList.remove('tomato-db-row-highlight');
+            }
         });
 
         // 优先在编辑器区域内查找，排除面包屑
         // 面包屑的父容器是 .protyle-breadcrumb，需要排除
         const editorArea = document.querySelector('.protyle-wysiwyg, .protyle-content');
+        let foundTaskBlock = false;
         
         if (editorArea) {
             // 在编辑器区域内查找.li元素（任务块）
@@ -19766,96 +20065,68 @@ function calculateWeeklyStats(dailyStatsArray) {
                 if (!quiet) {
                     try {
                         liElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    } catch (e) {
-                        // 忽略滚动错误
-                    }
+                    } catch (e) {}
                 }
-                return;
-            }
-            
-            // 如果没找到.li，查找.p元素
-            const pElement = editorArea.querySelector(`.p[data-node-id="${blockId}"]`);
-            
-            if (pElement) {
-                pElement.classList.add('tomato-task-highlight');
-                if (!quiet) Logger.info('✅ 任务段落(.p)高亮已添加:', blockId);
+                foundTaskBlock = true;
+            } else {
+                // 如果没找到.li，查找.p元素
+                const pElement = editorArea.querySelector(`.p[data-node-id="${blockId}"]`);
                 
-                // 滚动到任务段落（保持高亮时不需要滚动）
-                if (!quiet) {
-                    try {
-                        pElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    } catch (e) {
-                        // 忽略滚动错误
-                    }
-                }
-                return;
-            }
-        }
-        
-        // 备选方案：全局查找但排除面包屑
-        const allElements = document.querySelectorAll(`[data-node-id="${blockId}"]`);
-        
-        for (const el of allElements) {
-            // 排除面包屑区域
-            if (el.closest('.protyle-breadcrumb')) continue;
-            
-            el.classList.add('tomato-task-highlight');
-            if (!quiet) Logger.info('✅ 任务块高亮已添加:', blockId);
-            
-            // 滚动到任务块（保持高亮时不需要滚动）
-            if (!quiet) {
-                try {
-                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                } catch (e) {
-                    // 忽略滚动错误
-                }
-            }
-            break;
-        }
-
-        // 🔧 新增：支持数据库块引用高亮
-        // 当传入的 blockId 是数据库单元格中块引用的 ID 时
-        // 需要查找该引用并高亮整个单元格
-        if (!document.querySelector('.tomato-task-highlight')) {
-            if (!quiet) Logger.info('🔍 未找到直接元素，尝试数据库块引用方式:', blockId);
-
-            // 查找数据库单元格中的块引用
-            const blockRef = document.querySelector(`.av__cell [data-type="block-ref"][data-id="${blockId}"]`);
-
-            if (blockRef) {
-                if (!quiet) Logger.info('✅ 找到数据库块引用:', blockRef);
-
-                // 获取单元格容器
-                const cellContainer = blockRef.closest('.av__cell');
-                if (cellContainer) {
-                    cellContainer.classList.add('tomato-task-highlight');
-                    if (!quiet) Logger.info('✅ 数据库单元格高亮已添加');
-
-                    // 滚动到单元格（保持高亮时不需要滚动）
+                if (pElement) {
+                    pElement.classList.add('tomato-task-highlight');
+                    if (!quiet) Logger.info('✅ 任务段落(.p)高亮已添加:', blockId);
+                    
+                    // 滚动到任务段落（保持高亮时不需要滚动）
                     if (!quiet) {
                         try {
-                            cellContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        } catch (e) {
-                            // 忽略滚动错误
-                        }
+                            pElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        } catch (e) {}
                     }
-                    return;
+                    foundTaskBlock = true;
                 }
             }
-
-            // 如果是标题块引用
-            const titleBlockRef = document.querySelector(`[data-type="block-ref"][data-id="${blockId}"]`);
-            if (titleBlockRef) {
-                if (!quiet) Logger.info('✅ 找到标题块引用:', titleBlockRef);
-
-                // 尝试高亮引用本身或其父容器
-                titleBlockRef.classList.add('tomato-task-highlight');
-                if (!quiet) Logger.info('✅ 标题块引用高亮已添加');
-                return;
+        }
+        
+        if (!foundTaskBlock) {
+            // 备选方案：全局查找但排除面包屑
+            const allElements = document.querySelectorAll(`[data-node-id="${blockId}"]`);
+            
+            for (const el of allElements) {
+                // 排除面包屑区域
+                if (el.closest('.protyle-breadcrumb')) continue;
+                
+                el.classList.add('tomato-task-highlight');
+                if (!quiet) Logger.info('✅ 任务块高亮已添加:', blockId);
+                
+                // 滚动到任务块（保持高亮时不需要滚动）
+                if (!quiet) {
+                    try {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    } catch (e) {}
+                }
+                foundTaskBlock = true;
+                break;
             }
         }
 
-        if (!quiet && !document.querySelector('.tomato-task-highlight')) {
+        // 无论是否找到任务块，都尝试高亮数据库行（如果存在）
+        // 检查是否已经有对应的数据库高亮
+        let hasCurrentDbRef = false;
+        const existingDbHighlights = document.querySelectorAll('.tomato-db-row-highlight');
+        for (const el of existingDbHighlights) {
+            if (el.querySelector(`[data-id="${blockId}"]`)) {
+                hasCurrentDbRef = true;
+                break;
+            }
+        }
+        
+        if (!hasCurrentDbRef) {
+            // 尝试高亮数据库行（不重试，避免性能问题）
+            // 注意：highlightDatabaseRow 是异步的，但在同一帧内执行 DOM 查找
+            highlightDatabaseRow(blockId, 1, 0);
+        }
+
+        if (!foundTaskBlock && !hasCurrentDbRef && !quiet && !document.querySelector('.tomato-db-row-highlight')) {
             Logger.info('⚠️ 未能高亮任务块，可能原因：');
             Logger.info('  - 块在其他文档中，需要跳转后才能高亮');
             Logger.info('  - 块类型不支持高亮');
@@ -19877,15 +20148,35 @@ function calculateWeeklyStats(dailyStatsArray) {
                 return;
             }
 
-            // 检测任务块元素是否还存在
+            // 🔧 增强：同时检查任务块和数据库引用
             const blockElement = findBlockElement(currentTaskBlockId);
-            if (!blockElement) {
+            const dbRef = document.querySelector(`[data-type="block-ref"][data-id="${currentTaskBlockId}"]`);
+
+            // 如果当前页面既没有任务块也没有数据库引用，说明不在相关页面，停止定时器
+            // 注意：页面切换回相关页面时，通常会由 updateDisplay 或其他事件重新触发高亮和 KeepAlive
+            if (!blockElement && !dbRef) {
                 stopHighlightKeepAlive();
                 return;
             }
 
+            let needsUpdate = false;
+
+            // 1. 检查任务块高亮
+            if (blockElement && !blockElement.classList.contains('tomato-task-highlight')) {
+                needsUpdate = true;
+            }
+
+            // 2. 检查数据库高亮
+            if (dbRef) {
+                // 检查 dbRef 的祖先是否有高亮类（或者自身）
+                const hasHighlight = dbRef.closest('.tomato-db-row-highlight') || dbRef.classList.contains('tomato-db-row-highlight');
+                if (!hasHighlight) {
+                    needsUpdate = true;
+                }
+            }
+
             // 🔧 性能优化：只在高亮丢失时重新应用
-            if (!blockElement.classList.contains('tomato-task-highlight')) {
+            if (needsUpdate) {
                 highlightTaskBlock(currentTaskBlockId, true);
             }
         }, 2000);  // 🔧 性能优化：从 500ms 改为 2000ms
@@ -19932,10 +20223,20 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
 
         Logger.info('🔍 highlightDatabaseRow 开始查找:', blockId);
-
-        // 清除之前的高亮
+        
+        // 智能清除之前的高亮
         document.querySelectorAll('.tomato-db-row-highlight').forEach(el => {
-            el.classList.remove('tomato-db-row-highlight');
+             const hasCurrentRef = el.querySelector(`[data-type="block-ref"][data-id="${blockId}"]`);
+            if (!hasCurrentRef) {
+                el.classList.remove('tomato-db-row-highlight');
+            }
+        });
+        
+        // 同时也清除不匹配的任务块高亮
+        document.querySelectorAll('.tomato-task-highlight').forEach(el => {
+            if (el.dataset.nodeId !== blockId) {
+                el.classList.remove('tomato-task-highlight');
+            }
         });
 
         const tryHighlight = (attempt = 1) => {
@@ -22252,6 +22553,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         document.getElementById('tomato-settings-backdrop')?.remove();
 
         const isMobile = isMobileDevice();
+        ensureTomatoCommonStyles();
 
         const backdrop = document.createElement('div');
         backdrop.id = 'tomato-settings-backdrop';
@@ -22301,7 +22603,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 flex: 1; padding: 10px; background: transparent; border: none;
                 border-bottom: 2px solid transparent; cursor: pointer;
                 color: var(--b3-theme-on-surface);
-                transition: all 0.2s;
+                transition: color 0.2s, border-bottom-color 0.2s;
                 display: flex; flex-direction: column; align-items: center; justify-content: center;
                 gap: 4px;
             `;
@@ -26934,6 +27236,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     
     // 创建提醒面板内容
     function createReminderPanelContent() {
+        ensureTomatoCommonStyles();
         const container = document.createElement('div');
         container.className = 'tomato-reminder-panel';
         container.style.cssText = 'height:100%;display:flex;flex-direction:column;background:var(--b3-theme-background);';
@@ -26959,9 +27262,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         const settingsBtn = document.createElement('button');
         settingsBtn.innerHTML = '⚙️';
         settingsBtn.title = '提醒设置';
+        settingsBtn.className = 'tomato-reminder-settings-btn';
         settingsBtn.style.cssText = 'padding:4px 6px;border:none;border-radius:6px;background:transparent;cursor:pointer;font-size:13px;';
-        settingsBtn.onmouseover = () => settingsBtn.style.background = 'var(--b3-theme-surface-light)';
-        settingsBtn.onmouseout = () => settingsBtn.style.background = 'transparent';
         settingsBtn.onclick = () => showReminderSettingsDialog();
         
         header.appendChild(titleRow);
@@ -27007,6 +27309,9 @@ function calculateWeeklyStats(dailyStatsArray) {
     const REMINDER_DOCK_VIEW_STORAGE_KEY = 'tomato-reminder-dock-view';
     let reminderDockTodayOnly = false;
     let reminderDockView = 'unfinished';
+    const __reminderDockDataCache = { fetchedAtMs: 0, allReminders: null, inFlight: null };
+    const __reminderDockRenderStates = new Map();
+    const __reminderDockDom = { sortBar: null, list: null, empty: null, viewKey: '' };
     let __reminderSettingsSaveDebounceTimer = null;
     const __queueSaveReminderSettings = () => {
         try { if (__reminderSettingsSaveDebounceTimer) clearTimeout(__reminderSettingsSaveDebounceTimer); } catch (e) {}
@@ -27047,6 +27352,70 @@ function calculateWeeklyStats(dailyStatsArray) {
         try { localStorage.setItem(REMINDER_DOCK_VIEW_STORAGE_KEY, reminderDockView); } catch (e) {}
     };
     let __reminderDockPrefsSyncScheduled = false;
+
+    const __invalidateReminderDockCache = () => {
+        __reminderDockDataCache.fetchedAtMs = 0;
+        __reminderDockDataCache.allReminders = null;
+    };
+
+    const __getAllRemindersForDock = async (forceRefresh) => {
+        if (forceRefresh) __invalidateReminderDockCache();
+        const nowMs = Date.now();
+        const cached = __reminderDockDataCache.allReminders;
+        if (!forceRefresh && Array.isArray(cached) && (nowMs - (__reminderDockDataCache.fetchedAtMs || 0) < 2000)) {
+            return cached;
+        }
+        if (!forceRefresh && __reminderDockDataCache.inFlight) {
+            try { return await __reminderDockDataCache.inFlight; } catch (e) { return Array.isArray(cached) ? cached : []; }
+        }
+        __reminderDockDataCache.inFlight = (async () => {
+            try {
+                const res = await queryAllReminderBlocks(!!forceRefresh);
+                const list = Array.isArray(res) ? res : [];
+                __reminderDockDataCache.allReminders = list;
+                __reminderDockDataCache.fetchedAtMs = Date.now();
+                return list;
+            } finally {
+                __reminderDockDataCache.inFlight = null;
+            }
+        })();
+        try { return await __reminderDockDataCache.inFlight; } catch (e) { return Array.isArray(cached) ? cached : []; }
+    };
+
+    const __ensureReminderDockListDom = () => {
+        if (!reminderDockPanel) return null;
+        let sortBar = reminderDockPanel.querySelector('#tomato-reminder-dock-sortbar');
+        let list = reminderDockPanel.querySelector('#tomato-reminder-dock-list');
+        let empty = reminderDockPanel.querySelector('#tomato-reminder-dock-empty');
+        if (!sortBar || !list || !empty) {
+            reminderDockPanel.textContent = '';
+            sortBar = document.createElement('div');
+            sortBar.id = 'tomato-reminder-dock-sortbar';
+            sortBar.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;padding:0 4px;flex-wrap:wrap;';
+            list = document.createElement('div');
+            list.id = 'tomato-reminder-dock-list';
+            empty = document.createElement('div');
+            empty.id = 'tomato-reminder-dock-empty';
+            empty.style.cssText = 'text-align:center;color:var(--b3-theme-on-surface-light);padding:40px 20px;font-size:13px;line-height:1.6;display:none;';
+            reminderDockPanel.appendChild(sortBar);
+            reminderDockPanel.appendChild(empty);
+            reminderDockPanel.appendChild(list);
+        }
+        __reminderDockDom.sortBar = sortBar;
+        __reminderDockDom.list = list;
+        __reminderDockDom.empty = empty;
+        return __reminderDockDom;
+    };
+
+    const __getReminderDockRenderState = (viewKey) => {
+        const k = String(viewKey || '');
+        let st = __reminderDockRenderStates.get(k);
+        if (!st) {
+            st = { nodeByKey: new Map() };
+            __reminderDockRenderStates.set(k, st);
+        }
+        return st;
+    };
     
     // 尝试通过 eventBus 监听布局事件来注册 Dock
     function tryRegisterDockViaEventBus() {
@@ -27263,63 +27632,217 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
         reminderDockTodayOnly = __getReminderDockTodayOnly();
         reminderDockView = __getReminderDockView();
-        const allReminders = await queryAllReminderBlocks(forceRefresh);
         const now = new Date();
         const view = reminderDockView === 'completed' ? 'completed' : 'unfinished';
-        let reminders = allReminders || [];
-        if (view === 'unfinished' && reminderDockTodayOnly) {
-            const todayKey = formatDateKey(now);
-            reminders = reminders.filter(r => {
-                if (!r || r.enabled === false) return false;
-                if (!Array.isArray(r.times) || r.times.length === 0) return false;
-                return checkShouldRemindToday(r, todayKey);
-            });
-        }
+        const dom = __ensureReminderDockListDom();
+        if (!dom) return;
         sortBy = 'time';
 
-        reminderDockPanel.innerHTML = '';
-
-        const sortBar = document.createElement('div');
-        sortBar.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;padding:0 4px;flex-wrap:wrap;';
-
-        const viewOptions = [{ key: 'unfinished', label: '未完成' }, { key: 'completed', label: '已完成' }];
-        viewOptions.forEach(opt => {
-            const btn = document.createElement('button');
-            btn.textContent = opt.label;
-            const selected = view === opt.key;
-            btn.style.cssText = `padding:4px 10px;border:1px solid ${selected ? 'var(--b3-theme-primary)' : 'var(--b3-theme-surface-light)'};border-radius:4px;background:${selected ? 'var(--b3-theme-primary-light)' : 'transparent'};color:${selected ? 'var(--b3-theme-primary)' : 'var(--b3-theme-on-surface)'};cursor:pointer;font-size:11px;`;
-            btn.onclick = () => {
-                __setReminderDockView(opt.key);
-                renderReminderDockList(sortBy);
-            };
-            sortBar.appendChild(btn);
-        });
-
-        if (view === 'unfinished') {
-            reminders.sort((a, b) => {
-                const ta = (getNextReminderDateTime(a, now)?.getTime?.() ?? Number.POSITIVE_INFINITY);
-                const tb = (getNextReminderDateTime(b, now)?.getTime?.() ?? Number.POSITIVE_INFINITY);
-                if (ta !== tb) return ta - tb;
-                return String(a?.blockName || '').localeCompare(String(b?.blockName || ''));
+        const ensureSortBar = () => {
+            if (!dom.sortBar || dom.sortBar.dataset.inited === '1') return;
+            dom.sortBar.dataset.inited = '1';
+            const viewOptions = [{ key: 'unfinished', label: '未完成' }, { key: 'completed', label: '已完成' }];
+            viewOptions.forEach(opt => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.textContent = opt.label;
+                btn.dataset.view = opt.key;
+                btn.onclick = () => {
+                    __setReminderDockView(opt.key);
+                    renderReminderDockList('time', false);
+                };
+                dom.sortBar.appendChild(btn);
             });
-        }
-
-        const todayToggle = document.createElement('label');
-        todayToggle.style.cssText = `display:${view === 'unfinished' ? 'flex' : 'none'};align-items:center;gap:4px;margin-left:4px;font-size:11px;color:var(--b3-theme-on-surface-light);user-select:none;`;
-        const todayInput = document.createElement('input');
-        todayInput.type = 'checkbox';
-        todayInput.checked = reminderDockTodayOnly;
-        todayInput.style.cssText = 'width:14px;height:14px;cursor:pointer;';
-        todayInput.onchange = () => {
-            __setReminderDockTodayOnly(!!todayInput.checked);
-            renderReminderDockList(sortBy);
+            const todayToggle = document.createElement('label');
+            todayToggle.dataset.role = 'today-toggle';
+            todayToggle.style.cssText = 'align-items:center;gap:4px;margin-left:4px;font-size:11px;color:var(--b3-theme-on-surface-light);user-select:none;';
+            const todayInput = document.createElement('input');
+            todayInput.type = 'checkbox';
+            todayInput.style.cssText = 'width:14px;height:14px;cursor:pointer;';
+            todayInput.onchange = () => {
+                __setReminderDockTodayOnly(!!todayInput.checked);
+                renderReminderDockList('time', false);
+            };
+            const todayText = document.createElement('span');
+            todayText.textContent = '今天';
+            todayToggle.appendChild(todayInput);
+            todayToggle.appendChild(todayText);
+            dom.sortBar.appendChild(todayToggle);
         };
-        const todayText = document.createElement('span');
-        todayText.textContent = '今天';
-        todayToggle.appendChild(todayInput);
-        todayToggle.appendChild(todayText);
-        sortBar.appendChild(todayToggle);
-        reminderDockPanel.appendChild(sortBar);
+
+        const updateSortBar = () => {
+            ensureSortBar();
+            const buttons = Array.from(dom.sortBar.querySelectorAll('button[data-view]'));
+            buttons.forEach(btn => {
+                const selected = view === btn.dataset.view;
+                btn.style.cssText = `padding:4px 10px;border:1px solid ${selected ? 'var(--b3-theme-primary)' : 'var(--b3-theme-surface-light)'};border-radius:4px;background:${selected ? 'var(--b3-theme-primary-light)' : 'transparent'};color:${selected ? 'var(--b3-theme-primary)' : 'var(--b3-theme-on-surface)'};cursor:pointer;font-size:11px;`;
+            });
+            const todayToggle = dom.sortBar.querySelector('label[data-role="today-toggle"]');
+            if (todayToggle) {
+                todayToggle.style.display = view === 'unfinished' ? 'flex' : 'none';
+                const cb = todayToggle.querySelector('input[type="checkbox"]');
+                if (cb) cb.checked = !!reminderDockTodayOnly;
+            }
+        };
+
+        const showEmpty = (text) => {
+            dom.list.textContent = '';
+            dom.empty.textContent = text || '';
+            dom.empty.style.display = 'block';
+            dom.list.style.display = 'none';
+        };
+
+        const showList = () => {
+            dom.empty.style.display = 'none';
+            dom.list.style.display = 'block';
+        };
+
+        updateSortBar();
+
+        const allReminders = await __getAllRemindersForDock(forceRefresh);
+        const reminders = Array.isArray(allReminders) ? allReminders : [];
+        const todayKey = (view === 'unfinished' && reminderDockTodayOnly) ? formatDateKey(now) : null;
+
+        const viewKey = view === 'completed'
+            ? 'completed'
+            : (reminderDockTodayOnly ? 'unfinished-today' : 'unfinished-all');
+        if (__reminderDockDom.viewKey !== viewKey) {
+            __reminderDockDom.viewKey = viewKey;
+            dom.list.textContent = '';
+        }
+        const state = __getReminderDockRenderState(viewKey);
+
+        const adjustPaddingRightOnce = (item, actions) => {
+            if (!item || !actions) return;
+            if (item.dataset.prMeasured === '1') return;
+            item.dataset.prMeasured = '1';
+            try {
+                requestAnimationFrame(() => {
+                    try {
+                        const w = actions.getBoundingClientRect().width || 0;
+                        const pr = Math.max(56, Math.ceil(w + 20));
+                        item.style.paddingRight = pr + 'px';
+                    } catch (e) {}
+                });
+            } catch (e) {}
+        };
+
+        const createUnfinishedItem = () => {
+            const item = document.createElement('div');
+            item.className = 'tomy-reminder-item';
+            item.style.cssText = 'padding:12px 88px 12px 12px;min-height:70px;margin-bottom:8px;background:var(--b3-theme-surface-light);border-radius:8px;cursor:pointer;transition:background 0.2s;position:relative;';
+            const name = document.createElement('div');
+            name.style.cssText = 'font-weight:500;font-size:13px;margin-bottom:6px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.35;max-height:calc(1.35em * 2);';
+            const statusLine = document.createElement('div');
+            statusLine.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);margin-top:2px;';
+            const nextLine = document.createElement('div');
+            nextLine.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);margin-top:4px;';
+            const actions = document.createElement('div');
+            actions.className = 'reminder-actions';
+            actions.style.cssText = 'position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:4px;';
+
+            const editBtn = document.createElement('button');
+            editBtn.type = 'button';
+            editBtn.innerHTML = '编辑';
+            editBtn.title = '编辑';
+            editBtn.style.cssText = 'padding:4px 8px;border:none;border-radius:4px;background:var(--b3-theme-surface);color:var(--b3-theme-on-surface);cursor:pointer;font-size:11px;';
+
+            const deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.innerHTML = '删除';
+            deleteBtn.title = '删除';
+            deleteBtn.style.cssText = 'padding:4px 8px;border:none;border-radius:4px;background:rgba(244,67,54,0.1);cursor:pointer;font-size:11px;color:#f44336;';
+
+            const doneBtn = document.createElement('button');
+            doneBtn.type = 'button';
+            doneBtn.innerHTML = '完成';
+            doneBtn.title = '完成';
+            doneBtn.style.cssText = 'padding:4px 8px;border:none;border-radius:4px;background:rgba(76,175,80,0.12);cursor:pointer;font-size:11px;color:#2e7d32;';
+
+            actions.appendChild(editBtn);
+            actions.appendChild(deleteBtn);
+            actions.appendChild(doneBtn);
+
+            item.appendChild(name);
+            item.appendChild(statusLine);
+            item.appendChild(actions);
+            item.__dock = { name, statusLine, nextLine, actions, editBtn, deleteBtn, doneBtn };
+            adjustPaddingRightOnce(item, actions);
+            return item;
+        };
+
+        const updateUnfinishedItem = (item, entry, nowRef) => {
+            const reminder = entry.reminder || {};
+            const at = entry.at;
+            const dateKey = formatDateKey(at);
+            const timeKey = String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0');
+            const refs = item.__dock;
+            refs.name.textContent = reminder.blockName || reminder.blockContent || '未命名任务';
+            refs.statusLine.innerHTML = (entry.kind === 'expired' ? '<span style="color:#e74c3c">已过期</span>：' : '未完成：') + dateKey + ' ' + timeKey;
+            if (entry.kind === 'pending') {
+                const afterMs = (at instanceof Date && !isNaN(at.getTime())) ? (at.getTime() + 60 * 1000) : (nowRef.getTime() + 60 * 1000);
+                const nextAt = getNextReminderDateTime(reminder, new Date(afterMs));
+                refs.nextLine.textContent = '下次：' + (nextAt ? formatDateTimeKey(nextAt) : (reminder.interval === 'once' ? '无（已过期或未设置）' : '—'));
+                if (!refs.nextLine.isConnected) item.insertBefore(refs.nextLine, refs.actions);
+            } else {
+                try { if (refs.nextLine.isConnected) refs.nextLine.remove(); } catch (e) {}
+            }
+            item.onclick = (e) => { if (e.target.closest('.reminder-actions')) return; navigateToBlock(reminder.blockId); };
+            refs.editBtn.onclick = () => showReminderDialog(reminder.blockId, reminder.blockName, reminder);
+            refs.deleteBtn.onclick = async () => {
+                const success = await deleteBlockReminder(reminder.blockId);
+                if (success) {
+                    showMiniToast('提醒已删除');
+                    __invalidateReminderDockCache();
+                    renderReminderDockList('time', true);
+                }
+            };
+            refs.doneBtn.onclick = async () => {
+                const ok = await __markReminderOccurrenceCompleted(reminder.blockId, dateKey, timeKey);
+                showMiniToast(ok ? '已标记完成' : '标记失败');
+                __invalidateReminderDockCache();
+                renderReminderDockList('time', true);
+            };
+        };
+
+        const createCompletedItem = () => {
+            const item = document.createElement('div');
+            item.className = 'tomy-reminder-item';
+            item.style.cssText = 'padding:12px 86px 12px 12px;margin-bottom:8px;background:var(--b3-theme-surface-light);border-radius:8px;cursor:pointer;transition:background 0.2s;position:relative;';
+            const name = document.createElement('div');
+            name.style.cssText = 'font-weight:500;font-size:13px;margin-bottom:6px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.35;max-height:calc(1.35em * 2);';
+            const info = document.createElement('div');
+            info.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);';
+            const actions = document.createElement('div');
+            actions.className = 'reminder-actions';
+            actions.style.cssText = 'position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:4px;';
+            const undoBtn = document.createElement('button');
+            undoBtn.type = 'button';
+            undoBtn.innerHTML = '撤销';
+            undoBtn.title = '撤销';
+            undoBtn.style.cssText = 'padding:4px 8px;border:none;border-radius:4px;background:rgba(33,150,243,0.12);cursor:pointer;font-size:11px;color:#1565c0;';
+            actions.appendChild(undoBtn);
+            item.appendChild(name);
+            item.appendChild(info);
+            item.appendChild(actions);
+            item.__dock = { name, info, actions, undoBtn };
+            adjustPaddingRightOnce(item, actions);
+            return item;
+        };
+
+        const updateCompletedItem = (item, entry) => {
+            const r = entry.reminder || {};
+            const refs = item.__dock;
+            refs.name.textContent = r.blockName || r.blockContent || '未命名任务';
+            refs.info.textContent = '完成：' + entry.dateKey + ' ' + entry.timeKey;
+            item.onclick = (e) => { if (e.target.closest('.reminder-actions')) return; navigateToBlock(r.blockId); };
+            refs.undoBtn.onclick = async () => {
+                const ok = await __unmarkReminderOccurrenceCompleted(r.blockId, entry.dateKey, entry.timeKey);
+                showMiniToast(ok ? '已撤销' : '撤销失败');
+                __invalidateReminderDockCache();
+                renderReminderDockList('time', true);
+            };
+        };
 
         if (view === 'completed') {
             const completedEntries = [];
@@ -27336,56 +27859,58 @@ function calculateWeeklyStats(dailyStatsArray) {
             }
             completedEntries.sort((a, b) => (b.doneAtMs || 0) - (a.doneAtMs || 0));
             if (completedEntries.length === 0) {
-                const empty = document.createElement('div');
-                empty.textContent = '暂无已完成提醒';
-                empty.style.cssText = 'text-align:center;color:var(--b3-theme-on-surface-light);padding:40px 20px;font-size:13px;line-height:1.6;';
-                reminderDockPanel.appendChild(empty);
+                showEmpty('暂无已完成提醒');
                 return;
             }
             const showEntries = completedEntries.slice(0, 30);
             if (completedEntries.length > 30) {
                 try { __pruneCompletedOccurrencesGlobal(30); } catch (e) {}
             }
-            showEntries.forEach(entry => {
+            showList();
+            const keys = showEntries.map(entry => {
                 const r = entry.reminder || {};
-                const item = document.createElement('div');
-                item.style.cssText = 'padding:12px 86px 12px 12px;margin-bottom:8px;background:var(--b3-theme-surface-light);border-radius:8px;cursor:pointer;transition:background 0.2s;position:relative;';
-                item.onmouseover = () => { item.style.background = 'var(--b3-theme-surface)'; };
-                item.onmouseout = () => { item.style.background = 'var(--b3-theme-surface-light)'; };
-                item.onclick = (e) => { if (e.target.closest('.reminder-actions')) return; navigateToBlock(r.blockId); };
-                const name = document.createElement('div');
-                name.textContent = r.blockName || r.blockContent || '未命名任务';
-                name.style.cssText = 'font-weight:500;font-size:13px;margin-bottom:6px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.35;max-height:calc(1.35em * 2);';
-                item.appendChild(name);
-                const info = document.createElement('div');
-                info.textContent = '完成：' + entry.dateKey + ' ' + entry.timeKey;
-                info.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);';
-                item.appendChild(info);
-                const actions = document.createElement('div');
-                actions.className = 'reminder-actions';
-                actions.style.cssText = 'position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:4px;';
-                const undoBtn = document.createElement('button');
-                undoBtn.innerHTML = '撤销';
-                undoBtn.title = '撤销';
-                undoBtn.style.cssText = 'padding:4px 8px;border:none;border-radius:4px;background:rgba(33,150,243,0.12);cursor:pointer;font-size:11px;color:#1565c0;';
-                undoBtn.onclick = async () => {
-                    const ok = await __unmarkReminderOccurrenceCompleted(r.blockId, entry.dateKey, entry.timeKey);
-                    showMiniToast(ok ? '已撤销' : '撤销失败');
-                    renderReminderDockList();
-                };
-                actions.appendChild(undoBtn);
-                item.appendChild(actions);
-                reminderDockPanel.appendChild(item);
+                return `c|${String(r.blockId || '')}|${entry.dateKey}|${entry.timeKey}|${entry.doneAtMs || 0}`;
             });
+            const byKey = state.nodeByKey;
+            const entryByKey = new Map();
+            for (let i = 0; i < keys.length; i++) entryByKey.set(keys[i], showEntries[i]);
+            for (const [k, node] of byKey.entries()) {
+                if (!entryByKey.has(k)) {
+                    try { if (node && node.isConnected) node.remove(); } catch (e) {}
+                    byKey.delete(k);
+                }
+            }
+            const frag = document.createDocumentFragment();
+            for (const k of keys) {
+                let node = byKey.get(k);
+                if (!node) {
+                    node = createCompletedItem();
+                    byKey.set(k, node);
+                }
+                node.__dockKey = k;
+                const entry = entryByKey.get(k);
+                if (entry) updateCompletedItem(node, entry);
+                frag.appendChild(node);
+            }
+            dom.list.appendChild(frag);
             return;
         }
 
         const entries = [];
+        const shouldIncludePendingToday = (r) => {
+            if (!todayKey) return true;
+            if (!r || r.enabled === false) return false;
+            if (!Array.isArray(r.times) || r.times.length === 0) return false;
+            return checkShouldRemindToday(r, todayKey);
+        };
         for (const r of reminders) {
             if (!r || r.enabled === false) continue;
-            const nextAt = getNextReminderDateTime(r, now);
-            if (nextAt && Number.isFinite(nextAt.getTime())) {
-                entries.push({ kind: 'pending', reminder: r, at: nextAt });
+            let nextAt = null;
+            if (shouldIncludePendingToday(r)) {
+                nextAt = getNextReminderDateTime(r, now);
+                if (nextAt && Number.isFinite(nextAt.getTime())) {
+                    entries.push({ kind: 'pending', reminder: r, at: nextAt });
+                }
             }
             const lastDueAt = __getLastDueReminderDateTime(r, now);
             if (lastDueAt && Number.isFinite(lastDueAt.getTime()) && lastDueAt.getTime() < now.getTime()) {
@@ -27403,88 +27928,41 @@ function calculateWeeklyStats(dailyStatsArray) {
         });
 
         if (entries.length === 0) {
-            const empty = document.createElement('div');
-            empty.textContent = reminderDockTodayOnly ? '今天暂无任务提醒' : '暂无任务提醒，右键块或数据库选择添加提醒';
-            empty.style.cssText = 'text-align:center;color:var(--b3-theme-on-surface-light);padding:40px 20px;font-size:13px;line-height:1.6;';
-            reminderDockPanel.appendChild(empty);
+            showEmpty(reminderDockTodayOnly ? '今天暂无任务提醒' : '暂无任务提醒，右键块或数据库选择添加提醒');
             return;
         }
 
-        entries.forEach(entry => {
+        showList();
+        const keys = entries.map(entry => {
             const reminder = entry.reminder || {};
             const at = entry.at;
             const dateKey = formatDateKey(at);
             const timeKey = String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0');
-            const item = document.createElement('div');
-            item.style.cssText = 'padding:12px 88px 12px 12px;min-height:70px;margin-bottom:8px;background:var(--b3-theme-surface-light);border-radius:8px;cursor:pointer;transition:background 0.2s;position:relative;';
-            item.onmouseover = () => { item.style.background = 'var(--b3-theme-surface)'; };
-            item.onmouseout = () => { item.style.background = 'var(--b3-theme-surface-light)'; };
-            item.onclick = (e) => { if (e.target.closest('.reminder-actions')) return; navigateToBlock(reminder.blockId); };
-
-            const name = document.createElement('div');
-            name.textContent = reminder.blockName || reminder.blockContent || '未命名任务';
-            name.style.cssText = 'font-weight:500;font-size:13px;margin-bottom:6px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.35;max-height:calc(1.35em * 2);';
-            item.appendChild(name);
-
-            const statusLine = document.createElement('div');
-            statusLine.innerHTML = (entry.kind === 'expired' ? '<span style="color:#e74c3c">已过期</span>：' : '未完成：') + dateKey + ' ' + timeKey;
-            statusLine.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);margin-top:2px;';
-            item.appendChild(statusLine);
-
-            if (entry.kind === 'pending') {
-                const afterMs = (at instanceof Date && !isNaN(at.getTime())) ? (at.getTime() + 60 * 1000) : (now.getTime() + 60 * 1000);
-                const nextAt = getNextReminderDateTime(reminder, new Date(afterMs));
-                const nextLine = document.createElement('div');
-                nextLine.textContent = '下次：' + (nextAt ? formatDateTimeKey(nextAt) : (reminder.interval === 'once' ? '无（已过期或未设置）' : '—'));
-                nextLine.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);margin-top:4px;';
-                item.appendChild(nextLine);
-            }
-
-            const actions = document.createElement('div');
-            actions.className = 'reminder-actions';
-            actions.style.cssText = 'position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:4px;';
-
-            const editBtn = document.createElement('button');
-            editBtn.innerHTML = '编辑';
-            editBtn.title = '编辑';
-            editBtn.style.cssText = 'padding:4px 8px;border:none;border-radius:4px;background:var(--b3-theme-surface);color:var(--b3-theme-on-surface);cursor:pointer;font-size:11px;';
-            editBtn.onclick = () => showReminderDialog(reminder.blockId, reminder.blockName, reminder);
-
-            const deleteBtn = document.createElement('button');
-            deleteBtn.innerHTML = '删除';
-            deleteBtn.title = '删除';
-            deleteBtn.style.cssText = 'padding:4px 8px;border:none;border-radius:4px;background:rgba(244,67,54,0.1);cursor:pointer;font-size:11px;color:#f44336;';
-            deleteBtn.onclick = async () => {
-                // 移动端直接删除，无需确认
-                const success = await deleteBlockReminder(reminder.blockId);
-                if (success) { showMiniToast('提醒已删除'); renderReminderDockList(sortBy); }
-            };
-
-            const doneBtn = document.createElement('button');
-            doneBtn.innerHTML = '完成';
-            doneBtn.title = '完成';
-            doneBtn.style.cssText = 'padding:4px 8px;border:none;border-radius:4px;background:rgba(76,175,80,0.12);cursor:pointer;font-size:11px;color:#2e7d32;';
-            doneBtn.onclick = async () => {
-                const ok = await __markReminderOccurrenceCompleted(reminder.blockId, dateKey, timeKey);
-                showMiniToast(ok ? '已标记完成' : '标记失败');
-                renderReminderDockList(sortBy);
-            };
-
-            actions.appendChild(editBtn);
-            actions.appendChild(deleteBtn);
-            actions.appendChild(doneBtn);
-            item.appendChild(actions);
-            try {
-                requestAnimationFrame(() => {
-                    try {
-                        const w = actions.getBoundingClientRect().width || 0;
-                        const pr = Math.max(56, Math.ceil(w + 20));
-                        item.style.paddingRight = pr + 'px';
-                    } catch (e) {}
-                });
-            } catch (e) {}
-            reminderDockPanel.appendChild(item);
+            return `u|${entry.kind}|${String(reminder.blockId || '')}|${dateKey}|${timeKey}`;
         });
+        const byKey = state.nodeByKey;
+        const entryByKey = new Map();
+        for (let i = 0; i < keys.length; i++) entryByKey.set(keys[i], entries[i]);
+
+        for (const [k, node] of byKey.entries()) {
+            if (!entryByKey.has(k)) {
+                try { if (node && node.isConnected) node.remove(); } catch (e) {}
+                byKey.delete(k);
+            }
+        }
+        const frag = document.createDocumentFragment();
+        for (const k of keys) {
+            let node = byKey.get(k);
+            if (!node) {
+                node = createUnfinishedItem();
+                byKey.set(k, node);
+            }
+            node.__dockKey = k;
+            const entry = entryByKey.get(k);
+            if (entry) updateUnfinishedItem(node, entry, now);
+            frag.appendChild(node);
+        }
+        dom.list.appendChild(frag);
     }
     
     function refreshReminderDockPanel() {
@@ -27492,7 +27970,8 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
                 SyncManager.triggerSiyuanSync(false).catch(() => {});
             }
-            renderReminderDockList();
+            __invalidateReminderDockCache();
+            renderReminderDockList('time', true);
         }
     }
     
@@ -27575,5 +28054,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.6.2 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.6.5 已加载');
 })();
