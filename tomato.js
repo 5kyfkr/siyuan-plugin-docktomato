@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.6.8
+// @version      1.7.0
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录
 
 (function () {
@@ -25825,10 +25825,16 @@ function calculateWeeklyStats(dailyStatsArray) {
                     opacity: var(--tomato-focus-dim-opacity, 0.5) !important;
                     transition: opacity 0.5s ease !important;
                 }
-                .av.tomato-av-focus-mode .tomato-av-keep-opaque,
-                .av.tomato-av-focus-mode .tomato-av-keep-opaque * {
+                .av.tomato-av-focus-mode .tomato-av-keep-opaque {
                     opacity: 1 !important;
                     transition: opacity 0.5s ease !important;
+                }
+                .av.tomato-av-focus-mode .block__icon[data-type="copy"] {
+                    display: none !important;
+                }
+                .av.tomato-av-focus-mode .av__firstcol,
+                .av.tomato-av-focus-mode .av__checkbox {
+                    display: none !important;
                 }
                 .tomato-task-link {
                     cursor: pointer;
@@ -28293,5 +28299,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.6.8 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.7.0 已加载');
 })();
