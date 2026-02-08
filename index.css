@@ -1,0 +1,38 @@
+@media (min-width: 630px) {
+/* 禁用QYL状态栏隐藏效果 */
+#status {
+animation: none !important;
+height: 27px !important;
+width: auto !important;
+}
+
+#status::before {
+display: none !important;
+}
+
+#status * {
+display: auto !important;
+}
+
+#status.QYLStatusHidden:hover {
+animation: none !important;
+}
+
+/* 强制显示 #barDock 图标 - 禁用隐藏效果 */
+#status.QYLStatusHidden:not(:hover) #barDock,
+#status.QYLStatusHidden:not(:hover) #barDock * {
+display: flex !important;
+visibility: visible !important;
+opacity: 1 !important;
+pointer-events: auto !important;
+
+}
+
+/* 确保 #barDock 不会被隐藏 */
+#barDock {
+display: flex !important;
+visibility: visible !important;
+opacity: 1 !important;
+pointer-events: auto !important;
+}
+}
