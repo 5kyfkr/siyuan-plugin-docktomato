@@ -5,7 +5,7 @@
 - During timing, right-click and hold the bottom area to stop the timer.
 - After enabling the sync feature, the timer state will persist even after closing and restarting SiYuan; recommended to enable.
 
-## 1.7.2
+## 1.7.3
 
 - Added: integration with Task Horizon (task manager) plugin
 - Fixed: Dock panel may become blank after PC sleep/resume; auto-recover on wake
