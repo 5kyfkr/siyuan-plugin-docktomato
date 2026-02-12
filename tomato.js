@@ -1,7 +1,7 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.7.3
-// @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录
+// @version      1.7.2
+// @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
     'use strict';
@@ -200,6 +200,13 @@
                 }
                 return true;
             }
+            if (r?.data?.code === 0) {
+                if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
+                    __tomatoFileTextCache.delete(String(path || ''));
+                    __tomatoFileTextCache.delete(String(newPath || ''));
+                }
+                return true;
+            }
         } catch (e) {}
         return false;
     }
@@ -331,7 +338,22 @@
                 return true;
             }
             
+            
+            if (result?.code === 0) {
+                if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
+                    __tomatoFileTextCache.delete(String(path || ''));
+                }
+                return true;
+            }
+            
             const fallback = await postJSON('/api/file/removeFile', { path });
+            if (fallback?.data?.code === 0) {
+                if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
+                    __tomatoFileTextCache.delete(String(path || ''));
+                }
+                return true;
+            }
+            return false;
             if (fallback?.data?.code === 0) {
                 if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
                     __tomatoFileTextCache.delete(String(path || ''));
@@ -749,6 +771,7 @@
         stopPolling() {
             if (this.pollTimer) {
                 clearTimeout(this.pollTimer);
+                clearTimeout(this.pollTimer);
                 this.pollTimer = null;
                 Logger.debug('🔄 SyncManager: 轮询已停止');
             }
@@ -779,7 +802,13 @@
             if (this.pollTimer) clearTimeout(this.pollTimer);
             this.pollTimer = setTimeout(() => this.poll(), pollInterval);
 
+            
+            // Schedule next poll first to ensure it keeps running even if error occurs
+            if (this.pollTimer) clearTimeout(this.pollTimer);
+            this.pollTimer = setTimeout(() => this.poll(), pollInterval);
+
             if (!force && now - this.lastPollTime < pollInterval) {
+                // If called too early (e.g. manually), skip but timer is already set
                 // If called too early (e.g. manually), skip but timer is already set
                 return;
             }
@@ -2090,6 +2119,8 @@
             enableMobileSupport: DEFAULT_ENABLE_MOBILE_SUPPORT,
             enableFocusMode: true,
             focusModeDimOpacity: 0.5,
+            enableFocusMode: true,
+            focusModeDimOpacity: 0.5,
             extendTomatoOnDistraction: true,
             defaultTomatoTime: DEFAULT_TOMATO_TIME, // 默认番茄时间（分钟）
             showHoursInTimerFormat: false, // 超过60分钟时显示"X小时Y分Z秒"格式，默认关闭
@@ -2200,6 +2231,12 @@
         userSettings.main.breakDurations = normalizeMinuteList(userSettings.main.breakDurations, DEFAULT_BREAK_DURATIONS);
         userSettings.main.debugMode = userSettings.main.debugMode === true;
         userSettings.main.enableMobileSupport = userSettings.main.enableMobileSupport !== false;
+        if (typeof userSettings.main.enableFocusMode !== 'boolean') userSettings.main.enableFocusMode = true;
+        {
+            const v = Number(userSettings.main.focusModeDimOpacity);
+            if (!Number.isFinite(v)) userSettings.main.focusModeDimOpacity = 0.5;
+            else userSettings.main.focusModeDimOpacity = Math.max(0, Math.min(1, v));
+        }
         if (typeof userSettings.main.enableFocusMode !== 'boolean') userSettings.main.enableFocusMode = true;
         {
             const v = Number(userSettings.main.focusModeDimOpacity);
@@ -2675,6 +2712,7 @@
         }
         try { ensureUserSettings(); } catch (e) {}
         try { applyFocusModeDimOpacity(); } catch (e) {}
+        try { applyFocusModeDimOpacity(); } catch (e) {}
         try { Logger.setDebugEnabled(isDebugMode()); } catch (e) {}
         return userSettings;
     }
@@ -3045,6 +3083,8 @@
 
             ensureTomatoCommonStyles();
 
+            ensureTomatoCommonStyles();
+
             // 创建弹窗容器
             const modal = document.createElement('div');
             modal.className = 'tomy-mobile-confirm-modal';
@@ -3083,6 +3123,7 @@
                         visibility: hidden;
                         transition: opacity 0.3s, visibility 0.3s;
                         will-change: opacity;
+                        will-change: opacity;
                     }
 
                     .tomy-mobile-confirm-modal.active {
@@ -3099,6 +3140,8 @@
                         transform: scale(0.9);
                         transition: transform 0.3s;
                         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+                        will-change: transform;
+                        contain: layout paint;
                         will-change: transform;
                         contain: layout paint;
                     }
@@ -3165,6 +3208,13 @@
 
                     .tomy-mobile-confirm-btn.confirm:hover {
                         background: rgba(33, 150, 243, 0.1);
+                    }
+
+                    @media (prefers-reduced-motion: reduce) {
+                        .tomy-mobile-confirm-modal,
+                        .tomy-mobile-confirm-dialog {
+                            transition: none !important;
+                        }
                     }
 
                     @media (prefers-reduced-motion: reduce) {
@@ -3301,6 +3351,12 @@
 
                 .tomy-expired-notification.closing {
                     animation: slideOutRight 0.3s ease-in forwards;
+                    will-change: transform, opacity;
+                    contain: layout paint;
+                }
+
+                .tomy-expired-notification.closing {
+                    animation: slideOutRight 0.3s ease-in forwards;
                 }
 
                 @keyframes slideInRight {
@@ -3397,6 +3453,15 @@
                         right: 16px;
                         top: 16px;
                         max-width: none;
+                    }
+                }
+
+                @media (prefers-reduced-motion: reduce) {
+                    .tomy-expired-notification {
+                        animation: none !important;
+                    }
+                    .tomy-expired-notification.closing {
+                        animation: none !important;
                     }
                 }
 
@@ -4460,6 +4525,7 @@
                 box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.2);
                 animation: tomatoSlideUp 0.3s ease-out;
                 will-change: transform;
+                will-change: transform;
             }
 
             .tomato-bottomsheet-title {
@@ -4531,8 +4597,51 @@
                     animation: none !important;
                 }
             }
+
+            .tomato-routine-add-btn:hover {
+                background: var(--b3-theme-primary, #1E88E5) !important;
+                border-color: var(--b3-theme-primary, #1E88E5) !important;
+                color: #fff !important;
+            }
+
+            .tomato-reminder-settings-btn:hover {
+                background: var(--b3-theme-surface-light) !important;
+            }
+
+            .tomy-reminder-item:hover {
+                background: var(--b3-theme-surface) !important;
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                .tomato-bottomsheet,
+                #tomato-settings-dialog {
+                    animation: none !important;
+                }
+                #tomato-timeline-bar,
+                #tomato-routine-toolbar,
+                .tomato-routine-add-btn,
+                .tomy-expired-notification,
+                .tomy-mobile-confirm-modal,
+                .tomy-mobile-confirm-dialog,
+                .tomy-reminder-item {
+                    transition: none !important;
+                    animation: none !important;
+                }
+            }
         `;
         document.head.appendChild(style);
+    }
+
+    function prefersReducedMotion() {
+        try {
+            return !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function motionMs(ms) {
+        return prefersReducedMotion() ? 0 : ms;
     }
 
     function prefersReducedMotion() {
@@ -4748,6 +4857,12 @@
             if (!userSettings.timeline) userSettings.timeline = {};
             if (typeof userSettings.timeline.enabled !== 'boolean') userSettings.timeline.enabled = false;
             if (typeof userSettings.timeline.enableBreathing !== 'boolean') userSettings.timeline.enableBreathing = true;
+            // 🔧 新增：折叠态流光效果配置，默认开启
+            if (typeof userSettings.timeline.enableShimmerFlow !== 'boolean') userSettings.timeline.enableShimmerFlow = true;
+            if (typeof userSettings.timeline.shimmerDuration !== 'number' || !Number.isFinite(userSettings.timeline.shimmerDuration)) userSettings.timeline.shimmerDuration = 8;
+            userSettings.timeline.shimmerDuration = Math.max(5, Math.min(20, Number(userSettings.timeline.shimmerDuration) || 8));
+            if (typeof userSettings.timeline.shimmerWidth !== 'number' || !Number.isFinite(userSettings.timeline.shimmerWidth)) userSettings.timeline.shimmerWidth = 5; // 默认 5%
+            if (!userSettings.timeline.shimmerColor) userSettings.timeline.shimmerColor = '#ffffff'; // 默认白色
             // 🔧 新增：折叠态流光效果配置，默认开启
             if (typeof userSettings.timeline.enableShimmerFlow !== 'boolean') userSettings.timeline.enableShimmerFlow = true;
             if (typeof userSettings.timeline.shimmerDuration !== 'number' || !Number.isFinite(userSettings.timeline.shimmerDuration)) userSettings.timeline.shimmerDuration = 8;
@@ -8230,6 +8345,7 @@
         if (timelineBar) timelineBar.remove();
 
         ensureTomatoCommonStyles();
+        ensureTomatoCommonStyles();
         ensureTimelineSettings();
 
         const isNeonMode = userSettings.appearance?.enableNeonEffect && userSettings.appearance?.theme !== 'default';
@@ -8276,8 +8392,10 @@
             background: transparent;
             z-index: 10;
             transition: opacity 0.2s ease, transform 0.2s ease;
+            transition: opacity 0.2s ease, transform 0.2s ease;
             align-items: center;
             pointer-events: none;  // 初始不可交互，由展开状态控制
+            will-change: opacity, transform;
             will-change: opacity, transform;
         `;
         // 初始时隐藏（折叠状态）
@@ -8314,6 +8432,7 @@
             color: var(--b3-theme-icon, #666);
             font-size: 14px;
             font-weight: bold;
+            transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
             transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
             pointer-events: auto;
             user-select: none;
@@ -10012,6 +10131,29 @@
                 && (timerMode === 'countdown' || timerMode === 'stopwatch' || timerMode === 'stopwatch-break' || timerMode === 'break')
                 && isRunning
                 && !isTimerPaused;
+            
+            if (shouldBreathe) {
+                timelineVisual.classList.add('breathing');
+                
+                // 🔧 新增：控制折叠态流光效果
+                const shouldShimmer = userSettings.timeline.enableShimmerFlow !== false;
+                if (shouldShimmer) {
+                    timelineVisual.classList.add('shimmering');
+                    // 设置流光周期 CSS 变量
+                    const shimmerDuration = Math.max(5, Math.min(20, Number(userSettings.timeline.shimmerDuration) || 8));
+                    timelineVisual.style.setProperty('--shimmer-duration', `${shimmerDuration}s`);
+                    // 设置流光宽度
+                    const shimmerWidth = Math.max(1, Math.min(50, Number(userSettings.timeline.shimmerWidth) || 5));
+                    timelineVisual.style.setProperty('--shimmer-width', `${shimmerWidth}%`);
+                    // 设置流光颜色
+                    timelineVisual.style.setProperty('--shimmer-color', userSettings.timeline.shimmerColor || '#ffffff');
+                } else {
+                    timelineVisual.classList.remove('shimmering');
+                }
+            } else {
+                timelineVisual.classList.remove('breathing');
+                timelineVisual.classList.remove('shimmering');
+            }
             
             if (shouldBreathe) {
                 timelineVisual.classList.add('breathing');
@@ -19251,7 +19393,23 @@ function calculateWeeklyStats(dailyStatsArray) {
                 }
                 50% { 
                     opacity: 1;    // 最亮
+                50% { 
+                    opacity: 1;    // 最亮
                 }
+            }
+
+            /* 聚焦模式样式：降低非高亮内容的透明度（但保留任务块/高亮块） */
+            .tomato-focus-mode > [data-node-id]:not(.tomato-task-highlight):not(.tomato-keep-opaque) {
+                opacity: var(--tomato-focus-dim-opacity, 0.5) !important;
+                transition: opacity 0.5s ease !important;
+            }
+            
+            /* 保持高亮块/任务块清晰 */
+            .tomato-focus-mode .tomato-task-highlight,
+            .tomato-focus-mode .tomato-db-row-highlight,
+            .tomato-focus-mode .tomato-keep-opaque {
+                opacity: 1 !important;
+                transition: opacity 0.5s ease !important;
             }
 
             /* 聚焦模式样式：降低非高亮内容的透明度（但保留任务块/高亮块） */
@@ -19291,6 +19449,58 @@ function calculateWeeklyStats(dailyStatsArray) {
                 animation: previewBreatheStrong var(--breathing-duration, 3s) ease-in-out infinite;
             }
 
+            /* 折叠状态下的流动光效动画 - 从左往右滑动 */
+            @keyframes shimmerFlow {
+                0% {
+                    background-position: 200% 0;
+                }
+                100% {
+                    background-position: -200% 0;
+                }
+            }
+
+            /* 
+             * 🔧 修复：让流光层作为独立元素覆盖在整个时间轴上方
+             * 之前的实现是作为背景图，会被子元素遮挡
+             * 现在改为使用 ::after 伪元素
+             */
+            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.breathing.shimmering::after,
+            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering::after {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-image: linear-gradient(
+                    90deg, 
+                    transparent 0%, 
+                    transparent calc(50% - var(--shimmer-width, 10%)), 
+                    var(--shimmer-color, rgba(255, 255, 255, 0.6)) 50%, 
+                    transparent calc(50% + var(--shimmer-width, 10%)), 
+                    transparent 100%
+                );
+                background-size: 200% 100%;
+                animation: shimmerFlow var(--shimmer-duration, 8s) linear infinite;
+                will-change: background-position;
+                z-index: 2; /* 确保在内容之上 */
+                pointer-events: none; /* 允许点击穿透 */
+            }
+
+            /* 应用呼吸动画到容器本身（保持原样） */
+            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.breathing.shimmering {
+                animation: stopwatchBreathe var(--breathing-duration, 3s) ease-in-out infinite;
+            }
+
+            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering {
+                animation: neonBreatheStrong var(--breathing-duration, 3s) ease-in-out infinite;
+                box-shadow: 0 0 10px var(--neon-glow, #ff6b9d);
+            }
+
+            /* 修复：确保当前时间线在流光层之上 */
+            #tomato-timeline-now-line {
+                z-index: 3 !important;
+            }
             /* 折叠状态下的流动光效动画 - 从左往右滑动 */
             @keyframes shimmerFlow {
                 0% {
@@ -19775,6 +19985,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                 });
                 applyFocusMode(false);
                 applyDatabaseFocusMode(false);
+                applyFocusMode(false);
+                applyDatabaseFocusMode(false);
             }
         }
     }
@@ -20166,127 +20378,183 @@ function calculateWeeklyStats(dailyStatsArray) {
         keepEl?.classList?.add('tomato-av-keep-opaque');
     }
 
-    // 高亮显示当前计时关联的任务块
-    // ✅ 修复：添加 quiet 参数以减少日志输出（保持高亮时不需要日志）
-    // 🔧 扩展：支持数据库块引用高亮
-    // 🔧 移动端禁用：避免高亮CSS干扰悬浮条拖动
-    function highlightTaskBlock(blockId, quiet = false) {
-        // 移动端禁用高亮，避免影响悬浮条触摸事件
-        if (isMobileDevice()) {
+    function getActiveEditorArea() {
+        return document.querySelector('.protyle--focus .protyle-wysiwyg, .protyle--focus .protyle-content') ||
+            document.querySelector('.protyle-wysiwyg, .protyle-content');
+    }
+
+    function getEditorAreaForElement(anchorEl) {
+        return anchorEl?.closest?.('.protyle-wysiwyg, .protyle-content') || getActiveEditorArea();
+    }
+
+    function getTopLevelBlockInEditor(editorArea, el) {
+        if (!editorArea || !el) return null;
+        let current = el;
+        while (current && current !== editorArea) {
+            if (current.parentElement === editorArea) return current;
+            current = current.parentElement;
+        }
+        return null;
+    }
+
+    function clearFocusKeepOpaque(editorArea) {
+        if (!editorArea) return;
+        editorArea.querySelectorAll('.tomato-keep-opaque').forEach(el => el.classList.remove('tomato-keep-opaque'));
+    }
+
+    function getFocusModeDimOpacity() {
+        const v = Number(userSettings?.main?.focusModeDimOpacity);
+        if (!Number.isFinite(v)) return 0.5;
+        return Math.max(0, Math.min(1, v));
+    }
+
+    function applyFocusModeDimOpacity() {
+        try {
+            document.documentElement.style.setProperty('--tomato-focus-dim-opacity', String(getFocusModeDimOpacity()));
+        } catch (e) {}
+    }
+
+    function refreshFocusKeepOpaque(editorArea, anchorEl) {
+        if (!editorArea) return;
+
+        clearFocusKeepOpaque(editorArea);
+
+        const taskBlocks = editorArea.querySelectorAll('.li[data-subtype="t"][data-node-id], [data-type="NodeListItem"][data-subtype="t"][data-node-id]');
+        taskBlocks.forEach(taskEl => {
+            const topLevel = getTopLevelBlockInEditor(editorArea, taskEl);
+            if (topLevel?.hasAttribute?.('data-node-id')) {
+                topLevel.classList.add('tomato-keep-opaque');
+            }
+        });
+
+        if (anchorEl) {
+            const topLevel = getTopLevelBlockInEditor(editorArea, anchorEl) || anchorEl.closest?.('[data-node-id]');
+            if (topLevel && editorArea.contains(topLevel) && topLevel.hasAttribute?.('data-node-id')) {
+                topLevel.classList.add('tomato-keep-opaque');
+            }
+        }
+    }
+
+    // 🔧 新增：聚焦模式，降低非高亮元素的透明度
+    function applyFocusMode(enable, anchorEl = null) {
+        if (isMobileDevice()) return; // 移动端不应用
+
+        const focusModeEnabled = userSettings?.main?.enableFocusMode !== false;
+        if (!focusModeEnabled) enable = false;
+
+        if (!enable) {
+            document.querySelectorAll('.protyle-wysiwyg.tomato-focus-mode, .protyle-content.tomato-focus-mode').forEach(area => {
+                area.classList.remove('tomato-focus-mode');
+                clearFocusKeepOpaque(area);
+            });
             return;
         }
-        
-        if (!blockId) {
+
+        const editorArea = getEditorAreaForElement(anchorEl);
+        if (!editorArea) return;
+
+        editorArea.classList.add('tomato-focus-mode');
+        refreshFocusKeepOpaque(editorArea, anchorEl);
+    }
+
+    function clearDatabaseFocusKeepOpaque(av) {
+        if (!av) return;
+        av.querySelectorAll('.tomato-av-keep-opaque').forEach(el => el.classList.remove('tomato-av-keep-opaque'));
+    }
+
+    function applyDatabaseFocusMode(enable, anchorEl = null) {
+        if (isMobileDevice()) return;
+
+        const focusModeEnabled = userSettings?.main?.enableFocusMode !== false;
+        if (!focusModeEnabled) enable = false;
+
+        if (!enable) {
+            document.querySelectorAll('.av.tomato-av-focus-mode').forEach(av => {
+                av.classList.remove('tomato-av-focus-mode');
+                clearDatabaseFocusKeepOpaque(av);
+            });
+            return;
+        }
+
+        const av = anchorEl?.closest?.('.av');
+        if (!av) return;
+
+        document.querySelectorAll('.av.tomato-av-focus-mode').forEach(otherAv => {
+            if (otherAv === av) return;
+            otherAv.classList.remove('tomato-av-focus-mode');
+            clearDatabaseFocusKeepOpaque(otherAv);
+        });
+
+        av.classList.add('tomato-av-focus-mode');
+        clearDatabaseFocusKeepOpaque(av);
+
+        const keepEl = anchorEl.closest?.('.av__row, .av__gallery-item, .av__kanban-item') || anchorEl;
+        keepEl?.classList?.add('tomato-av-keep-opaque');
+    }
+
+    function highlightTaskBlock(blockId, quiet = false) {
+        if (isMobileDevice()) return;
+        const id = String(blockId || '').trim();
+        if (!id) {
             if (!quiet) Logger.info('🔍 高亮任务块: 未提供 blockId');
-            applyFocusMode(false); // 取消聚焦模式
+            applyFocusMode(false);
             applyDatabaseFocusMode(false);
             return;
         }
 
-        if (!quiet) Logger.info('🔍 尝试高亮任务块:', blockId);
+        if (!quiet) Logger.info('🔍 尝试高亮任务块:', id);
 
-        // 移除之前的高亮（智能清除：只清除不属于当前blockId的高亮）
         document.querySelectorAll('.tomato-task-highlight').forEach(el => {
-            if (el.dataset.nodeId !== blockId) {
-                el.classList.remove('tomato-task-highlight');
-            }
+            try {
+                if (el?.dataset?.nodeId !== id) el.classList.remove('tomato-task-highlight');
+            } catch (e) {}
         });
         document.querySelectorAll('.tomato-db-row-highlight').forEach(el => {
-            // 检查该高亮元素是否包含当前任务的引用
-            const hasCurrentRef = el.querySelector(`[data-type="block-ref"][data-id="${blockId}"]`);
-            if (!hasCurrentRef) {
-                el.classList.remove('tomato-db-row-highlight');
-            }
+            try {
+                const hasCurrentRef = el.querySelector?.(`[data-type="block-ref"][data-id="${id}"],[data-id="${id}"]`);
+                if (!hasCurrentRef) el.classList.remove('tomato-db-row-highlight');
+            } catch (e) {}
         });
 
-        // 优先在编辑器区域内查找，排除面包屑
-        // 面包屑的父容器是 .protyle-breadcrumb，需要排除
+        const pickCandidate = (root) => {
+            if (!root?.querySelector) return null;
+            const li = root.querySelector(`.li[data-node-id="${id}"]`);
+            if (li) return li;
+            const p = root.querySelector(`.p[data-node-id="${id}"]`);
+            if (p) return p;
+            const any = root.querySelector(`[data-node-id="${id}"]`);
+            if (any && !any.closest?.('.protyle-breadcrumb')) return any;
+            return null;
+        };
+
         const editorArea = document.querySelector('.protyle-wysiwyg, .protyle-content');
+        let highlightedElement = pickCandidate(editorArea) || pickCandidate(document);
         let foundTaskBlock = false;
-        let highlightedElement = null;
-        
-        if (editorArea) {
-            // 在编辑器区域内查找.li元素（任务块）
-            const liElement = editorArea.querySelector(`.li[data-node-id="${blockId}"]`);
-            
-            if (liElement) {
-                liElement.classList.add('tomato-task-highlight');
-                if (!quiet) Logger.info('✅ 任务块(.li)高亮已添加:', blockId);
-                
-                // 滚动到任务块（保持高亮时不需要滚动）
-                if (!quiet) {
-                    try {
-                        liElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    } catch (e) {}
-                }
-                foundTaskBlock = true;
-                highlightedElement = liElement;
-            } else {
-                // 如果没找到.li，查找.p元素
-                const pElement = editorArea.querySelector(`.p[data-node-id="${blockId}"]`);
-                
-                if (pElement) {
-                    pElement.classList.add('tomato-task-highlight');
-                    if (!quiet) Logger.info('✅ 任务段落(.p)高亮已添加:', blockId);
-                    
-                    // 滚动到任务段落（保持高亮时不需要滚动）
-                    if (!quiet) {
-                        try {
-                            pElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        } catch (e) {}
-                    }
-                    foundTaskBlock = true;
-                    highlightedElement = pElement;
-                }
-            }
-        }
-        
-        if (!foundTaskBlock) {
-            // 备选方案：全局查找但排除面包屑
-            const allElements = document.querySelectorAll(`[data-node-id="${blockId}"]`);
-            
-            for (const el of allElements) {
-                // 排除面包屑区域
-                if (el.closest('.protyle-breadcrumb')) continue;
-                
-                el.classList.add('tomato-task-highlight');
-                if (!quiet) Logger.info('✅ 任务块高亮已添加:', blockId);
-                
-                // 滚动到任务块（保持高亮时不需要滚动）
-                if (!quiet) {
-                    try {
-                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    } catch (e) {}
-                }
-                foundTaskBlock = true;
-                highlightedElement = el;
-                break;
+
+        if (highlightedElement) {
+            try { highlightedElement.classList.add('tomato-task-highlight'); } catch (e) {}
+            foundTaskBlock = true;
+            if (!quiet) {
+                try { highlightedElement.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
             }
         }
 
-        // 应用聚焦模式（如果有找到高亮块）
         applyFocusMode(foundTaskBlock, highlightedElement);
 
-        // 无论是否找到任务块，都尝试高亮数据库行（如果存在）
-        // 检查是否已经有对应的数据库高亮
         let hasCurrentDbRef = false;
         const existingDbHighlights = document.querySelectorAll('.tomato-db-row-highlight');
-        for (const el of existingDbHighlights) {
-            if (el.querySelector(`[data-id="${blockId}"]`)) {
+        for (const rowEl of existingDbHighlights) {
+            if (rowEl?.querySelector?.(`[data-type="block-ref"][data-id="${id}"],[data-id="${id}"]`)) {
                 hasCurrentDbRef = true;
+                if (!foundTaskBlock && rowEl.closest?.('.protyle-wysiwyg, .protyle-content')) {
+                    applyFocusMode(true, rowEl);
+                }
                 break;
             }
         }
-        
+
         if (!hasCurrentDbRef) {
-            // 尝试高亮数据库行（不重试，避免性能问题）
-            // 注意：highlightDatabaseRow 是异步的，但在同一帧内执行 DOM 查找
-            highlightDatabaseRow(blockId, 1, 0);
-        } else if (!foundTaskBlock) {
-            const existingDbHighlight = [...document.querySelectorAll('.tomato-db-row-highlight')].find(el => el.querySelector?.(`[data-id="${blockId}"]`));
-            if (existingDbHighlight && existingDbHighlight.closest?.('.protyle-wysiwyg, .protyle-content')) {
-                applyFocusMode(true, existingDbHighlight);
-            }
+            try { highlightDatabaseRow(id, 1, 0); } catch (e) {}
         }
 
         if (!foundTaskBlock && !hasCurrentDbRef && !quiet && !document.querySelector('.tomato-db-row-highlight')) {
@@ -20298,51 +20566,29 @@ function calculateWeeklyStats(dailyStatsArray) {
 
     // 启动保持高亮的定时器
     function startHighlightKeepAlive() {
-        // 清除之前的定时器
-        if (taskBlockHighlightInterval) {
-            clearInterval(taskBlockHighlightInterval);
-        }
-
-        // 🔧 性能优化：改为 2000ms 间隔，只在高亮丢失时重新应用
+        try {
+            if (taskBlockHighlightInterval) clearInterval(taskBlockHighlightInterval);
+        } catch (e) {}
         taskBlockHighlightInterval = setInterval(() => {
-            // 如果没有任务块ID，停止定时器
-            if (!currentTaskBlockId) {
+            const id = String(currentTaskBlockId || '').trim();
+            if (!id) {
                 stopHighlightKeepAlive();
                 return;
             }
-
-            // 🔧 增强：同时检查任务块和数据库引用
-            const blockElement = findBlockElement(currentTaskBlockId);
-            const dbRef = document.querySelector(`[data-type="block-ref"][data-id="${currentTaskBlockId}"]`);
-
-            // 如果当前页面既没有任务块也没有数据库引用，说明不在相关页面，停止定时器
-            // 注意：页面切换回相关页面时，通常会由 updateDisplay 或其他事件重新触发高亮和 KeepAlive
+            const blockElement = findBlockElement(id);
+            const dbRef = document.querySelector(`[data-type="block-ref"][data-id="${id}"]`);
             if (!blockElement && !dbRef) {
                 stopHighlightKeepAlive();
                 return;
             }
-
             let needsUpdate = false;
-
-            // 1. 检查任务块高亮
-            if (blockElement && !blockElement.classList.contains('tomato-task-highlight')) {
-                needsUpdate = true;
-            }
-
-            // 2. 检查数据库高亮
+            if (blockElement && !blockElement.classList.contains('tomato-task-highlight')) needsUpdate = true;
             if (dbRef) {
-                // 检查 dbRef 的祖先是否有高亮类（或者自身）
                 const hasHighlight = dbRef.closest('.tomato-db-row-highlight') || dbRef.classList.contains('tomato-db-row-highlight');
-                if (!hasHighlight) {
-                    needsUpdate = true;
-                }
+                if (!hasHighlight) needsUpdate = true;
             }
-
-            // 🔧 性能优化：只在高亮丢失时重新应用
-            if (needsUpdate) {
-                highlightTaskBlock(currentTaskBlockId, true);
-            }
-        }, 2000);  // 🔧 性能优化：从 500ms 改为 2000ms
+            if (needsUpdate) highlightTaskBlock(id, true);
+        }, 2000);
     }
 
     // 停止保持高亮的定时器
@@ -20362,6 +20608,9 @@ function calculateWeeklyStats(dailyStatsArray) {
         document.querySelectorAll('.tomato-db-row-highlight').forEach(el => {
             el.classList.remove('tomato-db-row-highlight');
         });
+        // 清除聚焦模式
+        applyFocusMode(false);
+        applyDatabaseFocusMode(false);
         // 清除聚焦模式
         applyFocusMode(false);
         applyDatabaseFocusMode(false);
@@ -20391,7 +20640,20 @@ function calculateWeeklyStats(dailyStatsArray) {
         Logger.info('🔍 highlightDatabaseRow 开始查找:', blockId);
         
         // 智能清除之前的高亮
+        
+        // 智能清除之前的高亮
         document.querySelectorAll('.tomato-db-row-highlight').forEach(el => {
+             const hasCurrentRef = el.querySelector(`[data-type="block-ref"][data-id="${blockId}"]`);
+            if (!hasCurrentRef) {
+                el.classList.remove('tomato-db-row-highlight');
+            }
+        });
+        
+        // 同时也清除不匹配的任务块高亮
+        document.querySelectorAll('.tomato-task-highlight').forEach(el => {
+            if (el.dataset.nodeId !== blockId) {
+                el.classList.remove('tomato-task-highlight');
+            }
              const hasCurrentRef = el.querySelector(`[data-type="block-ref"][data-id="${blockId}"]`);
             if (!hasCurrentRef) {
                 el.classList.remove('tomato-db-row-highlight');
@@ -21156,8 +21418,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 document.getElementById('tomato-task-submenu')?.remove();
                 document.getElementById('tomato-db-submenu')?.remove();
                 window.siyuan?.menus?.menu?.remove();
-                const existingReminder = await getBlockReminder(blockInfo.id);
-                showReminderDialog(blockInfo.id, blockInfo.name, existingReminder);
+                try { globalThis.__tomatoReminder?.showDialog?.(blockInfo.id, blockInfo.name); } catch (e) {}
             };
             subMenu.appendChild(reminderBtn);
         }
@@ -21371,8 +21632,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             };
             reminderOption.onclick = async () => {
                 closeDialog();
-                const existingReminder = await getBlockReminder(blockInfo.id);
-                showReminderDialog(blockInfo.id, blockInfo?.name || '任务', existingReminder);
+                try { globalThis.__tomatoReminder?.showDialog?.(blockInfo.id, blockInfo?.name || '任务'); } catch (e) {}
             };
             dialog.appendChild(reminderOption);
         }
@@ -22726,6 +22986,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         const isMobile = isMobileDevice();
         ensureTomatoCommonStyles();
+        ensureTomatoCommonStyles();
 
         const backdrop = document.createElement('div');
         backdrop.id = 'tomato-settings-backdrop';
@@ -22775,6 +23036,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 flex: 1; padding: 10px; background: transparent; border: none;
                 border-bottom: 2px solid transparent; cursor: pointer;
                 color: var(--b3-theme-on-surface);
+                transition: color 0.2s, border-bottom-color 0.2s;
                 transition: color 0.2s, border-bottom-color 0.2s;
                 display: flex; flex-direction: column; align-items: center; justify-content: center;
                 gap: 4px;
@@ -22999,6 +23261,54 @@ function calculateWeeklyStats(dailyStatsArray) {
                 }
             } catch (e) {}
         });
+
+        mkToggleRow('聚焦模式（高亮任务/数据库时淡化其它内容）', userSettings?.main?.enableFocusMode !== false, async (e) => {
+            userSettings.main.enableFocusMode = e.target.checked;
+            await saveUserSettings();
+            if (!userSettings.main.enableFocusMode) {
+                applyFocusMode(false);
+                applyDatabaseFocusMode(false);
+            }
+        });
+
+        {
+            const row = document.createElement('div');
+            row.style.cssText = 'padding: 10px 0;';
+            const label = document.createElement('div');
+            label.textContent = '聚焦模式淡化透明度（0-1）';
+            label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.min = '0';
+            input.max = '1';
+            input.step = '0.05';
+            input.value = String(getFocusModeDimOpacity());
+            input.style.cssText = `
+                width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px;
+                border: 1px solid var(--b3-border-color); font-size: 13px;
+                background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+            `;
+            input.oninput = (e) => {
+                const v = Number(e.target.value);
+                if (!Number.isFinite(v)) return;
+                userSettings.main.focusModeDimOpacity = Math.max(0, Math.min(1, v));
+                applyFocusModeDimOpacity();
+            };
+            input.onchange = async (e) => {
+                const v = Number(e.target.value);
+                if (!Number.isFinite(v)) {
+                    e.target.value = String(getFocusModeDimOpacity());
+                    return;
+                }
+                userSettings.main.focusModeDimOpacity = Math.max(0, Math.min(1, v));
+                e.target.value = String(userSettings.main.focusModeDimOpacity);
+                applyFocusModeDimOpacity();
+                await saveUserSettings();
+            };
+            row.appendChild(label);
+            row.appendChild(input);
+            togglesSection.appendChild(row);
+        }
 
         mkToggleRow('聚焦模式（高亮任务/数据库时淡化其它内容）', userSettings?.main?.enableFocusMode !== false, async (e) => {
             userSettings.main.enableFocusMode = e.target.checked;
@@ -25865,6 +26175,38 @@ function calculateWeeklyStats(dailyStatsArray) {
                 .av.tomato-av-focus-mode .av__checkbox {
                     display: none !important;
                 }
+                .av.tomato-av-focus-mode .av__row:not(.tomato-av-keep-opaque),
+                .av.tomato-av-focus-mode .av__gallery-item:not(.tomato-av-keep-opaque),
+                .av.tomato-av-focus-mode .av__kanban-item:not(.tomato-av-keep-opaque) {
+                    opacity: var(--tomato-focus-dim-opacity, 0.5) !important;
+                    transition: opacity 0.5s ease !important;
+                }
+                .av.tomato-av-focus-mode .av__views,
+                .av.tomato-av-focus-mode .av__view,
+                .av.tomato-av-focus-mode .av__toolbar,
+                .av.tomato-av-focus-mode .av__header,
+                .av.tomato-av-focus-mode .av__top,
+                .av.tomato-av-focus-mode .av__title,
+                .av.tomato-av-focus-mode .av__nav,
+                .av.tomato-av-focus-mode .av__filter,
+                .av.tomato-av-focus-mode .av__sort,
+                .av.tomato-av-focus-mode .av__group,
+                .av.tomato-av-focus-mode .av__group-title,
+                .av.tomato-av-focus-mode .av__group-name {
+                    opacity: var(--tomato-focus-dim-opacity, 0.5) !important;
+                    transition: opacity 0.5s ease !important;
+                }
+                .av.tomato-av-focus-mode .tomato-av-keep-opaque {
+                    opacity: 1 !important;
+                    transition: opacity 0.5s ease !important;
+                }
+                .av.tomato-av-focus-mode .block__icon[data-type="copy"] {
+                    display: none !important;
+                }
+                .av.tomato-av-focus-mode .av__firstcol,
+                .av.tomato-av-focus-mode .av__checkbox {
+                    display: none !important;
+                }
                 .tomato-task-link {
                     cursor: pointer;
                     transition: text-decoration 0.2s;
@@ -25904,6 +26246,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         // 添加数据库块菜单功能
         await addDatabaseBlockMenuFeature();
+        try { await loadTaskWhiteboardFeature(); } catch (e) { Logger.error('❌ loadTaskWhiteboardFeature 失败:', e); }
         try { await loadTaskWhiteboardFeature(); } catch (e) { Logger.error('❌ loadTaskWhiteboardFeature 失败:', e); }
         
         // 初始化提醒功能
@@ -26251,7 +26594,9 @@ function calculateWeeklyStats(dailyStatsArray) {
         reminderAudioVolume: 0.8,
         checkInterval: 60000,
         dockTodayOnly: false,
-        dockView: 'unfinished'
+        dockView: 'unfinished',
+        semanticTitleTimeEnabled: true,
+        semanticTitleAutoSaveEnabled: false
     };
     
     let reminderSettings = { ...DEFAULT_REMINDER_SETTINGS };
@@ -26449,7 +26794,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 }
             }
         } catch (e) {
-            Logger.warn('加载提醒设置失败:', e.message);
+            Logger.warn('加载提醒设置失败:', e?.message || String(e));
         } finally {
             reminderSettingsLoaded = true;
         }
@@ -26532,6 +26877,10 @@ function calculateWeeklyStats(dailyStatsArray) {
         nameInput.style.cssText = 'width:100%;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
         nameSection.appendChild(nameInput);
         content.appendChild(nameSection);
+
+        const __semanticTitleSuggestion = (!existingReminder && reminderSettings?.semanticTitleTimeEnabled)
+            ? __semanticExtractReminderSuggestion(nameInput.value, new Date())
+            : null;
         
         const intervalSection = document.createElement('div');
         intervalSection.style.cssText = 'margin-bottom:20px;';
@@ -26542,8 +26891,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         const intervalGrid = document.createElement('div');
         intervalGrid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:8px;';
-        let selectedInterval = existingReminder?.interval || 'once';
-        let intervalEvery = __getReminderEvery(existingReminder);
+        let selectedInterval = existingReminder?.interval || __semanticTitleSuggestion?.interval || 'once';
+        let intervalEvery = existingReminder ? __getReminderEvery(existingReminder) : (__semanticTitleSuggestion?.every || 1);
         
         Object.values(REMINDER_INTERVAL_TYPES).forEach(type => {
             const btn = document.createElement('button');
@@ -26609,7 +26958,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         dateSection.appendChild(dateLabel);
         const dateInput = document.createElement('input');
         dateInput.type = 'date';
-        dateInput.value = existingReminder?.startDate || formatDateKey(existingReminder?.createdAt || new Date());
+        dateInput.value = existingReminder?.startDate || __semanticTitleSuggestion?.startDateKey || formatDateKey(existingReminder?.createdAt || new Date());
         dateInput.style.cssText = 'width:100%;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
         dateSection.appendChild(dateInput);
         const dateHint = document.createElement('div');
@@ -26627,7 +26976,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         const timeListContainer = document.createElement('div');
         timeListContainer.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-bottom:12px;';
-        let reminderTimes = existingReminder?.times || ['09:00'];
+        let reminderTimes = existingReminder?.times || (__semanticTitleSuggestion?.times?.length ? __semanticTitleSuggestion.times : ['09:00']);
 
         let updateNextInfo = () => {
             try {
@@ -26809,6 +27158,246 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
         return { hh, mm, key: `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}` };
     };
+    const __normalizeSemanticText = (input) => {
+        let s = String(input || '');
+        if (!s) return '';
+        s = s.replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFF10 + 0x30));
+        s = s.replace(/[：]/g, ':').replace(/[／]/g, '/').replace(/[－—–]/g, '-');
+        s = s.replace(/\s+/g, ' ').trim();
+        return s;
+    };
+    const __semanticDowFromToken = (token) => {
+        const t = String(token || '').trim();
+        if (!t) return null;
+        if (/^\d+$/.test(t)) {
+            const n = parseInt(t, 10);
+            if (!Number.isFinite(n)) return null;
+            if (n >= 1 && n <= 6) return n;
+            if (n === 7) return 0;
+            return null;
+        }
+        const map = { '日': 0, '天': 0, '七': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6 };
+        return Object.prototype.hasOwnProperty.call(map, t) ? map[t] : null;
+    };
+    const __semanticClampYmd = (y, m1, d) => {
+        const year = Number(y);
+        const month1 = Number(m1);
+        const day = Number(d);
+        if (!Number.isFinite(year) || !Number.isFinite(month1) || !Number.isFinite(day)) return null;
+        if (year < 1970 || year > 9999) return null;
+        if (month1 < 1 || month1 > 12) return null;
+        const last = new Date(year, month1, 0).getDate();
+        const dd = Math.max(1, Math.min(last, day));
+        const dt = new Date(year, month1 - 1, dd, 0, 0, 0, 0);
+        if (isNaN(dt.getTime())) return null;
+        return dt;
+    };
+    const __semanticPickMeridiem = (text, index) => {
+        try {
+            const left = String(text || '').slice(Math.max(0, (index || 0) - 10), Math.max(0, index || 0));
+            const m = /(凌晨|早上|上午|中午|下午|晚上|傍晚)/g;
+            let hit = null;
+            let x;
+            while ((x = m.exec(left))) hit = x[1];
+            return hit;
+        } catch (e) {
+            return null;
+        }
+    };
+    const __semanticNormalizeTimeParts = (hh, mm, meridiem) => {
+        let h = Number(hh);
+        let m = Number(mm);
+        if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+        if (m < 0 || m > 59) return null;
+        if (h < 0 || h > 24) return null;
+        if (h === 24) h = 0;
+        const md = String(meridiem || '').trim();
+        if (md === '下午' || md === '晚上' || md === '傍晚') {
+            if (h >= 1 && h <= 11) h += 12;
+        } else if (md === '中午') {
+            if (h >= 1 && h <= 10) h += 12;
+        } else if (md === '凌晨' || md === '早上' || md === '上午') {
+            if (h === 12) h = 0;
+        }
+        if (h < 0 || h > 23) return null;
+        return __parseTime(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+    };
+    const __semanticExtractTimes = (rawText) => {
+        const text = __normalizeSemanticText(rawText);
+        if (!text) return [];
+        const out = [];
+        const push = (p) => {
+            if (!p?.key) return;
+            if (!out.includes(p.key)) out.push(p.key);
+        };
+        const re1 = /(\d{1,2})\s*:\s*(\d{2})/g;
+        let m;
+        while ((m = re1.exec(text))) {
+            const mer = __semanticPickMeridiem(text, m.index);
+            const p = __semanticNormalizeTimeParts(m[1], m[2], mer);
+            if (p) push(p);
+        }
+        const re2 = /(\d{1,2})\s*点\s*(半|(\d{1,2})\s*分?)?/g;
+        while ((m = re2.exec(text))) {
+            const hh = m[1];
+            const mer = __semanticPickMeridiem(text, m.index);
+            let mm = 0;
+            if (m[2] === '半') mm = 30;
+            else if (m[3]) mm = parseInt(m[3], 10) || 0;
+            const p = __semanticNormalizeTimeParts(hh, mm, mer);
+            if (p) push(p);
+        }
+        out.sort();
+        return out;
+    };
+    const __semanticExtractReminderSuggestion = (rawTitle, baseDate) => {
+        const title = __normalizeSemanticText(rawTitle);
+        if (!title) return null;
+        const now = toDateSafe(baseDate || new Date());
+        if (!(now instanceof Date) || isNaN(now.getTime())) return null;
+
+        const times = __semanticExtractTimes(title);
+        let interval = null;
+        let every = null;
+        let startDateKey = null;
+
+        const dur = /(\d+)\s*(分钟|分|小时|时|天|日|周|星期|礼拜)\s*后/.exec(title);
+        if (dur) {
+            const n = parseInt(dur[1], 10);
+            if (Number.isFinite(n) && n > 0) {
+                const unit = dur[2];
+                const dt = new Date(now);
+                if (unit === '分钟' || unit === '分') dt.setMinutes(dt.getMinutes() + n);
+                else if (unit === '小时' || unit === '时') dt.setHours(dt.getHours() + n);
+                else if (unit === '天' || unit === '日') dt.setDate(dt.getDate() + n);
+                else if (unit === '周' || unit === '星期' || unit === '礼拜') dt.setDate(dt.getDate() + n * 7);
+                startDateKey = formatDateKey(dt);
+                const p = __parseTime(`${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`);
+                return { interval: 'once', every: 1, startDateKey, times: p ? [p.key] : times };
+            }
+        }
+
+        if (/(每\s*\d+\s*年|每年)/.test(title)) interval = 'yearly';
+        else if (/(每\s*\d+\s*月|每月)/.test(title)) interval = 'monthly';
+        else if (/(每\s*\d+\s*周|每周|每星期|每礼拜)/.test(title)) interval = 'weekly';
+        else if (/(每\s*\d+\s*天|每天|每日)/.test(title)) interval = 'daily';
+
+        const everyMatch = interval === 'yearly'
+            ? /每\s*(\d+)\s*年/.exec(title)
+            : interval === 'monthly'
+                ? /每\s*(\d+)\s*月/.exec(title)
+                : interval === 'weekly'
+                    ? /每\s*(\d+)\s*周/.exec(title)
+                    : interval === 'daily'
+                        ? /每\s*(\d+)\s*天/.exec(title)
+                        : null;
+        if (everyMatch) {
+            const n = parseInt(everyMatch[1], 10);
+            if (Number.isFinite(n) && n > 0) every = Math.min(3650, Math.max(1, n));
+        }
+
+        const ymd = /(\d{4})[./-](\d{1,2})[./-](\d{1,2})/.exec(title);
+        const md = /(^|[^\d])(\d{1,2})[./-](\d{1,2})(?!\d)/.exec(title);
+        const mdCn = /(\d{1,2})\s*月\s*(\d{1,2})\s*(日|号)?/.exec(title);
+        const rel = /(今天|明天|后天|大后天)/.exec(title);
+        const weekday = /((本周|这周|下周|下下周)?\s*(周|星期|礼拜)\s*([一二三四五六日天1-7]))/.exec(title);
+
+        if (ymd) {
+            const dt = __semanticClampYmd(ymd[1], ymd[2], ymd[3]);
+            if (dt) startDateKey = formatDateKey(dt);
+        } else if (mdCn) {
+            const dt = __semanticClampYmd(now.getFullYear(), mdCn[1], mdCn[2]);
+            if (dt) {
+                if (!interval && dt.getTime() < new Date(formatDateKey(now) + 'T00:00:00').getTime()) dt.setFullYear(dt.getFullYear() + 1);
+                startDateKey = formatDateKey(dt);
+            }
+        } else if (md) {
+            const dt = __semanticClampYmd(now.getFullYear(), md[2], md[3]);
+            if (dt) {
+                if (!interval && dt.getTime() < new Date(formatDateKey(now) + 'T00:00:00').getTime()) dt.setFullYear(dt.getFullYear() + 1);
+                startDateKey = formatDateKey(dt);
+            }
+        } else if (rel) {
+            const dt = new Date(formatDateKey(now) + 'T00:00:00');
+            if (rel[1] === '明天') dt.setDate(dt.getDate() + 1);
+            else if (rel[1] === '后天') dt.setDate(dt.getDate() + 2);
+            else if (rel[1] === '大后天') dt.setDate(dt.getDate() + 3);
+            startDateKey = formatDateKey(dt);
+        } else if (weekday) {
+            const scope = String(weekday[2] || '').trim();
+            const targetDow = __semanticDowFromToken(weekday[4]);
+            if (Number.isFinite(targetDow)) {
+                const base = new Date(formatDateKey(now) + 'T00:00:00');
+                let forward = (targetDow - base.getDay() + 7) % 7;
+                if (scope === '下周') forward += 7;
+                else if (scope === '下下周') forward += 14;
+                if (forward === 0 && times.length) {
+                    const p = __parseTime(times[0]);
+                    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+                    const tMinutes = (p?.hh || 0) * 60 + (p?.mm || 0);
+                    if (tMinutes <= nowMinutes) forward += 7;
+                } else if (forward === 0 && !times.length && scope) {
+                    forward += scope === '下周' ? 7 : scope === '下下周' ? 14 : 0;
+                } else if (forward === 0 && !times.length) {
+                    forward += interval === 'weekly' ? 0 : 7;
+                }
+                base.setDate(base.getDate() + forward);
+                startDateKey = formatDateKey(base);
+            }
+        }
+
+        if (!interval) interval = 'once';
+        if (!every) every = interval === 'once' ? 1 : 1;
+        if (interval === 'once' && !startDateKey && times.length) {
+            const base = new Date(formatDateKey(now) + 'T00:00:00');
+            const p = __parseTime(times[0]);
+            const nowMinutes = now.getHours() * 60 + now.getMinutes();
+            const tMinutes = (p?.hh || 0) * 60 + (p?.mm || 0);
+            if (tMinutes <= nowMinutes) base.setDate(base.getDate() + 1);
+            startDateKey = formatDateKey(base);
+        }
+
+        if (times.length === 0 && !startDateKey && interval === 'once') return null;
+        return { interval, every, startDateKey, times };
+    };
+    async function __tryAutoSaveReminderFromTitle(blockId, blockName, baseDate) {
+        if (!blockId) return false;
+        try {
+            if (!reminderSettings?.semanticTitleTimeEnabled) return false;
+            if (!reminderSettings?.semanticTitleAutoSaveEnabled) return false;
+        } catch (e) {
+            return false;
+        }
+        const suggestion = __semanticExtractReminderSuggestion(blockName, baseDate || new Date());
+        if (!suggestion || !Array.isArray(suggestion.times) || suggestion.times.length === 0) return false;
+        const now = new Date();
+        const interval = String(suggestion.interval || 'once');
+        const every = interval === 'once' ? 1 : (Number.isFinite(suggestion.every) && suggestion.every > 0 ? suggestion.every : 1);
+        const startDate = String(suggestion.startDateKey || formatDateKey(now));
+        const times = Array.from(new Set(suggestion.times.map(x => String(x || '').trim())))
+            .filter(t => /^\d{2}:\d{2}$/.test(t))
+            .sort();
+        if (times.length === 0) return false;
+        const nowIso = new Date().toISOString();
+        const reminderData = {
+            blockId: String(blockId),
+            blockName: String(blockName || '').trim() || '未命名任务',
+            interval,
+            every,
+            times,
+            startDate,
+            endDate: undefined,
+            note: '',
+            createdAt: nowIso,
+            updatedAt: nowIso,
+            enabled: true
+        };
+        const ok = await saveBlockReminder(blockId, reminderData);
+        if (ok) {
+            try { showMiniToast('已自动添加提醒'); } catch (e) {}
+        }
+        return !!ok;
+    }
     const __getStartDateKey = (reminder) => {
         const v = String(reminder?.startDate || '').trim();
         if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
@@ -27331,7 +27920,21 @@ function calculateWeeklyStats(dailyStatsArray) {
     
     // 暴露到全局供调试使用
     globalThis.__tomatoReminder = {
-        showDialog: showReminderDialog,
+        showDialog: (blockId, blockName) => {
+            Promise.resolve().then(async () => {
+                const id = String(blockId || '').trim();
+                if (!id) return;
+                const name = String(blockName || '').trim() || '任务';
+                const existing = await getBlockReminder(id);
+                if (!existing) {
+                    const autoSaved = await __tryAutoSaveReminderFromTitle(id, name, new Date());
+                    if (autoSaved) return;
+                }
+                showReminderDialog(id, name, existing);
+            }).catch((e) => {
+                try { Logger.warn('提醒 showDialog 失败:', e); } catch (e2) {}
+            });
+        },
         showSettings: showReminderSettingsDialog,
         check: manualCheckReminders,
         refresh: refreshReminderDockPanel,
@@ -27502,15 +28105,15 @@ function calculateWeeklyStats(dailyStatsArray) {
                 }
             });
             if (setRes.ok && setRes.data?.code === 0) {
-                try { await postJSON('/api/sqlite/flushTransaction', {}); } catch (e) {}
                 try {
-                    const freshData = await getBlockReminder(blockId);
-                    try { refreshReminderDockPanel(); } catch (e) {}
-                    try { updateReminderBadge(); } catch (e) {}
+                    __invalidateReminderDockCache();
+                    renderReminderDockList('time', false);
                 } catch (e) {}
+                try { updateReminderBadge(); } catch (e) {}
+                try { postJSON('/api/sqlite/flushTransaction', {}).catch(() => {}); } catch (e) {}
                 try {
                     if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
-                        await SyncManager.triggerSiyuanSync(true);
+                        Promise.resolve().then(() => SyncManager.triggerSiyuanSync(true)).catch(() => {});
                     }
                 } catch (e) {}
                 return true;
@@ -27575,6 +28178,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     
     let reminderDockPanel = null;
     let __reminderDockMountEl = null;
+    let __reminderDockMountToken = 0;
     let __reminderDockWakeBound = false;
     let __reminderDockWakeTimer = null;
     let __reminderDockWasHiddenAt = 0;
@@ -27622,9 +28226,13 @@ function calculateWeeklyStats(dailyStatsArray) {
         } catch (e) {}
         const ok = __ensureReminderDockMounted();
         if (!ok) return;
-        try { refreshReminderDockPanel(); } catch (e) {
-            try { Logger.warn('提醒Dock wake refresh失败:', reason, e); } catch (e2) {}
-        }
+        const token = __reminderDockMountToken || 0;
+        setTimeout(() => {
+            if ((__reminderDockMountToken || 0) !== token) return;
+            try { refreshReminderDockPanel(); } catch (e) {
+                try { Logger.warn('提醒Dock wake refresh失败:', reason, e); } catch (e2) {}
+            }
+        }, 60);
     };
 
     const __bindReminderDockWakeRecover = () => {
@@ -27653,6 +28261,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     // 创建提醒面板内容
     function createReminderPanelContent() {
         ensureTomatoCommonStyles();
+        ensureTomatoCommonStyles();
         const container = document.createElement('div');
         container.className = 'tomato-reminder-panel';
         container.style.cssText = 'height:100%;display:flex;flex-direction:column;background:var(--b3-theme-background);';
@@ -27678,6 +28287,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const settingsBtn = document.createElement('button');
         settingsBtn.innerHTML = '⚙️';
         settingsBtn.title = '提醒设置';
+        settingsBtn.className = 'tomato-reminder-settings-btn';
         settingsBtn.className = 'tomato-reminder-settings-btn';
         settingsBtn.style.cssText = 'padding:4px 6px;border:none;border-radius:6px;background:transparent;cursor:pointer;font-size:13px;';
         settingsBtn.onclick = () => showReminderSettingsDialog();
@@ -27717,6 +28327,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     globalThis.__dockTomatoReminderDock = {
         mount: (element) => {
             if (!element) return;
+            __reminderDockMountToken = (__reminderDockMountToken || 0) + 1;
             try { reminderDockRegistered = true; } catch (e) {}
             try { __reminderDockMountEl = element; } catch (e) {}
             try { __bindReminderDockWakeRecover(); } catch (e) {}
@@ -28072,6 +28683,18 @@ function calculateWeeklyStats(dailyStatsArray) {
                 } catch (e) {}
             }
             if (!reminderDockPanel) return;
+            const __dockRenderToken = __reminderDockMountToken || 0;
+            const __dockRenderPanel = reminderDockPanel;
+            const __dockRenderIsStale = () => {
+                try {
+                    if ((__reminderDockMountToken || 0) !== __dockRenderToken) return true;
+                    if (!__dockRenderPanel || !__dockRenderPanel.isConnected) return true;
+                    if (reminderDockPanel !== __dockRenderPanel) return true;
+                } catch (e) {
+                    return true;
+                }
+                return false;
+            };
             if (!reminderSettingsLoaded && !__reminderDockPrefsSyncScheduled) {
                 __reminderDockPrefsSyncScheduled = true;
                 setTimeout(function poll() {
@@ -28087,38 +28710,38 @@ function calculateWeeklyStats(dailyStatsArray) {
             const dom = __ensureReminderDockListDom();
             if (!dom) return;
             sortBy = 'time';
-
-        const ensureSortBar = () => {
-            if (!dom.sortBar || dom.sortBar.dataset.inited === '1') return;
-            dom.sortBar.dataset.inited = '1';
-            const viewOptions = [{ key: 'unfinished', label: '未完成' }, { key: 'completed', label: '已完成' }];
-            viewOptions.forEach(opt => {
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.textContent = opt.label;
-                btn.dataset.view = opt.key;
-                btn.onclick = () => {
-                    __setReminderDockView(opt.key);
+            const ensureSortBar = () => {
+                if (!dom.sortBar || dom.sortBar.dataset.inited === '1') return;
+                dom.sortBar.dataset.inited = '1';
+                dom.sortBar.textContent = '';
+                const viewOptions = [{ key: 'unfinished', label: '未完成' }, { key: 'completed', label: '已完成' }];
+                viewOptions.forEach(opt => {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.textContent = opt.label;
+                    btn.dataset.view = opt.key;
+                    btn.onclick = () => {
+                        __setReminderDockView(opt.key);
+                        renderReminderDockList('time', false);
+                    };
+                    dom.sortBar.appendChild(btn);
+                });
+                const todayToggle = document.createElement('label');
+                todayToggle.dataset.role = 'today-toggle';
+                todayToggle.style.cssText = 'align-items:center;gap:4px;margin-left:4px;font-size:11px;color:var(--b3-theme-on-surface-light);user-select:none;';
+                const todayInput = document.createElement('input');
+                todayInput.type = 'checkbox';
+                todayInput.style.cssText = 'width:14px;height:14px;cursor:pointer;';
+                todayInput.onchange = () => {
+                    __setReminderDockTodayOnly(!!todayInput.checked);
                     renderReminderDockList('time', false);
                 };
-                dom.sortBar.appendChild(btn);
-            });
-            const todayToggle = document.createElement('label');
-            todayToggle.dataset.role = 'today-toggle';
-            todayToggle.style.cssText = 'align-items:center;gap:4px;margin-left:4px;font-size:11px;color:var(--b3-theme-on-surface-light);user-select:none;';
-            const todayInput = document.createElement('input');
-            todayInput.type = 'checkbox';
-            todayInput.style.cssText = 'width:14px;height:14px;cursor:pointer;';
-            todayInput.onchange = () => {
-                __setReminderDockTodayOnly(!!todayInput.checked);
-                renderReminderDockList('time', false);
+                const todayText = document.createElement('span');
+                todayText.textContent = '今天';
+                todayToggle.appendChild(todayInput);
+                todayToggle.appendChild(todayText);
+                dom.sortBar.appendChild(todayToggle);
             };
-            const todayText = document.createElement('span');
-            todayText.textContent = '今天';
-            todayToggle.appendChild(todayInput);
-            todayToggle.appendChild(todayText);
-            dom.sortBar.appendChild(todayToggle);
-        };
 
         const updateSortBar = () => {
             ensureSortBar();
@@ -28136,6 +28759,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         };
 
         const showEmpty = (text) => {
+            if (__dockRenderIsStale()) return;
             dom.list.textContent = '';
             dom.empty.textContent = text || '';
             dom.empty.style.display = 'block';
@@ -28143,6 +28767,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         };
 
         const showList = () => {
+            if (__dockRenderIsStale()) return;
             dom.empty.style.display = 'none';
             dom.list.style.display = 'block';
         };
@@ -28150,6 +28775,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         updateSortBar();
 
         const allReminders = await __getAllRemindersForDock(forceRefresh);
+        if (__dockRenderIsStale()) return;
         const reminders = Array.isArray(allReminders) ? allReminders : [];
         const todayKey = (view === 'unfinished' && reminderDockTodayOnly) ? formatDateKey(now) : null;
 
@@ -28240,11 +28866,24 @@ function calculateWeeklyStats(dailyStatsArray) {
             item.onclick = (e) => { if (e.target.closest('.reminder-actions')) return; navigateToBlock(reminder.blockId); };
             refs.editBtn.onclick = () => showReminderDialog(reminder.blockId, reminder.blockName, reminder);
             refs.deleteBtn.onclick = async () => {
+                try { showMiniToast('正在删除...'); } catch (e) {}
+                try {
+                    refs.deleteBtn.disabled = true;
+                    refs.editBtn.disabled = true;
+                    refs.doneBtn.disabled = true;
+                    item.style.opacity = '0.55';
+                } catch (e) {}
                 const success = await deleteBlockReminder(reminder.blockId);
                 if (success) {
+                    try {
+                        const k = item.__dockKey;
+                        if (k) {
+                            const viewKey = reminderDockTodayOnly ? 'unfinished-today' : 'unfinished-all';
+                            __getReminderDockRenderState(viewKey)?.nodeByKey?.delete?.(k);
+                        }
+                    } catch (e) {}
+                    try { if (item && item.isConnected) item.remove(); } catch (e) {}
                     showMiniToast('提醒已删除');
-                    __invalidateReminderDockCache();
-                    renderReminderDockList('time', true);
                 }
             };
             refs.doneBtn.onclick = async () => {
@@ -28318,8 +28957,8 @@ function calculateWeeklyStats(dailyStatsArray) {
             }
             showList();
             const keys = showEntries.map(entry => {
-                const r = entry.reminder || {};
-                return `c|${String(r.blockId || '')}|${entry.dateKey}|${entry.timeKey}|${entry.doneAtMs || 0}`;
+                const rr = entry.reminder || {};
+                return `c|${String(rr.blockId || '')}|${entry.dateKey}|${entry.timeKey}|${entry.doneAtMs || 0}`;
             });
             const byKey = state.nodeByKey;
             const entryByKey = new Map();
@@ -28342,11 +28981,18 @@ function calculateWeeklyStats(dailyStatsArray) {
                 if (entry) updateCompletedItem(node, entry);
                 frag.appendChild(node);
             }
+            dom.list.textContent = '';
             dom.list.appendChild(frag);
             return;
         }
 
         const entries = [];
+        const shouldIncludePendingToday = (r) => {
+            if (!todayKey) return true;
+            if (!r || r.enabled === false) return false;
+            if (!Array.isArray(r.times) || r.times.length === 0) return false;
+            return checkShouldRemindToday(r, todayKey);
+        };
         for (const r of reminders) {
             if (!r || r.enabled === false) continue;
             let nextAt = null;
@@ -28406,7 +29052,8 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (entry) updateUnfinishedItem(node, entry, now);
             frag.appendChild(node);
         }
-            dom.list.appendChild(frag);
+        dom.list.textContent = '';
+        dom.list.appendChild(frag);
         } catch (e) {
             try { Logger.error('❌ renderReminderDockList 失败:', e); } catch (e2) {}
             try {
@@ -28473,6 +29120,8 @@ function calculateWeeklyStats(dailyStatsArray) {
             return { row, sw };
         };
         content.appendChild(createToggle('启用提醒功能', reminderSettings.enabled, (e) => { reminderSettings.enabled = e.target.checked; }).row);
+        content.appendChild(createToggle('自动从标题识别时间', reminderSettings.semanticTitleTimeEnabled, (e) => { reminderSettings.semanticTitleTimeEnabled = e.target.checked; }).row);
+        content.appendChild(createToggle('识别后自动添加提醒', reminderSettings.semanticTitleAutoSaveEnabled, (e) => { reminderSettings.semanticTitleAutoSaveEnabled = e.target.checked; }).row);
         content.appendChild(createToggle('思源弹窗通知', reminderSettings.popupEnabled, (e) => { reminderSettings.popupEnabled = e.target.checked; }).row);
         content.appendChild(createToggle('系统通知', reminderSettings.systemNotificationEnabled, (e) => { reminderSettings.systemNotificationEnabled = e.target.checked; if (e.target.checked && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission(); }).row);
         content.appendChild(createToggle('声音提醒', reminderSettings.audioEnabled, (e) => { reminderSettings.audioEnabled = e.target.checked; }).row);
@@ -28521,5 +29170,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.7.3 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.7.2 已加载');
 })();
