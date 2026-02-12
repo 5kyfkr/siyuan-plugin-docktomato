@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.7.3
+// @version      1.7.5
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -200,13 +200,6 @@
                 }
                 return true;
             }
-            if (r?.data?.code === 0) {
-                if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
-                    __tomatoFileTextCache.delete(String(path || ''));
-                    __tomatoFileTextCache.delete(String(newPath || ''));
-                }
-                return true;
-            }
         } catch (e) {}
         return false;
     }
@@ -338,22 +331,7 @@
                 return true;
             }
             
-            
-            if (result?.code === 0) {
-                if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
-                    __tomatoFileTextCache.delete(String(path || ''));
-                }
-                return true;
-            }
-            
             const fallback = await postJSON('/api/file/removeFile', { path });
-            if (fallback?.data?.code === 0) {
-                if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
-                    __tomatoFileTextCache.delete(String(path || ''));
-                }
-                return true;
-            }
-            return false;
             if (fallback?.data?.code === 0) {
                 if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
                     __tomatoFileTextCache.delete(String(path || ''));
@@ -771,7 +749,6 @@
         stopPolling() {
             if (this.pollTimer) {
                 clearTimeout(this.pollTimer);
-                clearTimeout(this.pollTimer);
                 this.pollTimer = null;
                 Logger.debug('🔄 SyncManager: 轮询已停止');
             }
@@ -802,13 +779,7 @@
             if (this.pollTimer) clearTimeout(this.pollTimer);
             this.pollTimer = setTimeout(() => this.poll(), pollInterval);
 
-            
-            // Schedule next poll first to ensure it keeps running even if error occurs
-            if (this.pollTimer) clearTimeout(this.pollTimer);
-            this.pollTimer = setTimeout(() => this.poll(), pollInterval);
-
             if (!force && now - this.lastPollTime < pollInterval) {
-                // If called too early (e.g. manually), skip but timer is already set
                 // If called too early (e.g. manually), skip but timer is already set
                 return;
             }
@@ -2119,8 +2090,6 @@
             enableMobileSupport: DEFAULT_ENABLE_MOBILE_SUPPORT,
             enableFocusMode: true,
             focusModeDimOpacity: 0.5,
-            enableFocusMode: true,
-            focusModeDimOpacity: 0.5,
             extendTomatoOnDistraction: true,
             defaultTomatoTime: DEFAULT_TOMATO_TIME, // 默认番茄时间（分钟）
             showHoursInTimerFormat: false, // 超过60分钟时显示"X小时Y分Z秒"格式，默认关闭
@@ -2231,12 +2200,6 @@
         userSettings.main.breakDurations = normalizeMinuteList(userSettings.main.breakDurations, DEFAULT_BREAK_DURATIONS);
         userSettings.main.debugMode = userSettings.main.debugMode === true;
         userSettings.main.enableMobileSupport = userSettings.main.enableMobileSupport !== false;
-        if (typeof userSettings.main.enableFocusMode !== 'boolean') userSettings.main.enableFocusMode = true;
-        {
-            const v = Number(userSettings.main.focusModeDimOpacity);
-            if (!Number.isFinite(v)) userSettings.main.focusModeDimOpacity = 0.5;
-            else userSettings.main.focusModeDimOpacity = Math.max(0, Math.min(1, v));
-        }
         if (typeof userSettings.main.enableFocusMode !== 'boolean') userSettings.main.enableFocusMode = true;
         {
             const v = Number(userSettings.main.focusModeDimOpacity);
@@ -2712,7 +2675,6 @@
         }
         try { ensureUserSettings(); } catch (e) {}
         try { applyFocusModeDimOpacity(); } catch (e) {}
-        try { applyFocusModeDimOpacity(); } catch (e) {}
         try { Logger.setDebugEnabled(isDebugMode()); } catch (e) {}
         return userSettings;
     }
@@ -3083,8 +3045,6 @@
 
             ensureTomatoCommonStyles();
 
-            ensureTomatoCommonStyles();
-
             // 创建弹窗容器
             const modal = document.createElement('div');
             modal.className = 'tomy-mobile-confirm-modal';
@@ -3208,13 +3168,6 @@
 
                     .tomy-mobile-confirm-btn.confirm:hover {
                         background: rgba(33, 150, 243, 0.1);
-                    }
-
-                    @media (prefers-reduced-motion: reduce) {
-                        .tomy-mobile-confirm-modal,
-                        .tomy-mobile-confirm-dialog {
-                            transition: none !important;
-                        }
                     }
 
                     @media (prefers-reduced-motion: reduce) {
@@ -3453,15 +3406,6 @@
                         right: 16px;
                         top: 16px;
                         max-width: none;
-                    }
-                }
-
-                @media (prefers-reduced-motion: reduce) {
-                    .tomy-expired-notification {
-                        animation: none !important;
-                    }
-                    .tomy-expired-notification.closing {
-                        animation: none !important;
                     }
                 }
 
@@ -4598,50 +4542,8 @@
                 }
             }
 
-            .tomato-routine-add-btn:hover {
-                background: var(--b3-theme-primary, #1E88E5) !important;
-                border-color: var(--b3-theme-primary, #1E88E5) !important;
-                color: #fff !important;
-            }
-
-            .tomato-reminder-settings-btn:hover {
-                background: var(--b3-theme-surface-light) !important;
-            }
-
-            .tomy-reminder-item:hover {
-                background: var(--b3-theme-surface) !important;
-            }
-
-            @media (prefers-reduced-motion: reduce) {
-                .tomato-bottomsheet,
-                #tomato-settings-dialog {
-                    animation: none !important;
-                }
-                #tomato-timeline-bar,
-                #tomato-routine-toolbar,
-                .tomato-routine-add-btn,
-                .tomy-expired-notification,
-                .tomy-mobile-confirm-modal,
-                .tomy-mobile-confirm-dialog,
-                .tomy-reminder-item {
-                    transition: none !important;
-                    animation: none !important;
-                }
-            }
         `;
         document.head.appendChild(style);
-    }
-
-    function prefersReducedMotion() {
-        try {
-            return !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-        } catch (e) {
-            return false;
-        }
-    }
-
-    function motionMs(ms) {
-        return prefersReducedMotion() ? 0 : ms;
     }
 
     function prefersReducedMotion() {
@@ -8344,7 +8246,6 @@
         if (timelineBar && timelineBar.parentNode === document.body) return;
         if (timelineBar) timelineBar.remove();
 
-        ensureTomatoCommonStyles();
         ensureTomatoCommonStyles();
         ensureTimelineSettings();
 
@@ -22986,7 +22887,6 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         const isMobile = isMobileDevice();
         ensureTomatoCommonStyles();
-        ensureTomatoCommonStyles();
 
         const backdrop = document.createElement('div');
         backdrop.id = 'tomato-settings-backdrop';
@@ -28261,7 +28161,6 @@ function calculateWeeklyStats(dailyStatsArray) {
     // 创建提醒面板内容
     function createReminderPanelContent() {
         ensureTomatoCommonStyles();
-        ensureTomatoCommonStyles();
         const container = document.createElement('div');
         container.className = 'tomato-reminder-panel';
         container.style.cssText = 'height:100%;display:flex;flex-direction:column;background:var(--b3-theme-background);';
@@ -29170,5 +29069,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.7.3 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.7.5 已加载');
 })();
