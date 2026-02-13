@@ -2,7 +2,7 @@
     "name": "siyuan-plugin-docktomato",
     "author": "5kyfkr",
     "url": "https://github.com/5kyfkr/siyuan-plugin-docktomato",
-    "version": "1.7.5",
+    "version": "1.7.6",
     "minAppVersion": "3.0.12",
     "disabledInPublish": false,
     "backends": [

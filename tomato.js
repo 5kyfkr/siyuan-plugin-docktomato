@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.7.5
+// @version      1.7.6
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -8131,7 +8131,7 @@
                 if (btnConfig?.color) {
                     routineButtonHighlightColor = btnConfig.color.trim() || null;
                     if (timelineActiveLayer && (isRunning || isTimerPaused)) {
-                        try { if (timelineBar && timelineBar.parentNode) updateTimelineBar(true); } catch (e) {}
+                        try { if (userSettings?.timeline?.enabled) updateTimelineBar(true); } catch (e) {}
                     }
                 }
             }
@@ -9839,6 +9839,10 @@
 
     function updateTimelineBar(force = false) {
         ensureTimelineSettings();
+        if (!userSettings.timeline?.enabled) {
+            hideTimelineBar();
+            return;
+        }
         const nowTs = Date.now();
         const nowSecond = Math.floor(nowTs / 1000);
         if (!force && lastTimelineUpdateSecond === nowSecond) return;
@@ -10215,7 +10219,7 @@
             }
             cache.refreshing = false;
             try {
-                if (timelineBar && timelineBar.parentNode) updateTimelineBar(true);
+                if (userSettings?.timeline?.enabled) updateTimelineBar(true);
             } catch (e) {}
         });
     }
@@ -11116,7 +11120,7 @@
                     }
                 } catch (e) {}
                 try { updateDisplay(true); } catch (e) {}
-                try { if (timelineBar && timelineBar.parentNode) updateTimelineBar(true); } catch (e) {}
+                try { if (userSettings?.timeline?.enabled) updateTimelineBar(true); } catch (e) {}
             })().finally(() => {
                 handleTimerTick._resumeSyncing = false;
             });
