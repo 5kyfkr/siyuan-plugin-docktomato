@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.7.6
+// @version      1.7.7
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -1101,7 +1101,7 @@
             }
         } catch (e) {}
         try {
-            __tomatoHistoryParseCache = { source: '', raw: '', records: null };
+            __tomatoHistoryParseCache = { source: '', raw: '', records: null, recordsAll: null };
         } catch (e) {}
     }
 
@@ -1112,7 +1112,7 @@
             }
         } catch (e) {}
         try {
-            __tomatoHistoryParseCache = { source: '', raw: '', records: null };
+            __tomatoHistoryParseCache = { source: '', raw: '', records: null, recordsAll: null };
         } catch (e) {}
     }
 
@@ -2745,15 +2745,21 @@
     let __tomatoHistoryParseCache = {
         source: '',
         raw: '',
-        records: null
+        records: null,
+        recordsAll: null
     };
     let __tomatoHistoryLoadPromise = null;
-    async function loadHistoryRecords() {
-        if (__tomatoHistoryLoadPromise) return __tomatoHistoryLoadPromise;
-        __tomatoHistoryLoadPromise = (async () => {
+    let __tomatoHistoryLoadPromiseAll = null;
+    async function loadHistoryRecords(options = {}) {
+        const all = options?.all === true;
+        if (all) {
+            if (__tomatoHistoryLoadPromiseAll) return __tomatoHistoryLoadPromiseAll;
+        } else {
+            if (__tomatoHistoryLoadPromise) return __tomatoHistoryLoadPromise;
+        }
+        const promise = (async () => {
             const normalizeRecords = (records) => {
                 const list = Array.isArray(records) ? records : [];
-                const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
                 const mapped = list.map(record => {
                     if (record && record.end) {
                         record.date = formatDateKey(record.end);
@@ -2766,10 +2772,11 @@
                     }
                     return record;
                 });
-                const filtered = mapped.filter(r => {
+                if (all) return mapped;
+                const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
+                return mapped.filter(r => {
                     try { return toDateSafe(r.end || r.start).getTime() >= oneYearAgo; } catch (e) { return false; }
                 });
-                return filtered;
             };
 
             try {
@@ -2777,12 +2784,15 @@
                 const text = r?.exists ? (r.text ?? '') : '';
                 const raw = String(text || '');
                 if (raw.trim()) {
-                    if (__tomatoHistoryParseCache?.source === 'file' && __tomatoHistoryParseCache?.raw === raw && Array.isArray(__tomatoHistoryParseCache?.records)) {
-                        return __tomatoHistoryParseCache.records;
+                    if (__tomatoHistoryParseCache?.source === 'file' && __tomatoHistoryParseCache?.raw === raw) {
+                        const cached = all ? __tomatoHistoryParseCache?.recordsAll : __tomatoHistoryParseCache?.records;
+                        if (Array.isArray(cached)) return cached;
                     }
                     const parsed = JSON.parse(raw);
                     const normalized = normalizeRecords(parsed);
-                    __tomatoHistoryParseCache = { source: 'file', raw, records: normalized };
+                    __tomatoHistoryParseCache = all
+                        ? { source: 'file', raw, records: __tomatoHistoryParseCache?.records || null, recordsAll: normalized }
+                        : { source: 'file', raw, records: normalized, recordsAll: __tomatoHistoryParseCache?.recordsAll || null };
                     return normalized;
                 }
             } catch (e) {
@@ -2792,22 +2802,28 @@
             try {
                 const raw = String(localStorage.getItem('siyuan-tomato-history') || '');
                 if (!raw.trim()) return [];
-                if (__tomatoHistoryParseCache?.source === 'localStorage' && __tomatoHistoryParseCache?.raw === raw && Array.isArray(__tomatoHistoryParseCache?.records)) {
-                    return __tomatoHistoryParseCache.records;
+                if (__tomatoHistoryParseCache?.source === 'localStorage' && __tomatoHistoryParseCache?.raw === raw) {
+                    const cached = all ? __tomatoHistoryParseCache?.recordsAll : __tomatoHistoryParseCache?.records;
+                    if (Array.isArray(cached)) return cached;
                 }
                 const parsed = JSON.parse(raw);
                 const normalized = normalizeRecords(parsed);
-                __tomatoHistoryParseCache = { source: 'localStorage', raw, records: normalized };
+                __tomatoHistoryParseCache = all
+                    ? { source: 'localStorage', raw, records: __tomatoHistoryParseCache?.records || null, recordsAll: normalized }
+                    : { source: 'localStorage', raw, records: normalized, recordsAll: __tomatoHistoryParseCache?.recordsAll || null };
                 return normalized;
             } catch (e) {
                 return [];
             }
         })();
+        if (all) __tomatoHistoryLoadPromiseAll = promise;
+        else __tomatoHistoryLoadPromise = promise;
 
         try {
-            return await __tomatoHistoryLoadPromise;
+            return await promise;
         } finally {
-            __tomatoHistoryLoadPromise = null;
+            if (all) __tomatoHistoryLoadPromiseAll = null;
+            else __tomatoHistoryLoadPromise = null;
         }
     }
 
@@ -2838,7 +2854,8 @@
                         Logger.debug('🍅 保存历史记录后已清除缓存');
                     }
                 }
-                __tomatoHistoryParseCache = { source: '', raw: '', records: null };
+                __tomatoHistoryParseCache = { source: '', raw: '', records: null, recordsAll: null };
+                try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'file' } })); } catch (e) {}
                 return true;
             } else {
                 throw new Error('思源API保存失败');
@@ -2846,6 +2863,7 @@
         } catch (fileError) {
             try {
                 localStorage.setItem('siyuan-tomato-history', dataToSave);
+                try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'localStorage' } })); } catch (e) {}
                 return true;
             } catch (localError) {
                 Logger.error('保存到localStorage也失败:', localError);
@@ -2853,6 +2871,146 @@
             }
         }
     }
+
+    function __tomatoFindHistoryRecordIndex(records, recordKey) {
+        const list = Array.isArray(records) ? records : [];
+        const start = recordKey?.start;
+        const end = recordKey?.end;
+        const mode = recordKey?.mode;
+        const ts = recordKey?.timestamp;
+        const idx = list.findIndex(r => r && r.start === start && r.end === end && r.mode === mode && r.timestamp === ts);
+        if (idx >= 0) return idx;
+        return list.findIndex(r => r && r.start === start && r.end === end && r.mode === mode);
+    }
+
+    function __tomatoNormalizeHistoryRecordFields(record) {
+        if (!record) return;
+        const start = toDateSafe(record.start);
+        const end = toDateSafe(record.end);
+        if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end.getTime() <= start.getTime()) return;
+        const sec = Math.max(1, Math.round((end.getTime() - start.getTime()) / 1000));
+        record.durationSec = sec;
+        record.durationMin = Math.max(1, Math.round(sec / 60));
+        record.timestamp = end.getTime();
+        record.date = formatDateKey(end);
+        record.dateTime = end.toLocaleString('zh-CN');
+        record.timePeriod = getTimePeriod(end.getHours());
+    }
+
+    async function __tomatoHistoryLoadAll() {
+        const records = await loadHistoryRecords({ all: true });
+        return Array.isArray(records) ? records : [];
+    }
+
+    async function __tomatoHistoryLoadRange(startISO, endISO) {
+        const startMs = toDateSafe(startISO)?.getTime?.() || 0;
+        const endMs = toDateSafe(endISO)?.getTime?.() || 0;
+        const list = await __tomatoHistoryLoadAll();
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return list;
+        return list.filter(r => {
+            const s = toDateSafe(r?.start)?.getTime?.() || 0;
+            const e = toDateSafe(r?.end)?.getTime?.() || 0;
+            if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return false;
+            return s < endMs && e > startMs;
+        });
+    }
+
+    async function __tomatoHistoryUpdateTime(recordKey, patch) {
+        try {
+            const nextStart = toDateSafe(patch?.start);
+            const nextEnd = toDateSafe(patch?.end);
+            if (!nextStart || !nextEnd) return false;
+            const sMs = nextStart.getTime();
+            const eMs = nextEnd.getTime();
+            if (!Number.isFinite(sMs) || !Number.isFinite(eMs) || eMs <= sMs) return false;
+            const records = await __tomatoHistoryLoadAll();
+            const idx = __tomatoFindHistoryRecordIndex(records, recordKey);
+            if (idx < 0) return false;
+            const rec = records[idx];
+            rec.start = nextStart.toISOString();
+            rec.end = nextEnd.toISOString();
+            __tomatoNormalizeHistoryRecordFields(rec);
+            const ok = await saveHistoryRecords(records);
+            if (!ok) return false;
+            try { markTimelineHistoryDirty(); } catch (e) {}
+            try { updateTimelineBar(true); } catch (e) {}
+            try { refreshHistoryDialogIfOpen(); } catch (e) {}
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async function __tomatoHistoryDelete(recordKey) {
+        try {
+            const records = await __tomatoHistoryLoadAll();
+            const idx = __tomatoFindHistoryRecordIndex(records, recordKey);
+            if (idx < 0) return false;
+            records.splice(idx, 1);
+            const ok = await saveHistoryRecords(records);
+            if (!ok) return false;
+            try { markTimelineHistoryDirty(); } catch (e) {}
+            try { updateTimelineBar(true); } catch (e) {}
+            try { refreshHistoryDialogIfOpen(); } catch (e) {}
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async function __tomatoHistorySplit(recordKey, splitISO) {
+        try {
+            const split = toDateSafe(splitISO);
+            if (!split) return false;
+            const records = await __tomatoHistoryLoadAll();
+            const idx = __tomatoFindHistoryRecordIndex(records, recordKey);
+            if (idx < 0) return false;
+            const rec = records[idx];
+            const s0 = toDateSafe(rec?.start);
+            const e0 = toDateSafe(rec?.end);
+            if (!s0 || !e0) return false;
+            const sMs = s0.getTime();
+            const eMs = e0.getTime();
+            const xMs = split.getTime();
+            if (!Number.isFinite(sMs) || !Number.isFinite(eMs) || !Number.isFinite(xMs) || eMs <= sMs) return false;
+            if (!(xMs > sMs && xMs < eMs)) return false;
+            const d0 = formatDateKey(s0);
+            const d1 = formatDateKey(e0);
+            if (!d0 || !d1 || d0 !== d1) return false;
+            const r1 = { ...rec, start: s0.toISOString(), end: new Date(xMs).toISOString() };
+            const r2 = { ...rec, start: new Date(xMs).toISOString(), end: e0.toISOString() };
+            __tomatoNormalizeHistoryRecordFields(r1);
+            __tomatoNormalizeHistoryRecordFields(r2);
+            records.splice(idx, 1, r1, r2);
+            const ok = await saveHistoryRecords(records);
+            if (!ok) return false;
+            try { markTimelineHistoryDirty(); } catch (e) {}
+            try { updateTimelineBar(true); } catch (e) {}
+            try { refreshHistoryDialogIfOpen(); } catch (e) {}
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async function __tomatoHistoryRefreshUI() {
+        try { markTimelineHistoryDirty(); } catch (e) {}
+        try { updateTimelineBar(true); } catch (e) {}
+        try { await refreshHistoryDialogIfOpen(); } catch (e) {}
+    }
+
+    try {
+        if (globalThis.__dockTomato && typeof globalThis.__dockTomato === 'object') {
+            globalThis.__dockTomato.history = {
+                loadAll: __tomatoHistoryLoadAll,
+                loadRange: __tomatoHistoryLoadRange,
+                updateTime: __tomatoHistoryUpdateTime,
+                delete: __tomatoHistoryDelete,
+                split: __tomatoHistorySplit,
+                refreshUI: __tomatoHistoryRefreshUI,
+            };
+        }
+    } catch (e) {}
 
     /**
      * 导出历史记录为 ICS 文件（日历格式）
@@ -29073,5 +29231,5 @@ function calculateWeeklyStats(dailyStatsArray) {
         backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
     }
 
-    Logger.info('🍅 思源笔记番茄钟 v1.7.5 已加载');
+    Logger.info('🍅 思源笔记番茄钟 v1.7.7 已加载');
 })();
