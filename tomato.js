@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.7.7
+// @version      1.7.8
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -11744,7 +11744,7 @@
             const isStartedFromFullDuration = initialRemainingSecondsAtStart === fullDurationSeconds;
             // 如果是从休息模式重置回来继续计时，需要生成新的 sessionId
             const isResumingFromBreak = timerMode === 'countdown' && preBreakState !== null && !isFreshTomatoStart;
-            const shouldBeNewTomato = (isStartedFromFullDuration && isFreshTomatoStart) || timerMode === 'countdown' || isResumingFromBreak;
+            const shouldBeNewTomato = (isStartedFromFullDuration && isFreshTomatoStart) || isResumingFromBreak;
             
             // 🔧 v9.5.1：只有新番茄钟或从休息恢复时才生成新的 sessionId
             if (!currentSessionId || shouldBeNewTomato) {
@@ -11825,9 +11825,11 @@
                 Logger.info('🔍 recordEndTime: 休息记录保存完成，清除 pendingBreakSessionId');
             }
 
-            // 🔧 v9.5：重置 sessionId（下次开始时重新生成）
-            // 注意：番茄钟的 sessionId 已保存到 pendingBreakSessionId，供休息记录使用
-            currentSessionId = null;
+            // 🔧 v9.5：仅在会话真正结束时重置 sessionId
+            // 倒计时暂停/恢复产生的分段记录应保持同一个 sessionId，确保统计可去重
+            if (timerMode !== 'countdown' || isCompleted || isReset) {
+                currentSessionId = null;
+            }
 
             Logger.info('🔍 自定义属性更新检查:', { taskBlockId: currentTaskBlockId, durationSecToSave, timerMode });
             if (currentTaskBlockId && durationSecToSave > 0 && timerMode !== 'break' && timerMode !== 'stopwatch-break') {
@@ -13124,16 +13126,17 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const actualMinutes = record.actualFocusMinutes || 0;
                 if (actualMinutes > 0) {
                     if (record.mode === 'countdown') {
-                        day.tomatoCount += 1;
                         day.tomatoActual += actualMinutes;
-                        // 🔧 v9.5：去重计算计划时间
+                        // 🔧 v9.5：按 sessionId 去重番茄数量与计划时长
                         if (sessionId) {
                             if (!dateSessions.has(sessionId)) {
+                                day.tomatoCount += 1;
                                 day.tomatoPlanned += plannedDuration;
                                 dateSessions.add(sessionId);
                             }
                         } else {
                             // 兼容旧数据：没有 sessionId 时直接计算
+                            day.tomatoCount += 1;
                             day.tomatoPlanned += plannedDuration;
                         }
                     } else if (record.mode === 'stopwatch') {
@@ -13147,16 +13150,17 @@ function calculateWeeklyStats(dailyStatsArray) {
             } else {
                 // 普通模式：使用原始时长
                 if (record.mode === 'countdown' && record.durationMin >= 1) {
-                    day.tomatoCount += 1;
                     day.tomatoActual += record.durationMin;
-                    // 🔧 v9.5：去重计算计划时间
+                    // 🔧 v9.5：按 sessionId 去重番茄数量与计划时长
                     if (sessionId) {
                         if (!dateSessions.has(sessionId)) {
+                            day.tomatoCount += 1;
                             day.tomatoPlanned += plannedDuration;
                             dateSessions.add(sessionId);
                         }
                     } else {
                         // 兼容旧数据：没有 sessionId 时直接计算
+                        day.tomatoCount += 1;
                         day.tomatoPlanned += plannedDuration;
                     }
                 } else if (record.mode === 'stopwatch') {
