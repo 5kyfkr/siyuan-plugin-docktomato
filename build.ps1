@@ -39,6 +39,17 @@ try {
         }
     }
 
+    Get-ChildItem -Path $tempDir -Filter '*.zip' -File -ErrorAction SilentlyContinue | ForEach-Object {
+        try { Remove-Item -LiteralPath $_.FullName -Force } catch {}
+    }
+
+    # 重置所有文件的时间戳为中国时间 (UTC+8)
+    $chinaTime = [DateTime]::UtcNow.AddHours(8)
+    Get-ChildItem -Path $tempDir -Recurse -File | ForEach-Object {
+        $_.LastWriteTime = $chinaTime
+        $_.CreationTime = $chinaTime
+    }
+
     if (Test-Path -LiteralPath $output) {
         Remove-Item -LiteralPath $output -Force
     }
