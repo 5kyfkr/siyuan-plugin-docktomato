@@ -10,9 +10,8 @@ $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('plugin_build_' + [Syste
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 
 try {
-    Copy-Item -Path (Join-Path $pluginDir '*') -Destination $tempDir -Recurse -Force
-
-    $removePaths = @(
+    # 优化：排除不需要的目录，只复制需要的文件
+    $excludePaths = @(
         '.git',
         '.gitignore',
         '.github',
@@ -32,19 +31,36 @@ try {
         '.hotreload'
     )
 
-    foreach ($p in $removePaths) {
-        $full = Join-Path $tempDir $p
-        if (Test-Path -LiteralPath $full) {
-            Remove-Item -LiteralPath $full -Recurse -Force
-        }
+    Get-ChildItem -Path $pluginDir -Exclude $excludePaths | Copy-Item -Destination $tempDir -Recurse -Force
+
+    # 清理可能残留的 zip
+    Get-ChildItem -Path $tempDir -Filter '*.zip' -File -ErrorAction SilentlyContinue | ForEach-Object {
+        try { Remove-Item -LiteralPath $_.FullName -Force } catch {}
+    }
+
+    # 尝试重置时间戳（可选，容错）
+    $chinaTime = [DateTime]::UtcNow.AddHours(8)
+    Get-ChildItem -Path $tempDir -Recurse -File | ForEach-Object {
+        try { $_.LastWriteTime = $chinaTime } catch {}
+        try { $_.CreationTime = $chinaTime } catch {}
     }
 
     if (Test-Path -LiteralPath $output) {
         Remove-Item -LiteralPath $output -Force
     }
 
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [System.IO.Compression.ZipFile]::CreateFromDirectory($tempDir, $output, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+    # 兼容打包
+    $zipped = $false
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($tempDir, $output, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+        $zipped = $true
+    } catch {
+        $zipped = $false
+    }
+    if (-not $zipped) {
+        Compress-Archive -Path (Join-Path $tempDir '*') -DestinationPath $output -Force -CompressionLevel Optimal
+    }
 
     Write-Host ("Pack success: {0}" -f $output)
 } finally {
