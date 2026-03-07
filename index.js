@@ -13,6 +13,28 @@ const DEFAULT_MAIN_SETTINGS = {
     remindersEnabled: true,
 };
 
+const sanitizeMainSettings = (raw) => {
+    const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const payload = source.data && typeof source.data === "object" && !Array.isArray(source.data)
+        ? source.data
+        : source;
+    const next = { ...DEFAULT_MAIN_SETTINGS };
+    if (typeof payload.remindersEnabled === "boolean") next.remindersEnabled = payload.remindersEnabled;
+    if (payload.reminderDockEnabled === false) next.remindersEnabled = false;
+    return next;
+};
+
+const getReminderDockMeta = () => {
+    try {
+        if (!globalThis.__dockTomatoReminderDockMeta || typeof globalThis.__dockTomatoReminderDockMeta !== "object") {
+            globalThis.__dockTomatoReminderDockMeta = {};
+        }
+    } catch (e) {
+        globalThis.__dockTomatoReminderDockMeta = {};
+    }
+    return globalThis.__dockTomatoReminderDockMeta;
+};
+
 const findDockTabPath = (node, type, path = []) => {
     if (!node) return null;
     if (Array.isArray(node)) {
@@ -34,6 +56,28 @@ const findDockTabPath = (node, type, path = []) => {
     return null;
 };
 
+const getDockPlacementFromHit = (hit) => {
+    try {
+        const path = hit?.path;
+        if (!Array.isArray(path)) return null;
+        const area = path.includes("left") ? "left" : path.includes("right") ? "right" : path.includes("bottom") ? "bottom" : null;
+        if (!area) return null;
+
+        const dataIdx = path.lastIndexOf("data");
+        const groupIndex = dataIdx >= 0 ? path[dataIdx + 1] : null;
+        const index = dataIdx >= 0 ? path[dataIdx + 2] : null;
+        if (!Number.isFinite(groupIndex) || !Number.isFinite(index)) return null;
+
+        let position = "RightBottom";
+        if (area === "left") position = groupIndex === 0 ? "LeftTop" : "LeftBottom";
+        if (area === "right") position = groupIndex === 0 ? "RightTop" : "RightBottom";
+        if (area === "bottom") position = groupIndex === 0 ? "BottomLeft" : "BottomRight";
+
+        return { position, index };
+    } catch (e) {}
+    return null;
+};
+
 const inferDockPlacementFromLocalStorage = (type) => {
     try {
         if (!globalThis?.localStorage?.length) return null;
@@ -52,50 +96,37 @@ const inferDockPlacementFromLocalStorage = (type) => {
             const candidate = parsed?.uiLayout || parsed;
             const hit = findDockTabPath(candidate, type);
             if (!hit) continue;
-
-            const path = hit.path;
-            const area = path.includes("left") ? "left" : path.includes("right") ? "right" : path.includes("bottom") ? "bottom" : null;
-            if (!area) continue;
-
-            const dataIdx = path.lastIndexOf("data");
-            const groupIndex = dataIdx >= 0 ? path[dataIdx + 1] : null;
-            const index = dataIdx >= 0 ? path[dataIdx + 2] : null;
-            if (!Number.isFinite(groupIndex) || !Number.isFinite(index)) continue;
-
-            let position = "RightBottom";
-            if (area === "left") position = groupIndex === 0 ? "LeftTop" : "LeftBottom";
-            if (area === "right") position = groupIndex === 0 ? "RightTop" : "RightBottom";
-            if (area === "bottom") position = groupIndex === 0 ? "BottomLeft" : "BottomRight";
-
-            return { position, index };
+            const placement = getDockPlacementFromHit(hit);
+            if (placement) return placement;
         }
     } catch (e) {}
     return null;
 };
 
-const inferDockPlacementFromUiLayout = (type) => {
+const getDockPlacementFromCurrentUiLayout = (type) => {
     try {
         const uiLayout = globalThis?.siyuan?.config?.uiLayout;
-        if (!uiLayout) return inferDockPlacementFromLocalStorage(type);
+        if (!uiLayout) return null;
         const hit = findDockTabPath(uiLayout, type);
-        if (!hit) return inferDockPlacementFromLocalStorage(type);
-
-        const path = hit.path;
-        const area = path.includes("left") ? "left" : path.includes("right") ? "right" : path.includes("bottom") ? "bottom" : null;
-        if (!area) return null;
-
-        const dataIdx = path.lastIndexOf("data");
-        const groupIndex = dataIdx >= 0 ? path[dataIdx + 1] : null;
-        const index = dataIdx >= 0 ? path[dataIdx + 2] : null;
-        if (!Number.isFinite(groupIndex) || !Number.isFinite(index)) return null;
-
-        let position = "RightBottom";
-        if (area === "left") position = groupIndex === 0 ? "LeftTop" : "LeftBottom";
-        if (area === "right") position = groupIndex === 0 ? "RightTop" : "RightBottom";
-        if (area === "bottom") position = groupIndex === 0 ? "BottomLeft" : "BottomRight";
-
-        return { position, index };
+        if (!hit) return null;
+        return getDockPlacementFromHit(hit);
     } catch (e) {}
+    return null;
+};
+
+const hasDockInCurrentUiLayout = (type) => {
+    try {
+        const uiLayout = globalThis?.siyuan?.config?.uiLayout;
+        if (!uiLayout) return false;
+        return !!findDockTabPath(uiLayout, type);
+    } catch (e) {}
+    return false;
+};
+
+const inferDockPlacementFromUiLayout = (type) => {
+    const current = getDockPlacementFromCurrentUiLayout(type);
+    if (current) return current;
+    if (globalThis?.siyuan?.config?.uiLayout) return null;
     return inferDockPlacementFromLocalStorage(type);
 };
 
@@ -145,9 +176,7 @@ const loadMainSettings = async () => {
         const text = await fetchText("/api/file/getFile", { path: MAIN_SETTINGS_PATH });
         if (!text || !text.trim()) return { ...DEFAULT_MAIN_SETTINGS };
         const parsed = JSON.parse(text);
-        const merged = { ...DEFAULT_MAIN_SETTINGS, ...(parsed || {}) };
-        if (merged.reminderDockEnabled === false) merged.remindersEnabled = false;
-        return merged;
+        return sanitizeMainSettings(parsed);
     } catch (e) {
         return { ...DEFAULT_MAIN_SETTINGS };
     }
@@ -156,10 +185,11 @@ const loadMainSettings = async () => {
 const saveMainSettings = async (settings) => {
     try {
         await ensureDir(PLUGIN_STORAGE_DIR);
+        const normalizedSettings = sanitizeMainSettings(settings);
         const formData = new FormData();
         formData.append("path", MAIN_SETTINGS_PATH);
         formData.append("isDir", "false");
-        formData.append("file", new Blob([JSON.stringify(settings || {}, null, 2)], { type: "application/json" }));
+        formData.append("file", new Blob([JSON.stringify(normalizedSettings, null, 2)], { type: "application/json" }));
         const res = await fetch("/api/file/putFile", { method: "POST", body: formData });
         const result = await res.json().catch(() => null);
         if (result?.code === 0) return true;
@@ -196,6 +226,246 @@ module.exports = class TomatoTimerPlugin extends Plugin {
     _badgeUpdateInterval = null;
     _badgeUpdateListener = null;
     _dockBadgeRetryTimers = [];
+    _reminderDockAdded = false;
+    _reminderDockRecoverTimers = [];
+
+    _scheduleReminderDockRecover(reason) {
+        [0, 180, 600].forEach((delay) => {
+            const timer = setTimeout(() => {
+                try { globalThis.__dockTomato?.recoverDock?.(`${reason}-${delay}`); } catch (e) {}
+            }, delay);
+            this._reminderDockRecoverTimers.push(timer);
+        });
+    }
+
+    _clearReminderDockMeta() {
+        const dockMeta = getReminderDockMeta();
+        dockMeta.addRequested = false;
+        dockMeta.registered = false;
+        dockMeta.mountEl = null;
+        dockMeta.mountParentEl = null;
+        dockMeta.mountIndex = -1;
+        dockMeta.mountTagName = "";
+        dockMeta.mountClassName = "";
+    }
+
+    _resetReminderBadgeResources() {
+        try {
+            if (this._badgeUpdateInterval) {
+                clearInterval(this._badgeUpdateInterval);
+                this._badgeUpdateInterval = null;
+            }
+        } catch (e) {}
+        try {
+            if (this._badgeUpdateListener) {
+                window.removeEventListener("tomato-reminder-badge-update", this._badgeUpdateListener);
+                this._badgeUpdateListener = null;
+            }
+        } catch (e) {}
+        try {
+            for (const timer of this._dockBadgeRetryTimers) {
+                clearTimeout(timer);
+            }
+            this._dockBadgeRetryTimers.length = 0;
+        } catch (e) {}
+    }
+
+    _mountReminderDockElement(element) {
+        if (!element) return false;
+        try {
+            const dockMeta = getReminderDockMeta();
+            dockMeta.addRequested = true;
+            dockMeta.registered = true;
+            dockMeta.mountEl = element;
+        } catch (e) {}
+        const mount = globalThis.__dockTomatoReminderDock?.mount;
+        if (typeof mount !== "function") return false;
+        try {
+            mount(element);
+            return true;
+        } catch (e) {}
+        return false;
+    }
+
+    _registerReminderDock(reason = "manual", options = {}) {
+        try {
+            const force = !!options.force;
+            if (this.isMobile) return false;
+            if (typeof this.addDock !== "function") return false;
+            const mainSettings = globalThis.__dockTomatoMainSettings || DEFAULT_MAIN_SETTINGS;
+            if (!mainSettings.remindersEnabled) return false;
+            if (this._reminderDockAdded && !force) {
+                this._scheduleReminderDockRecover(`${reason}-existing`);
+                return true;
+            }
+            if (force) {
+                this._reminderDockAdded = false;
+                this._clearReminderDockMeta();
+            }
+
+            const existingPlacement = getDockPlacementFromCurrentUiLayout(REMINDER_DOCK_TYPE);
+            const plugin = this;
+            let badgeElement = globalThis.__tomatoReminderBadgeElement || null;
+
+            const findAndCreateDockBadge = async () => {
+                try {
+                    const badgeData = globalThis.__tomatoReminderBadge;
+                    const count = badgeData?.total || 0;
+                    let container = null;
+
+                    const typeIcons = document.querySelectorAll('[data-type="::tomato-reminder"]');
+                    for (const icon of typeIcons) {
+                        const found = icon.closest(".dock__item") || icon.closest(".dock__panel") || icon;
+                        if (found) {
+                            container = found;
+                            break;
+                        }
+                    }
+
+                    if (!container) {
+                        const svgIcons = document.querySelectorAll("svg.iconClock");
+                        for (const svg of svgIcons) {
+                            const found = svg.closest(".dock__item") || svg.closest(".dock__panel") || svg;
+                            if (found) {
+                                container = found;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!container) {
+                        const dockItems = document.querySelectorAll(".dock__item, .dock__panel");
+                        for (const item of dockItems) {
+                            const title = item.title || item.getAttribute("aria-label") || "";
+                            if (title.includes("提醒") || title.includes("Clock")) {
+                                container = item;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!container) {
+                        const retryTimer = setTimeout(findAndCreateDockBadge, 5000);
+                        plugin._dockBadgeRetryTimers.push(retryTimer);
+                        return;
+                    }
+
+                    const existingBadge = container.querySelector(".tomato-reminder-badge");
+                    if (existingBadge) {
+                        badgeElement = existingBadge;
+                    } else {
+                        badgeElement = document.createElement("div");
+                        badgeElement.className = "tomato-reminder-badge";
+                        container.style.position = "relative";
+                        badgeElement.style.cssText = `
+                            position: absolute;
+                            top: -4px;
+                            right: -4px;
+                            min-width: 18px;
+                            height: 18px;
+                            line-height: 18px;
+                            text-align: center;
+                            font-size: 10px;
+                            font-weight: bold;
+                            color: white;
+                            background: #f44336;
+                            border-radius: 9px;
+                            padding: 0 4px;
+                            box-sizing: border-box;
+                            z-index: 1000;
+                            display: ${count > 0 ? "flex" : "none"};
+                            align-items: center;
+                            justify-content: center;
+                        `;
+                        badgeElement.textContent = count > 99 ? "99+" : (count > 0 ? count : "");
+                        container.appendChild(badgeElement);
+                    }
+
+                    globalThis.__tomatoReminderBadgeElement = badgeElement;
+                } catch (e) {
+                    const retryTimer = setTimeout(findAndCreateDockBadge, 5000);
+                    plugin._dockBadgeRetryTimers.push(retryTimer);
+                }
+            };
+
+            const updateBadgeCount = async () => {
+                try {
+                    const badgeData = globalThis.__tomatoReminderBadge;
+                    const count = badgeData?.total || 0;
+                    if (badgeElement) {
+                        badgeElement.textContent = count > 99 ? "99+" : (count > 0 ? count : "");
+                        badgeElement.style.display = count > 0 ? "flex" : "none";
+                    }
+                    globalThis.__tomatoReminderBadgeElement = badgeElement;
+                } catch (e) {}
+            };
+
+            this.addDock({
+                type: REMINDER_DOCK_TYPE,
+                config: {
+                    position: existingPlacement?.position || "RightBottom",
+                    size: { width: 320, height: 360 },
+                    icon: "iconClock",
+                    title: "任务提醒",
+                    index: Number.isFinite(existingPlacement?.index) ? existingPlacement.index : undefined,
+                },
+                data: { plugin: this },
+                init() {
+                    plugin._mountReminderDockElement(this.element || null);
+                    setTimeout(() => {
+                        findAndCreateDockBadge();
+                    }, 1000);
+                },
+                update() {
+                    plugin._mountReminderDockElement(this.element || null);
+                    setTimeout(() => {
+                        findAndCreateDockBadge();
+                    }, 120);
+                },
+                resize() {
+                    plugin._mountReminderDockElement(this.element || null);
+                    try { globalThis.__dockTomato?.refresh?.(); } catch (e) {}
+                },
+                destroy() {
+                    try {
+                        const dockMeta = getReminderDockMeta();
+                        if (dockMeta.mountEl === (this.element || null)) {
+                            dockMeta.mountEl = null;
+                            dockMeta.registered = false;
+                        }
+                    } catch (e) {}
+                },
+            });
+
+            this._reminderDockAdded = true;
+            try {
+                const dockMeta = getReminderDockMeta();
+                dockMeta.addRequested = true;
+            } catch (e) {}
+
+            this._resetReminderBadgeResources();
+            if (typeof Event === "function") {
+                this._badgeUpdateListener = (e) => {
+                    const count = e.detail?.total || 0;
+                    if (badgeElement) {
+                        badgeElement.textContent = count > 99 ? "99+" : (count > 0 ? count : "");
+                        badgeElement.style.display = count > 0 ? "flex" : "none";
+                    }
+                };
+                window.addEventListener("tomato-reminder-badge-update", this._badgeUpdateListener);
+            }
+            this._badgeUpdateInterval = setInterval(async () => {
+                if (typeof globalThis.__tomatoUpdateReminderBadge === "function") {
+                    await globalThis.__tomatoUpdateReminderBadge();
+                }
+                await updateBadgeCount();
+            }, 30000);
+
+            this._scheduleReminderDockRecover(reason);
+            return true;
+        } catch (e) {}
+        return false;
+    }
 
     async onload() {
         globalThis.__tomatoPluginApp = this.app;
@@ -203,6 +473,9 @@ module.exports = class TomatoTimerPlugin extends Plugin {
         globalThis.__tomatoPluginIsMobile = !!this.isMobile;
         globalThis.__tomatoOpenTab = typeof openTab === "function" ? openTab : null;
         globalThis.__tomatoOpenMobileFileById = typeof openMobileFileById === "function" ? openMobileFileById : null;
+        globalThis.__dockTomatoRegisterReminderDock = (reason = "external", force = false) => {
+            try { return this._registerReminderDock(reason, { force: !!force }); } catch (e) { return false; }
+        };
         globalThis.__dockTomatoMainSettings = await loadMainSettings();
         await loadTomatoScript();
 
@@ -273,181 +546,18 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             description: "查看历史记录与统计",
             createActionElement: () => mkButton("打开历史面板", () => globalThis.__dockTomato?.openHistory?.("summary")),
         });
+
+        this._registerReminderDock("onload");
     }
 
     onLayoutReady() {
         try {
-            if (typeof this.addDock !== "function") return;
-            const mainSettings = globalThis.__dockTomatoMainSettings || DEFAULT_MAIN_SETTINGS;
-            if (!mainSettings.remindersEnabled) return;
-            const existingPlacement = inferDockPlacementFromUiLayout(REMINDER_DOCK_TYPE);
-
-            // 保存 this 引用供内部函数使用
-            const plugin = this;
-
-            // 查找或创建dock图标容器
-            let dockElement = null;
-            let badgeElement = null;
-
-            this.addDock({
-                type: REMINDER_DOCK_TYPE,
-                config: {
-                    position: existingPlacement?.position || "RightBottom",
-                    size: { width: 320, height: 360 },
-                    icon: "iconClock",
-                    title: "任务提醒",
-                    index: Number.isFinite(existingPlacement?.index) ? existingPlacement.index : undefined,
-                },
-                data: { plugin: this },
-                init() {
-                    const mount = globalThis.__dockTomatoReminderDock?.mount;
-                    if (typeof mount === "function") {
-                        mount(this.element);
-                    }
-
-                    // 延迟查找dock图标并添加角标
-                    setTimeout(() => {
-                        findAndCreateDockBadge();
-                    }, 1000);
-                },
-            });
-
-            // 查找并创建Dock图标角标
-            const findAndCreateDockBadge = async () => {
-                try {
-                    // 尝试获取全局角标数据
-                    const badgeData = globalThis.__tomatoReminderBadge;
-                    const count = badgeData?.total || 0;
-
-                    // 多种方式查找Dock图标
-                    let container = null;
-
-                    // 方式1：通过data-type属性查找
-                    const typeIcons = document.querySelectorAll('[data-type="::tomato-reminder"]');
-                    for (const icon of typeIcons) {
-                        const found = icon.closest('.dock__item') || icon.closest('.dock__panel') || icon;
-                        if (found) {
-                            container = found;
-                            break;
-                        }
-                    }
-
-                    // 方式2：通过图标SVG查找（iconClock）
-                    if (!container) {
-                        const svgIcons = document.querySelectorAll('svg.iconClock');
-                        for (const svg of svgIcons) {
-                            const found = svg.closest('.dock__item') || svg.closest('.dock__panel') || svg;
-                            if (found) {
-                                container = found;
-                                break;
-                            }
-                        }
-                    }
-
-                    // 方式3：查找所有dock项，查找包含"提醒"或"clock"图标的
-                    if (!container) {
-                        const dockItems = document.querySelectorAll('.dock__item, .dock__panel');
-                        for (const item of dockItems) {
-                            const title = item.title || item.getAttribute('aria-label') || '';
-                            if (title.includes('提醒') || title.includes('Clock')) {
-                                container = item;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!container) {
-                        // 5秒后重试
-                        const retryTimer = setTimeout(findAndCreateDockBadge, 5000);
-                        plugin._dockBadgeRetryTimers.push(retryTimer);
-                        return;
-                    }
-
-                    // 检查是否已经存在角标
-                    const existingBadge = container.querySelector('.tomato-reminder-badge');
-                    if (existingBadge) {
-                        badgeElement = existingBadge;
-                    } else {
-                        // 创建角标
-                        badgeElement = document.createElement('div');
-                        badgeElement.className = 'tomato-reminder-badge';
-
-                        // 设置容器为相对定位
-                        container.style.position = 'relative';
-
-                        // 添加角标样式
-                        badgeElement.style.cssText = `
-                            position: absolute;
-                            top: -4px;
-                            right: -4px;
-                            min-width: 18px;
-                            height: 18px;
-                            line-height: 18px;
-                            text-align: center;
-                            font-size: 10px;
-                            font-weight: bold;
-                            color: white;
-                            background: #f44336;
-                            border-radius: 9px;
-                            padding: 0 4px;
-                            box-sizing: border-box;
-                            z-index: 1000;
-                            display: ${count > 0 ? 'flex' : 'none'};
-                            align-items: center;
-                            justify-content: center;
-                        `;
-
-                        badgeElement.textContent = count > 99 ? '99+' : (count > 0 ? count : '');
-                        container.appendChild(badgeElement);
-                    }
-
-                    // 存储引用
-                    globalThis.__tomatoReminderBadgeElement = badgeElement;
-
-                } catch (e) {
-                    // 5秒后重试
-                    const retryTimer = setTimeout(findAndCreateDockBadge, 5000);
-                    plugin._dockBadgeRetryTimers.push(retryTimer);
-                }
-            };
-
-            // 更新角标数量
-            const updateBadgeCount = async () => {
-                try {
-                    const badgeData = globalThis.__tomatoReminderBadge;
-                    const count = badgeData?.total || 0;
-
-                    if (badgeElement) {
-                        badgeElement.textContent = count > 99 ? '99+' : (count > 0 ? count : '');
-                        badgeElement.style.display = count > 0 ? 'flex' : 'none';
-                    }
-
-                    // 存储引用
-                    globalThis.__tomatoReminderBadgeElement = badgeElement;
-                } catch (e) {}
-            };
-
-            // 监听自定义事件更新角标
-            if (typeof Event === "function") {
-                plugin._badgeUpdateListener = (e) => {
-                    const count = e.detail?.total || 0;
-                    if (badgeElement) {
-                        badgeElement.textContent = count > 99 ? '99+' : (count > 0 ? count : '');
-                        badgeElement.style.display = count > 0 ? 'flex' : 'none';
-                    }
-                };
-                window.addEventListener("tomato-reminder-badge-update", plugin._badgeUpdateListener);
+            if (this.isMobile) return;
+            if (!this._reminderDockAdded) {
+                this._registerReminderDock("layout-ready");
+                return;
             }
-
-            // 定期刷新角标（每30秒）
-            plugin._badgeUpdateInterval = setInterval(async () => {
-                // 重新计算角标数据
-                if (typeof globalThis.__tomatoUpdateReminderBadge === 'function') {
-                    await globalThis.__tomatoUpdateReminderBadge();
-                }
-                await updateBadgeCount();
-            }, 30000);
-
+            this._scheduleReminderDockRecover("layout-ready");
         } catch (e) {}
     }
 
@@ -466,10 +576,18 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             }
         } catch (e) {}
         try {
-            for (const timer of this._dockBadgeRetryTimers) {
+            this._resetReminderBadgeResources();
+        } catch (e) {}
+        try {
+            for (const timer of this._reminderDockRecoverTimers) {
                 clearTimeout(timer);
             }
-            this._dockBadgeRetryTimers.length = 0;
+            this._reminderDockRecoverTimers.length = 0;
+        } catch (e) {}
+        try { delete globalThis.__dockTomatoRegisterReminderDock; } catch (e) {}
+        try {
+            this._reminderDockAdded = false;
+            this._clearReminderDockMeta();
         } catch (e) {}
 
         try {

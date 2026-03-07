@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.7.8
+// @version      1.7.9
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -101,6 +101,7 @@
     const NEW_FOCUS_TIME_SETTINGS_PATH = `${PLUGIN_STORAGE_DIR}/tomato-focus-settings.json`;
     const NEW_SYNC_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-sync.json`;
     const NEW_AUDIO_STORAGE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-audio/`;
+    const REMINDER_DOCK_TYPE = '::tomato-reminder';
 
     let HISTORY_FILE_PATH = NEW_HISTORY_FILE_PATH;
     let SETTINGS_FILE_PATH = NEW_SETTINGS_FILE_PATH;
@@ -115,7 +116,18 @@
     // ========== 多端同步配置 ==========
     const DEFAULT_SYNC_ENABLED = true;
     const SYNC_POLL_INTERVAL = 10000;  // 轮询同步间隔（毫秒），10秒
-    const SYNC_DEVICE_ID = 'device_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);  // 本设备唯一标识
+    function getOrCreateStableTomatoDeviceId() {
+        const storageKey = 'tomato-sync-device-id';
+        const createId = () => 'device_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11);
+        try {
+            const existing = String(localStorage.getItem(storageKey) || '').trim();
+            if (existing) return existing;
+        } catch (e) {}
+        const nextId = createId();
+        try { localStorage.setItem(storageKey, nextId); } catch (e) {}
+        return nextId;
+    }
+    const SYNC_DEVICE_ID = getOrCreateStableTomatoDeviceId();  // 本设备唯一标识
     
     // ========== 🔧 新增：全局常量配置 ==========
     const CONFIG = {
@@ -383,6 +395,7 @@
         databaseBlockId: null,  // 关联的数据库块ID
         distractionCount: 0,
         distractionSavedCount: 0,
+        notificationSchedules: {},  // { [deviceId]: { id, timerKey, status, scheduledAtMs, dueAtMs, canceledAtMs, mode, delayInSeconds } }
         endDialog: null,  // {id,type,startAtMs,durationSec,endedAtMs,closed,closedAtMs,closedByDevice}
     };
     
@@ -1212,7 +1225,8 @@
                 String(st.lastModifiedTime || 0),
                 String(st.taskBlockId || ''),
                 String(st.taskBlockName || ''),
-                String(st.databaseBlockId || '')
+                String(st.databaseBlockId || ''),
+                JSON.stringify(st.notificationSchedules || {})
             ].join('|');
         } catch (e) {
             return '';
@@ -5554,17 +5568,338 @@
         document.body.appendChild(backdrop);
     }
 
-    function showSystemNotification(title, body, options) {
-        if (typeof Notification === 'undefined') return;
+    function getRuntimeBackendType() {
+        try {
+            if (__siyuanSdk && typeof __siyuanSdk.getBackend === 'function') {
+                const backend = __siyuanSdk.getBackend();
+                if (typeof backend === 'string' && backend) return backend.toLowerCase();
+            }
+        } catch (e) {}
+        try {
+            const container = window?.siyuan?.config?.system?.container;
+            if (typeof container === 'string' && container) return container.toLowerCase();
+        } catch (e) {}
+        return '';
+    }
+
+    function shouldPreferDeviceNotificationBackend() {
+        const backend = getRuntimeBackendType();
+        return isMobileDevice() || backend === 'android' || backend === 'harmony';
+    }
+
+    function showBrowserSystemNotification(title, body, options) {
+        if (typeof Notification === 'undefined') return false;
         const opts = options && typeof options === 'object' ? options : {};
-        if (Notification.permission === 'default') Notification.requestPermission().catch(() => {});
-        if (Notification.permission === 'granted') {
-            const payload = { body };
-            if (typeof opts.icon === 'string' && opts.icon) payload.icon = opts.icon;
-            if (typeof opts.tag === 'string' && opts.tag) payload.tag = opts.tag;
-            if (typeof opts.requireInteraction === 'boolean') payload.requireInteraction = opts.requireInteraction;
-            new Notification(title, payload);
+        if (Notification.permission === 'default') {
+            Notification.requestPermission().catch(() => {});
         }
+        if (Notification.permission !== 'granted') return false;
+        const payload = { body };
+        if (typeof opts.icon === 'string' && opts.icon) payload.icon = opts.icon;
+        if (typeof opts.tag === 'string' && opts.tag) payload.tag = opts.tag;
+        if (typeof opts.requireInteraction === 'boolean') payload.requireInteraction = opts.requireInteraction;
+        new Notification(title, payload);
+        return true;
+    }
+
+    function normalizeNotificationId(value) {
+        const num = Number(value);
+        if (!Number.isFinite(num)) return null;
+        return Math.trunc(num);
+    }
+
+    function extractNotificationIdFromUnknownPayload(payload, depth = 0) {
+        if (depth > 4) return null;
+        const direct = normalizeNotificationId(payload);
+        if (direct !== null) return direct;
+        if (payload == null) return null;
+        if (typeof payload === 'string') {
+            const trimmed = payload.trim();
+            if (!trimmed) return null;
+            try {
+                const parsed = JSON.parse(trimmed);
+                return extractNotificationIdFromUnknownPayload(parsed, depth + 1);
+            } catch (e) {
+                return null;
+            }
+        }
+        if (Array.isArray(payload)) {
+            for (const item of payload) {
+                const nested = extractNotificationIdFromUnknownPayload(item, depth + 1);
+                if (nested !== null) return nested;
+            }
+            return null;
+        }
+        if (typeof payload === 'object') {
+            const preferredKeys = ['id', 'notificationId', 'notificationID', 'data', 'result', 'value'];
+            for (const key of preferredKeys) {
+                if (!(key in payload)) continue;
+                const nested = extractNotificationIdFromUnknownPayload(payload[key], depth + 1);
+                if (nested !== null) return nested;
+            }
+            for (const key of Object.keys(payload)) {
+                const nested = extractNotificationIdFromUnknownPayload(payload[key], depth + 1);
+                if (nested !== null) return nested;
+            }
+        }
+        return null;
+    }
+
+    function summarizePayloadShape(payload, depth = 0) {
+        if (depth > 2) return '';
+        if (payload == null) return String(payload);
+        if (Array.isArray(payload)) return 'array[' + payload.length + ']';
+        if (typeof payload === 'object') {
+            const keys = Object.keys(payload).slice(0, 6).join(',');
+            return '{' + keys + '}';
+        }
+        return typeof payload;
+    }
+
+    function getNotificationBridgeCandidates() {
+        return [
+            { owner: globalThis, send: 'sendNotification', cancel: 'cancelNotification' },
+            { owner: window, send: 'sendNotification', cancel: 'cancelNotification' },
+            { owner: globalThis?.JSAndroid, send: 'sendNotification', cancel: 'cancelNotification' },
+            { owner: globalThis?.JSHarmony, send: 'sendNotification', cancel: 'cancelNotification' },
+            { owner: window?.siyuan, send: 'sendNotification', cancel: 'cancelNotification' },
+            { owner: window?.siyuan?.mobile, send: 'sendNotification', cancel: 'cancelNotification' },
+        ];
+    }
+
+    async function invokeNotificationBridge(owner, methodName, args) {
+        const fn = owner?.[methodName];
+        if (typeof fn !== 'function') return { called: false, value: null };
+        try {
+            const value = await fn.apply(owner, args);
+            return { called: true, value };
+        } catch (e) {
+            return { called: true, value: null };
+        }
+    }
+
+    function getNotificationSchedulesMap(state = syncState) {
+        if (!state || typeof state !== 'object') return {};
+        const current = state.notificationSchedules;
+        if (!current || typeof current !== 'object' || Array.isArray(current)) {
+            state.notificationSchedules = {};
+        }
+        return state.notificationSchedules;
+    }
+
+    function getCurrentDeviceNotificationSchedule(state = syncState) {
+        const map = getNotificationSchedulesMap(state);
+        const entry = map[SYNC_DEVICE_ID];
+        if (!entry || typeof entry !== 'object') return null;
+        return entry;
+    }
+
+    function setCurrentDeviceNotificationSchedule(entry, state = syncState) {
+        const map = getNotificationSchedulesMap(state);
+        if (entry && typeof entry === 'object') {
+            map[SYNC_DEVICE_ID] = entry;
+            return map[SYNC_DEVICE_ID];
+        }
+        delete map[SYNC_DEVICE_ID];
+        return null;
+    }
+
+    function buildTimerNotificationKey(state = syncState) {
+        const mode = String(state?.mode || timerMode || '').trim();
+        if (mode !== 'countdown' && mode !== 'break') return '';
+        const durationSec = Math.max(0, Math.round(Number(state?.duration) || (currentDuration * 60)));
+        const startAtMs = Math.round(Number(state?.startTime) || Number(startTime) || 0);
+        if (durationSec <= 0 || startAtMs <= 0) return '';
+        return [mode, String(startAtMs), String(durationSec)].join(':');
+    }
+
+    function buildTimerNotificationPayload(state = syncState) {
+        const mode = String(state?.mode || timerMode || '').trim();
+        if (mode !== 'countdown' && mode !== 'break') return null;
+        const durationSec = Math.max(0, Math.round(Number(state?.duration) || (currentDuration * 60)));
+        const startAtMs = Math.round(Number(state?.startTime) || Number(startTime) || 0);
+        if (durationSec <= 0 || startAtMs <= 0) return null;
+        const dueAtMs = startAtMs + durationSec * 1000;
+        const now = Date.now();
+        const status = String(state?.status || '').trim() || (isRunning ? 'RUNNING' : (isTimerPaused ? 'PAUSED' : 'IDLE'));
+        let delayInSeconds = 0;
+        if (status === 'RUNNING') {
+            const calculated = typeof StateCalculator !== 'undefined' && StateCalculator && typeof StateCalculator.calculateRemaining === 'function'
+                ? StateCalculator.calculateRemaining({ ...state, mode, duration: durationSec, startTime: startAtMs, status: 'RUNNING' })
+                : Math.ceil(Math.max(0, dueAtMs - now) / 1000);
+            delayInSeconds = Math.max(1, Math.round(Number(calculated) || 0));
+        } else if (status === 'PAUSED') {
+            delayInSeconds = Math.max(1, Math.round(Number(remainingSeconds) || Number(state?.pausedElapsedSeconds) || 0));
+        }
+        if (!Number.isFinite(delayInSeconds) || delayInSeconds <= 0) return null;
+        return {
+            channel: '',
+            title: mode === 'break' ? '⏰ 休息结束' : '🍅 时间到！',
+            body: mode === 'break' ? '继续你的计时吧！' : '该休息一下了～',
+            delayInSeconds,
+            dueAtMs: now + delayInSeconds * 1000,
+            timerKey: buildTimerNotificationKey({ ...state, mode, duration: durationSec, startTime: startAtMs }),
+            mode,
+        };
+    }
+
+    async function persistNotificationScheduleState() {
+        if (!isSyncEnabled() || typeof SyncManager === 'undefined' || typeof SyncManager.updateLocal !== 'function') return;
+        if (persistNotificationScheduleState._running) {
+            persistNotificationScheduleState._pending = true;
+            return;
+        }
+        persistNotificationScheduleState._running = true;
+        try {
+            await SyncManager.updateLocal(syncState, true, true);
+        } catch (e) {
+        } finally {
+            persistNotificationScheduleState._running = false;
+            if (persistNotificationScheduleState._pending) {
+                persistNotificationScheduleState._pending = false;
+                persistNotificationScheduleState();
+            }
+        }
+    }
+
+    async function sendDeviceNotificationCompat(title, body, options) {
+        const opts = options && typeof options === 'object' ? options : {};
+        const safeTitle = String(title ?? '').trim();
+        const safeBody = String(body ?? '').trim();
+        const safeChannel = String(opts.channel ?? '').trim();
+        const delayInSeconds = Math.max(0, Math.round(Number(opts.delayInSeconds) || 0));
+        if (!safeTitle && !safeBody) return -1;
+        sendDeviceNotificationCompat._lastFailureReason = '';
+
+        const bridgeCandidates = getNotificationBridgeCandidates();
+        for (const candidate of bridgeCandidates) {
+            const attempt = await invokeNotificationBridge(candidate.owner, candidate.send, [safeChannel, safeTitle, safeBody, delayInSeconds]);
+            if (!attempt.called) continue;
+            const id = normalizeNotificationId(attempt.value);
+            if (id !== null) {
+                if (id === -1) sendDeviceNotificationCompat._lastFailureReason = 'send-returned-minus-one';
+                return id;
+            }
+            sendDeviceNotificationCompat._lastFailureReason = 'send-no-numeric-return';
+        }
+
+        try {
+            const msgHandler = globalThis?.webkit?.messageHandlers?.sendNotification;
+            if (msgHandler && typeof msgHandler.postMessage === 'function') {
+                msgHandler.postMessage({ channel: safeChannel, title: safeTitle, body: safeBody, delayInSeconds });
+                sendDeviceNotificationCompat._lastFailureReason = 'webkit-no-numeric-return';
+                return -1;
+            }
+        } catch (e) {}
+
+        if (!sendDeviceNotificationCompat._lastFailureReason) {
+            sendDeviceNotificationCompat._lastFailureReason = 'no-bridge-failure';
+        }
+        return -1;
+    }
+
+    async function cancelDeviceNotificationCompat(id) {
+        const safeId = normalizeNotificationId(id);
+        if (safeId === null || safeId < 0) return false;
+        const bridgeCandidates = getNotificationBridgeCandidates();
+        for (const candidate of bridgeCandidates) {
+            const attempt = await invokeNotificationBridge(candidate.owner, candidate.cancel, [safeId]);
+            if (attempt.called) return true;
+        }
+        return false;
+    }
+
+    function shouldShowTimerNotificationCancelToast(reason = '') {
+        const silentReason = String(reason || '').trim();
+        return silentReason === 'pause-timer';
+    }
+
+    async function cancelTrackedTimerNotification(reason = '', persist = true) {
+        const existing = getCurrentDeviceNotificationSchedule(syncState);
+        if (!existing) return false;
+        const next = {
+            ...existing,
+            status: 'canceled',
+            canceledAtMs: Date.now(),
+            cancelReason: String(reason || '').trim(),
+        };
+        const safeId = normalizeNotificationId(existing.id);
+        if (safeId !== null && safeId >= 0) {
+            try { await cancelDeviceNotificationCompat(safeId); } catch (e) {}
+        }
+        setCurrentDeviceNotificationSchedule(next, syncState);
+        if (shouldPreferDeviceNotificationBackend() && shouldShowTimerNotificationCancelToast(reason)) {
+            showMiniToast('已取消预约通知');
+        }
+        if (persist) await persistNotificationScheduleState();
+        return true;
+    }
+
+    async function ensureTrackedTimerNotification(reason = '', persist = true) {
+        if (!shouldPreferDeviceNotificationBackend()) return false;
+        const payload = buildTimerNotificationPayload(syncState);
+        if (!payload) return false;
+
+        const existing = getCurrentDeviceNotificationSchedule(syncState);
+        if (existing && existing.status === 'scheduled' && existing.timerKey === payload.timerKey && normalizeNotificationId(existing.id) !== null && normalizeNotificationId(existing.id) >= 0) {
+            return true;
+        }
+        if (existing && existing.status === 'scheduled') {
+            await cancelTrackedTimerNotification('replace-' + String(reason || '').trim(), false);
+        }
+
+        const notificationId = await sendDeviceNotificationCompat(payload.title, payload.body, {
+            channel: payload.channel,
+            delayInSeconds: payload.delayInSeconds,
+        });
+        if (notificationId === -1) {
+            return false;
+        }
+
+        setCurrentDeviceNotificationSchedule({
+            id: notificationId,
+            timerKey: payload.timerKey,
+            status: 'scheduled',
+            mode: payload.mode,
+            delayInSeconds: payload.delayInSeconds,
+            dueAtMs: payload.dueAtMs,
+            scheduledAtMs: Date.now(),
+            scheduledByDevice: SYNC_DEVICE_ID,
+            reason: String(reason || '').trim(),
+        }, syncState);
+        if (shouldPreferDeviceNotificationBackend() && String(reason || '').trim() !== 'start-timer') {
+            showMiniToast(`已同步预约通知（${payload.delayInSeconds}秒后）`);
+        }
+        if (persist) await persistNotificationScheduleState();
+        return true;
+    }
+
+    async function reconcileTrackedTimerNotification(reason = '', persist = true) {
+        if (!shouldPreferDeviceNotificationBackend()) return false;
+        const currentStatus = String(syncState?.status || '').trim();
+        const mode = String(syncState?.mode || timerMode || '').trim();
+        if ((mode === 'countdown' || mode === 'break') && currentStatus === 'RUNNING') {
+            return ensureTrackedTimerNotification(reason, persist);
+        }
+        return cancelTrackedTimerNotification(reason || currentStatus || 'idle', persist);
+    }
+
+    function showSystemNotification(title, body, options) {
+        const opts = options && typeof options === 'object' ? options : {};
+        const shouldPreferDeviceNotification = shouldPreferDeviceNotificationBackend();
+
+        if (shouldPreferDeviceNotification) {
+            sendDeviceNotificationCompat(title, body, opts).then((sent) => {
+                if (normalizeNotificationId(sent) === null || Number(sent) < 0) {
+                    showBrowserSystemNotification(title, body, opts);
+                }
+            }).catch(() => {
+                showBrowserSystemNotification(title, body, opts);
+            });
+            return;
+        }
+
+        showBrowserSystemNotification(title, body, opts);
     }
 
     async function resetToLastTomato() {
@@ -5680,7 +6015,16 @@
 
     function showToastDialog(title, message, type = 'info', taskBlockId = null, taskBlockName = null, reminderDateKey = null, reminderTimeKey = null) {
         if (type === 'tomato-end' || type === 'break-end') {
-            showSystemNotification(title, message, { icon: '/favicon.ico', requireInteraction: true, tag: 'docktomato-' + type });
+            // 移动端/鸿蒙端已在“开始计时”时通过代理提醒预约；结束时仅桌面端补发浏览器通知。
+            if (!shouldPreferDeviceNotificationBackend()) {
+                showSystemNotification(title, message, {
+                    icon: '/favicon.ico',
+                    requireInteraction: true,
+                    tag: 'docktomato-' + type,
+                    channel: '',
+                    delayInSeconds: 0,
+                });
+            }
         }
         if (reminderIntervalId) {
             clearInterval(reminderIntervalId);
@@ -11484,7 +11828,44 @@
                 syncState.pausedElapsedSeconds = null;
                 syncState.distractionCount = currentDistractionCount || 0;
                 syncState.distractionSavedCount = lastSavedDistractionCount || 0;
+            } else {
+                syncState.status = 'RUNNING';
+                syncState.startTime = timerMode === 'stopwatch' || timerMode === 'stopwatch-break'
+                    ? stopwatchStartTimeMs
+                    : startTime;
+                syncState.mode = timerMode;
+                syncState.duration = timerMode === 'stopwatch' || timerMode === 'stopwatch-break'
+                    ? CONFIG.MAX_STOPWATCH_SECONDS
+                    : currentDuration * 60;
+                syncState.currentPauseStart = null;
+                syncState.pausedElapsedSeconds = null;
+            }
 
+            if ((timerMode === 'countdown' || timerMode === 'break') && shouldPreferDeviceNotificationBackend()) {
+                try {
+                    const scheduled = await ensureTrackedTimerNotification('start-timer', false);
+                    if (scheduled) {
+                        const entry = getCurrentDeviceNotificationSchedule(syncState);
+                        const secs = Math.max(1, Math.round(Number(entry?.delayInSeconds) || Number(remainingSeconds) || 0));
+                        showMiniToast(`已预约通知（${secs}秒后）`);
+                    } else {
+                        const reason = String(sendDeviceNotificationCompat._lastFailureReason || '').trim();
+                        if (reason === 'send-returned-minus-one') {
+                            showMiniToast('预约通知失败(-1)');
+                        } else if (reason === 'send-no-numeric-return') {
+                            showMiniToast('预约通知失败(无返回id)');
+                        } else if (reason === 'webkit-no-numeric-return') {
+                            showMiniToast('通知已发出但无返回id');
+                        } else {
+                            showMiniToast('预约通知失败');
+                        }
+                    }
+                } catch (e) {
+                    showMiniToast('预约通知异常');
+                }
+            }
+
+            if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
                 Logger.info('🔄 startTimer: 同步状态到云端', {
                     status: syncState.status,
                     mode: syncState.mode,
@@ -11571,6 +11952,14 @@
             try { markTimelineHistoryDirty(); } catch (e) {}
             try { updateTimelineBar(true); } catch (e) {}
         }
+
+        if (timerMode === 'countdown' || timerMode === 'break') {
+            syncState.mode = timerMode;
+            syncState.status = 'PAUSED';
+            syncState.startTime = startTime;
+            syncState.duration = currentDuration * 60;
+            try { await cancelTrackedTimerNotification('pause-timer', false); } catch (e) {}
+        }
         
         // 🔧 修复：同步暂停状态到云端
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
@@ -11612,16 +12001,21 @@
         const floatBar = document.getElementById('siyuan-tomato-float-bar');
         if (floatBar) floatBar.classList.remove('running');
         clearRoutineButtonRunningHighlight(true);
+
+        if (timerMode === 'countdown' || timerMode === 'break') {
+            syncState.mode = timerMode;
+            try { await cancelTrackedTimerNotification('stop-timer', false); } catch (e) {}
+        }
+        syncState.status = 'IDLE';
+        syncState.startTime = null;
+        syncState.currentPauseStart = null;
+        syncState.pausedElapsedSeconds = null;
         
         // 🔧 修复：同步停止状态到云端（fire-and-forget 模式，避免阻塞 UI）
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
-            syncState.status = 'IDLE';
-            syncState.startTime = null;
             syncState.stopwatchStartTimeMs = null;
             syncState.stopwatchDisplayOffset = 0;
             syncState.pausedIntervals = [];
-            syncState.currentPauseStart = null;
-            syncState.pausedElapsedSeconds = null;
             syncState.distractionCount = 0;
             syncState.distractionSavedCount = 0;
 
@@ -12403,6 +12797,9 @@
             }
             
             // 🔧 v9.0 修复：休息模式重置后必须同步状态到云端，否则轮询会覆盖本地状态
+            if (timerMode === 'countdown' || timerMode === 'break' || timerMode === 'stopwatch-break') {
+                try { await cancelTrackedTimerNotification('reset-timer', false); } catch (e) {}
+            }
             if (isSyncEnabled() && SyncManager.updateLocal) {
                 syncState.status = 'IDLE';
                 syncState.startTime = null;
@@ -12508,6 +12905,10 @@
         updateDisplay();
         clearRoutineButtonRunningHighlight(true);
         // 🔧 修复：暂停时保持高亮（任务块关联仍然存在）
+
+        if (timerMode === 'countdown' || timerMode === 'break') {
+            try { await cancelTrackedTimerNotification('reset-timer', false); } catch (e) {}
+        }
         
         // 🔧 v9.0 修复：重置后同步状态到云端
         if (isSyncEnabled() && SyncManager.updateLocal) {
@@ -20361,6 +20762,10 @@ function calculateWeeklyStats(dailyStatsArray) {
         return Math.max(0, Math.min(1, v));
     }
 
+    function isFocusModeEnabled() {
+        return userSettings?.main?.enableFocusMode !== false;
+    }
+
     function applyFocusModeDimOpacity() {
         try {
             document.documentElement.style.setProperty('--tomato-focus-dim-opacity', String(getFocusModeDimOpacity()));
@@ -20561,6 +20966,10 @@ function calculateWeeklyStats(dailyStatsArray) {
 
     function highlightTaskBlock(blockId, quiet = false) {
         if (isMobileDevice()) return;
+        if (!isFocusModeEnabled()) {
+            clearTaskBlockHighlight();
+            return;
+        }
         const id = String(blockId || '').trim();
         if (!id) {
             if (!quiet) Logger.info('🔍 高亮任务块: 未提供 blockId');
@@ -20633,6 +21042,10 @@ function calculateWeeklyStats(dailyStatsArray) {
 
     // 启动保持高亮的定时器
     function startHighlightKeepAlive() {
+        if (!isFocusModeEnabled()) {
+            stopHighlightKeepAlive();
+            return;
+        }
         try {
             if (taskBlockHighlightInterval) clearInterval(taskBlockHighlightInterval);
         } catch (e) {}
@@ -20696,6 +21109,10 @@ function calculateWeeklyStats(dailyStatsArray) {
     function highlightDatabaseRow(blockId, maxRetries = 3, retryInterval = 200) {
         // 移动端禁用高亮，避免影响悬浮条触摸事件
         if (isMobileDevice()) {
+            return false;
+        }
+        if (!isFocusModeEnabled()) {
+            clearTaskBlockHighlight();
             return false;
         }
         
@@ -23376,54 +23793,6 @@ function calculateWeeklyStats(dailyStatsArray) {
             togglesSection.appendChild(row);
         }
 
-        mkToggleRow('聚焦模式（高亮任务/数据库时淡化其它内容）', userSettings?.main?.enableFocusMode !== false, async (e) => {
-            userSettings.main.enableFocusMode = e.target.checked;
-            await saveUserSettings();
-            if (!userSettings.main.enableFocusMode) {
-                applyFocusMode(false);
-                applyDatabaseFocusMode(false);
-            }
-        });
-
-        {
-            const row = document.createElement('div');
-            row.style.cssText = 'padding: 10px 0;';
-            const label = document.createElement('div');
-            label.textContent = '聚焦模式淡化透明度（0-1）';
-            label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
-            const input = document.createElement('input');
-            input.type = 'number';
-            input.min = '0';
-            input.max = '1';
-            input.step = '0.05';
-            input.value = String(getFocusModeDimOpacity());
-            input.style.cssText = `
-                width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px;
-                border: 1px solid var(--b3-border-color); font-size: 13px;
-                background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
-            `;
-            input.oninput = (e) => {
-                const v = Number(e.target.value);
-                if (!Number.isFinite(v)) return;
-                userSettings.main.focusModeDimOpacity = Math.max(0, Math.min(1, v));
-                applyFocusModeDimOpacity();
-            };
-            input.onchange = async (e) => {
-                const v = Number(e.target.value);
-                if (!Number.isFinite(v)) {
-                    e.target.value = String(getFocusModeDimOpacity());
-                    return;
-                }
-                userSettings.main.focusModeDimOpacity = Math.max(0, Math.min(1, v));
-                e.target.value = String(userSettings.main.focusModeDimOpacity);
-                applyFocusModeDimOpacity();
-                await saveUserSettings();
-            };
-            row.appendChild(label);
-            row.appendChild(input);
-            togglesSection.appendChild(row);
-        }
-
         mkToggleRow('分心记录延长番茄时间（每次+1分钟）', userSettings?.main?.extendTomatoOnDistraction !== false, async (e) => {
             userSettings.main.extendTomatoOnDistraction = e.target.checked;
             await saveUserSettings();
@@ -25488,7 +25857,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (isSyncEnabled()) {
                 let lastSyncedRemainingSeconds = null;
 
-                const handleStateChange = (newState) => {
+                const handleStateChange = async (newState) => {
                     const now = Date.now();
 
                     const MIN_STATE_UPDATE_INTERVAL = 500;
@@ -25528,14 +25897,14 @@ function calculateWeeklyStats(dailyStatsArray) {
                     }
                     handleStateChange._lastTime = now;
 
-                    // 🔧 修复：如果是本地设备发起的更新，跳过状态重置（避免显示跳动）
-                    if (newState.lastModifiedDevice === SYNC_DEVICE_ID && isRunning) {
-                        Logger.debug('🔄 handleStateChange: 本地设备发起的更新且正在运行，跳过');
+                    const isLocalStateInitial = !syncState?.startTime && syncState?.status === 'IDLE';
+
+                    // 本设备已处理过自己的状态变化，这里只更新内存，避免通知状态同步引发重复调度。
+                    if (newState.lastModifiedDevice === SYNC_DEVICE_ID && !isLocalStateInitial) {
+                        Logger.debug('🔄 handleStateChange: 本地设备发起的更新，跳过重复应用');
                         syncState = newState;
                         return;
                     }
-
-                    const isLocalStateInitial = !syncState?.startTime && syncState?.status === 'IDLE';
 
                     Logger.info('🔄 SyncManager 回调：接收到云端状态更新', {
                         isLocalStateInitial: isLocalStateInitial,
@@ -25624,6 +25993,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                         startLocalTimerLoop();
                     }
 
+                    try { await reconcileTrackedTimerNotification('sync-init-restore', true); } catch (e) {}
+
                     try { maybeRefreshHistoryFromRemote(); } catch (e) {}
                     try { applyEndDialogCloseFromSync(newState); } catch (e) {}
                     return;
@@ -25676,6 +26047,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                         if (!timerId) {
                             startLocalTimerLoop();
                         }
+
+                        try { await reconcileTrackedTimerNotification('sync-remote-restart', true); } catch (e) {}
                         
                         Logger.info('🔄 SyncManager: 已同步新的开始时间并重启计时器');
                         try { maybeRefreshHistoryFromRemote(); } catch (e) {}
@@ -25745,6 +26118,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                     if (controlButton) controlButton.innerHTML = '▶️';
                     if (timeDisplay) updateDisplay(true);
 
+                    try { await reconcileTrackedTimerNotification('sync-remote-paused', true); } catch (e) {}
+
                     Logger.info('🔄 SyncManager: 已同步暂停状态');
                     try { maybeRefreshHistoryFromRemote(); } catch (e) {}
                     return;
@@ -25810,6 +26185,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                         if (timeDisplay) updateDisplay();
                         updateTaskBlockIcon();
                         hideProgressBar();
+
+                        try { await reconcileTrackedTimerNotification('sync-remote-idle', true); } catch (e) {}
                         
                         Logger.info('🔄 SyncManager: 已同步重置状态');
                         try { maybeRefreshHistoryFromRemote(); } catch (e) {}
@@ -25853,6 +26230,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                         startLocalTimerLoop();
                     }
 
+                    try { await reconcileTrackedTimerNotification('sync-remote-running', true); } catch (e) {}
+
                     try { maybeRefreshHistoryFromRemote(); } catch (e) {}
                     return;
                 }
@@ -25878,6 +26257,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                     clearInterval(timerId);
                     timerId = null;
                 }
+                try { await reconcileTrackedTimerNotification('sync-generic', true); } catch (e) {}
                 try { maybeRefreshHistoryFromRemote(); } catch (e) {}
             };
             
@@ -26061,6 +26441,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                             Logger.info('🔄 SyncManager: 启动本地定时器（自动恢复计时）');
                             startLocalTimerLoop();
                         }
+                        try { await reconcileTrackedTimerNotification('sync-post-init-running', true); } catch (e) {}
                     }
                 }
                 
@@ -26112,7 +26493,9 @@ function calculateWeeklyStats(dailyStatsArray) {
                     if (controlButton) {
                         controlButton.innerHTML = '▶️';
                     }
+                    try { await reconcileTrackedTimerNotification('sync-post-init-paused', true); } catch (e) {}
                 }
+                try { await reconcileTrackedTimerNotification('sync-post-init-final', true); } catch (e) {}
             } else {
                 Logger.info('🔄 SyncManager: 云端无有效状态或状态为空闲');
             }
@@ -26322,6 +26705,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             stopReminderCheck();
         } else if (reminderSettings.enabled) {
             startReminderCheck();
+            try { await __syncAllReminderDeviceSchedules(true); } catch (e) {}
         }
         
         // 🔧 修复：移动端初始化完成后，如果有正在运行的计时，显示悬浮窗
@@ -26731,6 +27115,303 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (interval === 'yearly') return every > 1 ? `每${every}年` : '每年';
         return REMINDER_INTERVAL_TYPES[interval]?.label || interval;
     };
+
+    const REMINDER_DEVICE_SCHEDULE_WINDOW_DAYS = 7;
+    const REMINDER_DEVICE_SCHEDULE_REGISTRY_KEY = 'tomato-reminder-device-schedule-registry-v1';
+
+    const __getReminderNotificationTitle = () => '⏰ 任务提醒';
+    const __getReminderNotificationBody = (reminder) => {
+        const content = reminder?.blockName || reminder?.blockContent || '未命名任务';
+        const note = reminder?.note ? '\n' + reminder.note : '';
+        return content + note;
+    };
+    const __sanitizeReminderNotificationSchedules = (value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+        const result = {};
+        for (const [deviceIdRaw, schedule] of Object.entries(value)) {
+            const deviceId = String(deviceIdRaw || '').trim();
+            if (!deviceId || !schedule || typeof schedule !== 'object' || Array.isArray(schedule)) continue;
+            const entries = Array.isArray(schedule.entries)
+                ? schedule.entries.map(it => {
+                    const id = normalizeNotificationId(it?.id);
+                    if (id === null || id < 0) return null;
+                    return {
+                        occurrenceKey: String(it?.occurrenceKey || '').trim(),
+                        dateKey: String(it?.dateKey || '').trim(),
+                        timeKey: String(it?.timeKey || '').trim(),
+                        atMs: Number(it?.atMs) || 0,
+                        id,
+                        delayInSeconds: Number(it?.delayInSeconds) || 0,
+                    };
+                }).filter(Boolean)
+                : [];
+            result[deviceId] = {
+                planKey: String(schedule?.planKey || '').trim(),
+                windowDays: Number(schedule?.windowDays) || REMINDER_DEVICE_SCHEDULE_WINDOW_DAYS,
+                updatedAt: String(schedule?.updatedAt || '').trim(),
+                entries,
+            };
+        }
+        return result;
+    };
+    const __sanitizeReminderData = (value, blockMeta = {}) => {
+        const raw = (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
+        return {
+            ...raw,
+            blockId: String(blockMeta.blockId || raw.blockId || '').trim(),
+            blockContent: String(blockMeta.blockContent || raw.blockContent || '').trim(),
+            blockType: String(blockMeta.blockType || raw.blockType || '').trim(),
+            rootId: String(blockMeta.rootId || raw.rootId || '').trim(),
+            notificationSchedules: __sanitizeReminderNotificationSchedules(raw.notificationSchedules),
+            completedOccurrences: Array.isArray(raw.completedOccurrences) ? raw.completedOccurrences.filter(it => it && typeof it === 'object') : [],
+            times: Array.isArray(raw.times)
+                ? raw.times.map(it => String(it || '').trim()).filter(Boolean)
+                : [],
+        };
+    };
+    const __getReminderDeviceScheduleRegistry = () => {
+        try {
+            const raw = localStorage.getItem(REMINDER_DEVICE_SCHEDULE_REGISTRY_KEY);
+            if (!raw) return {};
+            const parsed = JSON.parse(raw);
+            return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+        } catch (e) {
+            return {};
+        }
+    };
+    const __saveReminderDeviceScheduleRegistry = (registry) => {
+        try {
+            localStorage.setItem(REMINDER_DEVICE_SCHEDULE_REGISTRY_KEY, JSON.stringify(
+                (registry && typeof registry === 'object' && !Array.isArray(registry)) ? registry : {}
+            ));
+        } catch (e) {}
+    };
+    const __setReminderDeviceRegistryEntry = (blockId, schedule) => {
+        const id = String(blockId || '').trim();
+        if (!id) return;
+        const registry = __getReminderDeviceScheduleRegistry();
+        const validEntries = Array.isArray(schedule?.entries)
+            ? schedule.entries.filter(it => {
+                const nid = normalizeNotificationId(it?.id);
+                return nid !== null && nid >= 0;
+            })
+            : [];
+        if (validEntries.length === 0) {
+            delete registry[id];
+        } else {
+            registry[id] = {
+                planKey: String(schedule?.planKey || '').trim(),
+                updatedAt: String(schedule?.updatedAt || new Date().toISOString()).trim(),
+                entries: validEntries.map(it => ({
+                    occurrenceKey: String(it?.occurrenceKey || '').trim(),
+                    dateKey: String(it?.dateKey || '').trim(),
+                    timeKey: String(it?.timeKey || '').trim(),
+                    atMs: Number(it?.atMs) || 0,
+                    id: normalizeNotificationId(it?.id),
+                    delayInSeconds: Number(it?.delayInSeconds) || 0,
+                })),
+            };
+        }
+        __saveReminderDeviceScheduleRegistry(registry);
+    };
+    async function __cleanupOrphanReminderDeviceSchedules(reminders = []) {
+        const registry = __getReminderDeviceScheduleRegistry();
+        const blockIds = new Set((Array.isArray(reminders) ? reminders : []).map(it => String(it?.blockId || '').trim()).filter(Boolean));
+        let changed = false;
+        for (const [blockId, schedule] of Object.entries(registry)) {
+            if (blockIds.has(blockId)) continue;
+            try { await __cancelReminderDeviceScheduleEntries(schedule?.entries); } catch (e) {}
+            delete registry[blockId];
+            changed = true;
+        }
+        if (changed) __saveReminderDeviceScheduleRegistry(registry);
+    }
+    const __getReminderDeviceScheduleMap = (reminder) => {
+        if (!reminder || typeof reminder !== 'object') return {};
+        const current = reminder.notificationSchedules;
+        if (!current || typeof current !== 'object' || Array.isArray(current)) {
+            reminder.notificationSchedules = {};
+        }
+        return reminder.notificationSchedules;
+    };
+    const __getReminderDeviceSchedule = (reminder, deviceId = SYNC_DEVICE_ID) => {
+        const map = __getReminderDeviceScheduleMap(reminder);
+        const entry = map[String(deviceId || '').trim()];
+        return (entry && typeof entry === 'object') ? entry : null;
+    };
+    const __getReminderAllDeviceScheduleEntries = (reminder) => {
+        const map = __getReminderDeviceScheduleMap(reminder);
+        const result = [];
+        for (const [deviceId, schedule] of Object.entries(map)) {
+            const entries = Array.isArray(schedule?.entries)
+                ? schedule.entries.filter(it => {
+                    const id = normalizeNotificationId(it?.id);
+                    return id !== null && id >= 0;
+                })
+                : [];
+            if (entries.length === 0) continue;
+            result.push({ deviceId, schedule, entries });
+        }
+        return result;
+    };
+    const __setReminderDeviceSchedule = (reminder, entry, deviceId = SYNC_DEVICE_ID) => {
+        const key = String(deviceId || '').trim();
+        if (!key || !reminder || typeof reminder !== 'object') return null;
+        const map = __getReminderDeviceScheduleMap(reminder);
+        if (entry && typeof entry === 'object') {
+            map[key] = entry;
+            return map[key];
+        }
+        delete map[key];
+        return null;
+    };
+    const __buildReminderOccurrenceEntry = (at) => {
+        const dt = toDateSafe(at);
+        if (!(dt instanceof Date) || isNaN(dt.getTime())) return null;
+        const dateKey = formatDateKey(dt);
+        const timeKey = String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0');
+        const occurrenceKey = __reminderOccurrenceKey(dateKey, timeKey);
+        if (!occurrenceKey) return null;
+        return { occurrenceKey, dateKey, timeKey, atMs: dt.getTime() };
+    };
+    const __collectReminderScheduleTargets = (reminder, nowDate = new Date()) => {
+        const now = toDateSafe(nowDate);
+        if (!(now instanceof Date) || isNaN(now.getTime())) return [];
+        if (!reminder?.enabled) return [];
+        const horizonMs = now.getTime() + REMINDER_DEVICE_SCHEDULE_WINDOW_DAYS * 86400000;
+        const result = [];
+        const seen = new Set();
+        let cursor = new Date(now.getTime());
+        for (let i = 0; i < 64; i++) {
+            const nextAt = getNextReminderDateTime(reminder, cursor);
+            if (!(nextAt instanceof Date) || isNaN(nextAt.getTime())) break;
+            const entry = __buildReminderOccurrenceEntry(nextAt);
+            if (!entry || seen.has(entry.occurrenceKey)) break;
+            seen.add(entry.occurrenceKey);
+            if (result.length === 0 && entry.atMs > horizonMs) {
+                result.push(entry);
+                break;
+            }
+            if (entry.atMs <= horizonMs) {
+                result.push(entry);
+                cursor = new Date(entry.atMs + 60000);
+                continue;
+            }
+            break;
+        }
+        return result;
+    };
+    const __buildReminderSchedulePlanKey = (reminder, targets) => {
+        const blockId = String(reminder?.blockId || '').trim();
+        const updatedAt = String(reminder?.updatedAt || reminder?.createdAt || '').trim();
+        const targetSig = (targets || []).map(it => `${it.occurrenceKey}@${it.atMs}`).join('|');
+        return [blockId, updatedAt, targetSig].join('::');
+    };
+    async function __cancelReminderDeviceScheduleEntries(entries) {
+        const arr = Array.isArray(entries) ? entries : [];
+        for (const it of arr) {
+            const id = normalizeNotificationId(it?.id);
+            if (id === null || id < 0) continue;
+            try { await cancelDeviceNotificationCompat(id); } catch (e) {}
+        }
+    }
+    async function __reconcileReminderDeviceSchedule(reminder, options = {}) {
+        if (!shouldPreferDeviceNotificationBackend()) return { changed: false, scheduled: 0, canceled: 0, reason: 'unsupported-backend' };
+        if (!reminderSettings?.enabled || !reminderSettings?.systemNotificationEnabled) return { changed: false, scheduled: 0, canceled: 0, reason: 'disabled' };
+        const blockId = String(reminder?.blockId || '').trim();
+        if (!blockId) return { changed: false, scheduled: 0, canceled: 0, reason: 'missing-block-id' };
+
+        const existing = __getReminderDeviceSchedule(reminder);
+        const targets = __collectReminderScheduleTargets(reminder, options.now || new Date());
+        if (!reminder?.enabled || targets.length === 0) {
+            if (existing?.entries?.length) {
+                await __cancelReminderDeviceScheduleEntries(existing.entries);
+                __setReminderDeviceSchedule(reminder, {
+                    ...(existing || {}),
+                    status: 'canceled',
+                    canceledAt: new Date().toISOString(),
+                    entries: [],
+                    planKey: '',
+                });
+                __setReminderDeviceRegistryEntry(blockId, null);
+                return { changed: true, scheduled: 0, canceled: Array.isArray(existing.entries) ? existing.entries.length : 0, reason: 'no-targets' };
+            }
+            __setReminderDeviceRegistryEntry(blockId, null);
+            return { changed: false, scheduled: 0, canceled: 0, reason: 'no-targets' };
+        }
+
+        const planKey = __buildReminderSchedulePlanKey(reminder, targets);
+        const validExistingEntries = Array.isArray(existing?.entries)
+            ? existing.entries.filter(it => {
+                const id = normalizeNotificationId(it?.id);
+                return id !== null && id >= 0;
+            })
+            : [];
+        if (existing?.planKey === planKey && validExistingEntries.length === targets.length) {
+            return { changed: false, scheduled: 0, canceled: 0, reason: 'unchanged' };
+        }
+
+        let canceled = 0;
+        if (validExistingEntries.length > 0) {
+            await __cancelReminderDeviceScheduleEntries(validExistingEntries);
+            canceled = validExistingEntries.length;
+        }
+
+        const scheduledEntries = [];
+        for (const target of targets) {
+            const delayInSeconds = Math.max(1, Math.ceil((target.atMs - Date.now()) / 1000));
+            const notificationId = await sendDeviceNotificationCompat(__getReminderNotificationTitle(), __getReminderNotificationBody(reminder), {
+                channel: '',
+                delayInSeconds
+            });
+            const id = normalizeNotificationId(notificationId);
+            if (id === null || id < 0) continue;
+            scheduledEntries.push({
+                occurrenceKey: target.occurrenceKey,
+                dateKey: target.dateKey,
+                timeKey: target.timeKey,
+                atMs: target.atMs,
+                id,
+                delayInSeconds,
+            });
+        }
+
+        const nextSchedule = {
+            planKey,
+            windowDays: REMINDER_DEVICE_SCHEDULE_WINDOW_DAYS,
+            updatedAt: new Date().toISOString(),
+            entries: scheduledEntries,
+        };
+        __setReminderDeviceSchedule(reminder, nextSchedule);
+        __setReminderDeviceRegistryEntry(blockId, nextSchedule);
+        return { changed: true, scheduled: scheduledEntries.length, canceled, reason: 'updated' };
+    }
+    async function __syncReminderDeviceSchedule(blockId, reminderData, options = {}) {
+        const id = String(blockId || reminderData?.blockId || '').trim();
+        if (!id) return false;
+        const reminder = reminderData ? { ...reminderData, blockId: id } : await getBlockReminder(id);
+        if (!reminder) return false;
+        const result = await __reconcileReminderDeviceSchedule(reminder, options);
+        if (!result.changed) return false;
+        return await saveBlockReminder(id, reminder, { skipReminderScheduleSync: true });
+    }
+    async function __syncAllReminderDeviceSchedules(forceRefresh = false) {
+        if (!shouldPreferDeviceNotificationBackend()) return;
+        if (!reminderSettings?.enabled || !reminderSettings?.systemNotificationEnabled) return;
+        const reminders = await queryAllReminderBlocks(forceRefresh);
+        for (const reminder of (reminders || [])) {
+            try { await __syncReminderDeviceSchedule(reminder.blockId, reminder); } catch (e) {}
+        }
+        try { await __cleanupOrphanReminderDeviceSchedules(reminders); } catch (e) {}
+    }
+    async function __syncReminderDeviceSchedulesFromList(reminders) {
+        if (!shouldPreferDeviceNotificationBackend()) return;
+        if (!reminderSettings?.enabled || !reminderSettings?.systemNotificationEnabled) return;
+        for (const reminder of (reminders || [])) {
+            try { await __syncReminderDeviceSchedule(reminder.blockId, reminder); } catch (e) {}
+        }
+        try { await __cleanupOrphanReminderDeviceSchedules(reminders); } catch (e) {}
+    }
     
     let __reminderCompletedPruneRunning = false;
     const __pruneCompletedOccurrencesGlobal = async (limit = 30) => {
@@ -26799,6 +27480,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             next.updatedAt = new Date().toISOString();
             const ok = await saveBlockReminder(blockId, next);
             if (ok) {
+                try { await __syncReminderDeviceSchedule(blockId, next, { silent: true }); } catch (e) {}
                 try { __pruneCompletedOccurrencesGlobal(30); } catch (e) {}
                 try { refreshReminderDockPanel(); } catch (e) {}
                 try { updateReminderBadge(); } catch (e) {}
@@ -26822,6 +27504,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             const next = { ...existing, completedOccurrences: nextArr, updatedAt: new Date().toISOString() };
             const ok = await saveBlockReminder(blockId, next);
             if (ok) {
+                try { await __syncReminderDeviceSchedule(blockId, next, { silent: true }); } catch (e) {}
                 try { refreshReminderDockPanel(); } catch (e) {}
                 try { updateReminderBadge(); } catch (e) {}
             }
@@ -26921,11 +27604,29 @@ function calculateWeeklyStats(dailyStatsArray) {
         } else {
             dialog.style.cssText = 'background:var(--b3-theme-background);border:1px solid var(--b3-theme-surface-light);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.3);z-index:2147483648;padding:24px;width:90vw;max-width:480px;max-height:85vh;display:flex;flex-direction:column;color:var(--b3-theme-on-background);box-sizing:border-box;';
         }
-        
+
+        const closeDialog = () => {
+            try { backdrop.remove(); } catch (e) {}
+            try { dialog.remove(); } catch (e) {}
+        };
+
+        const titleRow = document.createElement('div');
+        titleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;';
+        const titleSpacer = document.createElement('div');
+        titleSpacer.style.cssText = 'width:32px;height:32px;flex:0 0 32px;';
         const title = document.createElement('div');
         title.textContent = existingReminder ? '编辑提醒' : '添加提醒';
-        title.style.cssText = 'font-size:18px;font-weight:600;margin-bottom:20px;text-align:center;';
-        dialog.appendChild(title);
+        title.style.cssText = 'flex:1 1 auto;font-size:18px;font-weight:600;text-align:center;';
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.textContent = '×';
+        closeBtn.setAttribute('aria-label', '关闭');
+        closeBtn.style.cssText = 'width:32px;height:32px;flex:0 0 32px;border:none;border-radius:8px;background:transparent;color:var(--b3-theme-on-background);cursor:pointer;font-size:22px;line-height:32px;padding:0;';
+        closeBtn.onclick = () => closeDialog();
+        titleRow.appendChild(titleSpacer);
+        titleRow.appendChild(title);
+        titleRow.appendChild(closeBtn);
+        dialog.appendChild(titleRow);
         
         const content = document.createElement('div');
         content.style.cssText = 'flex:1;overflow-y:auto;';
@@ -27154,11 +27855,29 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         const btnRow = document.createElement('div');
         btnRow.style.cssText = 'display:flex;gap:12px;margin-top:20px;';
-        const cancelBtn = document.createElement('button');
-        cancelBtn.textContent = '取消';
-        cancelBtn.style.cssText = 'flex:1;padding:12px;border:1px solid var(--b3-theme-surface-light);border-radius:8px;background:var(--b3-theme-surface);color:var(--b3-theme-on-surface);cursor:pointer;font-size:14px;';
-        cancelBtn.onclick = () => { backdrop.remove(); dialog.remove(); };
+        let deleteBtn = null;
+        if (existingReminder) {
+            deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.textContent = '删除提醒';
+            deleteBtn.style.cssText = 'flex:1;padding:12px;border:1px solid rgba(244,67,54,0.22);border-radius:8px;background:rgba(244,67,54,0.08);color:#f44336;cursor:pointer;font-size:14px;font-weight:500;';
+            deleteBtn.onclick = async () => {
+                try { deleteBtn.disabled = true; } catch (e) {}
+                try { saveBtn.disabled = true; } catch (e) {}
+                const success = await deleteBlockReminder(blockId);
+                if (success) {
+                    showMiniToast('提醒已删除');
+                    closeDialog();
+                    try { refreshReminderDockPanel(); } catch (e) {}
+                } else {
+                    showMiniToast('删除失败');
+                    try { deleteBtn.disabled = false; } catch (e) {}
+                    try { saveBtn.disabled = false; } catch (e) {}
+                }
+            };
+        }
         const saveBtn = document.createElement('button');
+        saveBtn.type = 'button';
         saveBtn.textContent = existingReminder ? '保存修改' : '添加提醒';
         saveBtn.style.cssText = 'flex:1;padding:12px;border:none;border-radius:8px;background:var(--b3-theme-primary);color:white;cursor:pointer;font-size:14px;font-weight:500;';
         saveBtn.onclick = async () => {
@@ -27185,20 +27904,19 @@ function calculateWeeklyStats(dailyStatsArray) {
             const success = await saveBlockReminder(blockId, reminderData);
             if (success) {
                 showMiniToast(existingReminder ? '提醒已更新' : '提醒已添加');
-                backdrop.remove();
-                dialog.remove();
-                refreshReminderDockPanel();
+                closeDialog();
+                try { refreshReminderDockPanel(); } catch (e) {}
             } else {
                 showMiniToast('保存失败');
             }
         };
-        btnRow.appendChild(cancelBtn);
+        if (deleteBtn) btnRow.appendChild(deleteBtn);
         btnRow.appendChild(saveBtn);
         dialog.appendChild(btnRow);
         try { updateNextInfo(); } catch (e) {}
         backdrop.appendChild(dialog);
         document.body.appendChild(backdrop);
-        backdrop.onclick = (e) => { if (e.target === backdrop) { backdrop.remove(); dialog.remove(); } };
+        backdrop.onclick = (e) => { if (e.target === backdrop) closeDialog(); };
     }
     
     let lastCheckedDate = null;
@@ -27858,6 +28576,13 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
         const sessionNotified = __getSessionNotifiedSet(currentDate);
         const reminders = await queryAllReminderBlocks();
+        if (shouldPreferDeviceNotificationBackend() && reminderSettings.systemNotificationEnabled) {
+            const lastAt = checkReminders._lastDeviceScheduleSyncAt || 0;
+            if (Date.now() - lastAt > 5 * 60 * 1000) {
+                checkReminders._lastDeviceScheduleSyncAt = Date.now();
+                try { await __syncReminderDeviceSchedulesFromList(reminders); } catch (e) {}
+            }
+        }
         for (const reminder of reminders) {
             if (!reminder.enabled) continue;
             if (!checkShouldRemindToday(reminder, currentDate)) continue;
@@ -27941,7 +28666,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
         
         // 系统通知
-        if (reminderSettings.systemNotificationEnabled && 'Notification' in window) {
+        if (reminderSettings.systemNotificationEnabled && !shouldPreferDeviceNotificationBackend() && 'Notification' in window) {
             if (Notification.permission === 'granted') {
                 new Notification(title, { body: fullMessage, icon: '/favicon.ico', requireInteraction: true });
             } else if (Notification.permission !== 'denied') {
@@ -27953,6 +28678,9 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         // 播放提醒音频
         if (reminderSettings.audioEnabled) playReminderAudio();
+        if (shouldPreferDeviceNotificationBackend() && reminder?.blockId) {
+            Promise.resolve().then(() => __syncReminderDeviceSchedule(reminder.blockId, reminder, { silent: true })).catch(() => {});
+        }
     }
     
     function playReminderAudio() {
@@ -28004,6 +28732,19 @@ function calculateWeeklyStats(dailyStatsArray) {
         showSettings: showReminderSettingsDialog,
         check: manualCheckReminders,
         refresh: refreshReminderDockPanel,
+        recoverDock: (reason = 'manual') => {
+            try {
+                reminderDockPanel = null;
+                if (reason !== 'wake' && reason !== 'visibility' && reason !== 'focus') {
+                    __reminderDockMountEl = null;
+                    __reminderDockMountParentEl = null;
+                    __reminderDockMountIndex = -1;
+                    __reminderDockMountTagName = '';
+                    __reminderDockMountClassName = '';
+                }
+                __scheduleReminderDockRepair(reason);
+            } catch (e) {}
+        },
         getBlocks: queryAllReminderBlocks,
         initDock: initReminderDock,
         tryEventBus: tryRegisterDockViaEventBus,
@@ -28121,7 +28862,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         },
     };
     
-    async function saveBlockReminder(blockId, reminderData) {
+    async function saveBlockReminder(blockId, reminderData, options = {}) {
         try {
             const getRes = await postJSON('/api/attr/getBlockAttrs', { id: blockId });
             if (!getRes.ok) { return false; }
@@ -28134,6 +28875,14 @@ function calculateWeeklyStats(dailyStatsArray) {
             };
             const setRes = await postJSON('/api/attr/setBlockAttrs', { id: blockId, attrs });
             if (setRes.ok && setRes.data?.code === 0) {
+                try {
+                    window.dispatchEvent(new CustomEvent('tm-task-attr-updated', {
+                        detail: { taskId: String(blockId || '').trim(), attrKey: 'bookmark', value: '⏰' }
+                    }));
+                } catch (e) {}
+                if (!options?.skipReminderScheduleSync) {
+                    try { await __syncReminderDeviceSchedule(blockId, reminderData, { silent: true }); } catch (e) {}
+                }
                 try { refreshReminderDockPanel(); } catch (e) {}
                 try { updateReminderBadge(); } catch (e) {}
                 try { postJSON('/api/sqlite/flushTransaction', {}).catch(() => {}); } catch (e) {}
@@ -28154,7 +28903,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (getRes.ok) {
                 const attrs = getRes.data?.data || {};
                 const reminderAttr = attrs['custom-tomato-reminder'];
-                if (reminderAttr) return JSON.parse(reminderAttr);
+                if (reminderAttr) return __sanitizeReminderData(JSON.parse(reminderAttr), { blockId });
             }
         } catch (e) { Logger.warn('获取块提醒设置失败:', e); }
         return null;
@@ -28162,6 +28911,14 @@ function calculateWeeklyStats(dailyStatsArray) {
     
     async function deleteBlockReminder(blockId) {
         try {
+            const reminderId = String(blockId || '').trim();
+            const existingReminder = await getBlockReminder(blockId);
+            if (existingReminder) {
+                try {
+                    const schedule = __getReminderDeviceSchedule(existingReminder);
+                    if (schedule?.entries?.length) await __cancelReminderDeviceScheduleEntries(schedule.entries);
+                } catch (e) {}
+            }
             // 删除提醒时，同时移除书签属性
             const setRes = await postJSON('/api/attr/setBlockAttrs', {
                 id: blockId,
@@ -28171,6 +28928,12 @@ function calculateWeeklyStats(dailyStatsArray) {
                 }
             });
             if (setRes.ok && setRes.data?.code === 0) {
+                try {
+                    window.dispatchEvent(new CustomEvent('tm-task-attr-updated', {
+                        detail: { taskId: String(blockId || '').trim(), attrKey: 'bookmark', value: '' }
+                    }));
+                } catch (e) {}
+                try { __setReminderDeviceRegistryEntry(reminderId, null); } catch (e) {}
                 try {
                     __invalidateReminderDockCache();
                     renderReminderDockList('time', false);
@@ -28221,13 +28984,12 @@ function calculateWeeklyStats(dailyStatsArray) {
                 return blocks.map(block => {
                     try {
                         const reminderData = JSON.parse(block.reminder_data);
-                        return {
+                        return __sanitizeReminderData(reminderData, {
                             blockId: block.id,
                             blockContent: block.content,
                             blockType: block.type,
                             rootId: block.root_id,
-                            ...reminderData
-                        };
+                        });
                     } catch (e) {
                         Logger.warn('解析提醒数据失败:', e);
                         return null;
@@ -28242,40 +29004,319 @@ function calculateWeeklyStats(dailyStatsArray) {
         return [];
     }
     
+    const __getReminderDockMeta = () => {
+        try {
+            if (!globalThis.__dockTomatoReminderDockMeta || typeof globalThis.__dockTomatoReminderDockMeta !== 'object') {
+                globalThis.__dockTomatoReminderDockMeta = {};
+            }
+        } catch (e) {
+            globalThis.__dockTomatoReminderDockMeta = {};
+        }
+        return globalThis.__dockTomatoReminderDockMeta;
+    };
+
     let reminderDockPanel = null;
-    let __reminderDockMountEl = null;
+    let __reminderDockMountEl = __getReminderDockMeta().mountEl || null;
+    let __reminderDockMountParentEl = __getReminderDockMeta().mountParentEl || null;
+    let __reminderDockMountIndex = Number.isFinite(__getReminderDockMeta().mountIndex) ? __getReminderDockMeta().mountIndex : -1;
+    let __reminderDockMountTagName = String(__getReminderDockMeta().mountTagName || '');
+    let __reminderDockMountClassName = String(__getReminderDockMeta().mountClassName || '');
     let __reminderDockMountToken = 0;
     let __reminderDockWakeBound = false;
     let __reminderDockWakeTimer = null;
     let __reminderDockWasHiddenAt = 0;
     let __reminderDockVisibilityHandler = null;
     let __reminderDockFocusHandler = null;
+    let __reminderDockClickRecoverHandler = null;
+    let __reminderDockMountObserver = null;
+    let __reminderDockBodyObserver = null;
+    let __reminderDockRepairTimer = null;
+    let __reminderDockRecreateTimer = null;
+
+    const __findReminderDockLayoutEntry = (node) => {
+        if (!node) return false;
+        if (Array.isArray(node)) {
+            for (const item of node) {
+                if (__findReminderDockLayoutEntry(item)) return true;
+            }
+            return false;
+        }
+        if (typeof node !== 'object') return false;
+        try {
+            if (node.type === REMINDER_DOCK_TYPE) return true;
+        } catch (e) {}
+        try {
+            for (const key of Object.keys(node)) {
+                if (__findReminderDockLayoutEntry(node[key])) return true;
+            }
+        } catch (e) {}
+        return false;
+    };
+
+    const __hasReminderDockInCurrentUiLayout = () => {
+        try {
+            const uiLayout = globalThis?.siyuan?.config?.uiLayout;
+            if (!uiLayout) return false;
+            return __findReminderDockLayoutEntry(uiLayout);
+        } catch (e) {}
+        return false;
+    };
+
+    const __hasMountedReminderDockPanel = () => {
+        try {
+            const panel = document.getElementById('tomato-reminder-dock-content');
+            return !!(panel && panel.isConnected);
+        } catch (e) {}
+        return false;
+    };
+
+    const __clearReminderDockRegistrationState = () => {
+        try { reminderDockRegistered = false; } catch (e) {}
+        reminderDockPanel = null;
+        __reminderDockMountToken = (__reminderDockMountToken || 0) + 1;
+        try { __reminderDockMountObserver?.disconnect?.(); } catch (e) {}
+        __reminderDockMountObserver = null;
+        __reminderDockMountEl = null;
+        __reminderDockMountParentEl = null;
+        __reminderDockMountIndex = -1;
+        __reminderDockMountTagName = '';
+        __reminderDockMountClassName = '';
+        try {
+            const meta = __getReminderDockMeta();
+            meta.addRequested = false;
+            meta.registered = false;
+            meta.mountEl = null;
+            meta.mountParentEl = null;
+            meta.mountIndex = -1;
+            meta.mountTagName = '';
+            meta.mountClassName = '';
+        } catch (e) {}
+    };
+
+    const __requestReminderDockRegistration = (reason = 'manual', force = false) => {
+        try {
+            const register = globalThis.__dockTomatoRegisterReminderDock;
+            if (typeof register === 'function') {
+                return !!register(reason, !!force);
+            }
+        } catch (e) {}
+        try {
+            const pluginInstance = __getPluginInstance?.() || globalThis.__tomatoPluginInstance || null;
+            if (pluginInstance && typeof pluginInstance._registerReminderDock === 'function') {
+                return !!pluginInstance._registerReminderDock(reason, { force: !!force });
+            }
+        } catch (e) {}
+        return false;
+    };
+
+    const __scheduleReminderDockRecreate = (reason) => {
+        if (__hasReminderDockInCurrentUiLayout()) return;
+        if (__reminderDockRecreateTimer) return;
+        __reminderDockRecreateTimer = setTimeout(() => {
+            __reminderDockRecreateTimer = null;
+            if (__hasReminderDockInCurrentUiLayout()) return;
+            try {
+                Logger.warn('提醒Dock 布局项缺失，准备重建:', reason);
+            } catch (e) {}
+            __clearReminderDockRegistrationState();
+            const requested = __requestReminderDockRegistration(`repair-${reason}`, true);
+            if (!requested) {
+                try { Logger.warn('提醒Dock 重建失败：入口插件未响应注册请求', reason); } catch (e) {}
+                return;
+            }
+            try { __scheduleReminderDockRepair(`recreate-${reason}`); } catch (e) {}
+        }, 180);
+    };
+
+    const __rememberReminderDockMountEl = (element) => {
+        if (!element) return;
+        __reminderDockMountEl = element;
+        try {
+            __reminderDockMountParentEl = element.parentElement || null;
+            __reminderDockMountIndex = __reminderDockMountParentEl
+                ? Array.prototype.indexOf.call(__reminderDockMountParentEl.children || [], element)
+                : -1;
+            __reminderDockMountTagName = String(element.tagName || '').toUpperCase();
+            __reminderDockMountClassName = String(element.className || '').trim();
+        } catch (e) {}
+        try {
+            const meta = __getReminderDockMeta();
+            meta.mountEl = __reminderDockMountEl;
+            meta.mountParentEl = __reminderDockMountParentEl;
+            meta.mountIndex = __reminderDockMountIndex;
+            meta.mountTagName = __reminderDockMountTagName;
+            meta.mountClassName = __reminderDockMountClassName;
+            meta.registered = true;
+        } catch (e) {}
+    };
+
+    const __resolveReminderDockHostFromActivator = (element) => {
+        if (!element) return null;
+        try {
+            const dockRoot = element.closest?.(
+                '.layout__dockl, .layout__dockr, .layout__dockb, .layout__dock--left, .layout__dock--right, .layout__dock--bottom'
+            );
+            if (!dockRoot) return null;
+            const panels = Array.from(dockRoot.querySelectorAll('.dock__panel'));
+            for (const panel of panels) {
+                if (!panel || !panel.isConnected) continue;
+                const visible = !!(panel.offsetWidth || panel.offsetHeight || panel.getClientRects?.().length);
+                if (!visible) continue;
+                const host = panel.querySelector?.('.fn__flex-1') || panel;
+                if (!host || host === document.body || host === document.documentElement) continue;
+                if (host.matches?.('.dock__item, button, [role="button"]')) continue;
+                __rememberReminderDockMountEl(host);
+                return host;
+            }
+        } catch (e) {}
+        return null;
+    };
+
+    const __resolveReminderDockMountEl = () => {
+        try {
+            const meta = __getReminderDockMeta();
+            if (!__reminderDockMountEl && meta.mountEl) __reminderDockMountEl = meta.mountEl;
+            if (!__reminderDockMountParentEl && meta.mountParentEl) __reminderDockMountParentEl = meta.mountParentEl;
+            if (__reminderDockMountIndex < 0 && Number.isFinite(meta.mountIndex)) __reminderDockMountIndex = meta.mountIndex;
+            if (!__reminderDockMountTagName && meta.mountTagName) __reminderDockMountTagName = String(meta.mountTagName || '');
+            if (!__reminderDockMountClassName && meta.mountClassName) __reminderDockMountClassName = String(meta.mountClassName || '');
+        } catch (e) {}
+        try {
+            if (__reminderDockMountEl && document.body.contains(__reminderDockMountEl)) return __reminderDockMountEl;
+        } catch (e) {}
+        const parent = __reminderDockMountParentEl;
+        const expectedTag = String(__reminderDockMountTagName || '').toUpperCase();
+        const expectedClass = String(__reminderDockMountClassName || '').trim();
+        const matches = (node) => {
+            if (!node || node.nodeType !== 1) return false;
+            const sameTag = !expectedTag || String(node.tagName || '').toUpperCase() === expectedTag;
+            const sameClass = !expectedClass || String(node.className || '').trim() === expectedClass;
+            return sameTag && sameClass;
+        };
+        if (parent && parent.isConnected) {
+            try {
+                if (__reminderDockMountIndex >= 0) {
+                    const direct = parent.children?.[__reminderDockMountIndex] || null;
+                    if (matches(direct)) {
+                        __reminderDockMountEl = direct;
+                        return direct;
+                    }
+                }
+            } catch (e) {}
+            try {
+                const fallback = Array.from(parent.children || []).find(matches) || null;
+                if (fallback) {
+                    __reminderDockMountEl = fallback;
+                    return fallback;
+                }
+            } catch (e) {}
+        }
+        try {
+            const candidates = Array.from(document.querySelectorAll(`[data-type="${REMINDER_DOCK_TYPE}"]`));
+            for (const candidate of candidates) {
+                if (!candidate || !candidate.isConnected) continue;
+                if (candidate.matches?.('.dock__item, button, [role="button"]')) {
+                    const hostFromActivator = __resolveReminderDockHostFromActivator(candidate);
+                    if (hostFromActivator) return hostFromActivator;
+                    continue;
+                }
+                const host = candidate.matches?.('.dock__panel')
+                    ? (candidate.querySelector?.('.fn__flex-1') || candidate)
+                    : candidate;
+                if (!host || host === document.body || host === document.documentElement) continue;
+                __rememberReminderDockMountEl(host);
+                return host;
+            }
+        } catch (e) {}
+        return null;
+    };
+
+    const __scheduleReminderDockRepair = (reason) => {
+        try { if (__reminderDockRepairTimer) clearTimeout(__reminderDockRepairTimer); } catch (e) {}
+        __reminderDockRepairTimer = setTimeout(() => {
+            __reminderDockRepairTimer = null;
+            try {
+                const ok = __ensureReminderDockMounted();
+                if (!ok && !__hasReminderDockInCurrentUiLayout()) {
+                    __scheduleReminderDockRecreate(`repair-${reason}`);
+                }
+            } catch (e) {
+                try { Logger.warn('提醒Dock 自动修复失败:', reason, e); } catch (e2) {}
+            }
+        }, 120);
+    };
+
+    const __bindReminderDockMountObserver = (element) => {
+        try { __reminderDockMountObserver?.disconnect?.(); } catch (e) {}
+        __reminderDockMountObserver = null;
+        if (!element || typeof MutationObserver === 'undefined') return;
+        try {
+            __reminderDockMountObserver = new MutationObserver(() => {
+                try {
+                    if (!element.isConnected) {
+                        __scheduleReminderDockRepair('mount-disconnected');
+                        return;
+                    }
+                    const panel = element.querySelector?.('#tomato-reminder-dock-content');
+                    if (!panel) __scheduleReminderDockRepair('mount-children-cleared');
+                } catch (e) {}
+            });
+            __reminderDockMountObserver.observe(element, { childList: true });
+        } catch (e) {}
+    };
+
+    const __bindReminderDockBodyObserver = () => {
+        if (__reminderDockBodyObserver || typeof MutationObserver === 'undefined') return;
+        try {
+            const root = document.body || document.documentElement;
+            if (!root) return;
+            __reminderDockBodyObserver = new MutationObserver(() => {
+                try {
+                    if (!reminderDockRegistered) return;
+                    const mountEl = __resolveReminderDockMountEl();
+                    if (!mountEl) return;
+                    const panel = mountEl.querySelector?.('#tomato-reminder-dock-content');
+                    if (panel && panel.isConnected) return;
+                    __scheduleReminderDockRepair('body-mutation');
+                } catch (e) {}
+            });
+            __reminderDockBodyObserver.observe(root, { childList: true, subtree: true });
+        } catch (e) {}
+    };
 
     const __ensureReminderDockMounted = () => {
         try {
-            if (__reminderDockMountEl && !document.body.contains(__reminderDockMountEl)) {
-                __reminderDockMountEl = null;
-            }
+            if (__reminderDockMountEl && !document.body.contains(__reminderDockMountEl)) __reminderDockMountEl = null;
         } catch (e) {}
-        if (!__reminderDockMountEl) return false;
+        const dockInCurrentUiLayout = __hasReminderDockInCurrentUiLayout();
+        const mountEl = __resolveReminderDockMountEl();
+        if (!mountEl) {
+            if (!dockInCurrentUiLayout) __scheduleReminderDockRecreate('ensure-missing-mount');
+            return false;
+        }
         try {
-            const panel = __reminderDockMountEl.querySelector?.('#tomato-reminder-dock-content');
+            const panel = mountEl.querySelector?.('#tomato-reminder-dock-content');
             if (panel && panel.isConnected) {
                 reminderDockPanel = panel;
+                __rememberReminderDockMountEl(mountEl);
+                __bindReminderDockMountObserver(mountEl);
                 return true;
             }
         } catch (e) {}
         try {
-            globalThis.__dockTomatoReminderDock?.mount?.(__reminderDockMountEl);
+            globalThis.__dockTomatoReminderDock?.mount?.(mountEl);
         } catch (e) {
             try { Logger.error('提醒Dock recover mount失败:', e); } catch (e2) {}
+            if (!dockInCurrentUiLayout) __scheduleReminderDockRecreate('ensure-mount-error');
             return false;
         }
         try {
-            const panel = __reminderDockMountEl.querySelector?.('#tomato-reminder-dock-content');
+            const panel = mountEl.querySelector?.('#tomato-reminder-dock-content');
             if (panel) reminderDockPanel = panel;
         } catch (e) {}
-        return !!reminderDockPanel;
+        const ok = !!reminderDockPanel;
+        if (!ok && !dockInCurrentUiLayout) __scheduleReminderDockRecreate('ensure-mount-empty');
+        return ok;
     };
 
     const __scheduleReminderDockWakeRecover = (reason) => {
@@ -28322,6 +29363,16 @@ function calculateWeeklyStats(dailyStatsArray) {
         };
         try { document.addEventListener('visibilitychange', __reminderDockVisibilityHandler); } catch (e) {}
         try { window.addEventListener('focus', __reminderDockFocusHandler); } catch (e) {}
+        __reminderDockClickRecoverHandler = (event) => {
+            try {
+                const hit = event?.target?.closest?.(`[data-type="${REMINDER_DOCK_TYPE}"]`);
+                if (!hit) return;
+                __reminderDockMountEl = null;
+                reminderDockPanel = null;
+                __scheduleReminderDockRepair('dock-click');
+            } catch (e) {}
+        };
+        try { document.addEventListener('click', __reminderDockClickRecoverHandler, true); } catch (e) {}
     };
     
     // 创建提醒面板内容
@@ -28348,17 +29399,47 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         titleRow.appendChild(icon);
         titleRow.appendChild(title);
+
+        const actionRow = document.createElement('div');
+        actionRow.style.cssText = 'display:flex;align-items:center;gap:4px;';
+
+        const refreshBtn = document.createElement('button');
+        refreshBtn.type = 'button';
+        refreshBtn.textContent = '🔄';
+        refreshBtn.title = '刷新提醒列表';
+        refreshBtn.className = 'tomato-reminder-refresh-btn';
+        refreshBtn.style.cssText = 'padding:4px 6px;border:none;border-radius:6px;background:transparent;cursor:pointer;font-size:13px;font-family:"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif;';
+        refreshBtn.onclick = async () => {
+            try {
+                refreshBtn.disabled = true;
+                refreshBtn.style.opacity = '0.6';
+                __invalidateReminderDockCache();
+                await renderReminderDockList('time', true);
+                try { showMiniToast('提醒列表已刷新'); } catch (e) {}
+            } catch (e) {
+                try { showMiniToast('刷新失败'); } catch (e2) {}
+            } finally {
+                try {
+                    refreshBtn.disabled = false;
+                    refreshBtn.style.opacity = '1';
+                } catch (e) {}
+            }
+        };
         
         const settingsBtn = document.createElement('button');
+        settingsBtn.type = 'button';
         settingsBtn.innerHTML = '⚙️';
         settingsBtn.title = '提醒设置';
         settingsBtn.className = 'tomato-reminder-settings-btn';
         settingsBtn.className = 'tomato-reminder-settings-btn';
         settingsBtn.style.cssText = 'padding:4px 6px;border:none;border-radius:6px;background:transparent;cursor:pointer;font-size:13px;';
         settingsBtn.onclick = () => showReminderSettingsDialog();
+
+        actionRow.appendChild(refreshBtn);
+        actionRow.appendChild(settingsBtn);
         
         header.appendChild(titleRow);
-        header.appendChild(settingsBtn);
+        header.appendChild(actionRow);
         container.appendChild(header);
         
         // 内容区域
@@ -28394,7 +29475,14 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (!element) return;
             __reminderDockMountToken = (__reminderDockMountToken || 0) + 1;
             try { reminderDockRegistered = true; } catch (e) {}
-            try { __reminderDockMountEl = element; } catch (e) {}
+            try {
+                const meta = __getReminderDockMeta();
+                meta.addRequested = true;
+                meta.registered = true;
+                __rememberReminderDockMountEl(element);
+                __bindReminderDockMountObserver(element);
+                __bindReminderDockBodyObserver();
+            } catch (e) {}
             try { __bindReminderDockWakeRecover(); } catch (e) {}
             try {
                 element.innerHTML = '';
@@ -28431,6 +29519,9 @@ function calculateWeeklyStats(dailyStatsArray) {
     const __reminderDockDataCache = { fetchedAtMs: 0, allReminders: null, inFlight: null };
     const __reminderDockRenderStates = new Map();
     const __reminderDockDom = { sortBar: null, list: null, empty: null, viewKey: '' };
+    let __reminderDockRenderSeq = 0;
+    let __reminderDockRenderInFlight = null;
+    let __reminderDockRenderPending = null;
     let __reminderSettingsSaveDebounceTimer = null;
     const __queueSaveReminderSettings = () => {
         try { if (__reminderSettingsSaveDebounceTimer) clearTimeout(__reminderSettingsSaveDebounceTimer); } catch (e) {}
@@ -28485,6 +29576,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             return cached;
         }
         if (!forceRefresh && __reminderDockDataCache.inFlight) {
+            if (Array.isArray(cached)) return cached;
             try { return await __reminderDockDataCache.inFlight; } catch (e) { return Array.isArray(cached) ? cached : []; }
         }
         __reminderDockDataCache.inFlight = (async () => {
@@ -28503,6 +29595,13 @@ function calculateWeeklyStats(dailyStatsArray) {
 
     const __ensureReminderDockListDom = () => {
         if (!reminderDockPanel) return null;
+        try {
+            if (reminderDockPanel.id !== 'tomato-reminder-dock-content') {
+                const nestedPanel = reminderDockPanel.querySelector?.('#tomato-reminder-dock-content');
+                if (nestedPanel) reminderDockPanel = nestedPanel;
+            }
+        } catch (e) {}
+        if (!reminderDockPanel || reminderDockPanel.id !== 'tomato-reminder-dock-content') return null;
         let sortBar = reminderDockPanel.querySelector('#tomato-reminder-dock-sortbar');
         let list = reminderDockPanel.querySelector('#tomato-reminder-dock-list');
         let empty = reminderDockPanel.querySelector('#tomato-reminder-dock-empty');
@@ -28539,208 +29638,67 @@ function calculateWeeklyStats(dailyStatsArray) {
     // 尝试通过 eventBus 监听布局事件来注册 Dock
     function tryRegisterDockViaEventBus() {
         try {
-            if (!isRemindersGloballyEnabled()) return;
-            // 尝试找到任意插件实例以访问 eventBus
-            let eventBus = null;
-            
-            // 方式1：通过 siyuan.plugin
-            if (globalThis.siyuan?.plugin) {
-                for (const key in globalThis.siyuan.plugin) {
-                    const p = globalThis.siyuan.plugin[key];
-                    if (p?.eventBus) {
-                        eventBus = p.eventBus;
-                        Logger.info('✅ 通过 siyuan.plugin.' + key + '.eventBus 找到 eventBus');
-                        break;
-                    }
-                }
+            if (!isRemindersGloballyEnabled()) return false;
+            const dockMeta = __getReminderDockMeta();
+            if (__hasReminderDockInCurrentUiLayout() || __hasMountedReminderDockPanel()) {
+                reminderDockRegistered = true;
+                dockMeta.addRequested = true;
+                dockMeta.registered = true;
+                try { __scheduleReminderDockRepair('eventbus-existing'); } catch (e) {}
+                return true;
             }
-            
-            // 方式2：通过 document 中查找
-            if (!eventBus) {
-                // 查找任何有 eventBus 的对象
-                const scripts = document.querySelectorAll('script');
-                scripts.forEach(s => {
-                    if (s.dataset?.pluginId && globalThis.siyuan?.plugin?.[s.dataset.pluginId]?.eventBus) {
-                        eventBus = globalThis.siyuan.plugin[s.dataset.pluginId].eventBus;
-                    }
-                });
+            __clearReminderDockRegistrationState();
+            const requested = __requestReminderDockRegistration('eventbus-delegated', true);
+            if (!requested) {
+                Logger.warn('⚠️ 无法委托入口插件注册提醒 Dock');
+                return false;
             }
-            
-            if (!eventBus) {
-                Logger.warn('⚠️ 无法找到 eventBus，直接创建浮动面板');
-                return;
-            }
-            
-            // 监听布局就绪事件
-            const onLayoutReady = () => {
-                Logger.info('✅ layout-ready 事件触发，尝试注册Dock');
-                if (!reminderDockRegistered) {
-                    initReminderDock();
-                }
-                // 移除监听
-                try {
-                    eventBus.off('layout-ready', onLayoutReady);
-                } catch (e) {}
-            };
-            
-            // 先尝试立即注册一次
-            if (!reminderDockRegistered) {
-                initReminderDock();
-            }
-            
-            // 如果还没注册成功，监听 layout-ready 事件
-            if (!reminderDockRegistered) {
-                eventBus.on('layout-ready', onLayoutReady);
-                Logger.info('✅ 已监听 layout-ready 事件');
-                
-                // 同时设置一个超时备用
-                setTimeout(() => {
-                    if (!reminderDockRegistered) {
-                        Logger.warn('⚠️ 等待 layout-ready 超时，提醒 Dock 未注册');
-                        try {
-                            eventBus.off('layout-ready', onLayoutReady);
-                        } catch (e) {}
-                    }
-                }, 5000);
-            }
-            
+            try { __scheduleReminderDockRepair('eventbus-delegated'); } catch (e) {}
+            return true;
         } catch (e) {
             Logger.error('❌ tryRegisterDockViaEventBus 失败:', e);
+            return false;
         }
     }
     
     function initReminderDock() {
         // 如果已经注册过，不再重复注册
-        if (reminderDockRegistered) {
+        if (reminderDockRegistered && (__hasReminderDockInCurrentUiLayout() || __hasMountedReminderDockPanel())) {
             Logger.info('提醒Dock已经注册，跳过');
             return true;
         }
         if (!isRemindersGloballyEnabled()) return false;
+        try {
+            const dockMeta = __getReminderDockMeta();
+            if (__hasReminderDockInCurrentUiLayout() || __hasMountedReminderDockPanel()) {
+                reminderDockRegistered = true;
+                dockMeta.addRequested = true;
+                dockMeta.registered = true;
+                Logger.info('提醒Dock已存在，转为恢复挂载');
+                try { __scheduleReminderDockRepair('init-existing'); } catch (e) {}
+                return true;
+            }
+            __clearReminderDockRegistrationState();
+        } catch (e) {}
         
         try {
-            Logger.info('🔍 尝试注册提醒Dock侧边栏...');
-            
-            // 尝试通过多种方式获取插件实例
-            let pluginInstance = null;
-            
-            // 方式0：插件入口注入
-            try {
-                pluginInstance = __getPluginInstance?.() || null;
-                if (pluginInstance) {
-                    Logger.info('✅ 通过 __tomatoPluginInstance 找到插件实例');
-                }
-            } catch (e) {}
-            
-            // 方式1：通过全局 siyuan 对象
-            if (globalThis.siyuan?.plugin) {
-                const plugins = globalThis.siyuan.plugin;
-                for (const key in plugins) {
-                    const p = plugins[key];
-                    // 检查是否是本插件（通过name或检查是否有addDock方法）
-                    if (p && typeof p.addDock === 'function') {
-                        // 进一步确认：检查插件名称或eventBus
-                        if (key.toLowerCase().includes('tomato') || 
-                            key.toLowerCase().includes('docktomato') ||
-                            p.name?.toLowerCase().includes('tomato')) {
-                            pluginInstance = p;
-                            Logger.info('✅ 找到插件实例:', key);
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            // 方式2：通过 __getPluginApp
-            if (!pluginInstance) {
-                const pluginApp = __getPluginApp();
-                if (pluginApp) {
-                    Logger.info('🔍 __getPluginApp 可用，但 app 不包含 plugin 实例');
-                }
-            }
-            
-            // 方式3：遍历 window 对象查找
-            if (!pluginInstance) {
-                for (const key in globalThis) {
-                    const obj = globalThis[key];
-                    if (obj && typeof obj === 'object' && obj.addDock && obj.eventBus) {
-                        Logger.info('🔍 可能的插件对象:', key);
-                    }
-                }
-            }
-            
-            if (!pluginInstance) {
-                Logger.warn('⚠️ 无法获取插件实例，延迟注册');
-                // 延迟尝试注册
-                setTimeout(() => {
-                    if (!reminderDockRegistered) {
-                        Logger.info('🔍 延迟尝试注册Dock...');
-                        initReminderDock();
-                    }
-                }, 2000);
+            const requested = __requestReminderDockRegistration('init-delegated', true);
+            if (!requested) {
+                Logger.warn('⚠️ 无法委托入口插件注册提醒Dock');
                 return false;
             }
-            
-            // 检查 addDock 方法是否存在
-            if (typeof pluginInstance.addDock !== 'function') {
-                Logger.warn('⚠️ 插件实例没有 addDock 方法');
-                return false;
-            }
-            
-            // 使用思源插件API注册Dock侧边栏
-            // 根据文档，addDock 接收一个对象参数，包含 type 和 init 方法
-            Logger.info('🔍 调用 addDock...');
-            
-            let dockResult;
-            try {
-                dockResult = pluginInstance.addDock({
-                    type: 'tomato-reminder-dock',
-                    config: {
-                        position: 'RightBottom',
-                        size: { width: 320, height: null },
-                        icon: 'iconClock',
-                        title: '任务提醒',
-                        show: true,
-                    },
-                    data: {},
-                    init(dock) {
-                        Logger.info('✅ Dock init 被调用');
-                        reminderDockRegistered = true;
-                        const el = this?.element || dock?.element;
-                        if (!el) return;
-                        el.innerHTML = '';
-                        el.appendChild(createReminderPanelContent());
-                    }
-                });
-                
-                Logger.info('✅ addDock 调用完成，结果类型:', typeof dockResult);
-                
-                // 在思源中，addDock 可能会返回 undefined，这是正常的
-                // Dock 是否成功注册取决于后续的 init 是否被调用
-                Logger.info('✅ 提醒Dock侧边栏注册请求已发送');
-                Logger.info('💡 如果Dock没有立即显示，请在思源 "设置 → 外观 → 布局" 中检查是否启用了 "任务提醒" 面板');
-                
-                // 设置一个超时检查，如果 init 没有被调用，则提示用户检查布局
-                setTimeout(() => {
-                    if (!reminderDockRegistered) {
-                        Logger.warn('⚠️ Dock init 未被调用，可能是思源版本不支持或布局未就绪');
-                    }
-                }, 3000);
-                
-                return true;
-            } catch (dockError) {
-                Logger.error('❌ addDock 调用失败:', dockError);
-                throw dockError;
-            }
-            
+            try { __scheduleReminderDockRepair('init-delegated'); } catch (e) {}
+            return true;
         } catch (e) { 
             Logger.error('❌ 注册提醒Dock侧边栏失败:', e); 
             return false; 
         }
     }
     
-    async function renderReminderDockList(sortBy, forceRefresh = false) {
+    async function __renderReminderDockListNow(sortBy, forceRefresh = false) {
         try {
             sortBy = sortBy || 'time';
+            const __dockRenderSeq = ++__reminderDockRenderSeq;
             if (!reminderDockPanel || !reminderDockPanel.isConnected) {
                 try {
                     const panel = document.getElementById('tomato-reminder-dock-content');
@@ -28753,6 +29711,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             const __dockRenderIsStale = () => {
                 try {
                     if ((__reminderDockMountToken || 0) !== __dockRenderToken) return true;
+                    if ((__reminderDockRenderSeq || 0) !== __dockRenderSeq) return true;
                     if (!__dockRenderPanel || !__dockRenderPanel.isConnected) return true;
                     if (reminderDockPanel !== __dockRenderPanel) return true;
                 } catch (e) {
@@ -28849,7 +29808,6 @@ function calculateWeeklyStats(dailyStatsArray) {
             : (reminderDockTodayOnly ? 'unfinished-today' : 'unfinished-all');
         if (__reminderDockDom.viewKey !== viewKey) {
             __reminderDockDom.viewKey = viewKey;
-            dom.list.textContent = '';
         }
         const state = __getReminderDockRenderState(viewKey);
 
@@ -28871,9 +29829,16 @@ function calculateWeeklyStats(dailyStatsArray) {
         const createUnfinishedItem = () => {
             const item = document.createElement('div');
             item.className = 'tomy-reminder-item';
-            item.style.cssText = 'padding:12px 88px 12px 12px;min-height:70px;margin-bottom:8px;background:var(--b3-theme-surface-light);border-radius:8px;cursor:pointer;transition:background 0.2s;position:relative;';
+            item.style.cssText = 'padding:12px 104px 12px 12px;min-height:70px;margin-bottom:8px;background:var(--b3-theme-surface-light);border-radius:8px;cursor:pointer;transition:background 0.2s;position:relative;';
+            const nameRow = document.createElement('div');
+            nameRow.style.cssText = 'display:flex;align-items:flex-start;gap:6px;margin-bottom:6px;';
+            const mobileBtn = document.createElement('button');
+            mobileBtn.type = 'button';
+            mobileBtn.innerHTML = '📱';
+            mobileBtn.title = '查看手机端预约';
+            mobileBtn.style.cssText = 'padding:2px 6px;border:none;border-radius:4px;background:rgba(30,136,229,0.12);cursor:pointer;font-size:12px;line-height:1.2;color:#1565c0;display:none;flex-shrink:0;';
             const name = document.createElement('div');
-            name.style.cssText = 'font-weight:500;font-size:13px;margin-bottom:6px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.35;max-height:calc(1.35em * 2);';
+            name.style.cssText = 'font-weight:500;font-size:13px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.35;max-height:calc(1.35em * 2);flex:1;';
             const statusLine = document.createElement('div');
             statusLine.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);margin-top:2px;';
             const nextLine = document.createElement('div');
@@ -28904,10 +29869,12 @@ function calculateWeeklyStats(dailyStatsArray) {
             actions.appendChild(deleteBtn);
             actions.appendChild(doneBtn);
 
-            item.appendChild(name);
+            nameRow.appendChild(mobileBtn);
+            nameRow.appendChild(name);
+            item.appendChild(nameRow);
             item.appendChild(statusLine);
             item.appendChild(actions);
-            item.__dock = { name, statusLine, nextLine, actions, editBtn, deleteBtn, doneBtn };
+            item.__dock = { nameRow, name, statusLine, nextLine, actions, editBtn, deleteBtn, doneBtn, mobileBtn };
             adjustPaddingRightOnce(item, actions);
             return item;
         };
@@ -28930,12 +29897,16 @@ function calculateWeeklyStats(dailyStatsArray) {
             }
             item.onclick = (e) => { if (e.target.closest('.reminder-actions')) return; navigateToBlock(reminder.blockId); };
             refs.editBtn.onclick = () => showReminderDialog(reminder.blockId, reminder.blockName, reminder);
+            const deviceSchedules = __getReminderAllDeviceScheduleEntries(reminder);
+            refs.mobileBtn.style.display = deviceSchedules.length > 0 ? '' : 'none';
+            refs.mobileBtn.onclick = () => showReminderDeviceScheduleDialog(reminder);
             refs.deleteBtn.onclick = async () => {
                 try { showMiniToast('正在删除...'); } catch (e) {}
                 try {
                     refs.deleteBtn.disabled = true;
                     refs.editBtn.disabled = true;
                     refs.doneBtn.disabled = true;
+                    refs.mobileBtn.disabled = true;
                     item.style.opacity = '0.55';
                 } catch (e) {}
                 const success = await deleteBlockReminder(reminder.blockId);
@@ -28952,8 +29923,31 @@ function calculateWeeklyStats(dailyStatsArray) {
                 }
             };
             refs.doneBtn.onclick = async () => {
+                const previousOpacity = item.style.opacity;
+                const previousBackground = item.style.background;
+                const previousBorder = item.style.border;
+                try {
+                    refs.doneBtn.disabled = true;
+                    refs.editBtn.disabled = true;
+                    refs.deleteBtn.disabled = true;
+                    refs.mobileBtn.disabled = true;
+                    item.style.opacity = '0.7';
+                    item.style.background = 'rgba(127,127,127,0.10)';
+                    item.style.border = '1px solid rgba(127,127,127,0.18)';
+                } catch (e) {}
                 const ok = await __markReminderOccurrenceCompleted(reminder.blockId, dateKey, timeKey);
                 showMiniToast(ok ? '已标记完成' : '标记失败');
+                if (!ok) {
+                    try {
+                        refs.doneBtn.disabled = false;
+                        refs.editBtn.disabled = false;
+                        refs.deleteBtn.disabled = false;
+                        refs.mobileBtn.disabled = false;
+                        item.style.opacity = previousOpacity || '';
+                        item.style.background = previousBackground || 'var(--b3-theme-surface-light)';
+                        item.style.border = previousBorder || '';
+                    } catch (e) {}
+                }
                 __invalidateReminderDockCache();
                 renderReminderDockList('time', true);
             };
@@ -28962,9 +29956,9 @@ function calculateWeeklyStats(dailyStatsArray) {
         const createCompletedItem = () => {
             const item = document.createElement('div');
             item.className = 'tomy-reminder-item';
-            item.style.cssText = 'padding:12px 86px 12px 12px;margin-bottom:8px;background:var(--b3-theme-surface-light);border-radius:8px;cursor:pointer;transition:background 0.2s;position:relative;';
+            item.style.cssText = 'padding:12px 86px 12px 12px;margin-bottom:8px;background:rgba(127,127,127,0.10);border:1px solid rgba(127,127,127,0.18);border-radius:8px;cursor:pointer;transition:background 0.2s,opacity 0.2s;position:relative;opacity:0.78;';
             const name = document.createElement('div');
-            name.style.cssText = 'font-weight:500;font-size:13px;margin-bottom:6px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.35;max-height:calc(1.35em * 2);';
+            name.style.cssText = 'font-weight:500;font-size:13px;margin-bottom:6px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.35;max-height:calc(1.35em * 2);color:var(--b3-theme-on-surface-light);';
             const info = document.createElement('div');
             info.style.cssText = 'font-size:11px;color:var(--b3-theme-on-surface-light);';
             const actions = document.createElement('div');
@@ -29059,19 +30053,23 @@ function calculateWeeklyStats(dailyStatsArray) {
             return checkShouldRemindToday(r, todayKey);
         };
         for (const r of reminders) {
-            if (!r || r.enabled === false) continue;
-            let nextAt = null;
-            nextAt = getNextReminderDateTime(r, now);
-            if (nextAt && Number.isFinite(nextAt.getTime())) {
-                if (!todayKey || formatDateKey(nextAt) === todayKey) {
-                    entries.push({ kind: 'pending', reminder: r, at: nextAt });
+            try {
+                if (!r || r.enabled === false) continue;
+                let nextAt = null;
+                nextAt = getNextReminderDateTime(r, now);
+                if (nextAt && Number.isFinite(nextAt.getTime())) {
+                    if (!todayKey || formatDateKey(nextAt) === todayKey) {
+                        entries.push({ kind: 'pending', reminder: r, at: nextAt });
+                    }
                 }
-            }
-            const lastDueAt = __getLastDueReminderDateTime(r, now);
-            if (lastDueAt && Number.isFinite(lastDueAt.getTime()) && lastDueAt.getTime() < now.getTime()) {
-                if (!nextAt || lastDueAt.getTime() !== nextAt.getTime()) {
-                    entries.push({ kind: 'expired', reminder: r, at: lastDueAt });
+                const lastDueAt = __getLastDueReminderDateTime(r, now);
+                if (lastDueAt && Number.isFinite(lastDueAt.getTime()) && lastDueAt.getTime() < now.getTime()) {
+                    if (!nextAt || lastDueAt.getTime() !== nextAt.getTime()) {
+                        entries.push({ kind: 'expired', reminder: r, at: lastDueAt });
+                    }
                 }
+            } catch (e) {
+                try { Logger.warn('提醒Dock跳过异常提醒:', r?.blockId || '', e?.message || String(e)); } catch (e2) {}
             }
         }
 
@@ -29135,11 +30133,43 @@ function calculateWeeklyStats(dailyStatsArray) {
             } catch (e3) {}
         }
     }
+
+    async function renderReminderDockList(sortBy, forceRefresh = false) {
+        const nextSortBy = sortBy || 'time';
+        const nextForceRefresh = !!forceRefresh;
+        if (__reminderDockRenderInFlight) {
+            __reminderDockRenderPending = {
+                sortBy: nextSortBy,
+                forceRefresh: !!(__reminderDockRenderPending?.forceRefresh || nextForceRefresh),
+            };
+            if (!nextForceRefresh && Array.isArray(__reminderDockDataCache.allReminders)) {
+                try { return await __renderReminderDockListNow(nextSortBy, false); } catch (e) { return; }
+            }
+            return;
+        }
+        const task = (async () => {
+            try {
+                return await __renderReminderDockListNow(nextSortBy, nextForceRefresh);
+            } finally {
+                __reminderDockRenderInFlight = null;
+                const pending = __reminderDockRenderPending;
+                __reminderDockRenderPending = null;
+                if (pending) {
+                    setTimeout(() => {
+                        renderReminderDockList(pending.sortBy, pending.forceRefresh).catch(() => {});
+                    }, 0);
+                }
+            }
+        })();
+        __reminderDockRenderInFlight = task;
+        return await task;
+    }
     
     function refreshReminderDockPanel() {
         try {
             if (!reminderDockPanel || !reminderDockPanel.isConnected) {
-                const panel = document.getElementById('tomato-reminder-dock-content');
+                const mountEl = __resolveReminderDockMountEl();
+                const panel = mountEl?.querySelector?.('#tomato-reminder-dock-content') || document.getElementById('tomato-reminder-dock-content');
                 if (panel) reminderDockPanel = panel;
             }
         } catch (e) {}
@@ -29147,11 +30177,32 @@ function calculateWeeklyStats(dailyStatsArray) {
             __ensureReminderDockMounted();
         }
         if (!reminderDockPanel || !reminderDockPanel.isConnected) return;
-        if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
-            SyncManager.triggerSiyuanSync(false).catch(() => {});
-        }
         __invalidateReminderDockCache();
         renderReminderDockList('time', true);
+    }
+
+    function showReminderDeviceScheduleDialog(reminder) {
+        const schedules = __getReminderAllDeviceScheduleEntries(reminder);
+        if (schedules.length === 0) {
+            showToastDialog('📱 手机端提醒', '当前没有已预约的手机端提醒', 'info');
+            return;
+        }
+        const lines = [];
+        schedules.sort((a, b) => String(a.deviceId || '').localeCompare(String(b.deviceId || '')));
+        for (const group of schedules) {
+            lines.push(`设备: ${String(group.deviceId || '').trim() || 'unknown'}`);
+            const sortedEntries = group.entries.slice().sort((a, b) => (Number(a?.atMs) || 0) - (Number(b?.atMs) || 0));
+            for (const entry of sortedEntries) {
+                const at = Number(entry?.atMs) || 0;
+                const label = at > 0
+                    ? formatDateTimeKey(new Date(at))
+                    : `${String(entry?.dateKey || '').trim()} ${String(entry?.timeKey || '').trim()}`.trim();
+                lines.push(`${label}\nid: ${String(entry?.id ?? '')}`);
+            }
+            lines.push('');
+        }
+        while (lines.length > 0 && !String(lines[lines.length - 1] || '').trim()) lines.pop();
+        showToastDialog('📱 手机端提醒', lines.join('\n\n'), 'info');
     }
     
     function showReminderSettingsDialog() {
