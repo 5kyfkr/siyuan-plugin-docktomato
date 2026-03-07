@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.7.9
+// @version      1.7.10
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -754,9 +754,9 @@
         startPolling() {
             if (!isSyncEnabled()) return;
             this.stopPolling();
-
-            this.poll(true);
             Logger.debug('🔄 SyncManager: 轮询已启动');
+            const pollInterval = document.hidden ? SYNC_POLL_INTERVAL * 6 : SYNC_POLL_INTERVAL;
+            this.pollTimer = setTimeout(() => this.poll(), pollInterval);
         },
         
         stopPolling() {
@@ -1030,6 +1030,7 @@
     let appResumeVisibilityHandler = null;
     let appResumeFocusHandler = null;
     let appResumePageShowHandler = null;
+    let __tomatoInitBootstrapping = false;
 
     function installAppResumeListeners() {
         if (appResumeListenersInstalled) return;
@@ -5751,7 +5752,7 @@
         }
         persistNotificationScheduleState._running = true;
         try {
-            await SyncManager.updateLocal(syncState, true, true);
+            await SyncManager.updateLocal(syncState, true, !__tomatoInitBootstrapping);
         } catch (e) {
         } finally {
             persistNotificationScheduleState._running = false;
@@ -25806,12 +25807,11 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (__tomatoInitPromise) return __tomatoInitPromise;
 
         __tomatoInitPromise = (async () => {
+            __tomatoInitBootstrapping = true;
             Logger.info('🍅 番茄钟 v9.1 初始化...');
             
             // v8.6 修复：使用 syncState 替代 localStorage 状态恢复
             let stateRestored = false;
-            try { installAppResumeListeners(); } catch (e) {}
-            
             await ensureTomatoStorageMigration();
             await loadUserSettings();
             // 确保 audioSettings 对象存在（兼容旧配置）
@@ -26705,7 +26705,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             stopReminderCheck();
         } else if (reminderSettings.enabled) {
             startReminderCheck();
-            try { await __syncAllReminderDeviceSchedules(true); } catch (e) {}
+            try { await __syncAllReminderDeviceSchedules(false, { skipSiyuanSync: true }); } catch (e) {}
         }
         
         // 🔧 修复：移动端初始化完成后，如果有正在运行的计时，显示悬浮窗
@@ -26733,6 +26733,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                 }
             }
         }
+        try {
+            lastResumeRefreshAtMs = Date.now();
+            installAppResumeListeners();
+        } catch (e) {}
+        __tomatoInitBootstrapping = false;
         
             // 🔧 修复：刷新UI显示，确保使用用户设置的默认番茄时间
             if (timeDisplay) {
@@ -27393,14 +27398,17 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (!reminder) return false;
         const result = await __reconcileReminderDeviceSchedule(reminder, options);
         if (!result.changed) return false;
-        return await saveBlockReminder(id, reminder, { skipReminderScheduleSync: true });
+        return await saveBlockReminder(id, reminder, {
+            skipReminderScheduleSync: true,
+            skipSiyuanSync: !!options?.skipSiyuanSync,
+        });
     }
-    async function __syncAllReminderDeviceSchedules(forceRefresh = false) {
+    async function __syncAllReminderDeviceSchedules(forceRefresh = false, options = {}) {
         if (!shouldPreferDeviceNotificationBackend()) return;
         if (!reminderSettings?.enabled || !reminderSettings?.systemNotificationEnabled) return;
         const reminders = await queryAllReminderBlocks(forceRefresh);
         for (const reminder of (reminders || [])) {
-            try { await __syncReminderDeviceSchedule(reminder.blockId, reminder); } catch (e) {}
+            try { await __syncReminderDeviceSchedule(reminder.blockId, reminder, options); } catch (e) {}
         }
         try { await __cleanupOrphanReminderDeviceSchedules(reminders); } catch (e) {}
     }
@@ -28887,7 +28895,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 try { updateReminderBadge(); } catch (e) {}
                 try { postJSON('/api/sqlite/flushTransaction', {}).catch(() => {}); } catch (e) {}
                 try {
-                    if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
+                    if (!options?.skipSiyuanSync && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
                         Promise.resolve().then(() => SyncManager.triggerSiyuanSync(true)).catch(() => {});
                     }
                 } catch (e) {}
