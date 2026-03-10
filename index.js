@@ -1,4 +1,4 @@
-const { Plugin, Setting, openTab, openMobileFileById } = require("siyuan");
+const { Plugin, Setting, openTab, openMobileFileById, platformUtils } = require("siyuan");
 
 const PLUGIN_ID = "siyuan-plugin-docktomato";
 const TOMATO_SCRIPT_PATH = `/data/plugins/${PLUGIN_ID}/tomato.js`;
@@ -470,6 +470,23 @@ module.exports = class TomatoTimerPlugin extends Plugin {
     async onload() {
         globalThis.__tomatoPluginApp = this.app;
         globalThis.__tomatoPluginInstance = this;
+        globalThis.__tomatoPlatformUtils = platformUtils || null;
+        globalThis.__tomatoLegacyNotificationBridge = (!this.isMobile && platformUtils && typeof platformUtils === "object") ? {
+            sendNotification: (channel, title, body, delayInSeconds) => {
+                if (typeof platformUtils.sendNotification !== "function") return -1;
+                return platformUtils.sendNotification({
+                    channel: String(channel || ""),
+                    title: String(title || ""),
+                    body: String(body || ""),
+                    delayInSeconds: Math.max(0, Math.round(Number(delayInSeconds) || 0)),
+                    timeoutType: "never",
+                });
+            },
+            cancelNotification: (id) => {
+                if (typeof platformUtils.cancelNotification !== "function") return false;
+                return platformUtils.cancelNotification(id);
+            },
+        } : null;
         globalThis.__tomatoPluginIsMobile = !!this.isMobile;
         globalThis.__tomatoOpenTab = typeof openTab === "function" ? openTab : null;
         globalThis.__tomatoOpenMobileFileById = typeof openMobileFileById === "function" ? openMobileFileById : null;
@@ -599,6 +616,8 @@ module.exports = class TomatoTimerPlugin extends Plugin {
         } finally {
             try { delete globalThis.__tomatoPluginApp; } catch (e) {}
             try { delete globalThis.__tomatoPluginInstance; } catch (e) {}
+            try { delete globalThis.__tomatoPlatformUtils; } catch (e) {}
+            try { delete globalThis.__tomatoLegacyNotificationBridge; } catch (e) {}
             try { delete globalThis.__tomatoPluginIsMobile; } catch (e) {}
             try { delete globalThis.__tomatoOpenTab; } catch (e) {}
             try { delete globalThis.__tomatoOpenMobileFileById; } catch (e) {}

@@ -50,6 +50,37 @@
             __siyuanSdk = require('siyuan');
         }
     } catch (e) {}
+    function __ensureSiyuanSdk() {
+        if (__siyuanSdk && typeof __siyuanSdk === 'object') return __siyuanSdk;
+        try {
+            if (typeof require === 'function') {
+                const sdk = require('siyuan');
+                if (sdk && typeof sdk === 'object') {
+                    __siyuanSdk = sdk;
+                    return __siyuanSdk;
+                }
+            }
+        } catch (e) {}
+        try {
+            if (typeof globalThis?.require === 'function') {
+                const sdk = globalThis.require('siyuan');
+                if (sdk && typeof sdk === 'object') {
+                    __siyuanSdk = sdk;
+                    return __siyuanSdk;
+                }
+            }
+        } catch (e) {}
+        try {
+            if (typeof window?.require === 'function') {
+                const sdk = window.require('siyuan');
+                if (sdk && typeof sdk === 'object') {
+                    __siyuanSdk = sdk;
+                    return __siyuanSdk;
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
     const __openTab = globalThis.__tomatoOpenTab || __siyuanSdk?.openTab;
     const __openMobileFileById = globalThis.__tomatoOpenMobileFileById || __siyuanSdk?.openMobileFileById;
     const __getPluginApp = () => globalThis.__tomatoPluginApp || null;
@@ -87,6 +118,7 @@
     const DEFAULT_TOMATO_DURATIONS = [5, 15, 25, 30, 45, 60, 90, 120];
     const DEFAULT_BREAK_DURATIONS = [5, 10, 15, 30];
     const DEFAULT_TOMATO_TIME = 30; // 默认番茄时间（分钟）
+    const DEVICE_NOTIFICATION_CHANNEL = 'siyuan-plugin-docktomato';
 
     const PLUGIN_STORAGE_PARENT_DIR = '/data/storage/petal';
     const PLUGIN_STORAGE_DIR = '/data/storage/petal/siyuan-plugin-docktomato';
@@ -2671,6 +2703,12 @@
     let lastProgressMode = null;  // 用于检测模式变化，强制重新创建进度条
 
     // ========== 设置管理 ==========
+    function __publishTomatoFocusModeState() {
+        try {
+            globalThis.__dockTomatoFocusModeEnabled = userSettings?.main?.enableFocusMode !== false;
+        } catch (e) {}
+    }
+
     async function loadUserSettings() {
         try {
             const r = await __tomatoGetFileText(SETTINGS_FILE_PATH);
@@ -2690,6 +2728,7 @@
         }
         try { ensureUserSettings(); } catch (e) {}
         try { applyFocusModeDimOpacity(); } catch (e) {}
+        try { __publishTomatoFocusModeState(); } catch (e) {}
         try { Logger.setDebugEnabled(isDebugMode()); } catch (e) {}
         return userSettings;
     }
@@ -2703,6 +2742,7 @@
             Logger.error('保存设置失败:', e);
             try { localStorage.setItem('tomato-user-settings', JSON.stringify(userSettings)); } catch (localError) {}
         }
+        try { __publishTomatoFocusModeState(); } catch (e) {}
     }
 
     // ========== 专注时间设置管理 ==========
@@ -5585,22 +5625,41 @@
 
     function shouldPreferDeviceNotificationBackend() {
         const backend = getRuntimeBackendType();
-        return isMobileDevice() || backend === 'android' || backend === 'harmony';
+        return isMobileDevice() || backend === 'android' || backend === 'harmony' || backend === 'ios' || !!getPlatformUtilsCompat();
     }
 
-    function showBrowserSystemNotification(title, body, options) {
-        if (typeof Notification === 'undefined') return false;
-        const opts = options && typeof options === 'object' ? options : {};
-        if (Notification.permission === 'default') {
-            Notification.requestPermission().catch(() => {});
+    function getPlatformUtilsCompat() {
+        const globalPlatformUtils = globalThis.__tomatoPlatformUtils || globalThis.__taskHorizonPlatformUtils || null;
+        if (globalPlatformUtils && (typeof globalPlatformUtils.sendNotification === 'function' || typeof globalPlatformUtils.cancelNotification === 'function')) {
+            return globalPlatformUtils;
         }
-        if (Notification.permission !== 'granted') return false;
-        const payload = { body };
-        if (typeof opts.icon === 'string' && opts.icon) payload.icon = opts.icon;
-        if (typeof opts.tag === 'string' && opts.tag) payload.tag = opts.tag;
-        if (typeof opts.requireInteraction === 'boolean') payload.requireInteraction = opts.requireInteraction;
-        new Notification(title, payload);
-        return true;
+        const sdk0 = __ensureSiyuanSdk();
+        const direct = sdk0?.platformUtils;
+        if (direct && (typeof direct.sendNotification === 'function' || typeof direct.cancelNotification === 'function')) {
+            return direct;
+        }
+        return null;
+    }
+
+    function hasTrackedTimerNotificationBackend() {
+        if (!isOfficialMobileNotificationRuntime()) {
+            for (const candidate of getNotificationBridgeCandidates()) {
+                if (typeof candidate?.owner?.[candidate?.send] === 'function' && typeof candidate?.owner?.[candidate?.cancel] === 'function') {
+                    return true;
+                }
+            }
+            return false;
+        }
+        const platformUtils = getPlatformUtilsCompat();
+        if (platformUtils && typeof platformUtils.sendNotification === 'function' && typeof platformUtils.cancelNotification === 'function') {
+            return true;
+        }
+        for (const candidate of getNotificationBridgeCandidates()) {
+            if (typeof candidate?.owner?.[candidate?.send] === 'function' && typeof candidate?.owner?.[candidate?.cancel] === 'function') {
+                return true;
+            }
+        }
+        return false;
     }
 
     function normalizeNotificationId(value) {
@@ -5659,6 +5718,7 @@
 
     function getNotificationBridgeCandidates() {
         return [
+            { owner: globalThis?.__tomatoLegacyNotificationBridge, send: 'sendNotification', cancel: 'cancelNotification' },
             { owner: globalThis, send: 'sendNotification', cancel: 'cancelNotification' },
             { owner: window, send: 'sendNotification', cancel: 'cancelNotification' },
             { owner: globalThis?.JSAndroid, send: 'sendNotification', cancel: 'cancelNotification' },
@@ -5734,7 +5794,7 @@
         }
         if (!Number.isFinite(delayInSeconds) || delayInSeconds <= 0) return null;
         return {
-            channel: '',
+            channel: isOfficialMobileNotificationRuntime() ? DEVICE_NOTIFICATION_CHANNEL : '',
             title: mode === 'break' ? '⏰ 休息结束' : '🍅 时间到！',
             body: mode === 'break' ? '继续你的计时吧！' : '该休息一下了～',
             delayInSeconds,
@@ -5742,6 +5802,11 @@
             timerKey: buildTimerNotificationKey({ ...state, mode, duration: durationSec, startTime: startAtMs }),
             mode,
         };
+    }
+
+    function isOfficialMobileNotificationRuntime() {
+        const backend = String(globalThis?.siyuan?.config?.system?.container || window?.siyuan?.config?.system?.container || '').trim().toLowerCase();
+        return isMobileDevice() || backend === 'android' || backend === 'harmony' || backend === 'ios';
     }
 
     async function persistNotificationScheduleState() {
@@ -5767,45 +5832,95 @@
         const opts = options && typeof options === 'object' ? options : {};
         const safeTitle = String(title ?? '').trim();
         const safeBody = String(body ?? '').trim();
-        const safeChannel = String(opts.channel ?? '').trim();
+        const safeChannel = String(opts.channel ?? DEVICE_NOTIFICATION_CHANNEL).trim();
         const delayInSeconds = Math.max(0, Math.round(Number(opts.delayInSeconds) || 0));
+        const timeoutType = String(
+            opts.timeoutType || (opts.requireInteraction === true ? 'never' : (isOfficialMobileNotificationRuntime() ? 'default' : 'never'))
+        ).trim() || 'default';
         if (!safeTitle && !safeBody) return -1;
         sendDeviceNotificationCompat._lastFailureReason = '';
-
-        const bridgeCandidates = getNotificationBridgeCandidates();
-        for (const candidate of bridgeCandidates) {
-            const attempt = await invokeNotificationBridge(candidate.owner, candidate.send, [safeChannel, safeTitle, safeBody, delayInSeconds]);
-            if (!attempt.called) continue;
-            const id = normalizeNotificationId(attempt.value);
+        if (!isOfficialMobileNotificationRuntime()) {
+            for (const candidate of getNotificationBridgeCandidates()) {
+                const result = await invokeNotificationBridge(candidate.owner, candidate.send, [safeChannel, safeTitle, safeBody, delayInSeconds]);
+                if (!result.called) continue;
+                const id = extractNotificationIdFromUnknownPayload(result.value);
+                if (id !== null) {
+                    if (id === -1) sendDeviceNotificationCompat._lastFailureReason = 'send-returned-minus-one';
+                    return id;
+                }
+                sendDeviceNotificationCompat._lastFailureReason = 'send-no-numeric-return';
+            }
+            try {
+                const msgHandler = globalThis?.webkit?.messageHandlers?.sendNotification;
+                if (msgHandler && typeof msgHandler.postMessage === 'function') {
+                    msgHandler.postMessage({ channel: safeChannel, title: safeTitle, body: safeBody, delayInSeconds });
+                    sendDeviceNotificationCompat._lastFailureReason = 'webkit-no-numeric-return';
+                    return -1;
+                }
+            } catch (e) {}
+            if (!sendDeviceNotificationCompat._lastFailureReason) sendDeviceNotificationCompat._lastFailureReason = 'no-bridge-failure';
+            return -1;
+        }
+        const platformUtils = getPlatformUtilsCompat();
+        if (platformUtils && typeof platformUtils.sendNotification === 'function') {
+            try {
+                const value = await platformUtils.sendNotification({
+                    channel: safeChannel,
+                    title: safeTitle,
+                    body: safeBody,
+                    delayInSeconds,
+                    timeoutType,
+                });
+                const id = extractNotificationIdFromUnknownPayload(value);
+                if (id !== null) {
+                    if (id === -1) sendDeviceNotificationCompat._lastFailureReason = 'send-returned-minus-one';
+                    return id;
+                }
+                sendDeviceNotificationCompat._lastFailureReason = 'send-no-numeric-return';
+            } catch (e) {
+                sendDeviceNotificationCompat._lastFailureReason = 'platform-utils-send-error';
+            }
+        }
+        for (const candidate of getNotificationBridgeCandidates()) {
+            const result = await invokeNotificationBridge(candidate.owner, candidate.send, [{
+                channel: safeChannel,
+                title: safeTitle,
+                body: safeBody,
+                delayInSeconds,
+                timeoutType,
+            }]);
+            if (!result.called) continue;
+            const id = extractNotificationIdFromUnknownPayload(result.value);
             if (id !== null) {
                 if (id === -1) sendDeviceNotificationCompat._lastFailureReason = 'send-returned-minus-one';
                 return id;
             }
             sendDeviceNotificationCompat._lastFailureReason = 'send-no-numeric-return';
         }
-
-        try {
-            const msgHandler = globalThis?.webkit?.messageHandlers?.sendNotification;
-            if (msgHandler && typeof msgHandler.postMessage === 'function') {
-                msgHandler.postMessage({ channel: safeChannel, title: safeTitle, body: safeBody, delayInSeconds });
-                sendDeviceNotificationCompat._lastFailureReason = 'webkit-no-numeric-return';
-                return -1;
-            }
-        } catch (e) {}
-
-        if (!sendDeviceNotificationCompat._lastFailureReason) {
-            sendDeviceNotificationCompat._lastFailureReason = 'no-bridge-failure';
-        }
+        if (!sendDeviceNotificationCompat._lastFailureReason) sendDeviceNotificationCompat._lastFailureReason = 'platform-utils-unavailable';
         return -1;
     }
 
     async function cancelDeviceNotificationCompat(id) {
         const safeId = normalizeNotificationId(id);
         if (safeId === null || safeId < 0) return false;
-        const bridgeCandidates = getNotificationBridgeCandidates();
-        for (const candidate of bridgeCandidates) {
-            const attempt = await invokeNotificationBridge(candidate.owner, candidate.cancel, [safeId]);
-            if (attempt.called) return true;
+        if (!isOfficialMobileNotificationRuntime()) {
+            for (const candidate of getNotificationBridgeCandidates()) {
+                const result = await invokeNotificationBridge(candidate.owner, candidate.cancel, [safeId]);
+                if (result.called) return true;
+            }
+            return false;
+        }
+        const platformUtils = getPlatformUtilsCompat();
+        if (platformUtils && typeof platformUtils.cancelNotification === 'function') {
+            try {
+                await platformUtils.cancelNotification(safeId);
+                return true;
+            } catch (e) {}
+        }
+        for (const candidate of getNotificationBridgeCandidates()) {
+            const result = await invokeNotificationBridge(candidate.owner, candidate.cancel, [safeId]);
+            if (result.called) return true;
         }
         return false;
     }
@@ -5837,7 +5952,7 @@
     }
 
     async function ensureTrackedTimerNotification(reason = '', persist = true) {
-        if (!shouldPreferDeviceNotificationBackend()) return false;
+        if (!hasTrackedTimerNotificationBackend()) return false;
         const payload = buildTimerNotificationPayload(syncState);
         if (!payload) return false;
 
@@ -5876,7 +5991,7 @@
     }
 
     async function reconcileTrackedTimerNotification(reason = '', persist = true) {
-        if (!shouldPreferDeviceNotificationBackend()) return false;
+        if (!hasTrackedTimerNotificationBackend()) return false;
         const currentStatus = String(syncState?.status || '').trim();
         const mode = String(syncState?.mode || timerMode || '').trim();
         if ((mode === 'countdown' || mode === 'break') && currentStatus === 'RUNNING') {
@@ -5887,20 +6002,7 @@
 
     function showSystemNotification(title, body, options) {
         const opts = options && typeof options === 'object' ? options : {};
-        const shouldPreferDeviceNotification = shouldPreferDeviceNotificationBackend();
-
-        if (shouldPreferDeviceNotification) {
-            sendDeviceNotificationCompat(title, body, opts).then((sent) => {
-                if (normalizeNotificationId(sent) === null || Number(sent) < 0) {
-                    showBrowserSystemNotification(title, body, opts);
-                }
-            }).catch(() => {
-                showBrowserSystemNotification(title, body, opts);
-            });
-            return;
-        }
-
-        showBrowserSystemNotification(title, body, opts);
+        sendDeviceNotificationCompat(title, body, opts).catch(() => {});
     }
 
     async function resetToLastTomato() {
@@ -6022,7 +6124,7 @@
                     icon: '/favicon.ico',
                     requireInteraction: true,
                     tag: 'docktomato-' + type,
-                    channel: '',
+                    channel: DEVICE_NOTIFICATION_CHANNEL,
                     delayInSeconds: 0,
                 });
             }
@@ -11842,7 +11944,7 @@
                 syncState.pausedElapsedSeconds = null;
             }
 
-            if ((timerMode === 'countdown' || timerMode === 'break') && shouldPreferDeviceNotificationBackend()) {
+            if ((timerMode === 'countdown' || timerMode === 'break') && hasTrackedTimerNotificationBackend()) {
                 try {
                     const scheduled = await ensureTrackedTimerNotification('start-timer', false);
                     if (scheduled) {
@@ -23749,6 +23851,11 @@ function calculateWeeklyStats(dailyStatsArray) {
         mkToggleRow('聚焦模式（高亮任务/数据库时淡化其它内容）', userSettings?.main?.enableFocusMode !== false, async (e) => {
             userSettings.main.enableFocusMode = e.target.checked;
             await saveUserSettings();
+            try {
+                window.dispatchEvent(new CustomEvent('tomato:focus-mode-changed', {
+                    detail: { enabled: userSettings.main.enableFocusMode !== false }
+                }));
+            } catch (err) {}
             if (!userSettings.main.enableFocusMode) {
                 applyFocusMode(false);
                 applyDatabaseFocusMode(false);
@@ -27259,6 +27366,26 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
         return result;
     };
+    const __getReminderNotificationClientLabel = (deviceId, schedule) => {
+        const safeDeviceId = String(deviceId || '').trim();
+        const clientKind = String(
+            schedule?.clientKind
+            || schedule?.sourceKind
+            || schedule?.platformKind
+            || schedule?.deviceType
+            || ''
+        ).trim().toLowerCase();
+        if (clientKind === 'mobile' || clientKind === 'android' || clientKind === 'ios' || clientKind === 'harmony') {
+            return '移动端';
+        }
+        if (clientKind === 'desktop' || clientKind === 'pc') {
+            return '桌面端';
+        }
+        if (safeDeviceId && safeDeviceId === String(SYNC_DEVICE_ID || '').trim()) {
+            return isOfficialMobileNotificationRuntime() ? '移动端' : '桌面端';
+        }
+        return '未知端';
+    };
     const __setReminderDeviceSchedule = (reminder, entry, deviceId = SYNC_DEVICE_ID) => {
         const key = String(deviceId || '').trim();
         if (!key || !reminder || typeof reminder !== 'object') return null;
@@ -27366,7 +27493,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         for (const target of targets) {
             const delayInSeconds = Math.max(1, Math.ceil((target.atMs - Date.now()) / 1000));
             const notificationId = await sendDeviceNotificationCompat(__getReminderNotificationTitle(), __getReminderNotificationBody(reminder), {
-                channel: '',
+                channel: DEVICE_NOTIFICATION_CHANNEL,
                 delayInSeconds
             });
             const id = normalizeNotificationId(notificationId);
@@ -27400,9 +27527,58 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (!result.changed) return false;
         return await saveBlockReminder(id, reminder, {
             skipReminderScheduleSync: true,
-            skipSiyuanSync: !!options?.skipSiyuanSync,
+            skipSiyuanSync: true,
         });
     }
+    async function __clearReminderDeviceSchedule(blockId, reminderData, options = {}) {
+        const id = String(blockId || reminderData?.blockId || '').trim();
+        if (!id) return false;
+        const reminder = reminderData ? { ...reminderData, blockId: id } : await getBlockReminder(id);
+        if (!reminder) return false;
+        const existing = __getReminderDeviceSchedule(reminder);
+        const validExistingEntries = Array.isArray(existing?.entries)
+            ? existing.entries.filter(it => {
+                const nid = normalizeNotificationId(it?.id);
+                return nid !== null && nid >= 0;
+            })
+            : [];
+        if (validExistingEntries.length > 0) {
+            await __cancelReminderDeviceScheduleEntries(validExistingEntries);
+        }
+        __setReminderDeviceSchedule(reminder, {
+            ...(existing || {}),
+            status: 'canceled',
+            canceledAt: new Date().toISOString(),
+            entries: [],
+            planKey: '',
+        });
+        __setReminderDeviceRegistryEntry(id, null);
+        return await saveBlockReminder(id, reminder, {
+            skipReminderScheduleSync: true,
+            skipSiyuanSync: true,
+        });
+    }
+
+    async function __clearReminderAllDeviceScheduleRecords(blockId, reminderData, options = {}) {
+        const id = String(blockId || reminderData?.blockId || '').trim();
+        if (!id) return false;
+        const reminder = reminderData ? { ...reminderData, blockId: id } : await getBlockReminder(id);
+        if (!reminder) return false;
+        const map = __buildReminderScheduleStateMap(reminder);
+        for (const schedule of Object.values(map || {})) {
+            const entries = Array.isArray(schedule?.entries) ? schedule.entries : [];
+            if (entries.length > 0) {
+                await __cancelReminderDeviceScheduleEntries(entries);
+            }
+        }
+        reminder.notificationSchedules = {};
+        __setReminderDeviceRegistryEntry(id, null);
+        return await saveBlockReminder(id, reminder, {
+            skipReminderScheduleSync: true,
+            skipSiyuanSync: true,
+        });
+    }
+
     async function __syncAllReminderDeviceSchedules(forceRefresh = false, options = {}) {
         if (!shouldPreferDeviceNotificationBackend()) return;
         if (!reminderSettings?.enabled || !reminderSettings?.systemNotificationEnabled) return;
@@ -28674,14 +28850,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
         
         // 系统通知
-        if (reminderSettings.systemNotificationEnabled && !shouldPreferDeviceNotificationBackend() && 'Notification' in window) {
-            if (Notification.permission === 'granted') {
-                new Notification(title, { body: fullMessage, icon: '/favicon.ico', requireInteraction: true });
-            } else if (Notification.permission !== 'denied') {
-                Notification.requestPermission().then(permission => {
-                    if (permission === 'granted') new Notification(title, { body: fullMessage, icon: '/favicon.ico' });
-                });
-            }
+        if (reminderSettings.systemNotificationEnabled) {
+            sendDeviceNotificationCompat(title, fullMessage, { timeoutType: 'never' }).catch(() => {});
         }
         
         // 播放提醒音频
@@ -29907,7 +30077,11 @@ function calculateWeeklyStats(dailyStatsArray) {
             refs.editBtn.onclick = () => showReminderDialog(reminder.blockId, reminder.blockName, reminder);
             const deviceSchedules = __getReminderAllDeviceScheduleEntries(reminder);
             refs.mobileBtn.style.display = deviceSchedules.length > 0 ? '' : 'none';
-            refs.mobileBtn.onclick = () => showReminderDeviceScheduleDialog(reminder);
+            refs.mobileBtn.onclick = (e) => {
+                try { e?.preventDefault?.(); } catch (err) {}
+                try { e?.stopPropagation?.(); } catch (err) {}
+                showReminderDeviceScheduleDialog(reminder);
+            };
             refs.deleteBtn.onclick = async () => {
                 try { showMiniToast('正在删除...'); } catch (e) {}
                 try {
@@ -30190,27 +30364,129 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     function showReminderDeviceScheduleDialog(reminder) {
-        const schedules = __getReminderAllDeviceScheduleEntries(reminder);
-        if (schedules.length === 0) {
-            showToastDialog('📱 手机端提醒', '当前没有已预约的手机端提醒', 'info');
+        const reminderData = reminder && typeof reminder === 'object' ? { ...reminder } : {};
+        const blockId = String(reminderData?.blockId || '').trim();
+        if (!blockId) {
+            showMiniToast('未找到提醒块');
             return;
         }
-        const lines = [];
-        schedules.sort((a, b) => String(a.deviceId || '').localeCompare(String(b.deviceId || '')));
-        for (const group of schedules) {
-            lines.push(`设备: ${String(group.deviceId || '').trim() || 'unknown'}`);
-            const sortedEntries = group.entries.slice().sort((a, b) => (Number(a?.atMs) || 0) - (Number(b?.atMs) || 0));
-            for (const entry of sortedEntries) {
-                const at = Number(entry?.atMs) || 0;
-                const label = at > 0
-                    ? formatDateTimeKey(new Date(at))
-                    : `${String(entry?.dateKey || '').trim()} ${String(entry?.timeKey || '').trim()}`.trim();
-                lines.push(`${label}\nid: ${String(entry?.id ?? '')}`);
+        document.getElementById('tomato-reminder-device-dialog')?.remove();
+        document.getElementById('tomato-reminder-device-backdrop')?.remove();
+
+        const backdrop = document.createElement('div');
+        backdrop.id = 'tomato-reminder-device-backdrop';
+        backdrop.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.4);z-index:2147483647;display:flex;align-items:center;justify-content:center;';
+        const dialog = document.createElement('div');
+        dialog.id = 'tomato-reminder-device-dialog';
+        dialog.style.cssText = 'background:var(--b3-theme-background);border:1px solid var(--b3-theme-surface-light);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.3);z-index:2147483648;padding:20px;width:90vw;max-width:420px;max-height:85vh;display:flex;flex-direction:column;color:var(--b3-theme-on-background);';
+
+        const close = () => {
+            try { backdrop.remove(); } catch (e) {}
+            try { dialog.remove(); } catch (e) {}
+        };
+
+        const title = document.createElement('div');
+        title.textContent = '当前设备预约';
+        title.style.cssText = 'font-size:18px;font-weight:600;margin-bottom:12px;text-align:center;';
+        dialog.appendChild(title);
+
+        const body = document.createElement('div');
+        body.style.cssText = 'flex:1;overflow:auto;white-space:pre-wrap;line-height:1.5;font-size:13px;background:var(--b3-theme-surface);border-radius:8px;padding:12px;border:1px solid var(--b3-theme-surface-light);';
+        dialog.appendChild(body);
+
+        const btnRow = document.createElement('div');
+        btnRow.style.cssText = 'display:flex;gap:10px;margin-top:16px;';
+        const refreshBtn = document.createElement('button');
+        refreshBtn.type = 'button';
+        refreshBtn.textContent = '更新预约';
+        refreshBtn.style.cssText = 'flex:1;padding:10px 12px;border:none;border-radius:8px;background:var(--b3-theme-primary);color:#fff;cursor:pointer;font-size:14px;';
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.textContent = '取消预约';
+        clearBtn.style.cssText = 'flex:1;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:8px;background:var(--b3-theme-surface);color:var(--b3-theme-on-surface);cursor:pointer;font-size:14px;';
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.textContent = '关闭';
+        closeBtn.style.cssText = 'flex:1;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:8px;background:transparent;color:var(--b3-theme-on-background);cursor:pointer;font-size:14px;';
+        btnRow.appendChild(refreshBtn);
+        btnRow.appendChild(clearBtn);
+        btnRow.appendChild(closeBtn);
+        dialog.appendChild(btnRow);
+
+        const setBusy = (busy) => {
+            refreshBtn.disabled = !!busy;
+            clearBtn.disabled = !!busy;
+            closeBtn.disabled = !!busy;
+            refreshBtn.style.opacity = busy ? '0.7' : '1';
+            clearBtn.style.opacity = busy ? '0.7' : '1';
+            closeBtn.style.opacity = busy ? '0.7' : '1';
+        };
+
+        const renderDetails = async () => {
+            const latest = await getBlockReminder(blockId);
+            const schedules = __getReminderAllDeviceScheduleEntries(latest || reminderData);
+            if (schedules.length === 0) {
+                body.textContent = '当前没有已预约的提醒';
+                return;
             }
-            lines.push('');
-        }
-        while (lines.length > 0 && !String(lines[lines.length - 1] || '').trim()) lines.pop();
-        showToastDialog('📱 手机端提醒', lines.join('\n\n'), 'info');
+            const lines = [];
+            schedules.sort((a, b) => String(a.deviceId || '').localeCompare(String(b.deviceId || '')));
+            for (const group of schedules) {
+                const clientLabel = __getReminderNotificationClientLabel(group?.deviceId, group?.schedule);
+                lines.push(`设备: ${String(group.deviceId || '').trim() || 'unknown'}（${clientLabel}）`);
+                const sortedEntries = group.entries.slice().sort((a, b) => (Number(a?.atMs) || 0) - (Number(b?.atMs) || 0));
+                for (const entry of sortedEntries) {
+                    const at = Number(entry?.atMs) || 0;
+                    const label = at > 0
+                        ? formatDateTimeKey(new Date(at))
+                        : `${String(entry?.dateKey || '').trim()} ${String(entry?.timeKey || '').trim()}`.trim();
+                    lines.push(`${label}\nid: ${String(entry?.id ?? '')}`);
+                }
+                lines.push('');
+            }
+            while (lines.length > 0 && !String(lines[lines.length - 1] || '').trim()) lines.pop();
+            body.textContent = lines.join('\n\n');
+        };
+
+        refreshBtn.onclick = async () => {
+            setBusy(true);
+            try {
+                const latest = await getBlockReminder(blockId);
+                const ok = await __syncReminderDeviceSchedule(blockId, latest || reminderData, { silent: true });
+                await renderDetails();
+                try { __invalidateReminderDockCache(); } catch (e) {}
+                try { refreshReminderDockPanel(); } catch (e) {}
+                showMiniToast(ok ? '已更新预约提醒' : '预约无需更新');
+            } catch (e) {
+                showMiniToast('更新预约失败');
+            } finally {
+                setBusy(false);
+            }
+        };
+
+        clearBtn.onclick = async () => {
+            setBusy(true);
+            try {
+                const latest = await getBlockReminder(blockId);
+                const ok = await __clearReminderDeviceSchedule(blockId, latest || reminderData, { silent: true });
+                await renderDetails();
+                try { __invalidateReminderDockCache(); } catch (e) {}
+                try { refreshReminderDockPanel(); } catch (e) {}
+                showMiniToast(ok ? '已取消预约提醒' : '取消预约失败');
+            } catch (e) {
+                showMiniToast('取消预约失败');
+            } finally {
+                setBusy(false);
+            }
+        };
+
+        closeBtn.onclick = close;
+        backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+        backdrop.appendChild(dialog);
+        document.body.appendChild(backdrop);
+        renderDetails().catch(() => {
+            body.textContent = '加载预约信息失败';
+        });
     }
     
     function showReminderSettingsDialog() {
