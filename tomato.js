@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.8.0
+// @version      1.8.2
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -27436,7 +27436,8 @@ function calculateWeeklyStats(dailyStatsArray) {
     const __buildReminderSchedulePlanKey = (reminder, targets) => {
         const blockId = String(reminder?.blockId || '').trim();
         const updatedAt = String(reminder?.updatedAt || reminder?.createdAt || '').trim();
-        const targetSig = (targets || []).map(it => `${it.occurrenceKey}@${it.atMs}`).join('|');
+        // 🔧 修复：使用稳定的标识符，不包含时间戳，避免每次重启都重新创建预约
+        const targetSig = (targets || []).map(it => `${it.occurrenceKey}@${it.dateKey}@${it.timeKey}`).join('|');
         return [blockId, updatedAt, targetSig].join('::');
     };
     async function __cancelReminderDeviceScheduleEntries(entries) {
