@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.7.10
+// @version      1.8.0
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -27448,6 +27448,23 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
     }
     async function __reconcileReminderDeviceSchedule(reminder, options = {}) {
+        // 🔧 修复：桌面端使用实时提醒模式，不预先预约系统通知
+        // 只有真正的移动端（手机/平板）才使用预先预约机制
+        // 不使用 shouldPreferDeviceNotificationBackend()，因为桌面端也可能返回 true
+        const isMobile = isMobileDevice();
+        if (!isMobile) {
+            // 桌面端：清理旧的预约（如果有的话）
+            // 避免修改提醒时间后，旧时间的提醒仍然触发
+            const existing = __getReminderDeviceSchedule(reminder);
+            if (existing?.entries?.length) {
+                try { await __cancelReminderDeviceScheduleEntries(existing.entries); } catch (e) {}
+                try { __setReminderDeviceSchedule(reminder, null); } catch (e) {}
+                try { __setReminderDeviceRegistryEntry(reminder?.blockId, null); } catch (e) {}
+                Logger.info('🧹 桌面端：已清理旧的预约');
+            }
+            return { changed: false, scheduled: 0, canceled: 0, reason: 'desktop-realtime-mode' };
+        }
+        
         if (!shouldPreferDeviceNotificationBackend()) return { changed: false, scheduled: 0, canceled: 0, reason: 'unsupported-backend' };
         if (!reminderSettings?.enabled || !reminderSettings?.systemNotificationEnabled) return { changed: false, scheduled: 0, canceled: 0, reason: 'disabled' };
         const blockId = String(reminder?.blockId || '').trim();
@@ -28760,12 +28777,37 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
         const sessionNotified = __getSessionNotifiedSet(currentDate);
         const reminders = await queryAllReminderBlocks();
-        if (shouldPreferDeviceNotificationBackend() && reminderSettings.systemNotificationEnabled) {
+        
+        // 🔧 修复：每次检查时都尝试清理孤立的系统通知预约，避免已删除的提醒到点仍弹窗
+        // 桌面端使用实时提醒，不预先预约；移动端使用预先预约机制
+        // 只使用 isMobileDevice()，确保桌面端不使用预约机制
+        const isMobile = isMobileDevice();
+        if (isMobile && reminderSettings.systemNotificationEnabled) {
+            // 先清理孤立的预约（使用最新读取到的提醒列表）
+            try {
+                const lastCleanupAt = checkReminders._lastOrphanCleanupAt || 0;
+                // 每分钟最多清理一次，避免频繁操作
+                if (Date.now() - lastCleanupAt > 60 * 1000) {
+                    checkReminders._lastOrphanCleanupAt = Date.now();
+                    try { await __cleanupOrphanReminderDeviceSchedules(reminders); } catch (e) {}
+                }
+            } catch (e) {}
+            
+            // 移动端：同步提醒预约（预先预约机制）
             const lastAt = checkReminders._lastDeviceScheduleSyncAt || 0;
             if (Date.now() - lastAt > 5 * 60 * 1000) {
                 checkReminders._lastDeviceScheduleSyncAt = Date.now();
                 try { await __syncReminderDeviceSchedulesFromList(reminders); } catch (e) {}
             }
+        } else if (!isMobile && reminderSettings.systemNotificationEnabled) {
+            // 桌面端：只清理孤立的预约，不预先预约（使用实时提醒模式）
+            try {
+                const lastCleanupAt = checkReminders._lastOrphanCleanupAt || 0;
+                if (Date.now() - lastCleanupAt > 60 * 1000) {
+                    checkReminders._lastOrphanCleanupAt = Date.now();
+                    try { await __cleanupOrphanReminderDeviceSchedules(reminders); } catch (e) {}
+                }
+            } catch (e) {}
         }
         for (const reminder of reminders) {
             if (!reminder.enabled) continue;
@@ -28849,16 +28891,44 @@ function calculateWeeklyStats(dailyStatsArray) {
             }, 100);
         }
         
-        // 系统通知
+        // 🔧 修复：桌面端改成实时提醒，不预先预约系统通知
+        // 只有真正的移动端（手机/平板）才使用预先预约机制
+        // 不使用 shouldPreferDeviceNotificationBackend()，因为桌面端也可能返回 true
+        const isMobile = isMobileDevice();
+        
         if (reminderSettings.systemNotificationEnabled) {
-            sendDeviceNotificationCompat(title, fullMessage, { timeoutType: 'never' }).catch(() => {});
+            if (isMobile) {
+                // 移动端：使用预先预约机制
+                sendDeviceNotificationCompat(title, fullMessage, { timeoutType: 'never' }).catch(() => {});
+                // 移动端需要预先预约未来的提醒
+                if (shouldPreferDeviceNotificationBackend() && reminder?.blockId) {
+                    Promise.resolve().then(() => __syncReminderDeviceSchedule(reminder.blockId, reminder, { silent: true })).catch(() => {});
+                }
+            } else {
+                // 桌面端：先清理旧预约，再发送实时通知
+                // 避免同时触发两个通知
+                (async () => {
+                    try {
+                        const registry = __getReminderDeviceScheduleRegistry();
+                        const blockId = String(reminder?.blockId || '').trim();
+                        if (registry[blockId]?.entries?.length) {
+                            const entries = registry[blockId].entries;
+                            Logger.info(`🧹 桌面端发送通知前：清理 ${entries.length} 个旧预约`);
+                            for (const entry of entries) {
+                                try { await cancelDeviceNotificationCompat(entry.id); } catch (e) {}
+                            }
+                            delete registry[blockId];
+                            __saveReminderDeviceScheduleRegistry(registry);
+                        }
+                    } catch (e) {}
+                    // 发送实时通知
+                    sendDeviceNotificationCompat(title, fullMessage, { timeoutType: 'never' }).catch(() => {});
+                })();
+            }
         }
         
         // 播放提醒音频
         if (reminderSettings.audioEnabled) playReminderAudio();
-        if (shouldPreferDeviceNotificationBackend() && reminder?.blockId) {
-            Promise.resolve().then(() => __syncReminderDeviceSchedule(reminder.blockId, reminder, { silent: true })).catch(() => {});
-        }
     }
     
     function playReminderAudio() {
@@ -28877,6 +28947,38 @@ function calculateWeeklyStats(dailyStatsArray) {
     function startReminderCheck() {
         if (reminderCheckTimer) clearInterval(reminderCheckTimer);
         reminderCheckTimer = __tomatoTrackInterval(checkReminders, reminderSettings.checkInterval || 60000);
+        
+        // 🔧 修复：桌面端启动时立即清理所有旧的系统通知预约
+        // 避免旧的预约在到点时触发通知
+        // 只使用 isMobileDevice()，确保桌面端不使用预约机制
+        const isMobile = isMobileDevice();
+        if (!isMobile && reminderSettings.systemNotificationEnabled) {
+            // 桌面端：立即清理所有旧的预约
+            (async () => {
+                try {
+                    const registry = __getReminderDeviceScheduleRegistry();
+                    const entriesToCancel = [];
+                    for (const [blockId, schedule] of Object.entries(registry)) {
+                        if (schedule?.entries?.length) {
+                            for (const entry of schedule.entries) {
+                                entriesToCancel.push(entry);
+                            }
+                        }
+                    }
+                    if (entriesToCancel.length > 0) {
+                        Logger.info(`🧹 桌面端启动：清理 ${entriesToCancel.length} 个旧的通知预约`);
+                        for (const entry of entriesToCancel) {
+                            try { await cancelDeviceNotificationCompat(entry.id); } catch (e) {}
+                        }
+                        // 清空本地注册表
+                        __saveReminderDeviceScheduleRegistry({});
+                    }
+                } catch (e) {
+                    Logger.warn('🧹 清理旧预约失败:', e);
+                }
+            })();
+        }
+        
         Logger.info('提醒检查已启动');
     }
     
@@ -29112,6 +29214,18 @@ function calculateWeeklyStats(dailyStatsArray) {
                     }));
                 } catch (e) {}
                 try { __setReminderDeviceRegistryEntry(reminderId, null); } catch (e) {}
+                // 🔧 修复：删除提醒时立即清理孤立的系统通知预约，避免到点仍弹窗
+                try {
+                    const registry = __getReminderDeviceScheduleRegistry();
+                    if (registry[reminderId]) {
+                        const schedule = registry[reminderId];
+                        if (schedule?.entries?.length) {
+                            await __cancelReminderDeviceScheduleEntries(schedule.entries);
+                        }
+                        delete registry[reminderId];
+                        __saveReminderDeviceScheduleRegistry(registry);
+                    }
+                } catch (e) {}
                 try {
                     __invalidateReminderDockCache();
                     renderReminderDockList('time', false);
