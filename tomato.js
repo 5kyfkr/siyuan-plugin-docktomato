@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.8.2
+// @version      1.8.5
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -440,6 +440,8 @@
         onStateChange: null,
         lastPollTime: 0,
         _lastSyncTime: 0, // 🔧 v9.5: 记录上次触发思源同步的时间
+        _pendingSiyuanSyncTimer: null,
+        _pendingSiyuanSyncForce: false,
         _focusHandler: null,
         
         async init(initialState, onChangeCallback) {
@@ -535,13 +537,7 @@
 
                 if (result.code === 0) {
                     Logger.info('🔄 SyncManager: 状态已保存到云端');
-
-                    // 🔧 v9.5: 保存成功后延迟500ms再触发思源笔记的数据同步
-                    // 这样可以确保状态文件已完全写入后再同步，避免同步过快导致文件未写入
-                    // forceSync 参数控制是否强制同步（跳过节流限制）
-                    setTimeout(() => {
-                        this.triggerSiyuanSync(forceSync);
-                    }, 500);
+                    this.scheduleSiyuanSync(forceSync);
 
                     return true;
                 } else {
@@ -551,6 +547,22 @@
                 Logger.warn('🔄 SyncManager: 保存云端状态失败', e.message);
             }
             return false;
+        },
+
+        scheduleSiyuanSync(forceSync = false) {
+            this._pendingSiyuanSyncForce = this._pendingSiyuanSyncForce || !!forceSync;
+            if (this._pendingSiyuanSyncTimer) {
+                try { clearTimeout(this._pendingSiyuanSyncTimer); } catch (e) {}
+                this._pendingSiyuanSyncTimer = null;
+            }
+
+            // 将同一轮按钮点击内的多次状态写入合并成一次思源同步。
+            this._pendingSiyuanSyncTimer = setTimeout(async () => {
+                const mergedForceSync = !!this._pendingSiyuanSyncForce;
+                this._pendingSiyuanSyncTimer = null;
+                this._pendingSiyuanSyncForce = false;
+                await this.triggerSiyuanSync(mergedForceSync);
+            }, 800);
         },
 
         // 🔧 v9.5: 尝试触发思源笔记的云端同步
@@ -1271,7 +1283,22 @@
             if (__tomatoDestroyed) return;
             if (resumeRefreshRunning) return;
             const now = Date.now();
+            const normalizedSource = String(source || '').trim() || 'unknown';
+            const lastSource = String(handleAppResumeRefresh._lastSource || '').trim();
+            const lastSourceAt = Number(handleAppResumeRefresh._lastSourceAt || 0);
+            if (lastSource) {
+                const withinSameResumeBurst = now - lastSourceAt < 2500;
+                const duplicateFocusAfterVisibility =
+                    withinSameResumeBurst &&
+                    ((lastSource === 'visibility' && (normalizedSource === 'focus' || normalizedSource === 'pageshow'))
+                    || (lastSource === 'focus' && normalizedSource === 'pageshow'));
+                if (duplicateFocusAfterVisibility || (withinSameResumeBurst && lastSource === normalizedSource)) {
+                    return;
+                }
+            }
             if (now - lastResumeRefreshAtMs < 800) return;
+            handleAppResumeRefresh._lastSource = normalizedSource;
+            handleAppResumeRefresh._lastSourceAt = now;
             lastResumeRefreshAtMs = now;
             resumeRefreshRunning = true;
 
@@ -1359,7 +1386,6 @@
             }
 
             try {
-                if (shouldForce) await softReloadOnResume({ longGap });
                 const all = await loadHistoryRecords();
                 let maxEndMs = 0;
                 for (const r of Array.isArray(all) ? all : []) {
@@ -2135,6 +2161,7 @@
             breakDurations: DEFAULT_BREAK_DURATIONS,
             debugMode: DEFAULT_DEBUG_MODE,
             enableMobileSupport: DEFAULT_ENABLE_MOBILE_SUPPORT,
+            enableDesktopMinimizedFloatWindow: true,
             enableFocusMode: true,
             focusModeDimOpacity: 0.5,
             extendTomatoOnDistraction: true,
@@ -2247,6 +2274,7 @@
         userSettings.main.breakDurations = normalizeMinuteList(userSettings.main.breakDurations, DEFAULT_BREAK_DURATIONS);
         userSettings.main.debugMode = userSettings.main.debugMode === true;
         userSettings.main.enableMobileSupport = userSettings.main.enableMobileSupport !== false;
+        if (typeof userSettings.main.enableDesktopMinimizedFloatWindow !== 'boolean') userSettings.main.enableDesktopMinimizedFloatWindow = true;
         if (typeof userSettings.main.enableFocusMode !== 'boolean') userSettings.main.enableFocusMode = true;
         {
             const v = Number(userSettings.main.focusModeDimOpacity);
@@ -2284,6 +2312,9 @@
     };
     const isMobileSupportEnabled = () => {
         try { return userSettings?.main?.enableMobileSupport !== false; } catch (e) { return DEFAULT_ENABLE_MOBILE_SUPPORT; }
+    };
+    const isDesktopMinimizedFloatWindowEnabled = () => {
+        try { return !isMobileDevice() && userSettings?.main?.enableDesktopMinimizedFloatWindow !== false; } catch (e) { return false; }
     };
     const isSyncEnabled = () => {
         try { return userSettings?.sync?.enabled !== false; } catch (e) { return DEFAULT_SYNC_ENABLED; }
@@ -11553,6 +11584,7 @@
             const floatBar = document.getElementById('siyuan-tomato-float-bar');
             if (floatBar) floatBar.classList.toggle('running', effectiveRunning);
         } catch (e) {}
+        try { scheduleDesktopMinimizedFloatWindowSync('update-display'); } catch (e) {}
         updateProgressBar();
 
         // 更新任务块图标状态
@@ -12013,7 +12045,7 @@
             pausedRemainingSeconds = elapsedSeconds;
             // 🔧 修复：正计时暂停时保存记录
             if (elapsedSeconds > 0) {
-                await recordEndTime(false, true);
+                await recordEndTime(false, true, { skipSyncUpdate: true });
             }
         }
 
@@ -12095,7 +12127,7 @@
             clearInterval(reminderIntervalId);
             reminderIntervalId = null;
         }
-        if (currentStartTimestamp) await recordEndTime();
+        if (currentStartTimestamp) await recordEndTime(false, false, { skipSyncUpdate: true });
         // 停止提示音
         stopAllAudio();
         hideProgressBar();  // 完全停止时隐藏进度条
@@ -12147,6 +12179,7 @@
     async function recordEndTime(isReset = false, isStopwatch = false, options = null) {
         const isCompleted = options?.isCompleted === true;
         const plannedDurationOverride = options?.plannedDurationOverride ?? null;
+        const skipSyncUpdate = options?.skipSyncUpdate === true;
         Logger.info('🔍 recordEndTime 开始: isReset =', isReset, ', isStopwatch =', isStopwatch, ', timerMode =', timerMode);
         Logger.info('🔍 recordEndTime: currentTaskBlockId =', currentTaskBlockId);
         // 🔧 修复：支持正计时模式
@@ -12301,7 +12334,7 @@
                 // 🔧 清除按钮高亮设置（记录已保存）
                 // 注意：只清除颜色，保留 activeRoutineButtonIndex 供新按钮使用
                 routineButtonHighlightColor = null;
-                if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
+                if (!skipSyncUpdate && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
                     try {
                         syncState.distractionCount = syncedDistractionTotal || 0;
                         syncState.distractionSavedCount = syncedDistractionTotal || 0;
@@ -19008,6 +19041,741 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
     }
 
+    let desktopFloatWindow = null;
+    let desktopFloatWindowReady = false;
+    let desktopFloatWindowLastPayloadKey = '';
+    let desktopFloatWindowSyncTimer = null;
+    let desktopFloatWindowMonitoredWindow = null;
+    const DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT = 90;
+    const DESKTOP_FLOAT_WINDOW_WIDTH_EXPANDED = 120;
+    const DESKTOP_FLOAT_WINDOW_HEIGHT = 78;
+    let desktopFloatWindowState = {
+        isMinimized: false,
+        alwaysOnTop: true,
+        bounds: null,
+        dismissed: false
+    };
+    const desktopFloatWindowHandlers = {
+        minimize: null,
+        restore: null,
+        show: null,
+        hide: null,
+        closed: null
+    };
+
+    function hasUnfinishedTimerState() {
+        const { running, paused } = getEffectiveTimerActivity();
+        return !!(running || paused);
+    }
+
+    function getDesktopFloatWindowWidthForSeconds(totalSeconds) {
+        const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+        return seconds >= 3600 ? DESKTOP_FLOAT_WINDOW_WIDTH_EXPANDED : DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT;
+    }
+
+    function getDesktopFloatWindowDesiredWidth(payload = null) {
+        const p = payload || getDesktopFloatWindowPayload();
+        if (p?.liveTimerKind === 'countdown' && p.liveTargetTimeMs) {
+            const remain = Math.ceil((Number(p.liveTargetTimeMs) - Date.now()) / 1000);
+            return getDesktopFloatWindowWidthForSeconds(Math.max(0, remain));
+        }
+        if (p?.liveTimerKind === 'elapsed' && p.liveStartTimeMs) {
+            const elapsed = Math.floor((Date.now() - Number(p.liveStartTimeMs)) / 1000) + Math.max(0, Math.floor(Number(p.liveOffsetSeconds) || 0));
+            return getDesktopFloatWindowWidthForSeconds(Math.max(0, elapsed));
+        }
+        const staticText = String(p?.timeText || '').trim();
+        return getDesktopFloatWindowWidthForSeconds(/^\d{2}:\d{2}:\d{2}$/.test(staticText) ? 3600 : 0);
+    }
+
+    function resizeDesktopMinimizedFloatWindow(win, width) {
+        if (!win || win.isDestroyed?.()) return;
+        const nextWidth = Math.max(DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT, Math.round(Number(width) || DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT));
+        let bounds = null;
+        try { bounds = win.getBounds(); } catch (e) {}
+        const currentWidth = Number(bounds?.width || 0);
+        if (currentWidth === nextWidth) return;
+        const x = Number.isFinite(bounds?.x) ? bounds.x : undefined;
+        const y = Number.isFinite(bounds?.y) ? bounds.y : undefined;
+        try {
+            win.setBounds({
+                x: Number.isFinite(x) ? x : 0,
+                y: Number.isFinite(y) ? y : 0,
+                width: nextWidth,
+                height: DESKTOP_FLOAT_WINDOW_HEIGHT
+            }, false);
+            desktopFloatWindowState.bounds = {
+                x: Number.isFinite(x) ? x : 0,
+                y: Number.isFinite(y) ? y : 0,
+                width: nextWidth,
+                height: DESKTOP_FLOAT_WINDOW_HEIGHT
+            };
+        } catch (e) {}
+    }
+
+    function getDesktopFloatWindowElectronSupport() {
+        let electron = null;
+        let remote = null;
+        let BrowserWindow = null;
+        let currentWindow = null;
+        let screen = null;
+        try { electron = window.require?.('electron') || null; } catch (e) {}
+        try { remote = electron?.remote || window.require?.('@electron/remote') || null; } catch (e) {}
+        try { BrowserWindow = remote?.BrowserWindow || electron?.BrowserWindow || null; } catch (e) {}
+        try { currentWindow = remote?.getCurrentWindow?.() || null; } catch (e) {}
+        try { screen = electron?.screen || remote?.screen || null; } catch (e) {}
+        return {
+            supported: !!(BrowserWindow && currentWindow),
+            BrowserWindow,
+            currentWindow,
+            screen
+        };
+    }
+
+    function getDesktopFloatWindowTimeText() {
+        const { running, paused } = getEffectiveTimerActivity();
+        const active = !!(running || paused);
+        if (timerMode === 'stopwatch') {
+            return formatTime(elapsedSeconds + (stopwatchDisplayOffset || 0));
+        }
+        if (timerMode === 'stopwatch-break') {
+            return formatTime(elapsedSeconds);
+        }
+        const fallbackSeconds = currentDuration * 60;
+        const displaySeconds = (active || remainingSeconds > 0) ? remainingSeconds : fallbackSeconds;
+        return formatTime(displaySeconds);
+    }
+
+    function getDesktopFloatWindowPayload() {
+        const { running, paused } = getEffectiveTimerActivity();
+        const prefix = getDisplayPrefixForTimer(timerMode);
+        let statusText = '待开始';
+        if (running) statusText = '进行中';
+        else if (paused) statusText = '已暂停';
+        let modeText = '番茄钟';
+        if (timerMode === 'break') modeText = '休息';
+        else if (timerMode === 'stopwatch') modeText = '正计时';
+        else if (timerMode === 'stopwatch-break') modeText = '正计时休息';
+        const hideModeText = timerMode === 'countdown' || timerMode === 'stopwatch-break';
+        const taskText = String(currentTaskBlockName || '').trim()
+            || (currentTaskBlockId ? '关联任务' : (currentDatabaseBlockId ? '关联数据库' : '未关联任务'));
+        let liveTimerKind = 'static';
+        let liveTargetTimeMs = null;
+        let liveStartTimeMs = null;
+        let liveOffsetSeconds = 0;
+        if (running) {
+            if (timerMode === 'countdown' || timerMode === 'break') {
+                liveTimerKind = 'countdown';
+                liveTargetTimeMs = Number(startTime || 0) + Math.max(0, Math.round(currentDuration * 60 * 1000));
+            } else if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
+                liveTimerKind = 'elapsed';
+                liveStartTimeMs = Number(stopwatchStartTimeMs || startTime || 0);
+                liveOffsetSeconds = timerMode === 'stopwatch' ? Math.max(0, Math.floor(Number(stopwatchDisplayOffset) || 0)) : 0;
+            }
+        }
+        return {
+            prefix,
+            timeText: getDesktopFloatWindowTimeText(),
+            statusText,
+            modeText,
+            hideModeText,
+            taskText,
+            running: !!running,
+            paused: !!paused,
+            alwaysOnTop: desktopFloatWindowState.alwaysOnTop !== false,
+            canToggleRun: hasUnfinishedTimerState(),
+            liveTimerKind,
+            liveTargetTimeMs,
+            liveStartTimeMs,
+            liveOffsetSeconds
+        };
+    }
+
+    function buildDesktopFloatWindowHtml() {
+        return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DockTomato</title>
+<style>
+html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #14181c;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+body {
+    display: flex;
+    align-items: stretch;
+    justify-content: stretch;
+    padding: 0;
+}
+.shell {
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 7px 8px 8px;
+    border-radius: 10px;
+    background: rgba(20, 24, 28, 0.94);
+    color: #f4f7fb;
+    border: 1px solid rgba(255,255,255,0.10);
+    box-shadow: 0 10px 22px rgba(0,0,0,0.22);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    user-select: none;
+    -webkit-app-region: drag;
+}
+.topline {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.leftbox {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+.rightbox {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+.mode {
+    font-size: 10px;
+    opacity: 0.72;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+.toolbtn {
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.08);
+    color: #dbe7f3;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    padding: 0;
+    -webkit-app-region: no-drag;
+}
+.toolbtn:hover {
+    background: rgba(255,255,255,0.16);
+}
+.toolbtn.active {
+    background: rgba(56, 142, 255, 0.22);
+    color: #8fc1ff;
+}
+.toolbtn.closebtn {
+    font-size: 10px;
+}
+.time {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 19px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.01em;
+    font-variant-numeric: tabular-nums;
+}
+.icon {
+    font-size: 15px;
+    width: 15px;
+    text-align: center;
+    flex: 0 0 auto;
+}
+.task {
+    font-size: 10px;
+    line-height: 1.15;
+    opacity: 0.82;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+    min-width: 0;
+}
+</style>
+</head>
+<body>
+<div id="shell" class="shell">
+    <div class="topline">
+        <div class="leftbox">
+            <button id="toggle-run" class="toolbtn" title="暂停">⏸</button>
+            <button id="pin" class="toolbtn active" title="切换置顶">📌</button>
+            <button id="close" class="toolbtn closebtn" title="关闭">✕</button>
+        </div>
+        <div class="rightbox">
+            <div id="mode" class="mode">番茄钟</div>
+        </div>
+    </div>
+    <div class="content">
+        <div class="time">
+            <span id="icon" class="icon">🍅</span>
+            <span id="time">00:00</span>
+        </div>
+        <div id="task" class="task">未关联任务</div>
+    </div>
+</div>
+<script>
+var __electron = null;
+var __ipcRenderer = null;
+try { __electron = window.require && window.require('electron'); } catch (e) {}
+try { __ipcRenderer = (__electron && __electron.ipcRenderer) || null; } catch (e) {}
+var __payloadState = null;
+var __liveTimer = null;
+var __lastRequestedWidth = 0;
+
+function __formatSeconds(totalSeconds) {
+    totalSeconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    var hours = Math.floor(totalSeconds / 3600);
+    var minutes = Math.floor((totalSeconds % 3600) / 60);
+    var seconds = totalSeconds % 60;
+    function pad(n) { return String(n).padStart(2, '0'); }
+    if (hours > 0) return pad(hours) + ':' + pad(minutes) + ':' + pad(seconds);
+    return pad(minutes) + ':' + pad(seconds);
+}
+
+function __syncDesiredWidth(totalSeconds) {
+    var seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    var nextWidth = seconds >= 3600 ? 120 : 100;
+    if (__lastRequestedWidth === nextWidth) return;
+    __lastRequestedWidth = nextWidth;
+    if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
+    try { __ipcRenderer.send('docktomato-float-window-command', 'set-width', nextWidth); } catch (e) {}
+}
+
+function __renderLiveTime() {
+    if (!__payloadState) return;
+    var time = document.getElementById('time');
+    if (!time) return;
+    if (__payloadState.liveTimerKind === 'countdown' && __payloadState.liveTargetTimeMs) {
+        var remain = Math.ceil((Number(__payloadState.liveTargetTimeMs) - Date.now()) / 1000);
+        var countdownText = __formatSeconds(Math.max(0, remain));
+        time.textContent = countdownText;
+        __syncDesiredWidth(Math.max(0, remain));
+        return;
+    }
+    if (__payloadState.liveTimerKind === 'elapsed' && __payloadState.liveStartTimeMs) {
+        var elapsed = Math.floor((Date.now() - Number(__payloadState.liveStartTimeMs)) / 1000) + Math.max(0, Math.floor(Number(__payloadState.liveOffsetSeconds) || 0));
+        var elapsedText = __formatSeconds(Math.max(0, elapsed));
+        time.textContent = elapsedText;
+        __syncDesiredWidth(Math.max(0, elapsed));
+        return;
+    }
+    var staticText = __payloadState.timeText || '00:00';
+    time.textContent = staticText;
+    if (__payloadState.liveTimerKind === 'static') {
+        var hhmmss = /^\d{2}:\d{2}:\d{2}$/;
+        __syncDesiredWidth(hhmmss.test(staticText) ? 3600 : 0);
+    }
+}
+
+function __syncLiveTimer() {
+    if (__liveTimer) {
+        clearInterval(__liveTimer);
+        __liveTimer = null;
+    }
+    __renderLiveTime();
+    if (!__payloadState) return;
+    if (__payloadState.liveTimerKind === 'countdown' || __payloadState.liveTimerKind === 'elapsed') {
+        __liveTimer = setInterval(__renderLiveTime, 500);
+    }
+}
+
+function __syncPinState() {
+    var pin = document.getElementById('pin');
+    var shell = document.getElementById('shell');
+    if (!pin) return;
+    var pinned = !!(shell && shell.dataset && shell.dataset.alwaysOnTop === 'true');
+    pin.classList.toggle('active', pinned);
+    pin.textContent = pinned ? '📌' : '📍';
+    pin.title = pinned ? '解除置顶' : '设为置顶';
+}
+
+function __syncRunButtonState(payload) {
+    var btn = document.getElementById('toggle-run');
+    if (!btn) return;
+    var running = !!payload.running;
+    var paused = !!payload.paused;
+    var canToggle = payload.canToggleRun !== false;
+    if (running) {
+        btn.textContent = '⏸';
+        btn.title = '暂停';
+    } else {
+        btn.textContent = '▶';
+        btn.title = paused ? '继续' : '开始';
+    }
+    btn.disabled = !canToggle;
+    btn.style.opacity = canToggle ? '1' : '0.45';
+    btn.style.cursor = canToggle ? 'pointer' : 'default';
+}
+
+window.__setTomatoFloatState = function (payload) {
+    payload = payload || {};
+    __payloadState = payload;
+    var shell = document.getElementById('shell');
+    var mode = document.getElementById('mode');
+    var icon = document.getElementById('icon');
+    var time = document.getElementById('time');
+    var task = document.getElementById('task');
+    if (shell && shell.dataset) shell.dataset.alwaysOnTop = payload.alwaysOnTop ? 'true' : 'false';
+    if (mode) {
+        mode.textContent = payload.hideModeText ? '' : (payload.modeText || '番茄钟');
+        mode.style.display = payload.hideModeText ? 'none' : '';
+    }
+    if (icon) icon.textContent = payload.prefix || '🍅';
+    if (time) time.textContent = payload.timeText || '00:00';
+    if (task) task.textContent = payload.taskText || '未关联任务';
+    if (shell) {
+        shell.classList.toggle('running', !!payload.running);
+        shell.classList.toggle('paused', !!payload.paused);
+    }
+    __syncPinState();
+    __syncRunButtonState(payload);
+    __syncLiveTimer();
+};
+
+(function () {
+    var shell = document.getElementById('shell');
+    var toggleRun = document.getElementById('toggle-run');
+    var pin = document.getElementById('pin');
+    var close = document.getElementById('close');
+    if (toggleRun) {
+        toggleRun.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (toggleRun.disabled) return;
+            if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
+            try { __ipcRenderer.send('docktomato-float-window-command', 'toggle-run'); } catch (err) {}
+        });
+    }
+    if (pin) {
+        pin.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
+            try { __ipcRenderer.send('docktomato-float-window-command', 'toggle-pin'); } catch (err) {}
+        });
+    }
+    if (close) {
+        close.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
+            try { __ipcRenderer.send('docktomato-float-window-command', 'dismiss'); } catch (err) {}
+        });
+    }
+    if (shell) {
+        shell.addEventListener('mouseenter', __syncPinState);
+        shell.addEventListener('mousedown', __syncPinState);
+    }
+    __syncPinState();
+    __syncRunButtonState({});
+})();
+</script>
+</body>
+</html>`;
+    }
+
+    function closeDesktopMinimizedFloatWindow() {
+        desktopFloatWindowLastPayloadKey = '';
+        desktopFloatWindowReady = false;
+        const win = desktopFloatWindow;
+        desktopFloatWindow = null;
+        if (!win) return;
+        try {
+            if (!win.isDestroyed?.()) {
+                win.close();
+            }
+        } catch (e) {}
+    }
+
+    async function ensureDesktopMinimizedFloatWindow() {
+        if (desktopFloatWindow && !desktopFloatWindow.isDestroyed?.()) return desktopFloatWindow;
+        const support = getDesktopFloatWindowElectronSupport();
+        if (!support.supported) return null;
+        try {
+            const win = new support.BrowserWindow({
+                width: DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT,
+                height: DESKTOP_FLOAT_WINDOW_HEIGHT,
+                show: false,
+                frame: false,
+                alwaysOnTop: desktopFloatWindowState.alwaysOnTop !== false,
+                skipTaskbar: true,
+                resizable: false,
+                minimizable: false,
+                maximizable: false,
+                fullscreenable: false,
+                focusable: true,
+                transparent: false,
+                backgroundColor: '#14181c',
+                hasShadow: true,
+                webPreferences: {
+                    nodeIntegration: true,
+                    contextIsolation: false
+                }
+            });
+            desktopFloatWindow = win;
+            desktopFloatWindowReady = false;
+            desktopFloatWindowLastPayloadKey = '';
+            try {
+                win.on('move', () => {
+                    try { desktopFloatWindowState.bounds = win.getBounds(); } catch (e) {}
+                });
+            } catch (e) {}
+            try {
+                win.on('always-on-top-changed', (_event, flag) => {
+                    desktopFloatWindowState.alwaysOnTop = !!flag;
+                    desktopFloatWindowLastPayloadKey = '';
+                    try { refreshDesktopMinimizedFloatWindow(); } catch (e) {}
+                });
+            } catch (e) {}
+            try {
+                win.webContents.on('ipc-message', (_event, channel, ...args) => {
+                    if (channel !== 'docktomato-float-window-command') return;
+                    const command = String(args?.[0] || '').trim();
+                    if (command === 'toggle-pin') {
+                        const next = !(desktopFloatWindowState.alwaysOnTop !== false);
+                        desktopFloatWindowState.alwaysOnTop = next;
+                        try {
+                            if (typeof win.setAlwaysOnTop === 'function') {
+                                try { win.setAlwaysOnTop(next, next ? 'screen-saver' : 'normal'); }
+                                catch (e) { win.setAlwaysOnTop(next); }
+                            }
+                        } catch (e) {}
+                        desktopFloatWindowLastPayloadKey = '';
+                        Promise.resolve().then(() => refreshDesktopMinimizedFloatWindow()).catch(() => {});
+                        return;
+                    }
+                    if (command === 'toggle-run') {
+                        Promise.resolve().then(async () => {
+                            try {
+                                if (isRunning) await pauseTimer();
+                                else await startTimer();
+                            } catch (e) {}
+                            desktopFloatWindowLastPayloadKey = '';
+                            try { await refreshDesktopMinimizedFloatWindow(); } catch (e) {}
+                        }).catch(() => {});
+                        return;
+                    }
+                    if (command === 'set-width') {
+                        const requestedWidth = Number(args?.[1] ?? args?.[0]);
+                        if (Number.isFinite(requestedWidth) && requestedWidth > 0) {
+                            resizeDesktopMinimizedFloatWindow(win, requestedWidth);
+                        }
+                        return;
+                    }
+                    if (command === 'dismiss') {
+                        desktopFloatWindowState.dismissed = true;
+                        try { win.hide(); } catch (e) {}
+                    }
+                });
+            } catch (e) {}
+            win.on('closed', () => {
+                if (desktopFloatWindow === win) {
+                    desktopFloatWindow = null;
+                    desktopFloatWindowReady = false;
+                    desktopFloatWindowLastPayloadKey = '';
+                }
+            });
+            const html = buildDesktopFloatWindowHtml();
+            await win.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`);
+            desktopFloatWindowReady = true;
+            return win;
+        } catch (e) {
+            Logger.warn('🍅 桌面端最小化悬浮窗创建失败:', e);
+            closeDesktopMinimizedFloatWindow();
+            return null;
+        }
+    }
+
+    function positionDesktopMinimizedFloatWindow(win) {
+        if (!win || win.isDestroyed?.()) return;
+        const savedBounds = desktopFloatWindowState.bounds;
+        if (savedBounds && Number.isFinite(savedBounds.x) && Number.isFinite(savedBounds.y)) {
+            try {
+                const savedWidth = Number(savedBounds.width) || DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT;
+                const normalizedWidth = savedWidth >= DESKTOP_FLOAT_WINDOW_WIDTH_EXPANDED
+                    ? DESKTOP_FLOAT_WINDOW_WIDTH_EXPANDED
+                    : DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT;
+                win.setBounds({
+                    x: Math.round(savedBounds.x),
+                    y: Math.round(savedBounds.y),
+                    width: normalizedWidth,
+                    height: DESKTOP_FLOAT_WINDOW_HEIGHT
+                }, false);
+                return;
+            } catch (e) {}
+        }
+        const support = getDesktopFloatWindowElectronSupport();
+        const display = support.screen?.getPrimaryDisplay?.();
+        const workArea = display?.workArea;
+        if (!workArea) return;
+        const width = DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT;
+        const height = DESKTOP_FLOAT_WINDOW_HEIGHT;
+        const x = Math.round(workArea.x + workArea.width - width - 20);
+        const y = Math.round(workArea.y + workArea.height - height - 40);
+        try {
+            win.setBounds({ x, y, width, height }, false);
+            desktopFloatWindowState.bounds = { x, y, width, height };
+        } catch (e) {}
+    }
+
+    async function refreshDesktopMinimizedFloatWindow() {
+        const win = desktopFloatWindow;
+        if (!win || win.isDestroyed?.() || !desktopFloatWindowReady) return;
+        const payload = getDesktopFloatWindowPayload();
+        resizeDesktopMinimizedFloatWindow(win, getDesktopFloatWindowDesiredWidth(payload));
+        const payloadKey = JSON.stringify(payload);
+        if (payloadKey === desktopFloatWindowLastPayloadKey) return;
+        desktopFloatWindowLastPayloadKey = payloadKey;
+        const payloadScript = JSON.stringify(payload).replace(/</g, '\\u003c');
+        try {
+            await win.webContents.executeJavaScript(`window.__setTomatoFloatState && window.__setTomatoFloatState(${payloadScript});`, true);
+        } catch (e) {
+            desktopFloatWindowLastPayloadKey = '';
+            Logger.debug('🍅 桌面端悬浮窗刷新失败:', e);
+        }
+    }
+
+    async function syncDesktopMinimizedFloatWindow(reason = '') {
+        if (__tomatoDestroyed) return;
+        if (!isDesktopMinimizedFloatWindowEnabled()) {
+            closeDesktopMinimizedFloatWindow();
+            return;
+        }
+        const support = getDesktopFloatWindowElectronSupport();
+        if (!support.supported) {
+            closeDesktopMinimizedFloatWindow();
+            return;
+        }
+        try {
+            desktopFloatWindowState.isMinimized = !!support.currentWindow?.isMinimized?.();
+        } catch (e) {
+            desktopFloatWindowState.isMinimized = false;
+        }
+        if (!hasUnfinishedTimerState()) {
+            desktopFloatWindowState.dismissed = false;
+        }
+        if (desktopFloatWindowState.dismissed) {
+            try {
+                if (desktopFloatWindow && !desktopFloatWindow.isDestroyed?.()) desktopFloatWindow.hide();
+            } catch (e) {}
+            return;
+        }
+        if (!desktopFloatWindowState.isMinimized || !hasUnfinishedTimerState()) {
+            closeDesktopMinimizedFloatWindow();
+            return;
+        }
+        const win = await ensureDesktopMinimizedFloatWindow();
+        if (!win) return;
+        positionDesktopMinimizedFloatWindow(win);
+        await refreshDesktopMinimizedFloatWindow();
+        try {
+            if (!win.isVisible?.()) {
+                if (typeof win.showInactive === 'function') win.showInactive();
+                else win.show();
+            }
+            if (typeof win.setAlwaysOnTop === 'function') {
+                const shouldPin = desktopFloatWindowState.alwaysOnTop !== false;
+                try {
+                    win.setAlwaysOnTop(shouldPin, shouldPin ? 'screen-saver' : 'normal');
+                } catch (e) {
+                    win.setAlwaysOnTop(shouldPin);
+                }
+            }
+        } catch (e) {
+            Logger.debug(`🍅 桌面端悬浮窗显示失败(${reason}):`, e);
+        }
+    }
+
+    function scheduleDesktopMinimizedFloatWindowSync(reason = '') {
+        if (desktopFloatWindowSyncTimer != null) return;
+        desktopFloatWindowSyncTimer = __tomatoTrackTimeout(async () => {
+            desktopFloatWindowSyncTimer = null;
+            try { await syncDesktopMinimizedFloatWindow(reason); } catch (e) {}
+        }, 80);
+    }
+
+    function uninstallDesktopMinimizedFloatWindowMonitor() {
+        const win = desktopFloatWindowMonitoredWindow;
+        if (win && typeof win.off === 'function') {
+            try { if (desktopFloatWindowHandlers.minimize) win.off('minimize', desktopFloatWindowHandlers.minimize); } catch (e) {}
+            try { if (desktopFloatWindowHandlers.restore) win.off('restore', desktopFloatWindowHandlers.restore); } catch (e) {}
+            try { if (desktopFloatWindowHandlers.show) win.off('show', desktopFloatWindowHandlers.show); } catch (e) {}
+            try { if (desktopFloatWindowHandlers.hide) win.off('hide', desktopFloatWindowHandlers.hide); } catch (e) {}
+            try { if (desktopFloatWindowHandlers.closed) win.off('closed', desktopFloatWindowHandlers.closed); } catch (e) {}
+        }
+        desktopFloatWindowMonitoredWindow = null;
+        desktopFloatWindowState.isMinimized = false;
+        Object.keys(desktopFloatWindowHandlers).forEach((key) => {
+            desktopFloatWindowHandlers[key] = null;
+        });
+    }
+
+    function installDesktopMinimizedFloatWindowMonitor() {
+        if (!isDesktopMinimizedFloatWindowEnabled()) {
+            uninstallDesktopMinimizedFloatWindowMonitor();
+            closeDesktopMinimizedFloatWindow();
+            return false;
+        }
+        const support = getDesktopFloatWindowElectronSupport();
+        if (!support.supported || !support.currentWindow) {
+            uninstallDesktopMinimizedFloatWindowMonitor();
+            closeDesktopMinimizedFloatWindow();
+            return false;
+        }
+        if (desktopFloatWindowMonitoredWindow === support.currentWindow) {
+            scheduleDesktopMinimizedFloatWindowSync('desktop-monitor-reuse');
+            return true;
+        }
+        uninstallDesktopMinimizedFloatWindowMonitor();
+        desktopFloatWindowMonitoredWindow = support.currentWindow;
+        desktopFloatWindowHandlers.minimize = () => {
+            desktopFloatWindowState.isMinimized = true;
+            scheduleDesktopMinimizedFloatWindowSync('desktop-window-minimize');
+        };
+        desktopFloatWindowHandlers.restore = () => {
+            desktopFloatWindowState.isMinimized = false;
+            desktopFloatWindowState.dismissed = false;
+            scheduleDesktopMinimizedFloatWindowSync('desktop-window-restore');
+        };
+        desktopFloatWindowHandlers.show = () => {
+            desktopFloatWindowState.isMinimized = false;
+            desktopFloatWindowState.dismissed = false;
+            scheduleDesktopMinimizedFloatWindowSync('desktop-window-show');
+        };
+        desktopFloatWindowHandlers.hide = () => {
+            scheduleDesktopMinimizedFloatWindowSync('desktop-window-hide');
+        };
+        desktopFloatWindowHandlers.closed = () => {
+            desktopFloatWindowState.isMinimized = false;
+            closeDesktopMinimizedFloatWindow();
+        };
+        try { support.currentWindow.on('minimize', desktopFloatWindowHandlers.minimize); } catch (e) {}
+        try { support.currentWindow.on('restore', desktopFloatWindowHandlers.restore); } catch (e) {}
+        try { support.currentWindow.on('show', desktopFloatWindowHandlers.show); } catch (e) {}
+        try { support.currentWindow.on('hide', desktopFloatWindowHandlers.hide); } catch (e) {}
+        try { support.currentWindow.on('closed', desktopFloatWindowHandlers.closed); } catch (e) {}
+        try { desktopFloatWindowState.isMinimized = !!support.currentWindow.isMinimized?.(); } catch (e) { desktopFloatWindowState.isMinimized = false; }
+        scheduleDesktopMinimizedFloatWindowSync('desktop-monitor-install');
+        return true;
+    }
+
     // 创建可拖动悬浮条（移动端专用）
     function createDraggableFloatBar() {
         // 🔧 v9.0 修复：如果用户主动关闭了悬浮窗，不创建
@@ -23848,6 +24616,26 @@ function calculateWeeklyStats(dailyStatsArray) {
             } catch (e) {}
         });
 
+        mkToggleRow('启用思源最小化后悬浮窗（桌面端）', userSettings?.main?.enableDesktopMinimizedFloatWindow !== false, async (e) => {
+            userSettings.main.enableDesktopMinimizedFloatWindow = e.target.checked;
+            await saveUserSettings();
+            try {
+                if (userSettings.main.enableDesktopMinimizedFloatWindow) {
+                    installDesktopMinimizedFloatWindowMonitor();
+                } else {
+                    uninstallDesktopMinimizedFloatWindowMonitor();
+                    closeDesktopMinimizedFloatWindow();
+                }
+                scheduleDesktopMinimizedFloatWindowSync('settings-desktop-float-toggle');
+            } catch (err) {}
+        });
+        {
+            const hint = document.createElement('div');
+            hint.textContent = '仅桌面端生效，思源最小化后显示独立悬浮窗';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
+            togglesSection.appendChild(hint);
+        }
+
         mkToggleRow('聚焦模式（高亮任务/数据库时淡化其它内容）', userSettings?.main?.enableFocusMode !== false, async (e) => {
             userSettings.main.enableFocusMode = e.target.checked;
             await saveUserSettings();
@@ -26844,6 +27632,12 @@ function calculateWeeklyStats(dailyStatsArray) {
             lastResumeRefreshAtMs = Date.now();
             installAppResumeListeners();
         } catch (e) {}
+        try {
+            if (!isMobileDevice()) {
+                installDesktopMinimizedFloatWindowMonitor();
+                scheduleDesktopMinimizedFloatWindowSync('initialize-finished');
+            }
+        } catch (e) {}
         __tomatoInitBootstrapping = false;
         
             // 🔧 修复：刷新UI显示，确保使用用户设置的默认番茄时间
@@ -26947,7 +27741,12 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (statusBar && !statusBar.querySelector('#siyuan-tomato-timer')) {
             createWidget(statusBar);
             initialize();
+            try { installDesktopMinimizedFloatWindowMonitor(); } catch (e) {}
+            try { scheduleDesktopMinimizedFloatWindowSync('inject-desktop-create-widget'); } catch (e) {}
+            return;
         }
+        try { installDesktopMinimizedFloatWindowMonitor(); } catch (e) {}
+        try { scheduleDesktopMinimizedFloatWindowSync('inject-desktop-existing-widget'); } catch (e) {}
     };
 
     // 🔧 性能优化：防抖 inject，避免频繁 DOM 变动导致多次执行
@@ -26967,6 +27766,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         try { injectTimeout = null; } catch (e) {}
         try { if (injectInitTimeout) clearTimeout(injectInitTimeout); } catch (e) {}
         try { injectInitTimeout = null; } catch (e) {}
+        try { if (desktopFloatWindowSyncTimer != null) clearTimeout(desktopFloatWindowSyncTimer); } catch (e) {}
+        try { desktopFloatWindowSyncTimer = null; } catch (e) {}
         try { if (timelineSnapRestoreTimer) clearTimeout(timelineSnapRestoreTimer); } catch (e) {}
         try { timelineSnapRestoreTimer = null; } catch (e) {}
         try { if (timelineDateOverlayHideTimer) clearTimeout(timelineDateOverlayHideTimer); } catch (e) {}
@@ -27009,6 +27810,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         try { stopAllAudio(); } catch (e) {}
         try { cleanupAudioResources(); } catch (e) {}
         try { cleanupFloatBarEvents(); } catch (e) {}
+        try { uninstallDesktopMinimizedFloatWindowMonitor(); } catch (e) {}
+        try { closeDesktopMinimizedFloatWindow(); } catch (e) {}
 
         try { document.getElementById('tomato-common-style')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-neon-style')?.remove(); } catch (e) {}
@@ -29145,13 +29948,19 @@ function calculateWeeklyStats(dailyStatsArray) {
     
     async function saveBlockReminder(blockId, reminderData, options = {}) {
         try {
+            const reminderToSave = (reminderData && typeof reminderData === 'object')
+                ? { ...reminderData, blockId: String(blockId || reminderData?.blockId || '').trim() }
+                : reminderData;
+            if (!options?.skipReminderScheduleSync && reminderToSave) {
+                try { await __reconcileReminderDeviceSchedule(reminderToSave, { silent: true }); } catch (e) {}
+            }
             const getRes = await postJSON('/api/attr/getBlockAttrs', { id: blockId });
             if (!getRes.ok) { return false; }
             const currentAttrs = getRes.data?.data || {};
             // 添加提醒时，同时设置书签属性为⏰
             const attrs = {
                 ...currentAttrs,
-                'custom-tomato-reminder': JSON.stringify(reminderData),
+                'custom-tomato-reminder': JSON.stringify(reminderToSave),
                 'bookmark': '⏰'
             };
             const setRes = await postJSON('/api/attr/setBlockAttrs', { id: blockId, attrs });
@@ -29161,9 +29970,6 @@ function calculateWeeklyStats(dailyStatsArray) {
                         detail: { taskId: String(blockId || '').trim(), attrKey: 'bookmark', value: '⏰' }
                     }));
                 } catch (e) {}
-                if (!options?.skipReminderScheduleSync) {
-                    try { await __syncReminderDeviceSchedule(blockId, reminderData, { silent: true }); } catch (e) {}
-                }
                 try { refreshReminderDockPanel(); } catch (e) {}
                 try { updateReminderBadge(); } catch (e) {}
                 try { postJSON('/api/sqlite/flushTransaction', {}).catch(() => {}); } catch (e) {}
