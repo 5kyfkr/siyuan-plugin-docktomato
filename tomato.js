@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.8.6
+// @version      1.8.7
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -557,12 +557,13 @@
             }
 
             // 将同一轮按钮点击内的多次状态写入合并成一次思源同步。
+            // 🔧 修改：增加延迟时间到2秒，避免与 handleAppResumeRefresh 的执行时间冲突
             this._pendingSiyuanSyncTimer = setTimeout(async () => {
                 const mergedForceSync = !!this._pendingSiyuanSyncForce;
                 this._pendingSiyuanSyncTimer = null;
                 this._pendingSiyuanSyncForce = false;
                 await this.triggerSiyuanSync(mergedForceSync);
-            }, 800);
+            }, 2000);
         },
 
         // 🔧 v9.5: 尝试触发思源笔记的云端同步
@@ -579,6 +580,13 @@
                 // 但暂停、停止等关键状态变化应该优先于节流
                 const now = Date.now();
                 const MIN_SYNC_INTERVAL = 10000;
+                
+                // 🔧 新增：如果当前有待执行的延迟同步触发，立即清除并更新时间戳
+                // 避免延迟触发在后续被重复执行
+                if (this._pendingSiyuanSyncTimer) {
+                    try { clearTimeout(this._pendingSiyuanSyncTimer); } catch (e) {}
+                    this._pendingSiyuanSyncTimer = null;
+                }
                 
                 if (!forceSync && this._lastSyncTime && now - this._lastSyncTime < MIN_SYNC_INTERVAL) {
                     // Logger.debug('🔄 SyncManager: 同步请求过于频繁，跳过触发思源同步');
@@ -1069,6 +1077,7 @@
     let lastKnownSyncSignature = '';
     let lastResumeRefreshAtMs = 0;
     let resumeRefreshRunning = false;
+    let __globalAppResumeSyncLock = false; // 🔧 新增：全局恢复同步锁，防止多次同步
     let lastKnownAppDateKey = null;
     let appResumeListenersInstalled = false;
     let appResumeVisibilityHandler = null;
@@ -1282,6 +1291,14 @@
         try {
             if (__tomatoDestroyed) return;
             if (resumeRefreshRunning) return;
+            
+            // 🔧 新增：全局同步锁，防止一次恢复触发多轮同步
+            if (__globalAppResumeSyncLock) {
+                Logger.debug('🔄 handleAppResumeRefresh: 同步进行中，跳过此次触发');
+                return;
+            }
+            __globalAppResumeSyncLock = true;
+            
             const now = Date.now();
             const normalizedSource = String(source || '').trim() || 'unknown';
             const lastSource = String(handleAppResumeRefresh._lastSource || '').trim();
@@ -1301,6 +1318,8 @@
             handleAppResumeRefresh._lastSourceAt = now;
             lastResumeRefreshAtMs = now;
             resumeRefreshRunning = true;
+            // 🔧 新增：设置全局同步锁
+            // handleAppResumeRefresh._isSyncing = true;
 
             const lastNow = handleAppResumeRefresh._lastNow;
             handleAppResumeRefresh._lastNow = now;
@@ -1311,6 +1330,9 @@
             if (nowDateKey) lastKnownAppDateKey = nowDateKey;
             const longGap = gapMs > 300000 || dayChanged;
 
+            // 🔧 简化逻辑：移除单独的 triggerSiyuanSync 调用，由 poll(true) 统一处理同步
+            // 避免在一次恢复操作中触发多次思源同步
+            /*
             try {
                 const needsSiyuanSync = isSyncEnabled() && (gapMs > 30000 || dayChanged);
                 if (needsSiyuanSync && SyncManager && typeof SyncManager.triggerSiyuanSync === 'function') {
@@ -1323,6 +1345,7 @@
                     }
                 }
             } catch (e) {}
+            */
 
             const prevSig = buildSyncSignature(syncState);
             try {
@@ -1405,6 +1428,9 @@
         } catch (e) {
         } finally {
             resumeRefreshRunning = false;
+            // 🔧 释放全局同步锁
+            __globalAppResumeSyncLock = false;
+            // handleAppResumeRefresh._isSyncing = false;
         }
     }
     
@@ -6165,8 +6191,11 @@
             reminderIntervalId = null;
         }
 
-        const existing = document.getElementById('tomy-tomato-toast');
-        if (existing) existing.remove();
+        const existingBackdrop = document.getElementById('tomy-tomato-backdrop');
+        if (existingBackdrop) existingBackdrop.remove();
+        
+        const existingToast = document.getElementById('tomy-tomato-toast');
+        if (existingToast) existingToast.remove();
 
         // 保存任务块信息供弹窗按钮使用
         const savedTaskBlockId = taskBlockId;
@@ -6179,8 +6208,13 @@
         backdrop.id = 'tomy-tomato-backdrop';
         backdrop.style.cssText = `
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: rgba(0, 0, 0, 0.3); z-index: 2147483646; pointer-events: none;
+            background: rgba(0, 0, 0, 0.3); z-index: 2147483646;
         `;
+        backdrop.onclick = (e) => {
+            if (e.target === backdrop) {
+                closeDialog();
+            }
+        };
 
         const dialog = document.createElement('div');
         dialog.id = 'tomy-tomato-toast';
@@ -11729,6 +11763,11 @@
         // 防止暂停后定时器继续运行
         if (isTimerPaused) return;
         
+        // 🔧 新增：全局同步锁，防止与 handleAppResumeRefresh 同时触发导致重复同步
+        if (__globalAppResumeSyncLock || handleTimerTick._isSyncing) {
+            return;
+        }
+        
         const now = Date.now();
         const lastNow = handleTimerTick._lastNow;
         handleTimerTick._lastNow = now;
@@ -11741,6 +11780,8 @@
         if (shouldAttemptResync && !handleTimerTick._resumeSyncing) {
             handleTimerTick._lastResumeSyncAt = now;
             handleTimerTick._resumeSyncing = true;
+            // 🔧 新增：设置全局同步锁
+            // handleTimerTick._isSyncing = true;
             (async () => {
                 try {
                     if (typeof SyncManager.triggerSiyuanSync === 'function') {
@@ -11760,6 +11801,8 @@
                 try { if (userSettings?.timeline?.enabled) updateTimelineBar(true); } catch (e) {}
             })().finally(() => {
                 handleTimerTick._resumeSyncing = false;
+                // 🔧 释放全局同步锁
+                // handleTimerTick._isSyncing = false;
             });
         }
             
@@ -19155,7 +19198,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (timerMode === 'break') modeText = '休息';
         else if (timerMode === 'stopwatch') modeText = '正计时';
         else if (timerMode === 'stopwatch-break') modeText = '正计时休息';
-        const hideModeText = timerMode === 'countdown' || timerMode === 'stopwatch-break';
+        const hideModeText = true;
         const taskText = String(currentTaskBlockName || '').trim()
             || (currentTaskBlockId ? '关联任务' : (currentDatabaseBlockId ? '关联数据库' : '未关联任务'));
         let liveTimerKind = 'static';
