@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.8.5
+// @version      1.8.6
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -19351,7 +19351,7 @@ function __formatSeconds(totalSeconds) {
 
 function __syncDesiredWidth(totalSeconds) {
     var seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
-    var nextWidth = seconds >= 3600 ? 120 : 100;
+    var nextWidth = seconds >= 3600 ? 120 : 90;
     if (__lastRequestedWidth === nextWidth) return;
     __lastRequestedWidth = nextWidth;
     if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
@@ -19628,7 +19628,7 @@ window.__setTomatoFloatState = function (payload) {
         const width = DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT;
         const height = DESKTOP_FLOAT_WINDOW_HEIGHT;
         const x = Math.round(workArea.x + workArea.width - width - 20);
-        const y = Math.round(workArea.y + workArea.height - height - 40);
+        const y = Math.round(workArea.y + workArea.height - height - 20);
         try {
             win.setBounds({ x, y, width, height }, false);
             desktopFloatWindowState.bounds = { x, y, width, height };
