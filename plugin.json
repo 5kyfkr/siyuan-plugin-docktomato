@@ -2,7 +2,7 @@
     "name": "siyuan-plugin-docktomato",
     "author": "5kyfkr",
     "url": "https://github.com/5kyfkr/siyuan-plugin-docktomato",
-    "version": "1.8.5",
+    "version": "1.8.6",
     "minAppVersion": "3.5.10",
     "disabledInPublish": false,
     "backends": [
@@ -30,5 +30,6 @@
   },
     "keywords": ["tomato", "timer", "pomodoro", "dock"]
 }
+
 
 
