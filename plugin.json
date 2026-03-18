@@ -2,7 +2,7 @@
     "name": "siyuan-plugin-docktomato",
     "author": "5kyfkr",
     "url": "https://github.com/5kyfkr/siyuan-plugin-docktomato",
-    "version": "1.8.7",
+    "version": "1.8.8",
     "minAppVersion": "3.5.10",
     "disabledInPublish": false,
     "backends": [
@@ -17,7 +17,7 @@
     },
     "description": {
         "default": "A dock Tomato Timer for SiYuan.",
-        "zh_CN": "思源底栏番茄钟：支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动"
+        "zh_CN": "思源底栏番茄钟：支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动/思源移动端通知提醒"
     },
     "readme": {
         "default": "README.md",

@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.8.7
+// @version      1.8.8
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -5685,6 +5685,12 @@
         return isMobileDevice() || backend === 'android' || backend === 'harmony' || backend === 'ios' || !!getPlatformUtilsCompat();
     }
 
+    function shouldUseScheduledTimerNotificationBackend() {
+        // 桌面端只在计时真正结束时实时弹出通知，不预先预约系统通知；
+        // 移动端继续保留原有的预约/后台提醒逻辑。
+        return isOfficialMobileNotificationRuntime() && hasTrackedTimerNotificationBackend();
+    }
+
     function getPlatformUtilsCompat() {
         const globalPlatformUtils = globalThis.__tomatoPlatformUtils || globalThis.__taskHorizonPlatformUtils || null;
         if (globalPlatformUtils && (typeof globalPlatformUtils.sendNotification === 'function' || typeof globalPlatformUtils.cancelNotification === 'function')) {
@@ -6009,7 +6015,7 @@
     }
 
     async function ensureTrackedTimerNotification(reason = '', persist = true) {
-        if (!hasTrackedTimerNotificationBackend()) return false;
+        if (!shouldUseScheduledTimerNotificationBackend()) return false;
         const payload = buildTimerNotificationPayload(syncState);
         if (!payload) return false;
 
@@ -6048,7 +6054,9 @@
     }
 
     async function reconcileTrackedTimerNotification(reason = '', persist = true) {
-        if (!hasTrackedTimerNotificationBackend()) return false;
+        if (!shouldUseScheduledTimerNotificationBackend()) {
+            return cancelTrackedTimerNotification(reason || 'realtime-notification-only', persist);
+        }
         const currentStatus = String(syncState?.status || '').trim();
         const mode = String(syncState?.mode || timerMode || '').trim();
         if ((mode === 'countdown' || mode === 'break') && currentStatus === 'RUNNING') {
@@ -6175,8 +6183,8 @@
 
     function showToastDialog(title, message, type = 'info', taskBlockId = null, taskBlockName = null, reminderDateKey = null, reminderTimeKey = null) {
         if (type === 'tomato-end' || type === 'break-end') {
-            // 移动端/鸿蒙端已在“开始计时”时通过代理提醒预约；结束时仅桌面端补发浏览器通知。
-            if (!shouldPreferDeviceNotificationBackend()) {
+            // 桌面端改为真正结束时实时通知；移动端仍沿用开始时预约的系统通知。
+            if (!shouldUseScheduledTimerNotificationBackend()) {
                 showSystemNotification(title, message, {
                     icon: '/favicon.ico',
                     requireInteraction: true,
@@ -12019,7 +12027,7 @@
                 syncState.pausedElapsedSeconds = null;
             }
 
-            if ((timerMode === 'countdown' || timerMode === 'break') && hasTrackedTimerNotificationBackend()) {
+            if ((timerMode === 'countdown' || timerMode === 'break') && shouldUseScheduledTimerNotificationBackend()) {
                 try {
                     const scheduled = await ensureTrackedTimerNotification('start-timer', false);
                     if (scheduled) {
@@ -12452,16 +12460,61 @@
         await setTaskAssociation(null, null, null);
     }
 
+    function __sanitizeTaskAssociationName(name) {
+        let text = String(name || '').split(/\r?\n/)[0].trim();
+        if (!text) return '';
+        text = text.replace(/\{\:\s*[^}]*\}/g, '');
+        text = text.replace(/<[^>]+>/g, '');
+        text = text.replace(/^[\s>*-]*\[[xX ]\]\s*/, '');
+        text = text.replace(/^[\s>*-]+/, '');
+        text = text.replace(/\s+/g, ' ').trim();
+        return text;
+    }
+
+    function __isGenericTaskAssociationName(name) {
+        const text = __sanitizeTaskAssociationName(name);
+        if (!text) return true;
+        return text === '任务'
+            || text === '未命名任务'
+            || text === '未知任务'
+            || text === '数据库任务';
+    }
+
+    async function __resolveTaskAssociationName(taskBlockId, taskBlockName) {
+        const id = String(taskBlockId || '').trim();
+        const rawName = __sanitizeTaskAssociationName(taskBlockName);
+        if (!id) return rawName;
+        if (!__isGenericTaskAssociationName(rawName)) return rawName;
+        try {
+            const bridge = globalThis?.['siyuan-plugin-task-horizon']?.aiBridge;
+            if (bridge && typeof bridge.getTaskSnapshot === 'function') {
+                const task = await bridge.getTaskSnapshot(id, { forceFresh: true });
+                const nextName = __sanitizeTaskAssociationName(task?.content || '');
+                if (nextName && !__isGenericTaskAssociationName(nextName)) return nextName;
+            }
+        } catch (e) {}
+        try {
+            const nextName = __sanitizeTaskAssociationName(await getBlockContent(id) || '');
+            if (nextName && !__isGenericTaskAssociationName(nextName)) return nextName;
+        } catch (e) {}
+        return rawName;
+    }
+
     async function setTaskAssociation(taskBlockId, taskBlockName, databaseBlockId) {
         const prevTaskBlockId = currentTaskBlockId;
         const prevDatabaseBlockId = currentDatabaseBlockId;
         localAssociationChangedAtMs = Date.now();
-        currentTaskBlockId = taskBlockId || null;
-        currentTaskBlockName = taskBlockName || null;
+        const resolvedTaskBlockId = String(taskBlockId || '').trim() || null;
+        const fallbackTaskBlockName = __sanitizeTaskAssociationName(taskBlockName) || String(taskBlockName || '').trim() || null;
+        const resolvedTaskBlockName = resolvedTaskBlockId
+            ? (await __resolveTaskAssociationName(resolvedTaskBlockId, taskBlockName) || fallbackTaskBlockName)
+            : null;
+        currentTaskBlockId = resolvedTaskBlockId;
+        currentTaskBlockName = resolvedTaskBlockName || null;
         currentDatabaseBlockId = databaseBlockId || null;
         
         // 🔧 修复：清除关联时，同时清除日常按钮的状态，恢复默认图标
-        if (!taskBlockId) {
+        if (!resolvedTaskBlockId) {
             activeRoutineButtonIndex = null;
             activeRoutineButtonBlockId = null;
             clearRoutineButtonRunningHighlight(false);
@@ -13117,6 +13170,7 @@
 
         try { if (timerId !== null) clearInterval(timerId); } catch (e) {}
         timerId = null;
+        try { await cancelTrackedTimerNotification('complete-timer', false); } catch (e) {}
 
         const wasStopwatch = timerMode === 'stopwatch' || timerMode === 'stopwatch-break';
         await recordEndTime(false, wasStopwatch, { isCompleted: true, plannedDurationOverride: 'elapsed' });
