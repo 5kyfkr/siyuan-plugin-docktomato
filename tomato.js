@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.8.5
+// @version      1.8.9
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -557,12 +557,13 @@
             }
 
             // 将同一轮按钮点击内的多次状态写入合并成一次思源同步。
+            // 🔧 修改：增加延迟时间到2秒，避免与 handleAppResumeRefresh 的执行时间冲突
             this._pendingSiyuanSyncTimer = setTimeout(async () => {
                 const mergedForceSync = !!this._pendingSiyuanSyncForce;
                 this._pendingSiyuanSyncTimer = null;
                 this._pendingSiyuanSyncForce = false;
                 await this.triggerSiyuanSync(mergedForceSync);
-            }, 800);
+            }, 2000);
         },
 
         // 🔧 v9.5: 尝试触发思源笔记的云端同步
@@ -579,6 +580,13 @@
                 // 但暂停、停止等关键状态变化应该优先于节流
                 const now = Date.now();
                 const MIN_SYNC_INTERVAL = 10000;
+                
+                // 🔧 新增：如果当前有待执行的延迟同步触发，立即清除并更新时间戳
+                // 避免延迟触发在后续被重复执行
+                if (this._pendingSiyuanSyncTimer) {
+                    try { clearTimeout(this._pendingSiyuanSyncTimer); } catch (e) {}
+                    this._pendingSiyuanSyncTimer = null;
+                }
                 
                 if (!forceSync && this._lastSyncTime && now - this._lastSyncTime < MIN_SYNC_INTERVAL) {
                     // Logger.debug('🔄 SyncManager: 同步请求过于频繁，跳过触发思源同步');
@@ -1069,6 +1077,7 @@
     let lastKnownSyncSignature = '';
     let lastResumeRefreshAtMs = 0;
     let resumeRefreshRunning = false;
+    let __globalAppResumeSyncLock = false; // 🔧 新增：全局恢复同步锁，防止多次同步
     let lastKnownAppDateKey = null;
     let appResumeListenersInstalled = false;
     let appResumeVisibilityHandler = null;
@@ -1282,6 +1291,14 @@
         try {
             if (__tomatoDestroyed) return;
             if (resumeRefreshRunning) return;
+            
+            // 🔧 新增：全局同步锁，防止一次恢复触发多轮同步
+            if (__globalAppResumeSyncLock) {
+                Logger.debug('🔄 handleAppResumeRefresh: 同步进行中，跳过此次触发');
+                return;
+            }
+            __globalAppResumeSyncLock = true;
+            
             const now = Date.now();
             const normalizedSource = String(source || '').trim() || 'unknown';
             const lastSource = String(handleAppResumeRefresh._lastSource || '').trim();
@@ -1301,6 +1318,8 @@
             handleAppResumeRefresh._lastSourceAt = now;
             lastResumeRefreshAtMs = now;
             resumeRefreshRunning = true;
+            // 🔧 新增：设置全局同步锁
+            // handleAppResumeRefresh._isSyncing = true;
 
             const lastNow = handleAppResumeRefresh._lastNow;
             handleAppResumeRefresh._lastNow = now;
@@ -1311,6 +1330,9 @@
             if (nowDateKey) lastKnownAppDateKey = nowDateKey;
             const longGap = gapMs > 300000 || dayChanged;
 
+            // 🔧 简化逻辑：移除单独的 triggerSiyuanSync 调用，由 poll(true) 统一处理同步
+            // 避免在一次恢复操作中触发多次思源同步
+            /*
             try {
                 const needsSiyuanSync = isSyncEnabled() && (gapMs > 30000 || dayChanged);
                 if (needsSiyuanSync && SyncManager && typeof SyncManager.triggerSiyuanSync === 'function') {
@@ -1323,6 +1345,7 @@
                     }
                 }
             } catch (e) {}
+            */
 
             const prevSig = buildSyncSignature(syncState);
             try {
@@ -1405,6 +1428,9 @@
         } catch (e) {
         } finally {
             resumeRefreshRunning = false;
+            // 🔧 释放全局同步锁
+            __globalAppResumeSyncLock = false;
+            // handleAppResumeRefresh._isSyncing = false;
         }
     }
     
@@ -2161,6 +2187,7 @@
             breakDurations: DEFAULT_BREAK_DURATIONS,
             debugMode: DEFAULT_DEBUG_MODE,
             enableMobileSupport: DEFAULT_ENABLE_MOBILE_SUPPORT,
+            showMobileBreadcrumbButton: true,
             enableDesktopMinimizedFloatWindow: true,
             enableFocusMode: true,
             focusModeDimOpacity: 0.5,
@@ -2274,6 +2301,7 @@
         userSettings.main.breakDurations = normalizeMinuteList(userSettings.main.breakDurations, DEFAULT_BREAK_DURATIONS);
         userSettings.main.debugMode = userSettings.main.debugMode === true;
         userSettings.main.enableMobileSupport = userSettings.main.enableMobileSupport !== false;
+        if (typeof userSettings.main.showMobileBreadcrumbButton !== 'boolean') userSettings.main.showMobileBreadcrumbButton = true;
         if (typeof userSettings.main.enableDesktopMinimizedFloatWindow !== 'boolean') userSettings.main.enableDesktopMinimizedFloatWindow = true;
         if (typeof userSettings.main.enableFocusMode !== 'boolean') userSettings.main.enableFocusMode = true;
         {
@@ -2312,6 +2340,9 @@
     };
     const isMobileSupportEnabled = () => {
         try { return userSettings?.main?.enableMobileSupport !== false; } catch (e) { return DEFAULT_ENABLE_MOBILE_SUPPORT; }
+    };
+    const isMobileBreadcrumbButtonEnabled = () => {
+        try { return userSettings?.main?.showMobileBreadcrumbButton !== false; } catch (e) { return true; }
     };
     const isDesktopMinimizedFloatWindowEnabled = () => {
         try { return !isMobileDevice() && userSettings?.main?.enableDesktopMinimizedFloatWindow !== false; } catch (e) { return false; }
@@ -5659,6 +5690,12 @@
         return isMobileDevice() || backend === 'android' || backend === 'harmony' || backend === 'ios' || !!getPlatformUtilsCompat();
     }
 
+    function shouldUseScheduledTimerNotificationBackend() {
+        // 桌面端只在计时真正结束时实时弹出通知，不预先预约系统通知；
+        // 移动端继续保留原有的预约/后台提醒逻辑。
+        return isOfficialMobileNotificationRuntime() && hasTrackedTimerNotificationBackend();
+    }
+
     function getPlatformUtilsCompat() {
         const globalPlatformUtils = globalThis.__tomatoPlatformUtils || globalThis.__taskHorizonPlatformUtils || null;
         if (globalPlatformUtils && (typeof globalPlatformUtils.sendNotification === 'function' || typeof globalPlatformUtils.cancelNotification === 'function')) {
@@ -5983,7 +6020,7 @@
     }
 
     async function ensureTrackedTimerNotification(reason = '', persist = true) {
-        if (!hasTrackedTimerNotificationBackend()) return false;
+        if (!shouldUseScheduledTimerNotificationBackend()) return false;
         const payload = buildTimerNotificationPayload(syncState);
         if (!payload) return false;
 
@@ -6022,7 +6059,9 @@
     }
 
     async function reconcileTrackedTimerNotification(reason = '', persist = true) {
-        if (!hasTrackedTimerNotificationBackend()) return false;
+        if (!shouldUseScheduledTimerNotificationBackend()) {
+            return cancelTrackedTimerNotification(reason || 'realtime-notification-only', persist);
+        }
         const currentStatus = String(syncState?.status || '').trim();
         const mode = String(syncState?.mode || timerMode || '').trim();
         if ((mode === 'countdown' || mode === 'break') && currentStatus === 'RUNNING') {
@@ -6149,8 +6188,8 @@
 
     function showToastDialog(title, message, type = 'info', taskBlockId = null, taskBlockName = null, reminderDateKey = null, reminderTimeKey = null) {
         if (type === 'tomato-end' || type === 'break-end') {
-            // 移动端/鸿蒙端已在“开始计时”时通过代理提醒预约；结束时仅桌面端补发浏览器通知。
-            if (!shouldPreferDeviceNotificationBackend()) {
+            // 桌面端改为真正结束时实时通知；移动端仍沿用开始时预约的系统通知。
+            if (!shouldUseScheduledTimerNotificationBackend()) {
                 showSystemNotification(title, message, {
                     icon: '/favicon.ico',
                     requireInteraction: true,
@@ -6165,8 +6204,11 @@
             reminderIntervalId = null;
         }
 
-        const existing = document.getElementById('tomy-tomato-toast');
-        if (existing) existing.remove();
+        const existingBackdrop = document.getElementById('tomy-tomato-backdrop');
+        if (existingBackdrop) existingBackdrop.remove();
+        
+        const existingToast = document.getElementById('tomy-tomato-toast');
+        if (existingToast) existingToast.remove();
 
         // 保存任务块信息供弹窗按钮使用
         const savedTaskBlockId = taskBlockId;
@@ -6179,8 +6221,13 @@
         backdrop.id = 'tomy-tomato-backdrop';
         backdrop.style.cssText = `
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: rgba(0, 0, 0, 0.3); z-index: 2147483646; pointer-events: none;
+            background: rgba(0, 0, 0, 0.3); z-index: 2147483646;
         `;
+        backdrop.onclick = (e) => {
+            if (e.target === backdrop) {
+                closeDialog();
+            }
+        };
 
         const dialog = document.createElement('div');
         dialog.id = 'tomy-tomato-toast';
@@ -11729,6 +11776,11 @@
         // 防止暂停后定时器继续运行
         if (isTimerPaused) return;
         
+        // 🔧 新增：全局同步锁，防止与 handleAppResumeRefresh 同时触发导致重复同步
+        if (__globalAppResumeSyncLock || handleTimerTick._isSyncing) {
+            return;
+        }
+        
         const now = Date.now();
         const lastNow = handleTimerTick._lastNow;
         handleTimerTick._lastNow = now;
@@ -11741,6 +11793,8 @@
         if (shouldAttemptResync && !handleTimerTick._resumeSyncing) {
             handleTimerTick._lastResumeSyncAt = now;
             handleTimerTick._resumeSyncing = true;
+            // 🔧 新增：设置全局同步锁
+            // handleTimerTick._isSyncing = true;
             (async () => {
                 try {
                     if (typeof SyncManager.triggerSiyuanSync === 'function') {
@@ -11760,6 +11814,8 @@
                 try { if (userSettings?.timeline?.enabled) updateTimelineBar(true); } catch (e) {}
             })().finally(() => {
                 handleTimerTick._resumeSyncing = false;
+                // 🔧 释放全局同步锁
+                // handleTimerTick._isSyncing = false;
             });
         }
             
@@ -11976,7 +12032,7 @@
                 syncState.pausedElapsedSeconds = null;
             }
 
-            if ((timerMode === 'countdown' || timerMode === 'break') && hasTrackedTimerNotificationBackend()) {
+            if ((timerMode === 'countdown' || timerMode === 'break') && shouldUseScheduledTimerNotificationBackend()) {
                 try {
                     const scheduled = await ensureTrackedTimerNotification('start-timer', false);
                     if (scheduled) {
@@ -12409,16 +12465,61 @@
         await setTaskAssociation(null, null, null);
     }
 
+    function __sanitizeTaskAssociationName(name) {
+        let text = String(name || '').split(/\r?\n/)[0].trim();
+        if (!text) return '';
+        text = text.replace(/\{\:\s*[^}]*\}/g, '');
+        text = text.replace(/<[^>]+>/g, '');
+        text = text.replace(/^[\s>*-]*\[[xX ]\]\s*/, '');
+        text = text.replace(/^[\s>*-]+/, '');
+        text = text.replace(/\s+/g, ' ').trim();
+        return text;
+    }
+
+    function __isGenericTaskAssociationName(name) {
+        const text = __sanitizeTaskAssociationName(name);
+        if (!text) return true;
+        return text === '任务'
+            || text === '未命名任务'
+            || text === '未知任务'
+            || text === '数据库任务';
+    }
+
+    async function __resolveTaskAssociationName(taskBlockId, taskBlockName) {
+        const id = String(taskBlockId || '').trim();
+        const rawName = __sanitizeTaskAssociationName(taskBlockName);
+        if (!id) return rawName;
+        if (!__isGenericTaskAssociationName(rawName)) return rawName;
+        try {
+            const bridge = globalThis?.['siyuan-plugin-task-horizon']?.aiBridge;
+            if (bridge && typeof bridge.getTaskSnapshot === 'function') {
+                const task = await bridge.getTaskSnapshot(id, { forceFresh: true });
+                const nextName = __sanitizeTaskAssociationName(task?.content || '');
+                if (nextName && !__isGenericTaskAssociationName(nextName)) return nextName;
+            }
+        } catch (e) {}
+        try {
+            const nextName = __sanitizeTaskAssociationName(await getBlockContent(id) || '');
+            if (nextName && !__isGenericTaskAssociationName(nextName)) return nextName;
+        } catch (e) {}
+        return rawName;
+    }
+
     async function setTaskAssociation(taskBlockId, taskBlockName, databaseBlockId) {
         const prevTaskBlockId = currentTaskBlockId;
         const prevDatabaseBlockId = currentDatabaseBlockId;
         localAssociationChangedAtMs = Date.now();
-        currentTaskBlockId = taskBlockId || null;
-        currentTaskBlockName = taskBlockName || null;
+        const resolvedTaskBlockId = String(taskBlockId || '').trim() || null;
+        const fallbackTaskBlockName = __sanitizeTaskAssociationName(taskBlockName) || String(taskBlockName || '').trim() || null;
+        const resolvedTaskBlockName = resolvedTaskBlockId
+            ? (await __resolveTaskAssociationName(resolvedTaskBlockId, taskBlockName) || fallbackTaskBlockName)
+            : null;
+        currentTaskBlockId = resolvedTaskBlockId;
+        currentTaskBlockName = resolvedTaskBlockName || null;
         currentDatabaseBlockId = databaseBlockId || null;
         
         // 🔧 修复：清除关联时，同时清除日常按钮的状态，恢复默认图标
-        if (!taskBlockId) {
+        if (!resolvedTaskBlockId) {
             activeRoutineButtonIndex = null;
             activeRoutineButtonBlockId = null;
             clearRoutineButtonRunningHighlight(false);
@@ -13074,6 +13175,7 @@
 
         try { if (timerId !== null) clearInterval(timerId); } catch (e) {}
         timerId = null;
+        try { await cancelTrackedTimerNotification('complete-timer', false); } catch (e) {}
 
         const wasStopwatch = timerMode === 'stopwatch' || timerMode === 'stopwatch-break';
         await recordEndTime(false, wasStopwatch, { isCompleted: true, plannedDurationOverride: 'elapsed' });
@@ -19155,7 +19257,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (timerMode === 'break') modeText = '休息';
         else if (timerMode === 'stopwatch') modeText = '正计时';
         else if (timerMode === 'stopwatch-break') modeText = '正计时休息';
-        const hideModeText = timerMode === 'countdown' || timerMode === 'stopwatch-break';
+        const hideModeText = true;
         const taskText = String(currentTaskBlockName || '').trim()
             || (currentTaskBlockId ? '关联任务' : (currentDatabaseBlockId ? '关联数据库' : '未关联任务'));
         let liveTimerKind = 'static';
@@ -19351,7 +19453,7 @@ function __formatSeconds(totalSeconds) {
 
 function __syncDesiredWidth(totalSeconds) {
     var seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
-    var nextWidth = seconds >= 3600 ? 120 : 100;
+    var nextWidth = seconds >= 3600 ? 120 : 90;
     if (__lastRequestedWidth === nextWidth) return;
     __lastRequestedWidth = nextWidth;
     if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
@@ -19628,7 +19730,7 @@ window.__setTomatoFloatState = function (payload) {
         const width = DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT;
         const height = DESKTOP_FLOAT_WINDOW_HEIGHT;
         const x = Math.round(workArea.x + workArea.width - width - 20);
-        const y = Math.round(workArea.y + workArea.height - height - 40);
+        const y = Math.round(workArea.y + workArea.height - height - 20);
         try {
             win.setBounds({ x, y, width, height }, false);
             desktopFloatWindowState.bounds = { x, y, width, height };
@@ -24609,12 +24711,31 @@ window.__setTomatoFloatState = function (payload) {
                 if (!isMobileSupportEnabled()) {
                     try { cleanupFloatBarEvents(); } catch (e) {}
                     try { document.getElementById('siyuan-tomato-float-bar')?.remove(); } catch (e) {}
-                    try { document.getElementById('tomato-breadcrumb-btn')?.remove(); } catch (e) {}
+                    try { removeMobileBreadcrumbButton(); } catch (e) {}
                 } else {
                     try { debouncedInject(); } catch (e) {}
                 }
             } catch (e) {}
         });
+
+        mkToggleRow('显示移动端文档顶栏番茄按钮', userSettings?.main?.showMobileBreadcrumbButton !== false, async (e) => {
+            userSettings.main.showMobileBreadcrumbButton = e.target.checked;
+            await saveUserSettings();
+            try {
+                if (userSettings.main.showMobileBreadcrumbButton) {
+                    observeBreadcrumbForMobile();
+                    addMobileBreadcrumbButton();
+                } else {
+                    removeMobileBreadcrumbButton();
+                }
+            } catch (e2) {}
+        });
+        {
+            const hint = document.createElement('div');
+            hint.textContent = '关闭后，移动端文档顶栏不再显示用于切换番茄悬浮条的按钮';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
+            togglesSection.appendChild(hint);
+        }
 
         mkToggleRow('启用思源最小化后悬浮窗（桌面端）', userSettings?.main?.enableDesktopMinimizedFloatWindow !== false, async (e) => {
             userSettings.main.enableDesktopMinimizedFloatWindow = e.target.checked;
@@ -26523,8 +26644,21 @@ window.__setTomatoFloatState = function (payload) {
      */
     let mobileBreadcrumbNextTimer = null;
     let mobileBreadcrumbNextTries = 0;
+    function removeMobileBreadcrumbButton() {
+        try { document.getElementById('tomato-breadcrumb-btn')?.remove(); } catch (e) {}
+        try {
+            if (mobileBreadcrumbNextTimer != null) {
+                clearTimeout(mobileBreadcrumbNextTimer);
+                mobileBreadcrumbNextTimer = null;
+            }
+        } catch (e) {}
+        mobileBreadcrumbNextTries = 0;
+    }
     function addMobileBreadcrumbButton() {
-        if (!isMobileDevice() || !isMobileSupportEnabled()) return;
+        if (!isMobileDevice() || !isMobileSupportEnabled() || !isMobileBreadcrumbButtonEnabled()) {
+            removeMobileBreadcrumbButton();
+            return;
+        }
         if (__tomatoDestroyed) return;
 
         // 检查是否已存在按钮
@@ -26648,7 +26782,11 @@ window.__setTomatoFloatState = function (payload) {
      * 在面包屑按钮之后监听面包屑栏变化，及时添加按钮
      */
     function observeBreadcrumbForMobile() {
-        if (!isMobileDevice() || !isMobileSupportEnabled()) return;
+        if (!isMobileDevice() || !isMobileSupportEnabled() || !isMobileBreadcrumbButtonEnabled()) return;
+        if (window.tomatoBreadcrumbObserver) {
+            addMobileBreadcrumbButton();
+            return;
+        }
 
         // 先尝试添加一次
         addMobileBreadcrumbButton();
@@ -28704,10 +28842,11 @@ window.__setTomatoFloatState = function (payload) {
         const syncEveryVisibility = () => {
             const show = selectedInterval !== 'once';
             everySection.style.display = show ? 'flex' : 'none';
+            try { syncEndDateVisibility(); } catch (e) {}
+            try { syncEndDateConstraints(); } catch (e) {}
             if (!show) return;
             const unit = selectedInterval === 'daily' ? '天' : selectedInterval === 'weekly' ? '周' : selectedInterval === 'monthly' ? '月' : selectedInterval === 'yearly' ? '年' : '';
             everyUnit.textContent = unit || '';
-            try { syncEndDateVisibility(); } catch (e) {}
         };
         everyInput.oninput = () => {
             const n = parseInt(everyInput.value, 10);
@@ -28725,7 +28864,7 @@ window.__setTomatoFloatState = function (payload) {
         const dateSection = document.createElement('div');
         dateSection.style.cssText = 'margin-bottom:20px;';
         const dateLabel = document.createElement('div');
-        dateLabel.textContent = '日期（仅一次/每周/每月/每年参考）';
+        dateLabel.textContent = '开始日期';
         dateLabel.style.cssText = 'font-size:14px;font-weight:500;margin-bottom:8px;';
         dateSection.appendChild(dateLabel);
         const dateInput = document.createElement('input');
@@ -28734,7 +28873,7 @@ window.__setTomatoFloatState = function (payload) {
         dateInput.style.cssText = 'width:100%;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
         dateSection.appendChild(dateInput);
         const dateHint = document.createElement('div');
-        dateHint.textContent = '“仅一次”：在该日期提醒；“每周”：以该日期的周几为基准；“每月/每年”：以该日期的日号/年月日为基准';
+        dateHint.textContent = '支持设置未来日期作为循环起点；“仅一次”在该日期提醒，“每天”从该日期开始，“每周/每月/每年”以该日期为循环基准';
         dateHint.style.cssText = 'margin-top:6px;font-size:11px;color:var(--b3-theme-on-surface-light);line-height:1.4;';
         dateSection.appendChild(dateHint);
         content.appendChild(dateSection);
@@ -28776,7 +28915,10 @@ window.__setTomatoFloatState = function (payload) {
                 nextInfo.textContent = '下次提醒：—';
             }
         };
-        dateInput.onchange = () => updateNextInfo();
+        dateInput.onchange = () => {
+            try { syncEndDateConstraints(); } catch (e) {}
+            updateNextInfo();
+        };
 
         const renderTimeInputs = () => {
             timeListContainer.innerHTML = '';
@@ -28832,6 +28974,10 @@ window.__setTomatoFloatState = function (payload) {
             const show = selectedInterval !== 'once';
             endDateSection.style.display = show ? 'block' : 'none';
         };
+        const syncEndDateConstraints = () => {
+            const startDate = String(dateInput.value || '').trim();
+            endDateInput.min = selectedInterval !== 'once' && startDate ? startDate : '';
+        };
         endDateInput.onchange = () => {
             try { updateNextInfo(); } catch (e) {}
         };
@@ -28842,6 +28988,7 @@ window.__setTomatoFloatState = function (payload) {
         endDateSection.appendChild(endDateHint);
         content.appendChild(endDateSection);
         syncEndDateVisibility();
+        syncEndDateConstraints();
 
         const noteSection = document.createElement('div');
         noteSection.style.cssText = 'margin-bottom:20px;';
@@ -28892,6 +29039,11 @@ window.__setTomatoFloatState = function (payload) {
             if (normalizedTimes.length === 0) normalizedTimes.push('09:00');
             const startDate = String(dateInput.value || '').trim() || formatDateKey(new Date());
             const endDate = String(endDateInput.value || '').trim();
+            if (selectedInterval !== 'once' && endDate && endDate < startDate) {
+                showMiniToast('截止日期不能早于开始日期');
+                try { endDateInput.focus(); } catch (e) {}
+                return;
+            }
             const customName = String(nameInput.value || '').trim();
             const reminderData = {
                 blockId,
@@ -29210,12 +29362,14 @@ window.__setTomatoFloatState = function (payload) {
         // 获取截止日期
         const endDate = reminder?.endDate ? String(reminder.endDate).trim() : null;
 
+        const isBeforeStartDate = (dateKey) => dateKey < startKey;
         const isBeyondEndDate = (dateKey) => {
             if (!endDate) return false;
             return dateKey > endDate;
         };
 
         const pickOnDate = (dateKey, requireFutureTime) => {
+            if (isBeforeStartDate(dateKey) || isBeyondEndDate(dateKey)) return null;
             const base = new Date(dateKey + 'T00:00:00');
             if (isNaN(base.getTime())) return null;
             for (const t of times) {
@@ -29232,7 +29386,7 @@ window.__setTomatoFloatState = function (payload) {
         };
 
         const pickEarliest = (dateKey) => {
-            if (isBeyondEndDate(dateKey)) return null;
+            if (isBeforeStartDate(dateKey) || isBeyondEndDate(dateKey)) return null;
             return pickOnDate(dateKey, false);
         };
 
@@ -29255,6 +29409,7 @@ window.__setTomatoFloatState = function (payload) {
             if (offset < 0) offset += every;
             let candidateDay = new Date(fromDay);
             if (offset !== 0) candidateDay.setDate(candidateDay.getDate() + (every - offset));
+            if (candidateDay.getTime() < anchor.getTime()) candidateDay = new Date(anchor);
             for (let i = 0; i < 366; i++) {
                 const candidateKey = formatDateKey(candidateDay);
                 if (isBeyondEndDate(candidateKey)) return null;
