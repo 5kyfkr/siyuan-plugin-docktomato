@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.8.9
+// @version      1.9.0
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -12231,6 +12231,37 @@
     let currentSessionId = null;
     // 🔧 v9.5 新增：保存番茄钟完成后的 sessionId，供休息记录使用
     let pendingBreakSessionId = null;
+    let isTimerFinalizing = false;
+
+    async function withTimerFinalizationLock(actionName, action) {
+        if (isTimerFinalizing) {
+            Logger.info('🔍 跳过重复的结束操作:', actionName);
+            return false;
+        }
+        isTimerFinalizing = true;
+        try {
+            await action();
+            return true;
+        } finally {
+            isTimerFinalizing = false;
+        }
+    }
+
+    function hasExactHistoryDuplicate(records, recordData) {
+        const list = Array.isArray(records) ? records : [];
+        if (!recordData) return false;
+        return list.some(record =>
+            String(record?.start || '') === String(recordData.start || '') &&
+            String(record?.end || '') === String(recordData.end || '') &&
+            String(record?.mode || '') === String(recordData.mode || '') &&
+            Number(record?.durationSec || 0) === Number(recordData.durationSec || 0) &&
+            Number(record?.durationMin || 0) === Number(recordData.durationMin || 0) &&
+            String(record?.taskBlockId || '') === String(recordData.taskBlockId || '') &&
+            String(record?.databaseBlockId || '') === String(recordData.databaseBlockId || '') &&
+            Boolean(record?.wasReset) === Boolean(recordData.wasReset) &&
+            Boolean(record?.isCompleted) === Boolean(recordData.isCompleted)
+        );
+    }
     
     async function recordEndTime(isReset = false, isStopwatch = false, options = null) {
         const isCompleted = options?.isCompleted === true;
@@ -12368,24 +12399,40 @@
             if (userSettings.hideShortRecords && Number(durationSecToSave || 0) < 60) {
                 Logger.info('🔍 recordEndTime: 时长小于1分钟且开启隐藏短记录，跳过保存');
             } else {
+                const pushRecordIfNeeded = () => {
+                    if (hasExactHistoryDuplicate(records, recordData)) {
+                        Logger.info('🔍 recordEndTime: 检测到完全重复记录，跳过保存', {
+                            start: recordData.start,
+                            end: recordData.end,
+                            mode: recordData.mode
+                        });
+                        return false;
+                    }
+                    records.push(recordData);
+                    return true;
+                };
+                let didAppendRecord = false;
+
                 if (timerMode === 'break' || timerMode === 'stopwatch-break') {
                     recordData.mode = timerMode === 'break' ? 'break' : 'stopwatch-break';
                     // 🔧 v9.5：休息记录使用保存的 sessionId
                     recordData.sessionId = currentSessionId || pendingBreakSessionId;
                     recordData.plannedDuration = currentDuration;
-                    records.push(recordData);
+                    didAppendRecord = pushRecordIfNeeded();
                 } 
                 else if (timerMode === 'countdown') {
                     // 🔧 v9.5 修改：移除合并逻辑，每次暂停/恢复都作为独立记录保存
                     // 通过 sessionId 在统计时去重，确保计划时间只计算一次
-                    records.push(recordData);
+                    didAppendRecord = pushRecordIfNeeded();
                     isFreshTomatoStart = false;
                 }
                 else if (timerMode === 'stopwatch') {
-                    records.push(recordData);
+                    didAppendRecord = pushRecordIfNeeded();
                 }
 
-                await saveHistoryRecords(records);
+                if (didAppendRecord) {
+                    await saveHistoryRecords(records);
+                }
                 lastSavedDistractionCount = syncedDistractionTotal || 0;
                 // 🔧 清除按钮高亮设置（记录已保存）
                 // 注意：只清除颜色，保留 activeRoutineButtonIndex 供新按钮使用
@@ -12397,8 +12444,10 @@
                         await SyncManager.updateLocal(syncState, true);
                     } catch (e) {}
                 }
-                Logger.info('✅ 记录已保存');
-                markTimelineHistoryDirty();
+                if (didAppendRecord) {
+                    Logger.info('✅ 记录已保存');
+                    markTimelineHistoryDirty();
+                }
             }
 
             // 🔧 v9.5：如果这是番茄钟记录，保存 sessionId 供休息记录使用
@@ -12951,257 +13000,281 @@
     }
 
     async function resetCurrentMode() {
-        isTimerPaused = false;
-        // 注意：不再自动清除任务块关联，用户可以通过📋️图标的删除按钮手动清除
+        return withTimerFinalizationLock('reset-current-mode', async () => {
+            const wasPaused = !!isTimerPaused;
+            isTimerPaused = false;
+            // 注意：不再自动清除任务块关联，用户可以通过📋️图标的删除按钮手动清除
 
-        if (timerMode === 'break' || timerMode === 'stopwatch-break') {
-            if (isRunning) {
+            if (timerMode === 'break' || timerMode === 'stopwatch-break') {
+                if (isRunning) {
+                    if (timerId !== null) clearInterval(timerId);
+                    timerId = null;
+                    isRunning = false;
+                    isTimerPaused = false;
+                    startTime = 0;
+                    lastTickTime = 0;
+                    await recordEndTime(true);
+                } else if (currentStartTimestamp) {
+                    await recordEndTime(true);
+                }
+
+                if (preBreakState) {
+                    if (preBreakState.mode === 'countdown') {
+                        timerMode = 'countdown';
+                        // 🔧 修复：同步更新 syncState.mode
+                        syncState.mode = 'countdown';
+                        currentDuration = preBreakState.currentDuration;
+                        remainingSeconds = preBreakState.remainingSeconds;
+                        pausedRemainingSeconds = preBreakState.remainingSeconds;
+                        isRunning = false;
+                        currentStartTimestamp = null;
+                        currentStartTimeMs = 0;
+                        isFreshTomatoStart = false;
+                        lastTickTime = 0;
+                        // 🔧 修复：继续休息后保持高亮
+                        if (controlButton) controlButton.innerHTML = '▶️';
+                        updateDisplay();
+                    } else if (preBreakState.mode === 'stopwatch') {
+                        timerMode = 'stopwatch';
+                        // 🔧 修复：同步更新 syncState.mode
+                        syncState.mode = 'stopwatch';
+                        // 🔧 修复：保存休息前的时间作为显示偏移，实际计时从0开始
+                        stopwatchDisplayOffset = preBreakState.elapsedSeconds || 0;
+                        elapsedSeconds = 0;
+                        // 🔧 修复：清除开始时间，让 startTimer 设置新的开始时间
+                        stopwatchStartTimestamp = null;
+                        stopwatchStartTimeMs = 0;
+                        isRunning = false;
+                        pausedRemainingSeconds = null;
+                        isFreshTomatoStart = false;
+                        lastTickTime = 0;
+                        // 🔧 修复：恢复后显示待开始按钮
+                        if (controlButton) controlButton.innerHTML = '▶️';
+                        updateDisplay();
+                    }
+                } else {
+                    if (timerMode === 'break') {
+                        timerMode = 'break';
+                        syncState.mode = 'break';
+                        syncState.duration = Math.max(1, Math.round(currentDuration * 60));
+                        remainingSeconds = currentDuration * 60;
+                        isRunning = false;
+                        isTimerPaused = false;
+                        pausedRemainingSeconds = null;
+                        currentStartTimestamp = null;
+                        currentStartTimeMs = 0;
+                        lastTickTime = 0;
+                        isFreshTomatoStart = false;
+                        if (controlButton) controlButton.innerHTML = '▶️';
+                        updateDisplay();
+                    } else {
+                        timerMode = 'stopwatch-break';
+                        syncState.mode = 'stopwatch-break';
+                        elapsedSeconds = 0;
+                        isRunning = false;
+                        isTimerPaused = false;
+                        pausedRemainingSeconds = null;
+                        lastTickTime = 0;
+                        startTime = 0;
+                        stopwatchStartTimestamp = null;
+                        stopwatchStartTimeMs = 0;
+                        isFreshTomatoStart = false;
+                        if (controlButton) controlButton.innerHTML = '▶️';
+                        updateDisplay();
+                    }
+                }
+                
+                // 🔧 v9.0 修复：休息模式重置后必须同步状态到云端，否则轮询会覆盖本地状态
+                if (timerMode === 'countdown' || timerMode === 'break' || timerMode === 'stopwatch-break') {
+                    try { await cancelTrackedTimerNotification('reset-timer', false); } catch (e) {}
+                }
+                if (isSyncEnabled() && SyncManager.updateLocal) {
+                    syncState.status = 'IDLE';
+                    syncState.startTime = null;
+                    syncState.stopwatchStartTimeMs = null;
+                    syncState.stopwatchDisplayOffset = 0;
+                    syncState.pausedIntervals = [];
+                    syncState.currentPauseStart = null;
+                    syncState.pausedElapsedSeconds = null;
+                    syncState.distractionCount = 0;
+                    syncState.distractionSavedCount = 0;
+                    // 清除 preBreakState，避免云端恢复时再次进入休息前状态
+                    preBreakState = null;
+                    await SyncManager.updateLocal(syncState, true);
+                    Logger.info('🔄 休息模式重置状态已同步到云端');
+                }
+                clearRoutineButtonRunningHighlight(true);
+                return;
+            }
+            
+            if (timerMode === 'countdown') {
+                if (isRunning || (currentStartTimestamp && remainingSeconds < currentDuration * 60)) {
+                    Logger.info('🔍 resetCurrentMode: 倒计时重置，准备保存记录');
+                    Logger.info('🔍 resetCurrentMode: isRunning =', isRunning, ', currentStartTimestamp =', currentStartTimestamp);
+                    Logger.info('🔍 resetCurrentMode: currentTaskBlockId =', currentTaskBlockId);
+                    if (timerId !== null) clearInterval(timerId);
+                    timerId = null;
+                    isRunning = false;
+                    isTimerPaused = false;
+                    startTime = 0;
+                    lastTickTime = 0;
+                    await recordEndTime(true);
+                } else if (syncState && syncState.startTime && syncState.status !== 'IDLE') {
+                    // 🔧 v9.0 修复：即使本地状态未运行，但云端有运行记录时也保存
+                    Logger.info('🔍 resetCurrentMode: 倒计时从云端状态恢复并重置，准备保存记录');
+                    const cloudRemaining = StateCalculator.calculateRemaining(syncState);
+                    if (cloudRemaining < syncState.duration) {
+                        // 从云端计算实际用时
+                        remainingSeconds = cloudRemaining;
+                        await recordEndTime(true);
+                    }
+                } else {
+                    Logger.info('🔍 resetCurrentMode: 倒计时重置，条件不满足，跳过保存');
+                    Logger.info('🔍 resetCurrentMode: isRunning =', isRunning, ', currentStartTimestamp =', currentStartTimestamp);
+                }
+            } else if (timerMode === 'stopwatch') {
+                if (wasPaused && !isRunning) {
+                    Logger.info('🔍 resetCurrentMode: 正计时处于暂停状态，当前分段已在暂停时保存，跳过补记总记录');
+                } else {
+                    // 🔧 v9.0 修复：正计时重置时保存记录，优先从云端状态获取时间
+                    let actualElapsed = elapsedSeconds;
+                    
+                    // 优先从云端状态计算实际经过时间
+                    if (syncState && syncState.startTime && syncState.status !== 'IDLE') {
+                        const cloudElapsed = StateCalculator.calculateElapsed(syncState);
+                        actualElapsed = Math.max(actualElapsed, cloudElapsed);
+                        Logger.info('🔍 resetCurrentMode: 从云端状态计算正计时时间，cloudElapsed =', cloudElapsed);
+                    } else if (stopwatchStartTimeMs > 0) {
+                        actualElapsed = Math.max(elapsedSeconds, Math.floor((Date.now() - stopwatchStartTimeMs) / 1000));
+                    }
+                    
+                    if (actualElapsed > 0 || stopwatchDisplayOffset > 0) {
+                        // 确保 elapsedSeconds 是最新值
+                        elapsedSeconds = actualElapsed;
+                        await recordEndTime(true, true);
+                    }
+                }
                 if (timerId !== null) clearInterval(timerId);
                 timerId = null;
                 isRunning = false;
                 isTimerPaused = false;
+                pausedRemainingSeconds = null;
                 startTime = 0;
                 lastTickTime = 0;
-                await recordEndTime(true);
-            } else if (currentStartTimestamp) {
-                await recordEndTime(true);
-            }
-
-            if (preBreakState) {
-                if (preBreakState.mode === 'countdown') {
-                    timerMode = 'countdown';
-                    // 🔧 修复：同步更新 syncState.mode
-                    syncState.mode = 'countdown';
-                    currentDuration = preBreakState.currentDuration;
-                    remainingSeconds = preBreakState.remainingSeconds;
-                    pausedRemainingSeconds = preBreakState.remainingSeconds;
-                    isRunning = false;
-                    currentStartTimestamp = null;
-                    currentStartTimeMs = 0;
-                    isFreshTomatoStart = false;
-                    lastTickTime = 0;
-                    // 🔧 修复：继续休息后保持高亮
-                    if (controlButton) controlButton.innerHTML = '▶️';
-                    updateDisplay();
-                } else if (preBreakState.mode === 'stopwatch') {
-                    timerMode = 'stopwatch';
-                    // 🔧 修复：同步更新 syncState.mode
-                    syncState.mode = 'stopwatch';
-                    // 🔧 修复：保存休息前的时间作为显示偏移，实际计时从0开始
-                    stopwatchDisplayOffset = preBreakState.elapsedSeconds || 0;
-                    elapsedSeconds = 0;
-                    // 🔧 修复：清除开始时间，让 startTimer 设置新的开始时间
-                    stopwatchStartTimestamp = null;
-                    stopwatchStartTimeMs = 0;
-                    isRunning = false;
-                    pausedRemainingSeconds = null;
-                    isFreshTomatoStart = false;
-                    lastTickTime = 0;
-                    // 🔧 修复：恢复后显示待开始按钮
-                    if (controlButton) controlButton.innerHTML = '▶️';
-                    updateDisplay();
-                }
-            } else {
-                if (timerMode === 'break') {
-                    timerMode = 'break';
-                    syncState.mode = 'break';
-                    syncState.duration = Math.max(1, Math.round(currentDuration * 60));
-                    remainingSeconds = currentDuration * 60;
-                    isRunning = false;
-                    isTimerPaused = false;
-                    pausedRemainingSeconds = null;
-                    currentStartTimestamp = null;
-                    currentStartTimeMs = 0;
-                    lastTickTime = 0;
-                    isFreshTomatoStart = false;
-                    if (controlButton) controlButton.innerHTML = '▶️';
-                    updateDisplay();
-                } else {
-                    timerMode = 'stopwatch-break';
-                    syncState.mode = 'stopwatch-break';
-                    elapsedSeconds = 0;
-                    isRunning = false;
-                    isTimerPaused = false;
-                    pausedRemainingSeconds = null;
-                    lastTickTime = 0;
-                    startTime = 0;
-                    stopwatchStartTimestamp = null;
-                    stopwatchStartTimeMs = 0;
-                    isFreshTomatoStart = false;
-                    if (controlButton) controlButton.innerHTML = '▶️';
-                    updateDisplay();
-                }
+                currentPauseStart = null;
+                elapsedSeconds = 0;
+                stopwatchDisplayOffset = 0;  // 🔧 重置时清除显示偏移
+                stopwatchStartTimestamp = null;
+                stopwatchStartTimeMs = 0;
+                stopwatchSegmentStartTimestamp = null;
+                stopwatchSegmentStartTimeMs = 0;
+                stopwatchSegmentBaseElapsedSeconds = 0;
             }
             
-            // 🔧 v9.0 修复：休息模式重置后必须同步状态到云端，否则轮询会覆盖本地状态
-            if (timerMode === 'countdown' || timerMode === 'break' || timerMode === 'stopwatch-break') {
+            if (timerMode === 'countdown') {
+                remainingSeconds = currentDuration * 60;
+                isRunning = false;
+                pausedRemainingSeconds = null;
+                preBreakState = null;
+                currentPauseStart = null;
+                currentStartTimestamp = null;
+                currentStartTimeMs = 0;
+                lastTickTime = 0;
+                isFreshTomatoStart = true;
+            } else if (timerMode === 'break') {
+                remainingSeconds = currentDuration * 60;
+                isRunning = false;
+                pausedRemainingSeconds = null;
+                currentPauseStart = null;
+                currentStartTimestamp = null;
+                currentStartTimeMs = 0;
+                lastTickTime = 0;
+                isFreshTomatoStart = false;
+            } else if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
+                elapsedSeconds = 0;
+                isRunning = false;
+                pausedRemainingSeconds = null;
+                startTime = 0;
+                currentPauseStart = null;
+                currentStartTimestamp = null;
+                currentStartTimeMs = 0;
+                lastTickTime = 0;
+                isFreshTomatoStart = false;
+            }
+
+            // 注意：不再自动清除任务块关联，保留供后续计时使用
+            if (controlButton) controlButton.innerHTML = '▶️';
+            updateDisplay();
+            clearRoutineButtonRunningHighlight(true);
+            // 🔧 修复：暂停时保持高亮（任务块关联仍然存在）
+
+            if (timerMode === 'countdown' || timerMode === 'break') {
                 try { await cancelTrackedTimerNotification('reset-timer', false); } catch (e) {}
             }
+            
+            // 🔧 v9.0 修复：重置后同步状态到云端
             if (isSyncEnabled() && SyncManager.updateLocal) {
                 syncState.status = 'IDLE';
                 syncState.startTime = null;
+                syncState.stopwatchStartTimeMs = null;
+                syncState.stopwatchDisplayOffset = 0;
                 syncState.pausedIntervals = [];
                 syncState.currentPauseStart = null;
                 syncState.pausedElapsedSeconds = null;
                 syncState.distractionCount = 0;
                 syncState.distractionSavedCount = 0;
-                // 清除 preBreakState，避免云端恢复时再次进入休息前状态
-                preBreakState = null;
-                await SyncManager.updateLocal(syncState, true);
-                Logger.info('🔄 休息模式重置状态已同步到云端');
-            }
-            clearRoutineButtonRunningHighlight(true);
-            return;
-        }
-        
-        if (timerMode === 'countdown') {
-            if (isRunning || (currentStartTimestamp && remainingSeconds < currentDuration * 60)) {
-                Logger.info('🔍 resetCurrentMode: 倒计时重置，准备保存记录');
-                Logger.info('🔍 resetCurrentMode: isRunning =', isRunning, ', currentStartTimestamp =', currentStartTimestamp);
-                Logger.info('🔍 resetCurrentMode: currentTaskBlockId =', currentTaskBlockId);
-                if (timerId !== null) clearInterval(timerId);
-                timerId = null;
-                isRunning = false;
-                isTimerPaused = false;
-                startTime = 0;
-                lastTickTime = 0;
-                await recordEndTime(true);
-            } else if (syncState && syncState.startTime && syncState.status !== 'IDLE') {
-                // 🔧 v9.0 修复：即使本地状态未运行，但云端有运行记录时也保存
-                Logger.info('🔍 resetCurrentMode: 倒计时从云端状态恢复并重置，准备保存记录');
-                const cloudRemaining = StateCalculator.calculateRemaining(syncState);
-                if (cloudRemaining < syncState.duration) {
-                    // 从云端计算实际用时
-                    remainingSeconds = cloudRemaining;
-                    await recordEndTime(true);
+                syncState.mode = timerMode;
+                if (timerMode === 'countdown' || timerMode === 'break') {
+                    syncState.duration = Math.max(1, Math.round(Number(currentDuration) || 0)) * 60;
+                } else {
+                    syncState.duration = 0;
                 }
-            } else {
-                Logger.info('🔍 resetCurrentMode: 倒计时重置，条件不满足，跳过保存');
-                Logger.info('🔍 resetCurrentMode: isRunning =', isRunning, ', currentStartTimestamp =', currentStartTimestamp);
+                await SyncManager.updateLocal(syncState, true);
+                Logger.info('🔄 重置状态已同步到云端');
             }
-        } else if (timerMode === 'stopwatch') {
-            // 🔧 v9.0 修复：正计时重置时保存记录，优先从云端状态获取时间
-            let actualElapsed = elapsedSeconds;
-            
-            // 优先从云端状态计算实际经过时间
-            if (syncState && syncState.startTime && syncState.status !== 'IDLE') {
-                const cloudElapsed = StateCalculator.calculateElapsed(syncState);
-                actualElapsed = Math.max(actualElapsed, cloudElapsed);
-                Logger.info('🔍 resetCurrentMode: 从云端状态计算正计时时间，cloudElapsed =', cloudElapsed);
-            } else if (stopwatchStartTimeMs > 0) {
-                actualElapsed = Math.max(elapsedSeconds, Math.floor((Date.now() - stopwatchStartTimeMs) / 1000));
-            }
-            
-            if (actualElapsed > 0 || stopwatchDisplayOffset > 0) {
-                // 确保 elapsedSeconds 是最新值
-                elapsedSeconds = actualElapsed;
-                await recordEndTime(true, true);
-            }
-            if (timerId !== null) clearInterval(timerId);
-            timerId = null;
-            isRunning = false;
-            isTimerPaused = false;
-            startTime = 0;
-            lastTickTime = 0;
-            elapsedSeconds = 0;
-            stopwatchDisplayOffset = 0;  // 🔧 重置时清除显示偏移
-            stopwatchStartTimestamp = null;
-            stopwatchStartTimeMs = 0;
-        }
-        
-        if (timerMode === 'countdown') {
-            remainingSeconds = currentDuration * 60;
-            isRunning = false;
-            pausedRemainingSeconds = null;
-            preBreakState = null;
-            currentStartTimestamp = null;
-            currentStartTimeMs = 0;
-            lastTickTime = 0;
-            isFreshTomatoStart = true;
-        } else if (timerMode === 'break') {
-            remainingSeconds = currentDuration * 60;
-            isRunning = false;
-            pausedRemainingSeconds = null;
-            currentStartTimestamp = null;
-            currentStartTimeMs = 0;
-            lastTickTime = 0;
-            isFreshTomatoStart = false;
-        } else if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
-            elapsedSeconds = 0;
-            isRunning = false;
-            pausedRemainingSeconds = null;
-            startTime = 0;
-            currentStartTimestamp = null;
-            currentStartTimeMs = 0;
-            lastTickTime = 0;
-            isFreshTomatoStart = false;
-        }
-
-        // 注意：不再自动清除任务块关联，保留供后续计时使用
-        if (controlButton) controlButton.innerHTML = '▶️';
-        updateDisplay();
-        clearRoutineButtonRunningHighlight(true);
-        // 🔧 修复：暂停时保持高亮（任务块关联仍然存在）
-
-        if (timerMode === 'countdown' || timerMode === 'break') {
-            try { await cancelTrackedTimerNotification('reset-timer', false); } catch (e) {}
-        }
-        
-        // 🔧 v9.0 修复：重置后同步状态到云端
-        if (isSyncEnabled() && SyncManager.updateLocal) {
-            syncState.status = 'IDLE';
-            syncState.startTime = null;
-            syncState.stopwatchStartTimeMs = null;
-            syncState.pausedIntervals = [];
-            syncState.currentPauseStart = null;
-            syncState.pausedElapsedSeconds = null;
-            syncState.distractionCount = 0;
-            syncState.distractionSavedCount = 0;
-            syncState.mode = timerMode;
-            if (timerMode === 'countdown' || timerMode === 'break') {
-                syncState.duration = Math.max(1, Math.round(Number(currentDuration) || 0)) * 60;
-            } else {
-                syncState.duration = 0;
-            }
-            await SyncManager.updateLocal(syncState, true);
-            Logger.info('🔄 重置状态已同步到云端');
-        }
+        });
     }
 
     async function completeCurrentTomato() {
-        if (timerMode !== 'countdown') return;
-        if (!isRunning && !isTimerPaused) return;
-        if (!currentStartTimestamp && !(syncState && syncState.startTime && syncState.status !== 'IDLE')) return;
+        return withTimerFinalizationLock('complete-current-tomato', async () => {
+            if (timerMode !== 'countdown') return;
+            if (!isRunning && !isTimerPaused) return;
+            if (!currentStartTimestamp && !(syncState && syncState.startTime && syncState.status !== 'IDLE')) return;
 
-        try { if (timerId !== null) clearInterval(timerId); } catch (e) {}
-        timerId = null;
-        try { await cancelTrackedTimerNotification('complete-timer', false); } catch (e) {}
+            try { if (timerId !== null) clearInterval(timerId); } catch (e) {}
+            timerId = null;
+            try { await cancelTrackedTimerNotification('complete-timer', false); } catch (e) {}
 
-        const wasStopwatch = timerMode === 'stopwatch' || timerMode === 'stopwatch-break';
-        await recordEndTime(false, wasStopwatch, { isCompleted: true, plannedDurationOverride: 'elapsed' });
+            await recordEndTime(false, false, { isCompleted: true, plannedDurationOverride: 'elapsed' });
 
-        isRunning = false;
-        isTimerPaused = false;
-        pausedRemainingSeconds = null;
-        startTime = 0;
-        lastTickTime = 0;
-        remainingSeconds = currentDuration * 60;
-        if (controlButton) controlButton.innerHTML = '▶️';
-        updateDisplay();
-        clearRoutineButtonRunningHighlight(true);
-        try { hideProgressBar(); } catch (e) {}
+            isRunning = false;
+            isTimerPaused = false;
+            pausedRemainingSeconds = null;
+            startTime = 0;
+            lastTickTime = 0;
+            currentPauseStart = null;
+            currentStartTimestamp = null;
+            currentStartTimeMs = 0;
+            remainingSeconds = currentDuration * 60;
+            if (controlButton) controlButton.innerHTML = '▶️';
+            updateDisplay();
+            clearRoutineButtonRunningHighlight(true);
+            try { hideProgressBar(); } catch (e) {}
 
-        if (isSyncEnabled() && SyncManager.updateLocal) {
-            syncState.status = 'IDLE';
-            syncState.startTime = null;
-            syncState.pausedIntervals = [];
-            syncState.currentPauseStart = null;
-            syncState.pausedElapsedSeconds = null;
-            syncState.distractionCount = 0;
-            syncState.distractionSavedCount = 0;
-            await SyncManager.updateLocal(syncState, true);
-        }
-        showToast('✅ 已完成番茄', 1600);
+            if (isSyncEnabled() && SyncManager.updateLocal) {
+                syncState.status = 'IDLE';
+                syncState.startTime = null;
+                syncState.stopwatchStartTimeMs = null;
+                syncState.stopwatchDisplayOffset = 0;
+                syncState.pausedIntervals = [];
+                syncState.currentPauseStart = null;
+                syncState.pausedElapsedSeconds = null;
+                syncState.distractionCount = 0;
+                syncState.distractionSavedCount = 0;
+                await SyncManager.updateLocal(syncState, true);
+            }
+            showToast('✅ 已完成番茄', 1600);
+        });
     }
 
     function createButtonGroup(values, currentValue, onClick, isBreak = false) {
