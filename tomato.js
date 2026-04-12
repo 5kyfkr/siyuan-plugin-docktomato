@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.9.1
+// @version      1.9.2
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -30529,6 +30529,44 @@ window.__setTomatoFloatState = function (payload) {
         } catch (e) {}
     };
 
+    const __clearReminderDockMountRef = () => {
+        __reminderDockMountEl = null;
+        __reminderDockMountParentEl = null;
+        __reminderDockMountIndex = -1;
+        __reminderDockMountTagName = '';
+        __reminderDockMountClassName = '';
+        try {
+            const meta = __getReminderDockMeta();
+            meta.mountEl = null;
+            meta.mountParentEl = null;
+            meta.mountIndex = -1;
+            meta.mountTagName = '';
+            meta.mountClassName = '';
+        } catch (e) {}
+    };
+
+    const __canAutoMountReminderDock = () => !isMobileDevice();
+
+    const __getReminderDockOwnerNode = (element) => {
+        if (!element || element === document.body || element === document.documentElement) return null;
+        try {
+            if (element.matches?.(`[data-type="${REMINDER_DOCK_TYPE}"]`)) return element;
+        } catch (e) {}
+        try {
+            return element.closest?.(`[data-type="${REMINDER_DOCK_TYPE}"]`) || null;
+        } catch (e) {}
+        return null;
+    };
+
+    const __isReminderDockOwnedMountEl = (element) => {
+        const owner = __getReminderDockOwnerNode(element);
+        if (!owner || !owner.isConnected) return false;
+        try {
+            if (owner.matches?.('.dock__item, button, [role="button"]')) return false;
+        } catch (e) {}
+        return true;
+    };
+
     const __requestReminderDockRegistration = (reason = 'manual', force = false) => {
         try {
             const register = globalThis.__dockTomatoRegisterReminderDock;
@@ -30546,6 +30584,10 @@ window.__setTomatoFloatState = function (payload) {
     };
 
     const __scheduleReminderDockRecreate = (reason) => {
+        if (!__canAutoMountReminderDock()) {
+            __clearReminderDockRegistrationState();
+            return;
+        }
         if (__hasReminderDockInCurrentUiLayout()) return;
         if (__reminderDockRecreateTimer) return;
         __reminderDockRecreateTimer = setTimeout(() => {
@@ -30566,6 +30608,10 @@ window.__setTomatoFloatState = function (payload) {
 
     const __rememberReminderDockMountEl = (element) => {
         if (!element) return;
+        if (!__isReminderDockOwnedMountEl(element)) {
+            __clearReminderDockMountRef();
+            return;
+        }
         __reminderDockMountEl = element;
         try {
             __reminderDockMountParentEl = element.parentElement || null;
@@ -30618,7 +30664,10 @@ window.__setTomatoFloatState = function (payload) {
             if (!__reminderDockMountClassName && meta.mountClassName) __reminderDockMountClassName = String(meta.mountClassName || '');
         } catch (e) {}
         try {
-            if (__reminderDockMountEl && document.body.contains(__reminderDockMountEl)) return __reminderDockMountEl;
+            if (__reminderDockMountEl && document.body.contains(__reminderDockMountEl)) {
+                if (__isReminderDockOwnedMountEl(__reminderDockMountEl)) return __reminderDockMountEl;
+                __clearReminderDockMountRef();
+            }
         } catch (e) {}
         const parent = __reminderDockMountParentEl;
         const expectedTag = String(__reminderDockMountTagName || '').toUpperCase();
@@ -30633,14 +30682,14 @@ window.__setTomatoFloatState = function (payload) {
             try {
                 if (__reminderDockMountIndex >= 0) {
                     const direct = parent.children?.[__reminderDockMountIndex] || null;
-                    if (matches(direct)) {
+                    if (matches(direct) && __isReminderDockOwnedMountEl(direct)) {
                         __reminderDockMountEl = direct;
                         return direct;
                     }
                 }
             } catch (e) {}
             try {
-                const fallback = Array.from(parent.children || []).find(matches) || null;
+                const fallback = Array.from(parent.children || []).find((node) => matches(node) && __isReminderDockOwnedMountEl(node)) || null;
                 if (fallback) {
                     __reminderDockMountEl = fallback;
                     return fallback;
@@ -30670,6 +30719,10 @@ window.__setTomatoFloatState = function (payload) {
     };
 
     const __scheduleReminderDockRepair = (reason) => {
+        if (!__canAutoMountReminderDock()) {
+            __clearReminderDockRegistrationState();
+            return;
+        }
         try { if (__reminderDockRepairTimer) clearTimeout(__reminderDockRepairTimer); } catch (e) {}
         __reminderDockRepairTimer = setTimeout(() => {
             __reminderDockRepairTimer = null;
@@ -30687,7 +30740,7 @@ window.__setTomatoFloatState = function (payload) {
     const __bindReminderDockMountObserver = (element) => {
         try { __reminderDockMountObserver?.disconnect?.(); } catch (e) {}
         __reminderDockMountObserver = null;
-        if (!element || typeof MutationObserver === 'undefined') return;
+        if (!element || typeof MutationObserver === 'undefined' || !__canAutoMountReminderDock()) return;
         try {
             __reminderDockMountObserver = new MutationObserver(() => {
                 try {
@@ -30704,7 +30757,7 @@ window.__setTomatoFloatState = function (payload) {
     };
 
     const __bindReminderDockBodyObserver = () => {
-        if (__reminderDockBodyObserver || typeof MutationObserver === 'undefined') return;
+        if (__reminderDockBodyObserver || typeof MutationObserver === 'undefined' || !__canAutoMountReminderDock()) return;
         try {
             const root = document.body || document.documentElement;
             if (!root) return;
@@ -30723,13 +30776,24 @@ window.__setTomatoFloatState = function (payload) {
     };
 
     const __ensureReminderDockMounted = () => {
+        if (!__canAutoMountReminderDock()) {
+            __clearReminderDockRegistrationState();
+            return false;
+        }
         try {
             if (__reminderDockMountEl && !document.body.contains(__reminderDockMountEl)) __reminderDockMountEl = null;
         } catch (e) {}
         const dockInCurrentUiLayout = __hasReminderDockInCurrentUiLayout();
+        if (!dockInCurrentUiLayout) {
+            __clearReminderDockMountRef();
+            return false;
+        }
         const mountEl = __resolveReminderDockMountEl();
         if (!mountEl) {
-            if (!dockInCurrentUiLayout) __scheduleReminderDockRecreate('ensure-missing-mount');
+            return false;
+        }
+        if (!__isReminderDockOwnedMountEl(mountEl)) {
+            __clearReminderDockMountRef();
             return false;
         }
         try {
@@ -30911,6 +30975,11 @@ window.__setTomatoFloatState = function (payload) {
     globalThis.__dockTomatoReminderDock = {
         mount: (element) => {
             if (!element) return;
+            if (!__isReminderDockOwnedMountEl(element) && !isMobileDevice()) {
+                __clearReminderDockMountRef();
+                try { Logger.warn('提醒Dock 挂载已跳过：目标容器不属于当前 Tomato 面板'); } catch (e) {}
+                return;
+            }
             __reminderDockMountToken = (__reminderDockMountToken || 0) + 1;
             try { reminderDockRegistered = true; } catch (e) {}
             try {
