@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.9.0
+// @version      1.9.1
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -19141,28 +19141,78 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     // ========== 移动端悬浮条功能 ==========
-    // 检测是否是移动端（用于悬浮条创建）
-    function isMobileDevice() {
-        const ua = navigator.userAgent;
-        if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Tablet/i.test(ua)) return true;
-        if (/HarmonyOS/i.test(ua)) return true;
-        if (/Huawei|HUAWEI/.test(ua) && !/Chrome|Chromium|EdgA|Firefox/.test(ua)) return true;
-        if (window.matchMedia("(any-pointer:coarse)").matches) {
-            if (/Android|Linux/.test(ua) && !/Win|Mac|X11/.test(ua)) return true;
-        }
+    const MOBILE_RUNTIME_CONTAINERS = new Set(["android", "ios", "harmony"]);
+
+    function getSiyuanRuntimeBackend() {
+        try {
+            const container = globalThis?.siyuan?.config?.system?.container;
+            if (typeof container === "string" && container.trim()) return container.trim().toLowerCase();
+        } catch (e) {}
+        try {
+            const container = window?.siyuan?.config?.system?.container;
+            if (typeof container === "string" && container.trim()) return container.trim().toLowerCase();
+        } catch (e) {}
+        try {
+            const os = globalThis?.siyuan?.config?.system?.os;
+            if (typeof os === "string" && os.trim()) return os.trim().toLowerCase();
+        } catch (e) {}
+        try {
+            const os = window?.siyuan?.config?.system?.os;
+            if (typeof os === "string" && os.trim()) return os.trim().toLowerCase();
+        } catch (e) {}
+        return "";
+    }
+
+    function hasOfficialMobileRuntimeSignal() {
+        let explicitIsMobile = null;
+        try {
+            if (window?.siyuan?.config?.isMobile !== undefined) explicitIsMobile = !!window.siyuan.config.isMobile;
+        } catch (e) {}
+        try {
+            if (globalThis?.siyuan?.config?.isMobile !== undefined) explicitIsMobile = !!globalThis.siyuan.config.isMobile;
+        } catch (e) {}
+        if (explicitIsMobile === true) return true;
+        try {
+            if (window?.siyuan?.mobile && typeof window.siyuan.mobile === "object") return true;
+        } catch (e) {}
+        try {
+            if (globalThis?.siyuan?.mobile && typeof globalThis.siyuan.mobile === "object") return true;
+        } catch (e) {}
+        try {
+            if (globalThis?.JSAndroid || globalThis?.JSHarmony) return true;
+        } catch (e) {}
         return false;
     }
 
-    // 🔍 排除移动端 & 鸿蒙（8.2版本逻辑，用于完全禁用）
+    // 检测是否是移动端（与任务管理器插件保持一致，优先使用思源官方运行时信号）
+    function isMobileDevice() {
+        let explicitIsMobile = null;
+        try {
+            if (globalThis?.siyuan?.config?.isMobile !== undefined) {
+                explicitIsMobile = !!globalThis.siyuan.config.isMobile;
+            }
+        } catch (e) {}
+        try {
+            if (window?.siyuan?.config?.isMobile !== undefined) {
+                explicitIsMobile = !!window.siyuan.config.isMobile;
+            }
+        } catch (e) {}
+        try {
+            if (globalThis.__tomatoPluginIsMobile !== undefined) {
+                explicitIsMobile = !!globalThis.__tomatoPluginIsMobile;
+            }
+        } catch (e) {}
+        if (explicitIsMobile === true) return true;
+        const backend = getSiyuanRuntimeBackend();
+        if (MOBILE_RUNTIME_CONTAINERS.has(backend)) return true;
+        if (hasOfficialMobileRuntimeSignal()) return true;
+        const ua = String(navigator?.userAgent || "");
+        return /Android|iPhone|iPad|iPod|HarmonyOS|Mobile/i.test(ua);
+    }
+
+    // 🔍 排除移动端 & 鸿蒙（与任务管理器插件统一为同一套客户端识别）
     function isMobileOrHarmony() {
-        const ua = navigator.userAgent;
-        if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Tablet/i.test(ua)) return true;
-        if (/HarmonyOS/i.test(ua)) return true;
-        if (/Huawei|HUAWEI/.test(ua) && !/Chrome|Chromium|EdgA|Firefox/.test(ua)) return true;
-        if (window.matchMedia("(any-pointer:coarse)").matches) {
-            if (/Android|Linux/.test(ua) && !/Win|Mac|X11/.test(ua)) return true;
-        }
-        return false;
+        return isMobileDevice();
     }
 
     // 移动端状态变量
@@ -28305,6 +28355,38 @@ window.__setTomatoFloatState = function (payload) {
             return {};
         }
     };
+    const __getReminderCurrentDeviceRegistrySchedule = (blockId) => {
+        const id = String(blockId || '').trim();
+        if (!id) return null;
+        const registry = __getReminderDeviceScheduleRegistry();
+        const schedule = registry[id];
+        if (!schedule || typeof schedule !== 'object' || Array.isArray(schedule)) return null;
+        const entries = Array.isArray(schedule.entries)
+            ? schedule.entries.map(it => {
+                const nid = normalizeNotificationId(it?.id);
+                if (nid === null || nid < 0) return null;
+                return {
+                    occurrenceKey: String(it?.occurrenceKey || '').trim(),
+                    dateKey: String(it?.dateKey || '').trim(),
+                    timeKey: String(it?.timeKey || '').trim(),
+                    atMs: Number(it?.atMs) || 0,
+                    id: nid,
+                    delayInSeconds: Number(it?.delayInSeconds) || 0,
+                };
+            }).filter(Boolean)
+            : [];
+        return {
+            planKey: String(schedule?.planKey || '').trim(),
+            windowDays: Number(schedule?.windowDays) || REMINDER_DEVICE_SCHEDULE_WINDOW_DAYS,
+            updatedAt: String(schedule?.updatedAt || '').trim(),
+            entries,
+        };
+    };
+    const __hasValidReminderDeviceScheduleEntries = (schedule) => Array.isArray(schedule?.entries)
+        && schedule.entries.some(it => {
+            const id = normalizeNotificationId(it?.id);
+            return id !== null && id >= 0;
+        });
     const __saveReminderDeviceScheduleRegistry = (registry) => {
         try {
             localStorage.setItem(REMINDER_DEVICE_SCHEDULE_REGISTRY_KEY, JSON.stringify(
@@ -30176,26 +30258,53 @@ window.__setTomatoFloatState = function (payload) {
     
     async function saveBlockReminder(blockId, reminderData, options = {}) {
         try {
-            const reminderToSave = (reminderData && typeof reminderData === 'object')
-                ? { ...reminderData, blockId: String(blockId || reminderData?.blockId || '').trim() }
-                : reminderData;
+            const reminderBlockId = String(blockId || reminderData?.blockId || '').trim();
+            const getRes = await postJSON('/api/attr/getBlockAttrs', { id: reminderBlockId });
+            if (!getRes.ok) { return false; }
+            const currentAttrs = getRes.data?.data || {};
+            let currentReminder = null;
+            try {
+                const currentRaw = currentAttrs['custom-tomato-reminder'];
+                if (currentRaw) currentReminder = __sanitizeReminderData(JSON.parse(currentRaw), { blockId: reminderBlockId });
+            } catch (e) {}
+            let reminderToSave = reminderData;
+            if (reminderData && typeof reminderData === 'object') {
+                reminderToSave = __sanitizeReminderData({
+                    ...(currentReminder && typeof currentReminder === 'object' ? currentReminder : {}),
+                    ...reminderData,
+                    blockId: reminderBlockId,
+                }, {
+                    blockId: reminderBlockId,
+                    blockContent: currentReminder?.blockContent,
+                    blockType: currentReminder?.blockType,
+                    rootId: currentReminder?.rootId,
+                });
+                // 编辑提醒时，如果属性里暂时没带上当前设备预约，就从本地预约注册表补回，
+                // 这样修改时间时仍能先取消本设备旧预约，再创建新预约。
+                const currentDeviceSchedule = __getReminderDeviceSchedule(reminderToSave);
+                const registrySchedule = __getReminderCurrentDeviceRegistrySchedule(reminderBlockId);
+                if (__hasValidReminderDeviceScheduleEntries(registrySchedule) && !__hasValidReminderDeviceScheduleEntries(currentDeviceSchedule)) {
+                    __setReminderDeviceSchedule(reminderToSave, {
+                        ...(currentDeviceSchedule && typeof currentDeviceSchedule === 'object' ? currentDeviceSchedule : {}),
+                        ...registrySchedule,
+                        entries: Array.isArray(registrySchedule.entries) ? registrySchedule.entries.slice() : [],
+                    });
+                }
+            }
             if (!options?.skipReminderScheduleSync && reminderToSave) {
                 try { await __reconcileReminderDeviceSchedule(reminderToSave, { silent: true }); } catch (e) {}
             }
-            const getRes = await postJSON('/api/attr/getBlockAttrs', { id: blockId });
-            if (!getRes.ok) { return false; }
-            const currentAttrs = getRes.data?.data || {};
             // 添加提醒时，同时设置书签属性为⏰
             const attrs = {
                 ...currentAttrs,
                 'custom-tomato-reminder': JSON.stringify(reminderToSave),
                 'bookmark': '⏰'
             };
-            const setRes = await postJSON('/api/attr/setBlockAttrs', { id: blockId, attrs });
+            const setRes = await postJSON('/api/attr/setBlockAttrs', { id: reminderBlockId, attrs });
             if (setRes.ok && setRes.data?.code === 0) {
                 try {
                     window.dispatchEvent(new CustomEvent('tm-task-attr-updated', {
-                        detail: { taskId: String(blockId || '').trim(), attrKey: 'bookmark', value: '⏰' }
+                        detail: { taskId: reminderBlockId, attrKey: 'bookmark', value: '⏰' }
                     }));
                 } catch (e) {}
                 try { refreshReminderDockPanel(); } catch (e) {}
@@ -30542,9 +30651,11 @@ window.__setTomatoFloatState = function (payload) {
             const candidates = Array.from(document.querySelectorAll(`[data-type="${REMINDER_DOCK_TYPE}"]`));
             for (const candidate of candidates) {
                 if (!candidate || !candidate.isConnected) continue;
+                // Never recover from the dock activator icon alone. Siyuan reuses a
+                // shared `.dock__panel` for the currently active plugin, so inferring
+                // "my host panel" from a visible panel under the same dock root can
+                // mount reminder content over another plugin's page.
                 if (candidate.matches?.('.dock__item, button, [role="button"]')) {
-                    const hostFromActivator = __resolveReminderDockHostFromActivator(candidate);
-                    if (hostFromActivator) return hostFromActivator;
                     continue;
                 }
                 const host = candidate.matches?.('.dock__panel')
