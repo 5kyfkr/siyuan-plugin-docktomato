@@ -30554,6 +30554,28 @@ window.__setTomatoFloatState = function (payload) {
         return true;
     };
 
+    const __isReminderDockDirectMountEl = (element) => {
+        if (!element || element === document.body || element === document.documentElement) return false;
+        try {
+            if (!element.isConnected) return false;
+        } catch (e) {}
+        try {
+            if (element.matches?.('.dock__item, button, [role="button"]')) return false;
+        } catch (e) {}
+        if (__isReminderDockOwnedMountEl(element)) return true;
+        try {
+            const dockPanel = element.closest?.('.dock__panel');
+            if (dockPanel && dockPanel.isConnected) return true;
+        } catch (e) {}
+        try {
+            const dockLayout = element.closest?.(
+                '.layout__dockl, .layout__dockr, .layout__dockb, .layout__dock--left, .layout__dock--right, .layout__dock--bottom'
+            );
+            if (dockLayout && dockLayout.isConnected) return true;
+        } catch (e) {}
+        return false;
+    };
+
     const __requestReminderDockRegistration = (reason = 'manual', force = false) => {
         try {
             const register = globalThis.__dockTomatoRegisterReminderDock;
@@ -30593,9 +30615,13 @@ window.__setTomatoFloatState = function (payload) {
         }, 180);
     };
 
-    const __rememberReminderDockMountEl = (element) => {
+    const __rememberReminderDockMountEl = (element, options = {}) => {
         if (!element) return;
-        if (!__isReminderDockOwnedMountEl(element)) {
+        const allowDirect = !!options.allowDirect;
+        const validMountEl = allowDirect
+            ? __isReminderDockDirectMountEl(element)
+            : __isReminderDockOwnedMountEl(element);
+        if (!validMountEl) {
             __clearReminderDockMountRef();
             return;
         }
@@ -30652,7 +30678,9 @@ window.__setTomatoFloatState = function (payload) {
         } catch (e) {}
         try {
             if (__reminderDockMountEl && document.body.contains(__reminderDockMountEl)) {
-                if (__isReminderDockOwnedMountEl(__reminderDockMountEl)) return __reminderDockMountEl;
+                if (__isReminderDockOwnedMountEl(__reminderDockMountEl) || __isReminderDockDirectMountEl(__reminderDockMountEl)) {
+                    return __reminderDockMountEl;
+                }
                 __clearReminderDockMountRef();
             }
         } catch (e) {}
@@ -30962,7 +30990,7 @@ window.__setTomatoFloatState = function (payload) {
     globalThis.__dockTomatoReminderDock = {
         mount: (element) => {
             if (!element) return;
-            if (!__isReminderDockOwnedMountEl(element) && !isMobileDevice()) {
+            if (!__isReminderDockDirectMountEl(element) && !isMobileDevice()) {
                 __clearReminderDockMountRef();
                 try { Logger.warn('提醒Dock 挂载已跳过：目标容器不属于当前 Tomato 面板'); } catch (e) {}
                 return;
@@ -30973,7 +31001,7 @@ window.__setTomatoFloatState = function (payload) {
                 const meta = __getReminderDockMeta();
                 meta.addRequested = true;
                 meta.registered = true;
-                __rememberReminderDockMountEl(element);
+                __rememberReminderDockMountEl(element, { allowDirect: !isMobileDevice() });
                 __bindReminderDockMountObserver(element);
                 __bindReminderDockBodyObserver();
             } catch (e) {}
