@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.9.2
+// @version      1.9.3
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -5686,8 +5686,7 @@
     }
 
     function shouldPreferDeviceNotificationBackend() {
-        const backend = getRuntimeBackendType();
-        return isMobileDevice() || backend === 'android' || backend === 'harmony' || backend === 'ios' || !!getPlatformUtilsCompat();
+        return isOfficialMobileNotificationRuntime() && hasTrackedTimerNotificationBackend();
     }
 
     function shouldUseScheduledTimerNotificationBackend() {
@@ -5873,8 +5872,7 @@
     }
 
     function isOfficialMobileNotificationRuntime() {
-        const backend = String(globalThis?.siyuan?.config?.system?.container || window?.siyuan?.config?.system?.container || '').trim().toLowerCase();
-        return isMobileDevice() || backend === 'android' || backend === 'harmony' || backend === 'ios';
+        return hasOfficialMobileRuntimeSignal();
     }
 
     async function persistNotificationScheduleState() {
@@ -19164,50 +19162,39 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     function hasOfficialMobileRuntimeSignal() {
-        let explicitIsMobile = null;
+        const backend = getSiyuanRuntimeBackend();
+        if (!MOBILE_RUNTIME_CONTAINERS.has(backend)) return false;
         try {
-            if (window?.siyuan?.config?.isMobile !== undefined) explicitIsMobile = !!window.siyuan.config.isMobile;
+            if (backend === "android") return !!globalThis?.JSAndroid;
         } catch (e) {}
         try {
-            if (globalThis?.siyuan?.config?.isMobile !== undefined) explicitIsMobile = !!globalThis.siyuan.config.isMobile;
-        } catch (e) {}
-        if (explicitIsMobile === true) return true;
-        try {
-            if (window?.siyuan?.mobile && typeof window.siyuan.mobile === "object") return true;
+            if (backend === "harmony") return !!globalThis?.JSHarmony;
         } catch (e) {}
         try {
-            if (globalThis?.siyuan?.mobile && typeof globalThis.siyuan.mobile === "object") return true;
-        } catch (e) {}
-        try {
-            if (globalThis?.JSAndroid || globalThis?.JSHarmony) return true;
+            if (backend === "ios") return !!globalThis?.webkit?.messageHandlers;
         } catch (e) {}
         return false;
     }
 
-    // 检测是否是移动端（与任务管理器插件保持一致，优先使用思源官方运行时信号）
+    function isMobileBrowserViewport() {
+        try {
+            const ua = String(navigator?.userAgent || "");
+            if (/Android|iPhone|iPad|iPod|HarmonyOS|Mobile/i.test(ua)) return true;
+        } catch (e) {}
+        try {
+            const maxTouchPoints = Number(navigator?.maxTouchPoints) || 0;
+            const width = Number(window?.innerWidth) || 0;
+            if (maxTouchPoints > 0 && width > 0 && width <= 768) return true;
+        } catch (e) {}
+        return false;
+    }
+
+    // 检测当前页面是否应采用移动端布局：
+    // 1. 真正运行在思源原生移动宿主里
+    // 2. 当前访问页面本身就是移动浏览器/窄屏视口
     function isMobileDevice() {
-        let explicitIsMobile = null;
-        try {
-            if (globalThis?.siyuan?.config?.isMobile !== undefined) {
-                explicitIsMobile = !!globalThis.siyuan.config.isMobile;
-            }
-        } catch (e) {}
-        try {
-            if (window?.siyuan?.config?.isMobile !== undefined) {
-                explicitIsMobile = !!window.siyuan.config.isMobile;
-            }
-        } catch (e) {}
-        try {
-            if (globalThis.__tomatoPluginIsMobile !== undefined) {
-                explicitIsMobile = !!globalThis.__tomatoPluginIsMobile;
-            }
-        } catch (e) {}
-        if (explicitIsMobile === true) return true;
-        const backend = getSiyuanRuntimeBackend();
-        if (MOBILE_RUNTIME_CONTAINERS.has(backend)) return true;
         if (hasOfficialMobileRuntimeSignal()) return true;
-        const ua = String(navigator?.userAgent || "");
-        return /Android|iPhone|iPad|iPod|HarmonyOS|Mobile/i.test(ua);
+        return isMobileBrowserViewport();
     }
 
     // 🔍 排除移动端 & 鸿蒙（与任务管理器插件统一为同一套客户端识别）

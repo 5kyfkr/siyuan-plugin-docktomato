@@ -8,6 +8,7 @@ const LEGACY_AUDIO_DIR = "/data/storage/tomato-audio/";
 const PLUGIN_AUDIO_DIR = `${PLUGIN_STORAGE_DIR}/tomato-audio/`;
 const REMINDER_DOCK_TYPE = "::tomato-reminder";
 const MAIN_SETTINGS_PATH = `${PLUGIN_STORAGE_DIR}/tomato-main-settings.json`;
+const MOBILE_RUNTIME_CONTAINERS = new Set(["android", "ios", "harmony"]);
 
 const DEFAULT_MAIN_SETTINGS = {
     remindersEnabled: true,
@@ -22,6 +23,51 @@ const sanitizeMainSettings = (raw) => {
     if (typeof payload.remindersEnabled === "boolean") next.remindersEnabled = payload.remindersEnabled;
     if (payload.reminderDockEnabled === false) next.remindersEnabled = false;
     return next;
+};
+
+const getSiyuanRuntimeBackend = () => {
+    try {
+        const container = globalThis?.siyuan?.config?.system?.container;
+        if (typeof container === "string" && container.trim()) return container.trim().toLowerCase();
+    } catch (e) {}
+    try {
+        const container = window?.siyuan?.config?.system?.container;
+        if (typeof container === "string" && container.trim()) return container.trim().toLowerCase();
+    } catch (e) {}
+    return "";
+};
+
+const hasOfficialMobileRuntimeSignal = () => {
+    const backend = getSiyuanRuntimeBackend();
+    if (!MOBILE_RUNTIME_CONTAINERS.has(backend)) return false;
+    try {
+        if (backend === "android") return !!globalThis?.JSAndroid;
+    } catch (e) {}
+    try {
+        if (backend === "harmony") return !!globalThis?.JSHarmony;
+    } catch (e) {}
+    try {
+        if (backend === "ios") return !!globalThis?.webkit?.messageHandlers;
+    } catch (e) {}
+    return false;
+};
+
+const isMobileBrowserViewport = () => {
+    try {
+        const ua = String(navigator?.userAgent || "");
+        if (/Android|iPhone|iPad|iPod|HarmonyOS|Mobile/i.test(ua)) return true;
+    } catch (e) {}
+    try {
+        const maxTouchPoints = Number(navigator?.maxTouchPoints) || 0;
+        const width = Number(window?.innerWidth) || 0;
+        if (maxTouchPoints > 0 && width > 0 && width <= 768) return true;
+    } catch (e) {}
+    return false;
+};
+
+const isRuntimeMobileClient = () => {
+    if (hasOfficialMobileRuntimeSignal()) return true;
+    return isMobileBrowserViewport();
 };
 
 const getReminderDockMeta = () => {
@@ -290,7 +336,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
     _registerReminderDock(reason = "manual", options = {}) {
         try {
             const force = !!options.force;
-            if (this.isMobile) return false;
+            if (isRuntimeMobileClient()) return false;
             if (typeof this.addDock !== "function") return false;
             const mainSettings = globalThis.__dockTomatoMainSettings || DEFAULT_MAIN_SETTINGS;
             if (!mainSettings.remindersEnabled) return false;
@@ -468,10 +514,11 @@ module.exports = class TomatoTimerPlugin extends Plugin {
     }
 
     async onload() {
+        const runtimeMobile = isRuntimeMobileClient();
         globalThis.__tomatoPluginApp = this.app;
         globalThis.__tomatoPluginInstance = this;
         globalThis.__tomatoPlatformUtils = platformUtils || null;
-        globalThis.__tomatoLegacyNotificationBridge = (!this.isMobile && platformUtils && typeof platformUtils === "object") ? {
+        globalThis.__tomatoLegacyNotificationBridge = (!runtimeMobile && platformUtils && typeof platformUtils === "object") ? {
             sendNotification: (channel, title, body, delayInSeconds) => {
                 if (typeof platformUtils.sendNotification !== "function") return -1;
                 return platformUtils.sendNotification({
@@ -487,7 +534,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
                 return platformUtils.cancelNotification(id);
             },
         } : null;
-        globalThis.__tomatoPluginIsMobile = !!this.isMobile;
+        globalThis.__tomatoPluginIsMobile = runtimeMobile;
         globalThis.__tomatoOpenTab = typeof openTab === "function" ? openTab : null;
         globalThis.__tomatoOpenMobileFileById = typeof openMobileFileById === "function" ? openMobileFileById : null;
         globalThis.__dockTomatoRegisterReminderDock = (reason = "external", force = false) => {
@@ -569,7 +616,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
 
     onLayoutReady() {
         try {
-            if (this.isMobile) return;
+            if (isRuntimeMobileClient()) return;
             if (!this._reminderDockAdded) {
                 this._registerReminderDock("layout-ready");
                 return;
