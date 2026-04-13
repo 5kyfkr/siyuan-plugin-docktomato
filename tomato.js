@@ -30455,7 +30455,6 @@ window.__setTomatoFloatState = function (payload) {
     let __reminderDockBodyObserver = null;
     let __reminderDockRepairTimer = null;
     let __reminderDockRecreateTimer = null;
-
     const __findReminderDockLayoutEntry = (node) => {
         if (!node) return false;
         if (Array.isArray(node)) {
@@ -30790,6 +30789,34 @@ window.__setTomatoFloatState = function (payload) {
         } catch (e) {}
     };
 
+    const __mountReminderDockContentIntoElement = (element) => {
+        if (!element) return false;
+        try {
+            element.innerHTML = '';
+            element.style.display = 'flex';
+            element.style.flexDirection = 'column';
+            element.style.height = '100%';
+        } catch (e) {}
+        try {
+            element.appendChild(createReminderPanelContent());
+        } catch (e) {
+            try { Logger.error('提醒Dock mount失败:', e); } catch (e2) {}
+            try {
+                element.textContent = '';
+                const msg = document.createElement('div');
+                msg.style.cssText = 'padding:12px;color:var(--b3-theme-error);font-size:12px;line-height:1.6;';
+                msg.textContent = '提醒面板挂载失败：' + String(e?.message || e);
+                element.appendChild(msg);
+            } catch (e3) {}
+            return false;
+        }
+        try {
+            const cur = element.querySelector('#tomato-reminder-dock-content');
+            if (cur) reminderDockPanel = cur;
+        } catch (e) {}
+        return true;
+    };
+
     const __ensureReminderDockMounted = () => {
         if (!__canAutoMountReminderDock()) {
             __clearReminderDockRegistrationState();
@@ -30990,6 +31017,18 @@ window.__setTomatoFloatState = function (payload) {
     globalThis.__dockTomatoReminderDock = {
         mount: (element) => {
             if (!element) return;
+            if (isMobileDevice()) {
+                __reminderDockMountToken = (__reminderDockMountToken || 0) + 1;
+                try { reminderDockRegistered = true; } catch (e) {}
+                try {
+                    const meta = __getReminderDockMeta();
+                    meta.addRequested = true;
+                    meta.registered = true;
+                    meta.mountEl = element;
+                } catch (e) {}
+                __mountReminderDockContentIntoElement(element);
+                return;
+            }
             if (!__isReminderDockDirectMountEl(element) && !isMobileDevice()) {
                 __clearReminderDockMountRef();
                 try { Logger.warn('提醒Dock 挂载已跳过：目标容器不属于当前 Tomato 面板'); } catch (e) {}
@@ -31001,34 +31040,12 @@ window.__setTomatoFloatState = function (payload) {
                 const meta = __getReminderDockMeta();
                 meta.addRequested = true;
                 meta.registered = true;
-                __rememberReminderDockMountEl(element, { allowDirect: !isMobileDevice() });
+                __rememberReminderDockMountEl(element, { allowDirect: true });
                 __bindReminderDockMountObserver(element);
                 __bindReminderDockBodyObserver();
             } catch (e) {}
             try { __bindReminderDockWakeRecover(); } catch (e) {}
-            try {
-                element.innerHTML = '';
-                element.style.display = 'flex';
-                element.style.flexDirection = 'column';
-                element.style.height = '100%';
-            } catch (e) {}
-            try {
-                element.appendChild(createReminderPanelContent());
-            } catch (e) {
-                try { Logger.error('提醒Dock mount失败:', e); } catch (e2) {}
-                try {
-                    element.textContent = '';
-                    const msg = document.createElement('div');
-                    msg.style.cssText = 'padding:12px;color:var(--b3-theme-error);font-size:12px;line-height:1.6;';
-                    msg.textContent = '提醒面板挂载失败：' + String(e?.message || e);
-                    element.appendChild(msg);
-                } catch (e3) {}
-                return;
-            }
-            try {
-                const cur = element.querySelector('#tomato-reminder-dock-content');
-                if (cur) reminderDockPanel = cur;
-            } catch (e) {}
+            __mountReminderDockContentIntoElement(element);
         },
     };
     

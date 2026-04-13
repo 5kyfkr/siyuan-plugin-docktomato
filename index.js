@@ -336,7 +336,6 @@ module.exports = class TomatoTimerPlugin extends Plugin {
     _registerReminderDock(reason = "manual", options = {}) {
         try {
             const force = !!options.force;
-            if (isRuntimeMobileClient()) return false;
             if (typeof this.addDock !== "function") return false;
             const mainSettings = globalThis.__dockTomatoMainSettings || DEFAULT_MAIN_SETTINGS;
             if (!mainSettings.remindersEnabled) return false;
@@ -616,7 +615,6 @@ module.exports = class TomatoTimerPlugin extends Plugin {
 
     onLayoutReady() {
         try {
-            if (isRuntimeMobileClient()) return;
             if (!this._reminderDockAdded) {
                 this._registerReminderDock("layout-ready");
                 return;
