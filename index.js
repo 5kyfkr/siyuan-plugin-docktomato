@@ -38,21 +38,28 @@ const getSiyuanRuntimeBackend = () => {
 };
 
 const hasOfficialMobileRuntimeSignal = () => {
-    const backend = getSiyuanRuntimeBackend();
-    if (!MOBILE_RUNTIME_CONTAINERS.has(backend)) return false;
     try {
-        if (backend === "android") return !!globalThis?.JSAndroid;
+        if (globalThis?.JSAndroid) return true;
     } catch (e) {}
     try {
-        if (backend === "harmony") return !!globalThis?.JSHarmony;
+        if (globalThis?.JSHarmony) return true;
     } catch (e) {}
     try {
-        if (backend === "ios") return !!globalThis?.webkit?.messageHandlers;
+        const hasIosBridge = !!globalThis?.webkit?.messageHandlers;
+        if (!hasIosBridge) return false;
+        const ua = String(navigator?.userAgent || "");
+        const maxTouchPoints = Number(navigator?.maxTouchPoints) || 0;
+        if (/iPhone|iPad|iPod/i.test(ua)) return true;
+        if (maxTouchPoints > 0) return true;
+        return true;
     } catch (e) {}
     return false;
 };
 
 const isMobileBrowserViewport = () => {
+    try {
+        if (navigator?.userAgentData?.mobile === true) return true;
+    } catch (e) {}
     try {
         const ua = String(navigator?.userAgent || "");
         if (/Android|iPhone|iPad|iPod|HarmonyOS|Mobile/i.test(ua)) return true;
@@ -60,10 +67,13 @@ const isMobileBrowserViewport = () => {
     try {
         const maxTouchPoints = Number(navigator?.maxTouchPoints) || 0;
         const width = Number(window?.innerWidth) || 0;
-        if (maxTouchPoints > 0 && width > 0 && width <= 768) return true;
+        const coarse = !!window?.matchMedia?.("(pointer: coarse)")?.matches;
+        if ((coarse || maxTouchPoints > 0) && width > 0 && width <= 900) return true;
     } catch (e) {}
     return false;
 };
+
+const isNativeMobileRuntimeClient = () => hasOfficialMobileRuntimeSignal();
 
 const isRuntimeMobileClient = () => {
     if (hasOfficialMobileRuntimeSignal()) return true;
@@ -276,6 +286,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
     _reminderDockRecoverTimers = [];
 
     _scheduleReminderDockRecover(reason) {
+        if (isRuntimeMobileClient()) return;
         [0, 180, 600].forEach((delay) => {
             const timer = setTimeout(() => {
                 try { globalThis.__dockTomato?.recoverDock?.(`${reason}-${delay}`); } catch (e) {}
@@ -514,6 +525,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
 
     async onload() {
         const runtimeMobile = isRuntimeMobileClient();
+        const runtimeNativeMobile = isNativeMobileRuntimeClient();
         globalThis.__tomatoPluginApp = this.app;
         globalThis.__tomatoPluginInstance = this;
         globalThis.__tomatoPlatformUtils = platformUtils || null;
@@ -534,6 +546,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             },
         } : null;
         globalThis.__tomatoPluginIsMobile = runtimeMobile;
+        globalThis.__tomatoPluginIsNativeMobile = runtimeNativeMobile;
         globalThis.__tomatoOpenTab = typeof openTab === "function" ? openTab : null;
         globalThis.__tomatoOpenMobileFileById = typeof openMobileFileById === "function" ? openMobileFileById : null;
         globalThis.__dockTomatoRegisterReminderDock = (reason = "external", force = false) => {
@@ -664,6 +677,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             try { delete globalThis.__tomatoPlatformUtils; } catch (e) {}
             try { delete globalThis.__tomatoLegacyNotificationBridge; } catch (e) {}
             try { delete globalThis.__tomatoPluginIsMobile; } catch (e) {}
+            try { delete globalThis.__tomatoPluginIsNativeMobile; } catch (e) {}
             try { delete globalThis.__tomatoOpenTab; } catch (e) {}
             try { delete globalThis.__tomatoOpenMobileFileById; } catch (e) {}
         }

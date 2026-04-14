@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.9.3
+// @version      1.9.4
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -91,12 +91,11 @@
         const app = __getPluginApp();
         if (!app || !id) return false;
         try {
-            if (isMobileDevice()) {
+            if (hasOfficialMobileRuntimeSignal()) {
                 if (typeof __openMobileFileById === 'function') {
                     __openMobileFileById(app, id);
                     return true;
                 }
-                return false;
             }
             if (typeof __openTab === 'function') {
                 const docId = await findDocumentIdByBlockId(id);
@@ -19162,21 +19161,31 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     function hasOfficialMobileRuntimeSignal() {
-        const backend = getSiyuanRuntimeBackend();
-        if (!MOBILE_RUNTIME_CONTAINERS.has(backend)) return false;
         try {
-            if (backend === "android") return !!globalThis?.JSAndroid;
+            if (globalThis.__tomatoPluginIsNativeMobile !== undefined) return !!globalThis.__tomatoPluginIsNativeMobile;
         } catch (e) {}
         try {
-            if (backend === "harmony") return !!globalThis?.JSHarmony;
+            if (globalThis?.JSAndroid) return true;
         } catch (e) {}
         try {
-            if (backend === "ios") return !!globalThis?.webkit?.messageHandlers;
+            if (globalThis?.JSHarmony) return true;
+        } catch (e) {}
+        try {
+            const hasIosBridge = !!globalThis?.webkit?.messageHandlers;
+            if (!hasIosBridge) return false;
+            const ua = String(navigator?.userAgent || "");
+            const maxTouchPoints = Number(navigator?.maxTouchPoints) || 0;
+            if (/iPhone|iPad|iPod/i.test(ua)) return true;
+            if (maxTouchPoints > 0) return true;
+            return true;
         } catch (e) {}
         return false;
     }
 
     function isMobileBrowserViewport() {
+        try {
+            if (navigator?.userAgentData?.mobile === true) return true;
+        } catch (e) {}
         try {
             const ua = String(navigator?.userAgent || "");
             if (/Android|iPhone|iPad|iPod|HarmonyOS|Mobile/i.test(ua)) return true;
@@ -19184,7 +19193,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         try {
             const maxTouchPoints = Number(navigator?.maxTouchPoints) || 0;
             const width = Number(window?.innerWidth) || 0;
-            if (maxTouchPoints > 0 && width > 0 && width <= 768) return true;
+            const coarse = !!window?.matchMedia?.("(pointer: coarse)")?.matches;
+            if ((coarse || maxTouchPoints > 0) && width > 0 && width <= 900) return true;
         } catch (e) {}
         return false;
     }
@@ -21180,6 +21190,65 @@ window.__setTomatoFloatState = function (payload) {
         document.head.appendChild(style);
     }
 
+    // 确保任务关联提示框挂载在 body，避免被主题 status 容器的 overflow 裁剪
+    function ensureTaskBlockTooltip() {
+        let taskBlockTooltip = document.getElementById('tomy-task-block-tooltip');
+        if (taskBlockTooltip) return taskBlockTooltip;
+
+        taskBlockTooltip = document.createElement('div');
+        taskBlockTooltip.id = 'tomy-task-block-tooltip';
+        taskBlockTooltip.innerHTML = `
+            <div style="padding: 8px 12px; background: var(--b3-theme-surface); border-radius: 6px;
+                 box-shadow: 0 2px 8px rgba(0,0,0,0.15); font-size: 12px; width: 150px;
+                 display: flex; flex-direction: column; gap: 6px;">
+                <button id="tomy-tooltip-delete-btn" style="
+                    padding: 2px 8px; font-size: 11px; align-self: flex-start;
+                    background: var(--b3-theme-error); color: white;
+                    border: none; border-radius: 3px; cursor: pointer;
+                ">清除</button>
+                <span id="tomy-tooltip-task-name" style="
+                    word-break: break-word;
+                    line-height: 1.3;
+                    cursor: pointer;
+                    padding: 2px 4px;
+                    border-radius: 3px;
+                    transition: background-color 0.2s;
+                    display: inline-block;
+                "></span>
+            </div>
+        `;
+        taskBlockTooltip.style.cssText = `
+            display: none;
+            position: fixed;
+            left: 0;
+            top: 0;
+            z-index: 2147483000;
+        `;
+        document.body.appendChild(taskBlockTooltip);
+        return taskBlockTooltip;
+    }
+
+    function positionTaskBlockTooltip(taskBlockIcon, taskBlockTooltip) {
+        if (!taskBlockIcon || !taskBlockTooltip) return;
+
+        const iconRect = taskBlockIcon.getBoundingClientRect();
+        const tooltipRect = taskBlockTooltip.getBoundingClientRect();
+        const gap = 8;
+        const viewportPadding = 8;
+
+        let left = iconRect.left + (iconRect.width / 2) - (tooltipRect.width / 2);
+        const maxLeft = Math.max(viewportPadding, window.innerWidth - tooltipRect.width - viewportPadding);
+        left = Math.min(Math.max(left, viewportPadding), maxLeft);
+
+        let top = iconRect.top - tooltipRect.height - gap;
+        if (top < viewportPadding) {
+            top = Math.min(window.innerHeight - tooltipRect.height - viewportPadding, iconRect.bottom + gap);
+        }
+
+        taskBlockTooltip.style.left = `${Math.round(left)}px`;
+        taskBlockTooltip.style.top = `${Math.round(top)}px`;
+    }
+
     function createWidget(statusBar) {
         if (container?.parentNode === statusBar) return;
         if (container?.parentNode) container.remove();
@@ -21210,39 +21279,8 @@ window.__setTomatoFloatState = function (payload) {
         taskBlockIcon.title = '查看关联任务';
         container.appendChild(taskBlockIcon);
 
-        // 任务块信息提示框
-        const taskBlockTooltip = document.createElement('div');
-        taskBlockTooltip.id = 'tomy-task-block-tooltip';
-        taskBlockTooltip.innerHTML = `
-            <div style="padding: 8px 12px; background: var(--b3-theme-surface); border-radius: 6px;
-                 box-shadow: 0 2px 8px rgba(0,0,0,0.15); font-size: 12px; width: 150px;
-                 display: flex; flex-direction: column; gap: 6px;">
-                <button id="tomy-tooltip-delete-btn" style="
-                    padding: 2px 8px; font-size: 11px; align-self: flex-start;
-                    background: var(--b3-theme-error); color: white;
-                    border: none; border-radius: 3px; cursor: pointer;
-                ">清除</button>
-                <span id="tomy-tooltip-task-name" style="
-                    word-break: break-word;
-                    line-height: 1.3;
-                    cursor: pointer;
-                    padding: 2px 4px;
-                    border-radius: 3px;
-                    transition: background-color 0.2s;
-                    display: inline-block;
-                "></span>
-            </div>
-        `;
-        taskBlockTooltip.style.cssText = `
-            display: none;
-            position: absolute;
-            bottom: 100%;
-            left: 50%;
-            transform: translateX(-50%);
-            margin-bottom: 8px;
-            z-index: 1000;
-        `;
-        container.appendChild(taskBlockTooltip);
+        // 任务块信息提示框（挂到 body，避免被 status overflow 裁剪）
+        const taskBlockTooltip = ensureTaskBlockTooltip();
 
         // 图标交互
         let tooltipTimeout = null;
@@ -21251,6 +21289,7 @@ window.__setTomatoFloatState = function (payload) {
             updateTaskBlockTooltip();
             setupWidgetTaskLinkListener(); // 设置事件委托，和历史记录一致
             taskBlockTooltip.style.display = 'block';
+            positionTaskBlockTooltip(taskBlockIcon, taskBlockTooltip);
         };
         taskBlockIcon.onmouseleave = () => {
             tooltipTimeout = setTimeout(() => {
@@ -21527,6 +21566,8 @@ window.__setTomatoFloatState = function (payload) {
             } else {
                 // 清除关联时隐藏图标并确保从DOM中移除可能的残留
                 icon.style.display = 'none';
+                const tooltip = document.getElementById('tomy-task-block-tooltip');
+                if (tooltip) tooltip.style.display = 'none';
                 // 清除可能残留的高亮样式
                 document.querySelectorAll('.tomato-task-highlight').forEach(el => {
                     el.classList.remove('tomato-task-highlight');
@@ -27843,6 +27884,7 @@ window.__setTomatoFloatState = function (payload) {
         
         // 初始化提醒功能
         await loadReminderSettings();
+        try { installReminderTaskAttrSync(); } catch (e) {}
         if (!isRemindersGloballyEnabled()) {
             reminderSettings.enabled = false;
             stopReminderCheck();
@@ -28071,6 +28113,7 @@ window.__setTomatoFloatState = function (payload) {
         try { document.getElementById('tomato-timeline-date-overlay')?.remove(); } catch (e) {}
         try { document.getElementById('tomy-tomato-icon-click-layer')?.remove(); } catch (e) {}
         try { document.getElementById('tomy-tomato-tooltip')?.remove(); } catch (e) {}
+        try { document.getElementById('tomy-task-block-tooltip')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-time-select-backdrop')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-time-select-dialog')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-settings-backdrop')?.remove(); } catch (e) {}
@@ -28224,8 +28267,86 @@ window.__setTomatoFloatState = function (payload) {
         monthly: { label: '每月', value: 'monthly' },
         yearly: { label: '每年', value: 'yearly' },
     };
+    const REMINDER_REPEAT_MODE_MANUAL = 'manual';
+    const REMINDER_REPEAT_MODE_FOLLOW_TASK = 'followTaskRepeat';
+    const TASK_REPEAT_RULE_ATTR = 'custom-task-repeat-rule';
+    const TASK_REPEAT_STATE_ATTR = 'custom-task-repeat-state';
+    const TASK_START_DATE_ATTR = 'custom-start-date';
+    const TASK_COMPLETION_TIME_ATTR = 'custom-completion-time';
     
     const __reminderOccurrenceKey = (dateKey, timeKey) => `${String(dateKey || '').trim()} ${String(timeKey || '').trim()}`.trim();
+
+    const __normalizeReminderDateKey = (value) => {
+        if (value instanceof Date && !Number.isNaN(value.getTime())) return formatDateKey(value);
+        const raw = String(value || '').trim();
+        if (!raw) return '';
+        const matched = raw.match(/^\d{4}-\d{2}-\d{2}/);
+        if (matched) return matched[0];
+        const dt = toDateSafe(raw);
+        return Number.isNaN(dt.getTime()) ? '' : formatDateKey(dt);
+    };
+
+    const __normalizeReminderRepeatMode = (value, fallback = REMINDER_REPEAT_MODE_MANUAL) => {
+        const raw = String(value || '').trim();
+        if (raw === REMINDER_REPEAT_MODE_FOLLOW_TASK || raw === 'follow' || raw === 'task') return REMINDER_REPEAT_MODE_FOLLOW_TASK;
+        return fallback === REMINDER_REPEAT_MODE_FOLLOW_TASK ? REMINDER_REPEAT_MODE_FOLLOW_TASK : REMINDER_REPEAT_MODE_MANUAL;
+    };
+
+    const __parseReminderTaskRepeatRule = (value) => {
+        let raw = value;
+        if (typeof raw === 'string') {
+            const text = String(raw || '').trim();
+            if (!text) return null;
+            try { raw = JSON.parse(text); } catch (e) { return null; }
+        }
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+        const typeRaw = String(raw.type || raw.repeatType || raw.interval || '').trim().toLowerCase();
+        const type = (!typeRaw || typeRaw === 'none' || typeRaw === 'once')
+            ? 'none'
+            : (typeRaw === 'weekday' || typeRaw === 'weekdays' ? 'workday' : typeRaw);
+        const enabled = raw.enabled === undefined ? (type !== 'none') : !!raw.enabled;
+        return {
+            enabled: enabled && type !== 'none',
+            trigger: String(raw.trigger || '').trim().toLowerCase() === 'complete' ? 'complete' : 'due',
+            type,
+            every: Math.max(1, Math.min(3650, parseInt(raw.every, 10) || 1)),
+            monthlyMode: String(raw.monthlyMode || '').trim().toLowerCase() === 'weekday' ? 'weekday' : 'date',
+            until: __normalizeReminderDateKey(raw.until || raw.repeatUntil || ''),
+            anchorDate: __normalizeReminderDateKey(raw.anchorDate || ''),
+        };
+    };
+
+    const __normalizeReminderTaskRepeatState = (value) => {
+        let raw = value;
+        if (typeof raw === 'string') {
+            const text = String(raw || '').trim();
+            if (!text) return { lastCompletedAt: '', lastAdvancedAt: '', lastInstanceStart: '', lastInstanceDue: '' };
+            try { raw = JSON.parse(text); } catch (e) { raw = {}; }
+        }
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) raw = {};
+        return {
+            lastCompletedAt: String(raw.lastCompletedAt || '').trim(),
+            lastAdvancedAt: String(raw.lastAdvancedAt || '').trim(),
+            lastInstanceStart: __normalizeReminderDateKey(raw.lastInstanceStart || ''),
+            lastInstanceDue: __normalizeReminderDateKey(raw.lastInstanceDue || ''),
+        };
+    };
+
+    const __getReminderRepeatMode = (reminder) => __normalizeReminderRepeatMode(
+        reminder?.repeatMode || reminder?.mode || reminder?.repeat_mode || (reminder?.followTaskRepeat ? REMINDER_REPEAT_MODE_FOLLOW_TASK : ''),
+        REMINDER_REPEAT_MODE_MANUAL
+    );
+
+    const __hasReminderFollowTaskRepeat = (reminder) => {
+        const rule = __parseReminderTaskRepeatRule(reminder?.taskRepeatRule);
+        return __getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK && !!rule?.enabled;
+    };
+
+    const __getReminderFollowTaskAnchorKey = (reminder) => {
+        const dueKey = __normalizeReminderDateKey(reminder?.taskCompletionTime || '');
+        if (dueKey) return dueKey;
+        return __normalizeReminderDateKey(reminder?.taskStartDate || '');
+    };
 
     const __getReminderCompletedSet = (reminder) => {
         const set = new Set();
@@ -28325,6 +28446,18 @@ window.__setTomatoFloatState = function (payload) {
             blockContent: String(blockMeta.blockContent || raw.blockContent || '').trim(),
             blockType: String(blockMeta.blockType || raw.blockType || '').trim(),
             rootId: String(blockMeta.rootId || raw.rootId || '').trim(),
+            repeatMode: __normalizeReminderRepeatMode(
+                blockMeta.repeatMode
+                || raw.repeatMode
+                || raw.mode
+                || raw.repeat_mode
+                || (raw.followTaskRepeat ? REMINDER_REPEAT_MODE_FOLLOW_TASK : ''),
+                REMINDER_REPEAT_MODE_MANUAL
+            ),
+            taskStartDate: __normalizeReminderDateKey(blockMeta.taskStartDate || raw.taskStartDate || ''),
+            taskCompletionTime: __normalizeReminderDateKey(blockMeta.taskCompletionTime || raw.taskCompletionTime || ''),
+            taskRepeatRule: __parseReminderTaskRepeatRule(blockMeta.taskRepeatRule || raw.taskRepeatRule || raw.task_repeat_rule || '') || null,
+            taskRepeatState: __normalizeReminderTaskRepeatState(blockMeta.taskRepeatState || raw.taskRepeatState || raw.task_repeat_state || ''),
             notificationSchedules: __sanitizeReminderNotificationSchedules(raw.notificationSchedules),
             completedOccurrences: Array.isArray(raw.completedOccurrences) ? raw.completedOccurrences.filter(it => it && typeof it === 'object') : [],
             times: Array.isArray(raw.times)
@@ -28873,7 +29006,7 @@ window.__setTomatoFloatState = function (payload) {
         }
     }
     
-    function showReminderDialog(blockId, blockName, existingReminder) {
+    function showReminderDialog(blockId, blockName, existingReminder, taskContextInput = null) {
         document.getElementById('tomato-reminder-dialog')?.remove();
         document.getElementById('tomato-reminder-backdrop')?.remove();
         
@@ -28930,9 +29063,43 @@ window.__setTomatoFloatState = function (payload) {
         nameSection.appendChild(nameInput);
         content.appendChild(nameSection);
 
+        const taskContext = {
+            taskStartDate: __normalizeReminderDateKey(taskContextInput?.taskStartDate || existingReminder?.taskStartDate || ''),
+            taskCompletionTime: __normalizeReminderDateKey(taskContextInput?.taskCompletionTime || existingReminder?.taskCompletionTime || ''),
+            taskRepeatRule: __parseReminderTaskRepeatRule(taskContextInput?.taskRepeatRule || existingReminder?.taskRepeatRule || '') || null,
+            taskRepeatState: __normalizeReminderTaskRepeatState(taskContextInput?.taskRepeatState || existingReminder?.taskRepeatState || ''),
+        };
+        const hasTaskRepeat = !!taskContext.taskRepeatRule?.enabled;
+        let repeatMode = existingReminder
+            ? __getReminderRepeatMode(existingReminder)
+            : (hasTaskRepeat ? REMINDER_REPEAT_MODE_FOLLOW_TASK : REMINDER_REPEAT_MODE_MANUAL);
+
         const __semanticTitleSuggestion = (!existingReminder && reminderSettings?.semanticTitleTimeEnabled)
             ? __semanticExtractReminderSuggestion(nameInput.value, new Date())
             : null;
+
+        const repeatModeSection = document.createElement('div');
+        repeatModeSection.style.cssText = 'margin-bottom:16px;';
+        const repeatModeLabel = document.createElement('div');
+        repeatModeLabel.textContent = '重复来源';
+        repeatModeLabel.style.cssText = 'font-size:14px;font-weight:500;margin-bottom:8px;';
+        repeatModeSection.appendChild(repeatModeLabel);
+        const repeatModeSelect = document.createElement('select');
+        repeatModeSelect.style.cssText = 'width:100%;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:10px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
+        repeatModeSelect.innerHTML = `
+            <option value="${REMINDER_REPEAT_MODE_MANUAL}" ${repeatMode === REMINDER_REPEAT_MODE_MANUAL ? 'selected' : ''}>独立提醒循环</option>
+            <option value="${REMINDER_REPEAT_MODE_FOLLOW_TASK}" ${(repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK && hasTaskRepeat) ? 'selected' : ''} ${hasTaskRepeat ? '' : 'disabled'}>跟随任务循环</option>
+        `;
+        repeatModeSelect.onchange = () => {
+            repeatMode = __normalizeReminderRepeatMode(repeatModeSelect.value, REMINDER_REPEAT_MODE_MANUAL);
+            try { syncRepeatModeVisibility(); } catch (e) {}
+            try { updateNextInfo(); } catch (e) {}
+        };
+        repeatModeSection.appendChild(repeatModeSelect);
+        const repeatModeHint = document.createElement('div');
+        repeatModeHint.style.cssText = 'margin-top:6px;font-size:11px;color:var(--b3-theme-on-surface-light);line-height:1.45;';
+        repeatModeSection.appendChild(repeatModeHint);
+        content.appendChild(repeatModeSection);
         
         const intervalSection = document.createElement('div');
         intervalSection.style.cssText = 'margin-bottom:20px;';
@@ -28962,6 +29129,7 @@ window.__setTomatoFloatState = function (payload) {
                     child.style.fontWeight = sel ? '600' : '400';
                 });
                 try { syncEveryVisibility(); } catch (e) {}
+                try { syncRepeatModeVisibility(); } catch (e) {}
                 try { updateNextInfo(); } catch (e) {}
             };
             intervalGrid.appendChild(btn);
@@ -29039,11 +29207,16 @@ window.__setTomatoFloatState = function (payload) {
                 const endDate = String(endDateInput.value || '').trim();
                 const reminderPreview = {
                     blockId: blockId,
+                    repeatMode,
                     interval: selectedInterval,
                     every: selectedInterval === 'once' ? 1 : intervalEvery,
                     times: normalizedTimes,
                     startDate: String(dateInput.value || '').trim(),
                     endDate: endDate || undefined,
+                    taskStartDate: taskContext.taskStartDate,
+                    taskCompletionTime: taskContext.taskCompletionTime,
+                    taskRepeatRule: taskContext.taskRepeatRule,
+                    taskRepeatState: taskContext.taskRepeatState,
                     createdAt: existingReminder?.createdAt || new Date().toISOString(),
                     enabled: true,
                 };
@@ -29132,6 +29305,19 @@ window.__setTomatoFloatState = function (payload) {
         syncEndDateVisibility();
         syncEndDateConstraints();
 
+        const syncRepeatModeVisibility = () => {
+            const follow = repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK && hasTaskRepeat;
+            intervalSection.style.display = follow ? 'none' : '';
+            dateSection.style.display = follow ? 'none' : '';
+            endDateSection.style.display = follow ? 'none' : (selectedInterval !== 'once' ? 'block' : 'none');
+            repeatModeHint.textContent = follow
+                ? `当前会跟随任务循环；提醒日期将使用任务的${taskContext.taskCompletionTime ? '截止日期' : '开始日期'}。`
+                : (hasTaskRepeat
+                    ? '可切换为跟随任务循环，提醒会跟随任务实例自动推进。'
+                    : '当前任务尚未启用任务循环，提醒将按自己的循环规则运行。');
+        };
+        syncRepeatModeVisibility();
+
         const noteSection = document.createElement('div');
         noteSection.style.cssText = 'margin-bottom:20px;';
         const noteLabel = document.createElement('div');
@@ -29190,11 +29376,16 @@ window.__setTomatoFloatState = function (payload) {
             const reminderData = {
                 blockId,
                 blockName: customName || blockName,
+                repeatMode,
                 interval: selectedInterval,
                 every: selectedInterval === 'once' ? 1 : intervalEvery,
                 times: normalizedTimes,
                 startDate,
                 endDate: endDate || undefined, // 只保存非空截止日期
+                taskStartDate: taskContext.taskStartDate,
+                taskCompletionTime: taskContext.taskCompletionTime,
+                taskRepeatRule: taskContext.taskRepeatRule,
+                taskRepeatState: taskContext.taskRepeatState,
                 note: noteInput.value.trim(),
                 createdAt: existingReminder?.createdAt || new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
@@ -29532,6 +29723,14 @@ window.__setTomatoFloatState = function (payload) {
             return pickOnDate(dateKey, false);
         };
 
+        if (__hasReminderFollowTaskRepeat(reminder)) {
+            const followKey = __getReminderFollowTaskAnchorKey(reminder);
+            if (!followKey) return null;
+            if (followKey < nowKey) return null;
+            if (followKey === nowKey) return pickOnDate(followKey, true);
+            return pickEarliest(followKey);
+        }
+
         if (interval === 'once') {
             if (startKey < nowKey) return null;
             if (startKey === nowKey) return pickOnDate(startKey, true);
@@ -29714,6 +29913,12 @@ window.__setTomatoFloatState = function (payload) {
                 }
                 return null;
             };
+
+            if (__hasReminderFollowTaskRepeat(reminder)) {
+                const followKey = __getReminderFollowTaskAnchorKey(reminder);
+                if (!followKey || followKey > nowKey) return null;
+                return pickLatestOnDate(followKey, followKey === nowKey);
+            }
 
             if (interval === 'once') {
                 if (startKey > nowKey) return null;
@@ -30086,6 +30291,41 @@ window.__setTomatoFloatState = function (payload) {
     function stopReminderCheck() {
         if (reminderCheckTimer) { clearInterval(reminderCheckTimer); reminderCheckTimer = null; Logger.info('提醒检查已停止'); }
     }
+
+    let __reminderTaskAttrSyncBound = false;
+    const __reminderTaskAttrSyncTimers = new Map();
+    function installReminderTaskAttrSync() {
+        if (__reminderTaskAttrSyncBound) return;
+        __reminderTaskAttrSyncBound = true;
+        try {
+            window.addEventListener('tm-task-attr-updated', (ev) => {
+                const taskId = String(ev?.detail?.taskId || '').trim();
+                const attrKey = String(ev?.detail?.attrKey || '').trim();
+                if (!taskId) return;
+                if (![
+                    TASK_START_DATE_ATTR,
+                    TASK_COMPLETION_TIME_ATTR,
+                    TASK_REPEAT_RULE_ATTR,
+                    TASK_REPEAT_STATE_ATTR,
+                ].includes(attrKey)) return;
+                const prevTimer = __reminderTaskAttrSyncTimers.get(taskId);
+                if (prevTimer) {
+                    try { clearTimeout(prevTimer); } catch (e) {}
+                }
+                const timer = setTimeout(async () => {
+                    __reminderTaskAttrSyncTimers.delete(taskId);
+                    try {
+                        const reminder = await getBlockReminder(taskId);
+                        if (!reminder) return;
+                        try { await __syncReminderDeviceSchedule(taskId, reminder, { silent: true }); } catch (e) {}
+                        try { refreshReminderDockPanel(); } catch (e) {}
+                        try { updateReminderBadge(); } catch (e) {}
+                    } catch (e) {}
+                }, 180);
+                __reminderTaskAttrSyncTimers.set(taskId, timer);
+            });
+        } catch (e) {}
+    }
     
     // 手动触发检查（用于测试）
     function manualCheckReminders() {
@@ -30100,12 +30340,13 @@ window.__setTomatoFloatState = function (payload) {
                 const id = String(blockId || '').trim();
                 if (!id) return;
                 const name = String(blockName || '').trim() || '任务';
+                const taskContext = await __getReminderTaskContext(id);
                 const existing = await getBlockReminder(id);
                 if (!existing) {
                     const autoSaved = await __tryAutoSaveReminderFromTitle(id, name, new Date());
                     if (autoSaved) return;
                 }
-                showReminderDialog(id, name, existing);
+                showReminderDialog(id, name, existing, taskContext);
             }).catch((e) => {
                 try { Logger.warn('提醒 showDialog 失败:', e); } catch (e2) {}
             });
@@ -30116,6 +30357,10 @@ window.__setTomatoFloatState = function (payload) {
         recoverDock: (reason = 'manual') => {
             try {
                 reminderDockPanel = null;
+                if (isMobileDevice()) {
+                    __scheduleReminderDockRepair(reason);
+                    return;
+                }
                 if (reason !== 'wake' && reason !== 'visibility' && reason !== 'focus') {
                     __reminderDockMountEl = null;
                     __reminderDockMountParentEl = null;
@@ -30169,6 +30414,34 @@ window.__setTomatoFloatState = function (payload) {
             };
         }
     };
+
+    async function __getReminderTaskContext(blockId, attrsInput = null) {
+        const id = String(blockId || '').trim();
+        if (!id) {
+            return {
+                taskStartDate: '',
+                taskCompletionTime: '',
+                taskRepeatRule: null,
+                taskRepeatState: __normalizeReminderTaskRepeatState(null),
+            };
+        }
+        let attrs = (attrsInput && typeof attrsInput === 'object' && !Array.isArray(attrsInput)) ? attrsInput : null;
+        if (!attrs) {
+            try {
+                const getRes = await postJSON('/api/attr/getBlockAttrs', { id });
+                if (getRes.ok) attrs = getRes.data?.data || {};
+            } catch (e) {
+                attrs = null;
+            }
+        }
+        const map = (attrs && typeof attrs === 'object' && !Array.isArray(attrs)) ? attrs : {};
+        return {
+            taskStartDate: __normalizeReminderDateKey(map[TASK_START_DATE_ATTR] || ''),
+            taskCompletionTime: __normalizeReminderDateKey(map[TASK_COMPLETION_TIME_ATTR] || ''),
+            taskRepeatRule: __parseReminderTaskRepeatRule(map[TASK_REPEAT_RULE_ATTR] || '') || null,
+            taskRepeatState: __normalizeReminderTaskRepeatState(map[TASK_REPEAT_STATE_ATTR] || ''),
+        };
+    }
 
     globalThis.__tomatoTimer = {
         refreshUI: () => {
@@ -30249,10 +30522,11 @@ window.__setTomatoFloatState = function (payload) {
             const getRes = await postJSON('/api/attr/getBlockAttrs', { id: reminderBlockId });
             if (!getRes.ok) { return false; }
             const currentAttrs = getRes.data?.data || {};
+            const taskContext = await __getReminderTaskContext(reminderBlockId, currentAttrs);
             let currentReminder = null;
             try {
                 const currentRaw = currentAttrs['custom-tomato-reminder'];
-                if (currentRaw) currentReminder = __sanitizeReminderData(JSON.parse(currentRaw), { blockId: reminderBlockId });
+                if (currentRaw) currentReminder = __sanitizeReminderData(JSON.parse(currentRaw), { blockId: reminderBlockId, ...taskContext });
             } catch (e) {}
             let reminderToSave = reminderData;
             if (reminderData && typeof reminderData === 'object') {
@@ -30265,6 +30539,7 @@ window.__setTomatoFloatState = function (payload) {
                     blockContent: currentReminder?.blockContent,
                     blockType: currentReminder?.blockType,
                     rootId: currentReminder?.rootId,
+                    ...taskContext,
                 });
                 // 编辑提醒时，如果属性里暂时没带上当前设备预约，就从本地预约注册表补回，
                 // 这样修改时间时仍能先取消本设备旧预约，再创建新预约。
@@ -30313,8 +30588,9 @@ window.__setTomatoFloatState = function (payload) {
             const getRes = await postJSON('/api/attr/getBlockAttrs', { id: blockId });
             if (getRes.ok) {
                 const attrs = getRes.data?.data || {};
+                const taskContext = await __getReminderTaskContext(blockId, attrs);
                 const reminderAttr = attrs['custom-tomato-reminder'];
-                if (reminderAttr) return __sanitizeReminderData(JSON.parse(reminderAttr), { blockId });
+                if (reminderAttr) return __sanitizeReminderData(JSON.parse(reminderAttr), { blockId, ...taskContext });
             }
         } catch (e) { Logger.warn('获取块提醒设置失败:', e); }
         return null;
@@ -30389,7 +30665,16 @@ window.__setTomatoFloatState = function (payload) {
 
             // 使用思源 SQL 查询 API 获取所有带有 custom-tomato-reminder 属性的块
             const sql = `
-                SELECT b.id, b.content, b.type, b.root_id, a.value as reminder_data
+                SELECT
+                    b.id,
+                    b.content,
+                    b.type,
+                    b.root_id,
+                    a.value as reminder_data,
+                    (SELECT value FROM attributes WHERE block_id = b.id AND name = '${TASK_START_DATE_ATTR}' LIMIT 1) as task_start_date,
+                    (SELECT value FROM attributes WHERE block_id = b.id AND name = '${TASK_COMPLETION_TIME_ATTR}' LIMIT 1) as task_completion_time,
+                    (SELECT value FROM attributes WHERE block_id = b.id AND name = '${TASK_REPEAT_RULE_ATTR}' LIMIT 1) as task_repeat_rule,
+                    (SELECT value FROM attributes WHERE block_id = b.id AND name = '${TASK_REPEAT_STATE_ATTR}' LIMIT 1) as task_repeat_state
                 FROM blocks b
                 JOIN attributes a ON b.id = a.block_id
                 WHERE a.name = 'custom-tomato-reminder'
@@ -30412,6 +30697,10 @@ window.__setTomatoFloatState = function (payload) {
                             blockContent: block.content,
                             blockType: block.type,
                             rootId: block.root_id,
+                            taskStartDate: block.task_start_date,
+                            taskCompletionTime: block.task_completion_time,
+                            taskRepeatRule: block.task_repeat_rule,
+                            taskRepeatState: block.task_repeat_state,
                         });
                     } catch (e) {
                         Logger.warn('解析提醒数据失败:', e);
@@ -30533,6 +30822,14 @@ window.__setTomatoFloatState = function (payload) {
 
     const __canAutoMountReminderDock = () => !isMobileDevice();
 
+    const __isReminderDockMobileMountEl = (element) => {
+        if (!element || element === document.body || element === document.documentElement) return false;
+        try {
+            return !!element.isConnected;
+        } catch (e) {}
+        return false;
+    };
+
     const __getReminderDockOwnerNode = (element) => {
         if (!element || element === document.body || element === document.documentElement) return null;
         try {
@@ -30592,6 +30889,23 @@ window.__setTomatoFloatState = function (payload) {
     };
 
     const __scheduleReminderDockRecreate = (reason) => {
+        if (isMobileDevice()) {
+            if (__reminderDockRecreateTimer) return;
+            __reminderDockRecreateTimer = setTimeout(() => {
+                __reminderDockRecreateTimer = null;
+                const mountEl = __resolveReminderDockMountEl();
+                if (mountEl) {
+                    try {
+                        globalThis.__dockTomatoReminderDock?.mount?.(mountEl);
+                        return;
+                    } catch (e) {}
+                }
+                try {
+                    __requestReminderDockRegistration(`repair-mobile-${reason}`, true);
+                } catch (e) {}
+            }, 180);
+            return;
+        }
         if (!__canAutoMountReminderDock()) {
             __clearReminderDockRegistrationState();
             return;
@@ -30617,9 +30931,12 @@ window.__setTomatoFloatState = function (payload) {
     const __rememberReminderDockMountEl = (element, options = {}) => {
         if (!element) return;
         const allowDirect = !!options.allowDirect;
-        const validMountEl = allowDirect
-            ? __isReminderDockDirectMountEl(element)
-            : __isReminderDockOwnedMountEl(element);
+        const allowMobile = !!options.allowMobile || isMobileDevice();
+        const validMountEl = allowMobile
+            ? __isReminderDockMobileMountEl(element)
+            : (allowDirect
+                ? __isReminderDockDirectMountEl(element)
+                : __isReminderDockOwnedMountEl(element));
         if (!validMountEl) {
             __clearReminderDockMountRef();
             return;
@@ -30675,6 +30992,22 @@ window.__setTomatoFloatState = function (payload) {
             if (!__reminderDockMountTagName && meta.mountTagName) __reminderDockMountTagName = String(meta.mountTagName || '');
             if (!__reminderDockMountClassName && meta.mountClassName) __reminderDockMountClassName = String(meta.mountClassName || '');
         } catch (e) {}
+        if (isMobileDevice()) {
+            try {
+                if (__isReminderDockMobileMountEl(__reminderDockMountEl)) {
+                    return __reminderDockMountEl;
+                }
+            } catch (e) {}
+            try {
+                const meta = __getReminderDockMeta();
+                if (__isReminderDockMobileMountEl(meta.mountEl)) {
+                    __rememberReminderDockMountEl(meta.mountEl, { allowDirect: true, allowMobile: true });
+                    return meta.mountEl;
+                }
+            } catch (e) {}
+            __clearReminderDockMountRef();
+            return null;
+        }
         try {
             if (__reminderDockMountEl && document.body.contains(__reminderDockMountEl)) {
                 if (__isReminderDockOwnedMountEl(__reminderDockMountEl) || __isReminderDockDirectMountEl(__reminderDockMountEl)) {
@@ -30733,6 +31066,19 @@ window.__setTomatoFloatState = function (payload) {
     };
 
     const __scheduleReminderDockRepair = (reason) => {
+        if (isMobileDevice()) {
+            try { if (__reminderDockRepairTimer) clearTimeout(__reminderDockRepairTimer); } catch (e) {}
+            __reminderDockRepairTimer = setTimeout(() => {
+                __reminderDockRepairTimer = null;
+                try {
+                    const ok = __ensureReminderDockMounted();
+                    if (!ok) __scheduleReminderDockRecreate(`repair-${reason}`);
+                } catch (e) {
+                    try { Logger.warn('提醒Dock 移动端修复失败:', reason, e); } catch (e2) {}
+                }
+            }, 120);
+            return;
+        }
         if (!__canAutoMountReminderDock()) {
             __clearReminderDockRegistrationState();
             return;
@@ -30818,6 +31164,33 @@ window.__setTomatoFloatState = function (payload) {
     };
 
     const __ensureReminderDockMounted = () => {
+        if (isMobileDevice()) {
+            const mountEl = __resolveReminderDockMountEl();
+            if (!mountEl) return false;
+            try {
+                const panel = mountEl.querySelector?.('#tomato-reminder-dock-content');
+                if (panel && panel.isConnected) {
+                    reminderDockPanel = panel;
+                    __rememberReminderDockMountEl(mountEl, { allowDirect: true, allowMobile: true });
+                    return true;
+                }
+            } catch (e) {}
+            try {
+                globalThis.__dockTomatoReminderDock?.mount?.(mountEl);
+            } catch (e) {
+                try { Logger.error('提醒Dock 移动端 recover mount失败:', e); } catch (e2) {}
+                return false;
+            }
+            try {
+                const panel = mountEl.querySelector?.('#tomato-reminder-dock-content');
+                if (panel && panel.isConnected) {
+                    reminderDockPanel = panel;
+                    __rememberReminderDockMountEl(mountEl, { allowDirect: true, allowMobile: true });
+                    return true;
+                }
+            } catch (e) {}
+            return false;
+        }
         if (!__canAutoMountReminderDock()) {
             __clearReminderDockRegistrationState();
             return false;
@@ -31024,7 +31397,7 @@ window.__setTomatoFloatState = function (payload) {
                     const meta = __getReminderDockMeta();
                     meta.addRequested = true;
                     meta.registered = true;
-                    meta.mountEl = element;
+                    __rememberReminderDockMountEl(element, { allowDirect: true, allowMobile: true });
                 } catch (e) {}
                 __mountReminderDockContentIntoElement(element);
                 return;
