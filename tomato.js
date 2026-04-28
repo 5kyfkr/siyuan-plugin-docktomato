@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.9.4
+// @version      1.9.5
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -1567,6 +1567,14 @@
     let breakEndAudio = null;
     let workEndAudioObjectUrl = null;
     let breakEndAudioObjectUrl = null;
+    let workBackgroundAudio = null;
+    let breakBackgroundAudio = null;
+    let workBackgroundAudioObjectUrl = null;
+    let breakBackgroundAudioObjectUrl = null;
+    let currentBackgroundAudio = null;
+    let backgroundAudioPreview = null;
+    let backgroundAudioPreviewObjectUrl = null;
+    let backgroundAudioPreviewTimer = null;
     
     // ========== 统一日志输出系统 ==========
     // 支持日志级别控制，提供结构化日志输出
@@ -2219,6 +2227,11 @@
             breakEndSound: '',     // 休息结束提示音文件名
             workEndPreset: '',     // 预置提示音: '' 表示不使用预置
             breakEndPreset: '',    // 预置提示音: '' 表示不使用预置
+            workBackgroundSound: '', // 工作背景音文件名
+            breakBackgroundSound: '', // 休息背景音文件名
+            backgroundVolume: 0.35, // 背景音音量 (0-1)
+            backgroundEnabled: true, // 是否启用背景音
+            backgroundMuted: false, // 是否静音背景音
             volume: 0.8,           // 提示音音量 (0-1)
             enabled: true          // 是否启用提示音
         },
@@ -9015,7 +9028,7 @@
             font-weight: bold;
             transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
             transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-            pointer-events: auto;
+            pointer-events: inherit;
             user-select: none;
             -webkit-user-select: none;
         `;
@@ -9039,6 +9052,7 @@
         // 🔧 关键修复：在 timelineBar 上添加更高优先级的捕获监听器
         // 直接处理 routineToolbar 区域的点击事件
         const routineToolbarClickHandler = async (e) => {
+            if (!isTimelineExpanded) return;
             const clickX = e.clientX;
             const clickY = e.clientY;
             
@@ -11762,8 +11776,9 @@
             if (!isRunning) return;
             handleTimerTick();
         }, CONFIG.TIMER_INTERVAL);
-        
+
         Logger.debug('🔄 本地计时器循环已启动');
+        try { syncBackgroundAudioWithTimerState(); } catch (e) {}
     }
 
     // 🔧 新增：计时器 tick 处理逻辑
@@ -12109,6 +12124,7 @@
         // 🔧 修复：暂停时不重置 startTime，保留用于 recordEndTime 的时间戳计算
         // startTime 只在完全停止（stopTimer）时才重置为 0
         lastTickTime = 0;
+        pauseBackgroundAudio(false);
 
         // 🔧 修复：暂停时保存当前按钮颜色，确保暂停期间颜色不变
         // 获取暂停时的颜色（如果有活跃的日常按钮）
@@ -12169,6 +12185,7 @@
         timerId = null;
         isRunning = false;
         isTimerPaused = false;  // 清除暂停状态
+        stopBackgroundAudio();
         startTime = 0;
         lastTickTime = 0;
         // 🔧 修复：停止时清除暂停颜色
@@ -12881,6 +12898,7 @@
         currentDuration = duration;
         remainingSeconds = duration * 60;
         isRunning = false;
+        stopBackgroundAudio();
         pausedRemainingSeconds = null;
         // 🔧 修复：清除 currentStartTimestamp，避免重置休息模式时错误保存记录
         currentStartTimestamp = null;
@@ -12963,6 +12981,7 @@
         elapsedSeconds = 0;
         isRunning = false;
         isTimerPaused = false;
+        stopBackgroundAudio();
         pausedRemainingSeconds = null;
         isFreshTomatoStart = false;
         lastTickTime = 0;
@@ -13000,6 +13019,7 @@
         return withTimerFinalizationLock('reset-current-mode', async () => {
             const wasPaused = !!isTimerPaused;
             isTimerPaused = false;
+            stopBackgroundAudio();
             // 注意：不再自动清除任务块关联，用户可以通过📋️图标的删除按钮手动清除
 
             if (timerMode === 'break' || timerMode === 'stopwatch-break') {
@@ -13232,7 +13252,8 @@
         });
     }
 
-    async function completeCurrentTomato() {
+    async function completeCurrentTomato(options = {}) {
+        const opts = (options && typeof options === 'object') ? options : {};
         return withTimerFinalizationLock('complete-current-tomato', async () => {
             if (timerMode !== 'countdown') return;
             if (!isRunning && !isTimerPaused) return;
@@ -13250,6 +13271,7 @@
             startTime = 0;
             lastTickTime = 0;
             currentPauseStart = null;
+            stopBackgroundAudio();
             currentStartTimestamp = null;
             currentStartTimeMs = 0;
             remainingSeconds = currentDuration * 60;
@@ -13270,8 +13292,61 @@
                 syncState.distractionSavedCount = 0;
                 await SyncManager.updateLocal(syncState, true);
             }
-            showToast('✅ 已完成番茄', 1600);
+            if (opts.suppressToast !== true) showToast('✅ 已完成番茄', 1600);
         });
+    }
+
+    function isCurrentTaskAssociation(blockId) {
+        const id = String(blockId || '').trim();
+        if (!id) return false;
+        return [currentTaskBlockId, currentDatabaseBlockId]
+            .some((value) => String(value || '').trim() === id);
+    }
+
+    function hasActiveTimerSegment() {
+        try {
+            const status = String(syncState?.status || '').trim();
+            const syncActive = !!(syncState && status && status !== 'IDLE' && (syncState.startTime || syncState.stopwatchStartTimeMs));
+            return !!(isRunning || isTimerPaused || currentStartTimestamp || stopwatchStartTimestamp || syncActive);
+        } catch (e) {
+            return !!(isRunning || isTimerPaused || currentStartTimestamp || stopwatchStartTimestamp);
+        }
+    }
+
+    async function stopAssociatedTaskAfterDone(blockId, options = {}) {
+        const id = String(blockId || '').trim();
+        const opts = (options && typeof options === 'object') ? options : {};
+        if (!id || !isCurrentTaskAssociation(id)) {
+            return { matched: false, stopped: false, associationCleared: false };
+        }
+
+        const modeBefore = String(timerMode || '').trim();
+        const hadActiveTimer = hasActiveTimerSegment();
+        try {
+            if (modeBefore === 'countdown' && (isRunning || isTimerPaused)) {
+                await completeCurrentTomato({ suppressToast: opts.suppressToast !== false });
+            } else if (hadActiveTimer) {
+                await resetCurrentMode();
+            } else {
+                try { await stopTimer(); } catch (e) {}
+            }
+        } catch (e) {
+            try { Logger.warn('任务完成时停止番茄钟失败:', e); } catch (e2) {}
+        }
+
+        try { await setTaskAssociation(null, null, null); } catch (e) {}
+        try { clearTaskBlockHighlight(); } catch (e) {}
+        try { stopHighlightKeepAlive(); } catch (e) {}
+        try { updateTaskBlockIcon(); } catch (e) {}
+        try { updateTaskBlockTooltip(); } catch (e) {}
+        try { updateDisplay(); } catch (e) {}
+
+        return {
+            matched: true,
+            stopped: hadActiveTimer,
+            associationCleared: true,
+            mode: modeBefore,
+        };
     }
 
     function createButtonGroup(values, currentValue, onClick, isBreak = false) {
@@ -13431,6 +13506,48 @@
             menu.appendChild(hrClose);
         }
 
+        const currentAudioSettings = getAudioSettings();
+        const hasBackgroundAudio = !!(currentAudioSettings.workBackgroundSound || currentAudioSettings.breakBackgroundSound);
+        if (currentAudioSettings.backgroundEnabled !== false && hasBackgroundAudio) {
+            const muteBackgroundItem = document.createElement('div');
+            const isMuted = currentAudioSettings.backgroundMuted === true;
+            muteBackgroundItem.textContent = isMuted ? '🔊 取消静音背景音' : '🔇 静音背景音';
+            muteBackgroundItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
+            muteBackgroundItem.onmouseenter = () => muteBackgroundItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
+            muteBackgroundItem.onmouseleave = () => muteBackgroundItem.style.backgroundColor = '';
+            muteBackgroundItem.onclick = async (e) => {
+                e.stopPropagation();
+                await setBackgroundAudioMuted(!isMuted);
+                menu.remove();
+                isContextMenuOpen = false;
+            };
+            menu.appendChild(muteBackgroundItem);
+
+            const hrBackgroundAudio = document.createElement('hr');
+            hrBackgroundAudio.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
+            menu.appendChild(hrBackgroundAudio);
+        }
+
+        if (isRunning && (timerMode === 'countdown' || timerMode === 'stopwatch')) {
+            const distractionItem = document.createElement('div');
+            const willExtend = timerMode === 'countdown' && userSettings?.main?.extendTomatoOnDistraction !== false;
+            distractionItem.textContent = willExtend ? '😵 记录分心（+1分钟）' : '😵 记录分心';
+            distractionItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
+            distractionItem.onmouseenter = () => distractionItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
+            distractionItem.onmouseleave = () => distractionItem.style.backgroundColor = '';
+            distractionItem.onclick = async (e) => {
+                e.stopPropagation();
+                await recordDistraction();
+                menu.remove();
+                isContextMenuOpen = false;
+            };
+            menu.appendChild(distractionItem);
+
+            const hrDistraction = document.createElement('hr');
+            hrDistraction.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
+            menu.appendChild(hrDistraction);
+        }
+
         const tomatoTitle = document.createElement('div');
         tomatoTitle.textContent = '🍅 番茄';
         tomatoTitle.style.cssText = `
@@ -13508,26 +13625,6 @@
             const hrComplete = document.createElement('hr');
             hrComplete.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
             menu.appendChild(hrComplete);
-        }
-
-        if (isRunning && (timerMode === 'countdown' || timerMode === 'stopwatch')) {
-            const distractionItem = document.createElement('div');
-            const willExtend = timerMode === 'countdown' && userSettings?.main?.extendTomatoOnDistraction !== false;
-            distractionItem.textContent = willExtend ? '😵 记录分心（+1分钟）' : '😵 记录分心';
-            distractionItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
-            distractionItem.onmouseenter = () => distractionItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
-            distractionItem.onmouseleave = () => distractionItem.style.backgroundColor = '';
-            distractionItem.onclick = async (e) => {
-                e.stopPropagation();
-                await recordDistraction();
-                menu.remove();
-                isContextMenuOpen = false;
-            };
-            menu.appendChild(distractionItem);
-
-            const hrDistraction = document.createElement('hr');
-            hrDistraction.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
-            menu.appendChild(hrDistraction);
         }
 
         menu.appendChild(createButtonGroup(getTomatoDurations(),
@@ -24173,19 +24270,336 @@ window.__setTomatoFloatState = function (payload) {
     }
     
     // ========== 音频播放功能 ==========
-    
+
+    function clampAudioVolume(value, fallback = 0.8) {
+        const num = Number(value);
+        if (!Number.isFinite(num)) return fallback;
+        return Math.max(0, Math.min(1, num));
+    }
+
+    function ensureAudioSettingsDefaults() {
+        const defaults = {
+            workEndSound: '',
+            breakEndSound: '',
+            workEndPreset: '',
+            breakEndPreset: '',
+            workBackgroundSound: '',
+            breakBackgroundSound: '',
+            backgroundVolume: 0.35,
+            backgroundEnabled: true,
+            backgroundMuted: false,
+            volume: 0.8,
+            enabled: true
+        };
+
+        if (!userSettings.audioSettings || typeof userSettings.audioSettings !== 'object') {
+            userSettings.audioSettings = { ...defaults };
+        } else {
+            for (const [key, value] of Object.entries(defaults)) {
+                if (userSettings.audioSettings[key] == null) {
+                    userSettings.audioSettings[key] = value;
+                }
+            }
+        }
+
+        userSettings.audioSettings.volume = clampAudioVolume(userSettings.audioSettings.volume, defaults.volume);
+        userSettings.audioSettings.backgroundVolume = clampAudioVolume(userSettings.audioSettings.backgroundVolume, defaults.backgroundVolume);
+        userSettings.audioSettings.enabled = userSettings.audioSettings.enabled !== false;
+        userSettings.audioSettings.backgroundEnabled = userSettings.audioSettings.backgroundEnabled !== false;
+        userSettings.audioSettings.backgroundMuted = userSettings.audioSettings.backgroundMuted === true;
+        audioSettings = userSettings.audioSettings;
+        return audioSettings;
+    }
+
+    function releaseAudio(audio, objectUrl) {
+        if (audio) {
+            try { audio.pause(); } catch (e) {}
+            try { audio.src = ''; } catch (e) {}
+        }
+        if (objectUrl) {
+            try { URL.revokeObjectURL(objectUrl); } catch (e) {}
+        }
+    }
+
+    function cleanupEndAudioResources() {
+        releaseAudio(workEndAudio, workEndAudioObjectUrl);
+        releaseAudio(breakEndAudio, breakEndAudioObjectUrl);
+        workEndAudio = null;
+        breakEndAudio = null;
+        workEndAudioObjectUrl = null;
+        breakEndAudioObjectUrl = null;
+    }
+
+    function stopBackgroundAudioPreview() {
+        if (backgroundAudioPreviewTimer) {
+            try { clearTimeout(backgroundAudioPreviewTimer); } catch (e) {}
+            backgroundAudioPreviewTimer = null;
+        }
+        releaseAudio(backgroundAudioPreview, backgroundAudioPreviewObjectUrl);
+        backgroundAudioPreview = null;
+        backgroundAudioPreviewObjectUrl = null;
+    }
+
+    function cleanupBackgroundAudioResources() {
+        stopBackgroundAudioPreview();
+        releaseAudio(workBackgroundAudio, workBackgroundAudioObjectUrl);
+        releaseAudio(breakBackgroundAudio, breakBackgroundAudioObjectUrl);
+        workBackgroundAudio = null;
+        breakBackgroundAudio = null;
+        workBackgroundAudioObjectUrl = null;
+        breakBackgroundAudioObjectUrl = null;
+        currentBackgroundAudio = null;
+    }
+
+    async function loadAudioFromStorage(filename, label, options = {}) {
+        const cleanFilename = String(filename || '').trim();
+        if (!cleanFilename) return { audio: null, objectUrl: null };
+
+        try {
+            let fileResponse = await fetch('/api/file/getFile', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: AUDIO_STORAGE_PATH + cleanFilename })
+            });
+            if (!fileResponse.ok) {
+                fileResponse = await fetch('/api/file/getFile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: LEGACY_AUDIO_STORAGE_PATH + cleanFilename })
+                });
+            }
+            if (!fileResponse.ok) {
+                Logger.warn(`🍅 无法读取${label}文件:`, cleanFilename);
+                return { audio: null, objectUrl: null };
+            }
+
+            const blob = await fileResponse.blob();
+            const objectUrl = URL.createObjectURL(blob);
+            const audio = new Audio(objectUrl);
+            audio.loop = options.loop === true;
+            audio.volume = clampAudioVolume(options.volume, 0.8);
+            audio.addEventListener('error', (e) => {
+                Logger.warn(`🍅 ${label}加载错误:`, e);
+            });
+            return { audio, objectUrl };
+        } catch (e) {
+            Logger.warn(`⚠️ 无法加载${label}:`, e);
+            return { audio: null, objectUrl: null };
+        }
+    }
+
+    async function uploadAudioFileToStorage(file) {
+        const filename = file?.name || '';
+        if (!filename) throw new Error('empty audio filename');
+        try { await __tomatoEnsureDir(AUDIO_STORAGE_PATH); } catch (mkdirErr) {}
+
+        const formData = new FormData();
+        formData.append('path', AUDIO_STORAGE_PATH + filename);
+        formData.append('isDir', 'false');
+        formData.append('file', file);
+
+        const response = await fetch('/api/file/putFile', {
+            method: 'POST',
+            body: formData
+        });
+        const result = await response.json();
+        if (result?.code !== 0) {
+            throw new Error(result?.msg || 'upload audio failed');
+        }
+        return filename;
+    }
+
+    async function setBackgroundAudioFile(type, filename) {
+        audioSettings = ensureAudioSettingsDefaults();
+        if (type === 'work') {
+            audioSettings.workBackgroundSound = String(filename || '').trim();
+        } else if (type === 'break') {
+            audioSettings.breakBackgroundSound = String(filename || '').trim();
+        }
+        await saveAudioSettings();
+        await initAudio();
+        syncBackgroundAudioWithTimerState();
+    }
+
+    async function setBackgroundAudioMuted(muted) {
+        audioSettings = ensureAudioSettingsDefaults();
+        audioSettings.backgroundMuted = muted === true;
+        await saveAudioSettings();
+        updateBackgroundAudioVolume();
+        syncBackgroundAudioWithTimerState();
+    }
+
+    function isBreakAudioMode(mode = timerMode) {
+        return mode === 'break' || mode === 'stopwatch-break';
+    }
+
+    function getBackgroundAudioForCurrentMode() {
+        return isBreakAudioMode() ? breakBackgroundAudio : workBackgroundAudio;
+    }
+
+    function updateBackgroundAudioVolume() {
+        audioSettings = ensureAudioSettingsDefaults();
+        const volume = audioSettings.backgroundMuted ? 0 : clampAudioVolume(audioSettings.backgroundVolume, 0.35);
+        if (workBackgroundAudio) workBackgroundAudio.volume = volume;
+        if (breakBackgroundAudio) breakBackgroundAudio.volume = volume;
+        if (currentBackgroundAudio) currentBackgroundAudio.volume = volume;
+    }
+
+    function pauseBackgroundAudio(reset = false) {
+        for (const audio of [workBackgroundAudio, breakBackgroundAudio]) {
+            if (!audio) continue;
+            try { audio.pause(); } catch (e) {}
+            if (reset) {
+                try { audio.currentTime = 0; } catch (e) {}
+            }
+        }
+        if (reset) currentBackgroundAudio = null;
+    }
+
+    function stopBackgroundAudio() {
+        pauseBackgroundAudio(true);
+    }
+
+    async function playBackgroundAudioForCurrentMode() {
+        audioSettings = ensureAudioSettingsDefaults();
+        if (!audioSettings.backgroundEnabled || audioSettings.backgroundMuted || !isRunning || isTimerPaused) {
+            pauseBackgroundAudio(false);
+            return;
+        }
+
+        const audio = getBackgroundAudioForCurrentMode();
+        if (!audio) {
+            pauseBackgroundAudio(false);
+            return;
+        }
+
+        if (currentBackgroundAudio && currentBackgroundAudio !== audio) {
+            try { currentBackgroundAudio.pause(); } catch (e) {}
+            try { currentBackgroundAudio.currentTime = 0; } catch (e) {}
+        }
+
+        currentBackgroundAudio = audio;
+        audio.loop = true;
+        audio.volume = clampAudioVolume(audioSettings.backgroundVolume, 0.35);
+
+        try {
+            const playPromise = audio.play();
+            if (playPromise !== undefined) await playPromise;
+        } catch (e) {
+            Logger.warn('⚠️ 播放背景音失败:', e?.name || e, e?.message || '');
+        }
+    }
+
+    function syncBackgroundAudioWithTimerState() {
+        if (isRunning && !isTimerPaused) {
+            playBackgroundAudioForCurrentMode().catch((e) => {
+                Logger.warn('⚠️ 同步背景音状态失败:', e);
+            });
+        } else {
+            pauseBackgroundAudio(false);
+        }
+    }
+
+    async function initBackgroundAudio() {
+        audioSettings = ensureAudioSettingsDefaults();
+        const workBackgroundPath = audioSettings.workBackgroundSound;
+        const breakBackgroundPath = audioSettings.breakBackgroundSound;
+
+        cleanupBackgroundAudioResources();
+
+        if (workBackgroundPath) {
+            const loaded = await loadAudioFromStorage(workBackgroundPath, '工作背景音', {
+                loop: true,
+                volume: audioSettings.backgroundVolume
+            });
+            workBackgroundAudio = loaded.audio;
+            workBackgroundAudioObjectUrl = loaded.objectUrl;
+            if (workBackgroundAudio) Logger.info('🍅 工作背景音已加载:', workBackgroundPath);
+        }
+
+        if (breakBackgroundPath) {
+            const loaded = await loadAudioFromStorage(breakBackgroundPath, '休息背景音', {
+                loop: true,
+                volume: audioSettings.backgroundVolume
+            });
+            breakBackgroundAudio = loaded.audio;
+            breakBackgroundAudioObjectUrl = loaded.objectUrl;
+            if (breakBackgroundAudio) Logger.info('🍅 休息背景音已加载:', breakBackgroundPath);
+        }
+
+        updateBackgroundAudioVolume();
+        syncBackgroundAudioWithTimerState();
+    }
+
+    async function playBackgroundAudioPreview(type) {
+        audioSettings = ensureAudioSettingsDefaults();
+        const isBreak = type === 'break';
+        const filename = isBreak ? audioSettings.breakBackgroundSound : audioSettings.workBackgroundSound;
+        const existingAudio = isBreak ? breakBackgroundAudio : workBackgroundAudio;
+        const existingObjectUrl = isBreak ? breakBackgroundAudioObjectUrl : workBackgroundAudioObjectUrl;
+
+        if (!filename) {
+            showMiniToast('请先选择背景音文件');
+            return;
+        }
+
+        stopBackgroundAudioPreview();
+
+        let previewSrc = existingAudio?.src || '';
+        if (!previewSrc) {
+            const loaded = await loadAudioFromStorage(filename, isBreak ? '休息背景音预览' : '工作背景音预览', {
+                loop: false,
+                volume: audioSettings.backgroundVolume
+            });
+            previewSrc = loaded.audio?.src || '';
+            backgroundAudioPreviewObjectUrl = loaded.objectUrl;
+            if (loaded.audio) {
+                try { loaded.audio.src = ''; } catch (e) {}
+            }
+        } else {
+            backgroundAudioPreviewObjectUrl = existingObjectUrl ? null : '';
+        }
+
+        if (!previewSrc) {
+            showMiniToast('背景音读取失败');
+            return;
+        }
+
+        const preview = new Audio(previewSrc);
+        backgroundAudioPreview = preview;
+        preview.loop = false;
+        preview.volume = audioSettings.backgroundMuted ? 0 : clampAudioVolume(audioSettings.backgroundVolume, 0.35);
+
+        const clearPreview = () => {
+            if (backgroundAudioPreview === preview) {
+                stopBackgroundAudioPreview();
+            }
+        };
+        preview.addEventListener('ended', clearPreview, { once: true });
+        backgroundAudioPreviewTimer = setTimeout(clearPreview, 5000);
+
+        try {
+            const playPromise = preview.play();
+            if (playPromise !== undefined) await playPromise;
+        } catch (e) {
+            stopBackgroundAudioPreview();
+            Logger.warn('⚠️ 背景音预览失败:', e?.name || e, e?.message || '');
+            showMiniToast('背景音预览失败');
+        }
+    }
+
     /**
      * 加载音频配置
      */
     function getAudioSettings() {
-        return userSettings.audioSettings;
+        return ensureAudioSettingsDefaults();
     }
     
     /**
      * 保存音频配置
      */
     async function saveAudioSettings() {
-        userSettings.audioSettings = audioSettings;
+        userSettings.audioSettings = ensureAudioSettingsDefaults();
         await saveUserSettings();
     }
     
@@ -24196,9 +24610,7 @@ window.__setTomatoFloatState = function (payload) {
      */
     async function setAudioFile(type, filename) {
         // 同步最新的 userSettings
-        if (userSettings.audioSettings) {
-            audioSettings = userSettings.audioSettings;
-        }
+        audioSettings = ensureAudioSettingsDefaults();
 
         if (type === 'work') {
             audioSettings.workEndSound = filename;
@@ -24233,14 +24645,15 @@ window.__setTomatoFloatState = function (payload) {
      */
     async function initAudio() {
         // 确保 audioSettings 引用正确（同步 userSettings 中的值）
-        if (userSettings.audioSettings) {
-            audioSettings = userSettings.audioSettings;
-        }
+        audioSettings = ensureAudioSettingsDefaults();
 
         Logger.info('🍅 initAudio 当前配置:', JSON.stringify(audioSettings));
 
+        await initBackgroundAudio();
+
         if (!audioSettings?.enabled) {
             Logger.info('🍅 提示音已禁用');
+            cleanupEndAudioResources();
             return;
         }
 
@@ -24353,12 +24766,10 @@ window.__setTomatoFloatState = function (payload) {
      */
     async function playEndSound(type) {
         Logger.info('🔔 playEndSound 被调用, type:', type);
-        
+
         // 同步最新的音频配置
-        if (userSettings.audioSettings) {
-            audioSettings = userSettings.audioSettings;
-        }
-        
+        audioSettings = ensureAudioSettingsDefaults();
+
         Logger.info('🔔 audioSettings:', JSON.stringify(audioSettings));
         Logger.info('🔔 workEndAudio:', workEndAudio);
         Logger.info('🔔 breakEndAudio:', breakEndAudio);
@@ -24544,30 +24955,16 @@ window.__setTomatoFloatState = function (payload) {
             breakEndAudio.pause();
             breakEndAudio.currentTime = 0;
         }
+        stopBackgroundAudio();
+        stopBackgroundAudioPreview();
     }
     
     /**
      * 🔧 性能优化：完全清理音频资源（用于页面卸载）
      */
     function cleanupAudioResources() {
-        if (workEndAudio) {
-            workEndAudio.pause();
-            workEndAudio.src = '';
-            workEndAudio = null;
-        }
-        if (breakEndAudio) {
-            breakEndAudio.pause();
-            breakEndAudio.src = '';
-            breakEndAudio = null;
-        }
-        if (workEndAudioObjectUrl) {
-            try { URL.revokeObjectURL(workEndAudioObjectUrl); } catch (e) {}
-            workEndAudioObjectUrl = null;
-        }
-        if (breakEndAudioObjectUrl) {
-            try { URL.revokeObjectURL(breakEndAudioObjectUrl); } catch (e) {}
-            breakEndAudioObjectUrl = null;
-        }
+        cleanupEndAudioResources();
+        cleanupBackgroundAudioResources();
     }
 
     /**
@@ -24576,7 +24973,7 @@ window.__setTomatoFloatState = function (payload) {
     function showSettingsDialog() {
         // 确保配置已加载
         if (!audioSettings) {
-            audioSettings = userSettings.audioSettings;
+            audioSettings = ensureAudioSettingsDefaults();
         }
         if (!userSettings.taskBlockTomatoTime) {
             userSettings.taskBlockTomatoTime = {
@@ -25035,6 +25432,8 @@ window.__setTomatoFloatState = function (payload) {
      * 渲染音频设置页面
      */
     function renderAudioSettings(container) {
+        audioSettings = getAudioSettings();
+
         const presetOptions = [
             { value: '', label: '不使用预置（自定义文件/浏览器默认）' },
             { value: 'crisp', label: '清脆双响' },
@@ -25043,6 +25442,103 @@ window.__setTomatoFloatState = function (payload) {
         ];
         let workPresetSelect = null;
         let breakPresetSelect = null;
+
+        const createAudioButton = (text, primary = false) => {
+            const btn = document.createElement('button');
+            btn.textContent = text;
+            btn.style.cssText = primary ? `
+                flex: 1; padding: 8px; background: var(--b3-theme-primary);
+                color: white; border: none; border-radius: 4px; cursor: pointer;
+            ` : `
+                flex: 1; padding: 8px; background: var(--b3-theme-surface);
+                border: 1px solid var(--b3-theme-surface); border-radius: 4px; cursor: pointer;
+            `;
+            return btn;
+        };
+
+        const createBackgroundSoundSection = (type, label, prop, placeholder) => {
+            const section = document.createElement('div');
+            section.style.cssText = 'margin-top: 12px;';
+
+            const title = document.createElement('div');
+            title.textContent = label;
+            title.style.cssText = 'font-size: 13px; margin-bottom: 8px;';
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.placeholder = placeholder;
+            input.value = audioSettings[prop] || '';
+            input.style.cssText = `
+                width: 100%; padding: 8px; border: 1px solid var(--b3-theme-surface);
+                border-radius: 4px; font-size: 13px; margin-bottom: 8px;
+                background: var(--b3-theme-background); color: var(--b3-theme-on-background);
+            `;
+
+            const btns = document.createElement('div');
+            btns.style.cssText = 'display: flex; gap: 8px; margin-bottom: 8px;';
+            const testBtn = createAudioButton('🔊 预览', true);
+            testBtn.onclick = () => playBackgroundAudioPreview(type);
+            const clearBtn = createAudioButton('清除');
+            clearBtn.onclick = async () => {
+                input.value = '';
+                await setBackgroundAudioFile(type, '');
+            };
+            btns.appendChild(testBtn);
+            btns.appendChild(clearBtn);
+
+            const uploadContainer = document.createElement('div');
+            uploadContainer.style.cssText = 'display: flex; gap: 8px; align-items: center;';
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.accept = 'audio/*';
+            fileInput.style.cssText = 'display: none;';
+            const uploadBtn = createAudioButton('📤 上传背景音', true);
+            const uploadStatus = document.createElement('span');
+            uploadStatus.style.cssText = 'font-size: 11px; color: var(--b3-theme-on-surface-light);';
+
+            uploadBtn.onclick = () => fileInput.click();
+            fileInput.onchange = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                uploadStatus.textContent = '上传中...';
+                try {
+                    uploadBtn.disabled = true;
+                    uploadBtn.style.opacity = '0.7';
+                    const filename = await uploadAudioFileToStorage(file);
+                    input.value = filename;
+                    await setBackgroundAudioFile(type, filename);
+                    uploadStatus.textContent = '✅ 上传成功';
+                    setTimeout(() => {
+                        playBackgroundAudioPreview(type).catch(() => {});
+                    }, 300);
+                    setTimeout(() => {
+                        uploadStatus.textContent = '';
+                    }, 3000);
+                } catch (error) {
+                    uploadStatus.textContent = '❌ 上传失败';
+                    Logger.error('上传背景音失败:', error);
+                } finally {
+                    try { e.target.value = ''; } catch (err) {}
+                    uploadBtn.disabled = false;
+                    uploadBtn.style.opacity = '1';
+                }
+            };
+
+            input.onchange = async () => {
+                await setBackgroundAudioFile(type, input.value);
+            };
+
+            uploadContainer.appendChild(uploadBtn);
+            uploadContainer.appendChild(fileInput);
+            uploadContainer.appendChild(uploadStatus);
+
+            section.appendChild(title);
+            section.appendChild(input);
+            section.appendChild(btns);
+            section.appendChild(uploadContainer);
+            return section;
+        };
 
         // 启用提示音开关
         const enableContainer = document.createElement('div');
@@ -25093,6 +25589,67 @@ window.__setTomatoFloatState = function (payload) {
         volumeContainer.appendChild(volumeLabel);
         volumeContainer.appendChild(volumeSlider);
         container.appendChild(volumeContainer);
+
+        // 背景音
+        const backgroundContainer = document.createElement('div');
+        backgroundContainer.style.cssText = `
+            padding: 12px; background: var(--b3-theme-surface-light);
+            border-radius: 6px; margin-bottom: 12px;
+        `;
+        const backgroundTitle = document.createElement('div');
+        backgroundTitle.textContent = '背景音';
+        backgroundTitle.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
+
+        const backgroundEnableRow = document.createElement('div');
+        backgroundEnableRow.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;';
+        const backgroundEnableLabel = document.createElement('span');
+        backgroundEnableLabel.textContent = '启用背景音';
+        backgroundEnableLabel.style.cssText = 'font-size: 13px;';
+        const backgroundEnableSwitch = document.createElement('input');
+        backgroundEnableSwitch.type = 'checkbox';
+        backgroundEnableSwitch.checked = audioSettings.backgroundEnabled !== false;
+        backgroundEnableSwitch.style.cssText = 'width: 18px; height: 18px; cursor: pointer;';
+        backgroundEnableSwitch.onchange = async (e) => {
+            audioSettings.backgroundEnabled = e.target.checked;
+            await saveAudioSettings();
+            syncBackgroundAudioWithTimerState();
+        };
+        backgroundEnableRow.appendChild(backgroundEnableLabel);
+        backgroundEnableRow.appendChild(backgroundEnableSwitch);
+
+        const backgroundVolumeLabel = document.createElement('div');
+        backgroundVolumeLabel.textContent = `背景音量: ${Math.round(audioSettings.backgroundVolume * 100)}%`;
+        backgroundVolumeLabel.style.cssText = 'font-size: 13px; margin-bottom: 8px;';
+        const backgroundVolumeSlider = document.createElement('input');
+        backgroundVolumeSlider.type = 'range';
+        backgroundVolumeSlider.min = '0';
+        backgroundVolumeSlider.max = '100';
+        backgroundVolumeSlider.value = Math.round(audioSettings.backgroundVolume * 100);
+        backgroundVolumeSlider.style.cssText = 'width: 100%; cursor: pointer; margin-bottom: 4px;';
+        backgroundVolumeSlider.oninput = (e) => {
+            backgroundVolumeLabel.textContent = `背景音量: ${e.target.value}%`;
+            audioSettings.backgroundVolume = parseInt(e.target.value) / 100;
+            updateBackgroundAudioVolume();
+        };
+        backgroundVolumeSlider.onchange = async (e) => {
+            audioSettings.backgroundVolume = parseInt(e.target.value) / 100;
+            await saveAudioSettings();
+            updateBackgroundAudioVolume();
+        };
+
+        backgroundContainer.appendChild(backgroundTitle);
+        backgroundContainer.appendChild(backgroundEnableRow);
+        backgroundContainer.appendChild(backgroundVolumeLabel);
+        backgroundContainer.appendChild(backgroundVolumeSlider);
+        backgroundContainer.appendChild(createBackgroundSoundSection('work', '工作背景音', 'workBackgroundSound', '输入音频文件名，如 rain.mp3'));
+        backgroundContainer.appendChild(createBackgroundSoundSection('break', '休息背景音', 'breakBackgroundSound', '输入音频文件名，如 forest.mp3'));
+
+        const backgroundHint = document.createElement('div');
+        backgroundHint.innerHTML = `💡 背景音会在计时运行时循环播放<br>💡 音频将保存到: ${AUDIO_STORAGE_PATH}`;
+        backgroundHint.style.cssText = 'font-size: 11px; color: var(--b3-theme-on-surface-light); margin-top: 8px; line-height: 1.5;';
+        backgroundContainer.appendChild(backgroundHint);
+
+        container.appendChild(backgroundContainer);
 
         // 工作结束提示音
         const workSoundContainer = document.createElement('div');
@@ -25248,16 +25805,7 @@ window.__setTomatoFloatState = function (payload) {
                         workEndAudioObjectUrl = objectUrl;
                         Logger.info('🍅 workEndAudio 已更新:', workEndAudio.src);
 
-                        if (!audioSettings) {
-                            audioSettings = userSettings.audioSettings || {
-                                workEndSound: '',
-                                breakEndSound: '',
-                                workEndPreset: '',
-                                breakEndPreset: '',
-                                volume: 0.8,
-                                enabled: true
-                            };
-                        }
+                        audioSettings = ensureAudioSettingsDefaults();
                         if (workPresetSelect) workPresetSelect.value = '';
                         audioSettings.workEndPreset = '';
                         audioSettings.workEndSound = filename;
@@ -25450,16 +25998,7 @@ window.__setTomatoFloatState = function (payload) {
                         breakEndAudioObjectUrl = objectUrl;
                         Logger.info('🍅 breakEndAudio 已更新:', breakEndAudio.src);
 
-                        if (!audioSettings) {
-                            audioSettings = userSettings.audioSettings || {
-                                workEndSound: '',
-                                breakEndSound: '',
-                                workEndPreset: '',
-                                breakEndPreset: '',
-                                volume: 0.8,
-                                enabled: true
-                            };
-                        }
+                        audioSettings = ensureAudioSettingsDefaults();
                         if (breakPresetSelect) breakPresetSelect.value = '';
                         audioSettings.breakEndPreset = '';
                         audioSettings.breakEndSound = filename;
@@ -26999,19 +27538,7 @@ window.__setTomatoFloatState = function (payload) {
             await ensureTomatoStorageMigration();
             await loadUserSettings();
             // 确保 audioSettings 对象存在（兼容旧配置）
-            if (!userSettings.audioSettings) {
-                userSettings.audioSettings = {
-                    workEndSound: '',
-                    breakEndSound: '',
-                    workEndPreset: '',
-                    breakEndPreset: '',
-                    volume: 0.8,
-                    enabled: true
-                };
-            } else {
-                if (userSettings.audioSettings.workEndPreset == null) userSettings.audioSettings.workEndPreset = '';
-                if (userSettings.audioSettings.breakEndPreset == null) userSettings.audioSettings.breakEndPreset = '';
-            }
+            ensureAudioSettingsDefaults();
             // 确保 taskBlockTomatoTime 对象存在（兼容旧配置）
             if (!userSettings.taskBlockTomatoTime) {
                 userSettings.taskBlockTomatoTime = {
@@ -27023,7 +27550,7 @@ window.__setTomatoFloatState = function (payload) {
                 };
             }
             // 确保 audioSettings 引用 userSettings 中的配置
-            audioSettings = userSettings.audioSettings;
+            audioSettings = ensureAudioSettingsDefaults();
             Logger.info('🍅 audioSettings 初始化:', JSON.stringify(audioSettings));
             
             // 修复：加载用户设置后，重新设置默认番茄时间
@@ -27258,6 +27785,7 @@ window.__setTomatoFloatState = function (payload) {
 
                     isRunning = false;
                     isTimerPaused = true;
+                    pauseBackgroundAudio(false);
 
                     if (timerMode === 'countdown' || timerMode === 'break') {
                         if (!syncState.startTime || syncState.startTime === 0) {
@@ -27335,6 +27863,7 @@ window.__setTomatoFloatState = function (payload) {
                         // 🔧 修复：重置本地所有计时状态
                         isRunning = false;
                         isTimerPaused = false;
+                        stopBackgroundAudio();
                         startTime = 0;
                         pausedRemainingSeconds = null;
                         currentStartTimestamp = null;
@@ -27440,7 +27969,9 @@ window.__setTomatoFloatState = function (payload) {
                 if (!isRunning && timerId) {
                     clearInterval(timerId);
                     timerId = null;
+                    pauseBackgroundAudio(false);
                 }
+                syncBackgroundAudioWithTimerState();
                 try { await reconcileTrackedTimerNotification('sync-generic', true); } catch (e) {}
                 try { maybeRefreshHistoryFromRemote(); } catch (e) {}
             };
@@ -27705,7 +28236,7 @@ window.__setTomatoFloatState = function (payload) {
         // 暴露音频配置函数到全局（方便用户在控制台配置）
         window.tomatoAudio = {
             // 获取当前音频配置
-            getSettings: () => audioSettings,
+            getSettings: () => getAudioSettings(),
 
             // 设置工作结束提示音文件
             setWorkSound: (filename) => setAudioFile('work', filename),
@@ -27713,18 +28244,47 @@ window.__setTomatoFloatState = function (payload) {
             // 设置休息结束提示音文件
             setBreakSound: (filename) => setAudioFile('break', filename),
 
+            // 设置工作背景音文件
+            setWorkBackgroundSound: (filename) => setBackgroundAudioFile('work', filename),
+
+            // 设置休息背景音文件
+            setBreakBackgroundSound: (filename) => setBackgroundAudioFile('break', filename),
+
             // 设置音量 (0-1)
             setVolume: async (vol) => {
+                audioSettings = ensureAudioSettingsDefaults();
                 audioSettings.volume = Math.max(0, Math.min(1, vol));
                 await saveAudioSettings();
                 initAudio();
             },
 
+            // 设置背景音量 (0-1)
+            setBackgroundVolume: async (vol) => {
+                audioSettings = ensureAudioSettingsDefaults();
+                audioSettings.backgroundVolume = Math.max(0, Math.min(1, vol));
+                await saveAudioSettings();
+                updateBackgroundAudioVolume();
+            },
+
             // 启用/禁用提示音
             enable: async (enabled) => {
+                audioSettings = ensureAudioSettingsDefaults();
                 audioSettings.enabled = enabled;
                 await saveAudioSettings();
                 initAudio();
+            },
+
+            // 启用/禁用背景音
+            enableBackground: async (enabled) => {
+                audioSettings = ensureAudioSettingsDefaults();
+                audioSettings.backgroundEnabled = enabled !== false;
+                await saveAudioSettings();
+                syncBackgroundAudioWithTimerState();
+            },
+
+            // 静音/取消静音背景音
+            muteBackground: async (muted) => {
+                await setBackgroundAudioMuted(muted);
             },
 
             // 获取音频文件路径
@@ -27736,6 +28296,12 @@ window.__setTomatoFloatState = function (payload) {
             // 测试播放
             testPlay: (type) => playEndSound(type),
 
+            // 预览背景音
+            testBackgroundPlay: (type) => playBackgroundAudioPreview(type),
+
+            // 停止背景音
+            stopBackground: () => stopBackgroundAudio(),
+
             // 获取计时器状态（调试用）
             getTimerState: () => ({
                 isRunning,
@@ -27745,6 +28311,9 @@ window.__setTomatoFloatState = function (payload) {
                 startTime,
                 workEndAudioLoaded: !!workEndAudio,
                 breakEndAudioLoaded: !!breakEndAudio,
+                workBackgroundAudioLoaded: !!workBackgroundAudio,
+                breakBackgroundAudioLoaded: !!breakBackgroundAudio,
+                currentBackgroundAudio: currentBackgroundAudio === workBackgroundAudio ? 'work' : (currentBackgroundAudio === breakBackgroundAudio ? 'break' : null),
                 // 同步状态
                 syncState: (isSyncEnabled() && SyncManager && SyncManager.getState) ? SyncManager.getState() : null,
                 sequenceId: (isSyncEnabled() && SyncManager && SyncManager.getSequenceId) ? SyncManager.getSequenceId() : null
@@ -28069,6 +28638,8 @@ window.__setTomatoFloatState = function (payload) {
         try { timerId = null; } catch (e) {}
         try { if (reminderIntervalId) clearInterval(reminderIntervalId); } catch (e) {}
         try { reminderIntervalId = null; } catch (e) {}
+        try { if (__reminderSiyuanSyncTimer) clearTimeout(__reminderSiyuanSyncTimer); } catch (e) {}
+        try { __reminderSiyuanSyncTimer = null; } catch (e) {}
         try { if (taskBlockHighlightInterval) clearInterval(taskBlockHighlightInterval); } catch (e) {}
         try { taskBlockHighlightInterval = null; } catch (e) {}
         try { if (timelineTickId) clearInterval(timelineTickId); } catch (e) {}
@@ -28254,7 +28825,41 @@ window.__setTomatoFloatState = function (payload) {
         semanticTitleTimeEnabled: true,
         semanticTitleAutoSaveEnabled: false
     };
-    
+
+    const REMINDER_SIYUAN_SYNC_DELAY_MS = 8000;
+    let __reminderSiyuanSyncTimer = null;
+    function __scheduleReminderSiyuanSync() {
+        try {
+            if (__tomatoDestroyed) return;
+            if (!isSyncEnabled()) return;
+            if (typeof SyncManager === 'undefined' || !SyncManager) return;
+            if (__reminderSiyuanSyncTimer) {
+                try { clearTimeout(__reminderSiyuanSyncTimer); } catch (e) {}
+                __reminderSiyuanSyncTimer = null;
+            }
+            __reminderSiyuanSyncTimer = setTimeout(() => {
+                __reminderSiyuanSyncTimer = null;
+                if (__tomatoDestroyed) return;
+                const run = () => {
+                    try {
+                        if (__tomatoDestroyed) return;
+                        if (typeof SyncManager.scheduleSiyuanSync === 'function') {
+                            SyncManager.scheduleSiyuanSync(false);
+                        } else if (typeof SyncManager.triggerSiyuanSync === 'function') {
+                            Promise.resolve().then(() => SyncManager.triggerSiyuanSync(false)).catch(() => {});
+                        }
+                    } catch (e) {}
+                };
+                try {
+                    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 10000 });
+                    else setTimeout(run, 0);
+                } catch (e) {
+                    setTimeout(run, 0);
+                }
+            }, REMINDER_SIYUAN_SYNC_DELAY_MS);
+        } catch (e) {}
+    }
+
     let reminderSettings = { ...DEFAULT_REMINDER_SETTINGS };
     let reminderSettingsLoaded = false;
     let reminderCheckTimer = null;
@@ -28725,7 +29330,9 @@ window.__setTomatoFloatState = function (payload) {
 
         const scheduledEntries = [];
         for (const target of targets) {
-            const delayInSeconds = Math.max(1, Math.ceil((target.atMs - Date.now()) / 1000));
+            const nowMs = Date.now();
+            if (!Number.isFinite(target?.atMs) || target.atMs < nowMs) continue;
+            const delayInSeconds = Math.max(1, Math.ceil((target.atMs - nowMs) / 1000));
             const notificationId = await sendDeviceNotificationCompat(__getReminderNotificationTitle(), __getReminderNotificationBody(reminder), {
                 channel: DEVICE_NOTIFICATION_CHANNEL,
                 delayInSeconds
@@ -29432,6 +30039,38 @@ window.__setTomatoFloatState = function (payload) {
         if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
         return { hh, mm, key: `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}` };
     };
+    const __getReminderScheduleSignature = (reminder) => {
+        try {
+            const interval = reminder?.interval || 'daily';
+            const times = Array.from(new Set((reminder?.times || [])
+                .map(__parseTime)
+                .filter(Boolean)
+                .map(x => x.key))).sort().join(',');
+            return [
+                __getReminderRepeatMode(reminder),
+                interval,
+                interval === 'once' ? 1 : __getReminderEvery(reminder),
+                __normalizeReminderDateKey(reminder?.startDate || ''),
+                __normalizeReminderDateKey(reminder?.endDate || ''),
+                times,
+                __normalizeReminderDateKey(reminder?.taskStartDate || ''),
+                __normalizeReminderDateKey(reminder?.taskCompletionTime || ''),
+                JSON.stringify(__parseReminderTaskRepeatRule(reminder?.taskRepeatRule) || null),
+            ].join('|');
+        } catch (e) {
+            return '';
+        }
+    };
+    const __getReminderScheduleUpdatedAtMs = (reminder) => {
+        try {
+            const raw = String(reminder?.scheduleUpdatedAt || '').trim();
+            if (!raw) return 0;
+            const ms = toDateSafe(raw).getTime();
+            return Number.isFinite(ms) ? ms : 0;
+        } catch (e) {
+            return 0;
+        }
+    };
     const __normalizeSemanticText = (input) => {
         let s = String(input || '');
         if (!s) return '';
@@ -29688,7 +30327,6 @@ window.__setTomatoFloatState = function (payload) {
         if (!(from instanceof Date) || isNaN(from.getTime())) return null;
 
         const nowKey = formatDateKey(from);
-        const nowMinutes = from.getHours() * 60 + from.getMinutes();
         const startKey = __getStartDateKey(reminder);
         const interval = reminder.interval || 'daily';
         const every = interval === 'once' ? 1 : __getReminderEvery(reminder);
@@ -29709,10 +30347,9 @@ window.__setTomatoFloatState = function (payload) {
                 const p = __parseTime(t);
                 if (!p) continue;
                 if (__isReminderOccurrenceCompleted(reminder, dateKey, p.key)) continue;
-                const minutes = p.hh * 60 + p.mm;
-                if (requireFutureTime && minutes < nowMinutes) continue;
                 const dt = new Date(base);
                 dt.setHours(p.hh, p.mm, 0, 0);
+                if (requireFutureTime && dt.getTime() < from.getTime()) continue;
                 return dt;
             }
             return null;
@@ -29896,6 +30533,7 @@ window.__setTomatoFloatState = function (payload) {
             const startKey = __getStartDateKey(reminder);
             const interval = reminder.interval || 'daily';
             const every = interval === 'once' ? 1 : __getReminderEvery(reminder);
+            const activeFromMs = __getReminderScheduleUpdatedAtMs(reminder);
 
             const pickLatestOnDate = (dateKey, requirePastTime) => {
                 const base = new Date(dateKey + 'T00:00:00');
@@ -29909,6 +30547,7 @@ window.__setTomatoFloatState = function (payload) {
                     const dt = new Date(base);
                     dt.setHours(p.hh, p.mm, 0, 0);
                     if (dt.getTime() > to.getTime()) continue;
+                    if (activeFromMs && dt.getTime() < activeFromMs) continue;
                     return dt;
                 }
                 return null;
@@ -30514,6 +31153,12 @@ window.__setTomatoFloatState = function (payload) {
         startPomodoro: async (blockId, taskName, durationMin) => {
             return await globalThis.__tomatoTimer.startCountdown(blockId, taskName, durationMin);
         },
+        stopAssociatedTaskAfterDone: async (blockId, options = {}) => {
+            return await stopAssociatedTaskAfterDone(blockId, options);
+        },
+        completeAssociatedTask: async (blockId, options = {}) => {
+            return await stopAssociatedTaskAfterDone(blockId, options);
+        },
     };
     
     async function saveBlockReminder(blockId, reminderData, options = {}) {
@@ -30541,6 +31186,9 @@ window.__setTomatoFloatState = function (payload) {
                     rootId: currentReminder?.rootId,
                     ...taskContext,
                 });
+                if (!currentReminder || __getReminderScheduleSignature(currentReminder) !== __getReminderScheduleSignature(reminderToSave)) {
+                    reminderToSave.scheduleUpdatedAt = new Date().toISOString();
+                }
                 // 编辑提醒时，如果属性里暂时没带上当前设备预约，就从本地预约注册表补回，
                 // 这样修改时间时仍能先取消本设备旧预约，再创建新预约。
                 const currentDeviceSchedule = __getReminderDeviceSchedule(reminderToSave);
@@ -30573,9 +31221,7 @@ window.__setTomatoFloatState = function (payload) {
                 try { updateReminderBadge(); } catch (e) {}
                 try { postJSON('/api/sqlite/flushTransaction', {}).catch(() => {}); } catch (e) {}
                 try {
-                    if (!options?.skipSiyuanSync && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
-                        Promise.resolve().then(() => SyncManager.triggerSiyuanSync(true)).catch(() => {});
-                    }
+                    if (!options?.skipSiyuanSync) __scheduleReminderSiyuanSync();
                 } catch (e) {}
                 return true;
             }
@@ -30640,9 +31286,7 @@ window.__setTomatoFloatState = function (payload) {
                 try { updateReminderBadge(); } catch (e) {}
                 try { postJSON('/api/sqlite/flushTransaction', {}).catch(() => {}); } catch (e) {}
                 try {
-                    if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
-                        Promise.resolve().then(() => SyncManager.triggerSiyuanSync(true)).catch(() => {});
-                    }
+                    __scheduleReminderSiyuanSync();
                 } catch (e) {}
                 return true;
             }
@@ -31865,7 +32509,7 @@ window.__setTomatoFloatState = function (payload) {
                     } catch (e) {}
                 }
                 __invalidateReminderDockCache();
-                renderReminderDockList('time', true);
+                renderReminderDockList('time', false);
             };
         };
 
@@ -31904,7 +32548,7 @@ window.__setTomatoFloatState = function (payload) {
                 const ok = await __unmarkReminderOccurrenceCompleted(r.blockId, entry.dateKey, entry.timeKey);
                 showMiniToast(ok ? '已撤销' : '撤销失败');
                 __invalidateReminderDockCache();
-                renderReminderDockList('time', true);
+                renderReminderDockList('time', false);
             };
         };
 
@@ -32081,7 +32725,7 @@ window.__setTomatoFloatState = function (payload) {
         return await task;
     }
     
-    function refreshReminderDockPanel() {
+    function refreshReminderDockPanel(forceRefresh = false) {
         try {
             if (!reminderDockPanel || !reminderDockPanel.isConnected) {
                 const mountEl = __resolveReminderDockMountEl();
@@ -32094,7 +32738,7 @@ window.__setTomatoFloatState = function (payload) {
         }
         if (!reminderDockPanel || !reminderDockPanel.isConnected) return;
         __invalidateReminderDockCache();
-        renderReminderDockList('time', true);
+        renderReminderDockList('time', !!forceRefresh);
     }
 
     function showReminderDeviceScheduleDialog(reminder) {
