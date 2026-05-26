@@ -30367,8 +30367,8 @@ window.__setTomatoFloatState = function (payload) {
             repeatModeHint.textContent = follow
                 ? `当前会跟随任务循环；提醒日期将使用任务的${taskContext.taskCompletionTime ? '截止日期' : '开始日期'}。`
                 : (hasTaskRepeat
-                    ? '可切换为跟随任务循环；在此设置新的提醒循环时，会同步更新任务循环。'
-                    : '当前任务尚未启用任务循环；在此设置循环提醒后，会同步创建任务循环。');
+                    ? '当前为独立提醒循环，不会改动任务循环；也可切换为跟随任务循环。'
+                    : '当前为独立提醒循环，不依赖任务循环。');
         };
         syncRepeatModeVisibility();
 
@@ -30386,7 +30386,7 @@ window.__setTomatoFloatState = function (payload) {
         noteSection.appendChild(noteInput);
         content.appendChild(noteSection);
         dialog.appendChild(content);
-        
+
         const btnRow = document.createElement('div');
         btnRow.style.cssText = 'display:flex;gap:12px;margin-top:20px;';
         let deleteBtn = null;
@@ -30452,17 +30452,9 @@ window.__setTomatoFloatState = function (payload) {
                 taskCompletionTime: taskContext.taskCompletionTime,
             });
             if (repeatMode === REMINDER_REPEAT_MODE_MANUAL && taskRepeatRuleDraft.enabled) {
-                const syncResult = await __syncReminderLoopToTaskRepeat(blockId, taskRepeatRuleDraft, taskContext, {
-                    source: 'tomato-reminder-dialog',
-                });
-                if (!syncResult?.ok) {
-                    showMiniToast('任务循环同步失败，请稍后重试');
-                    resetSaveBusy();
-                    return;
-                }
-                repeatModeToSave = REMINDER_REPEAT_MODE_FOLLOW_TASK;
-                taskRepeatRuleToSave = syncResult.rule || taskRepeatRuleDraft;
-                taskRepeatStateToSave = syncResult.state || taskContext.taskRepeatState;
+                repeatModeToSave = REMINDER_REPEAT_MODE_MANUAL;
+                taskRepeatRuleToSave = taskRepeatRuleDraft;
+                taskRepeatStateToSave = taskContext.taskRepeatState;
                 try { taskContext.taskRepeatRule = taskRepeatRuleToSave; } catch (e) {}
                 try { taskContext.taskRepeatState = taskRepeatStateToSave; } catch (e) {}
             }
@@ -30487,8 +30479,7 @@ window.__setTomatoFloatState = function (payload) {
             };
             const success = await saveBlockReminder(blockId, reminderData);
             if (success) {
-                const syncedText = repeatMode === REMINDER_REPEAT_MODE_MANUAL && taskRepeatRuleDraft.enabled ? '，已同步任务循环' : '';
-                showMiniToast((existingReminder ? '提醒已更新' : '提醒已添加') + syncedText);
+                showMiniToast(existingReminder ? '提醒已更新' : '提醒已添加');
                 closeDialog();
                 try { refreshReminderDockPanel(); } catch (e) {}
             } else {
@@ -31633,6 +31624,43 @@ window.__setTomatoFloatState = function (payload) {
         return await resolveTomatoTaskAttrContext(blockId);
     }
 
+    async function resolveReminderBlockAttrContext(blockId, options = {}) {
+        const requestedId = String(blockId || '').trim();
+        const emptyContext = { requestedTaskId: requestedId, taskId: requestedId, attrHostId: requestedId, writeId: requestedId };
+        if (!requestedId) return { attrContext: emptyContext, reminderBlockId: '', attrs: {}, direct: false };
+        if (options?.preferDirect !== false) {
+            try {
+                const directAttrs = await getTomatoBlockAttrs(requestedId);
+                const directReminder = String(directAttrs?.['custom-tomato-reminder'] ?? '').trim();
+                if (directReminder) {
+                    let binding = null;
+                    try { binding = await resolveTomatoTaskAttrContext(requestedId); } catch (e) { binding = null; }
+                    const taskId = String(binding?.taskId || requestedId).trim() || requestedId;
+                    return {
+                        attrContext: {
+                            requestedTaskId: requestedId,
+                            taskId,
+                            attrHostId: requestedId,
+                            writeId: requestedId,
+                        },
+                        reminderBlockId: requestedId,
+                        attrs: directAttrs || {},
+                        direct: true,
+                    };
+                }
+            } catch (e) {}
+        }
+        const attrContext = await resolveReminderTaskAttrContext(requestedId);
+        const reminderBlockId = String(attrContext.writeId || requestedId).trim();
+        const attrs = reminderBlockId ? ((await getTomatoBlockAttrs(reminderBlockId)) || {}) : {};
+        return {
+            attrContext,
+            reminderBlockId,
+            attrs,
+            direct: false,
+        };
+    }
+
     async function __syncReminderLoopToTaskRepeat(blockId, ruleInput, taskContextInput = null, options = {}) {
         const id = String(blockId || '').trim();
         if (!id) return null;
@@ -31771,12 +31799,13 @@ window.__setTomatoFloatState = function (payload) {
     async function saveBlockReminder(blockId, reminderData, options = {}) {
         try {
             const requestedReminderBlockId = String(blockId || reminderData?.blockId || '').trim();
-            const attrContext = await resolveReminderTaskAttrContext(requestedReminderBlockId);
-            const reminderBlockId = String(attrContext.writeId || requestedReminderBlockId).trim();
+            const resolvedReminder = await resolveReminderBlockAttrContext(requestedReminderBlockId, {
+                preferDirect: options?.preferDirect !== false,
+            });
+            const attrContext = resolvedReminder.attrContext;
+            const reminderBlockId = String(resolvedReminder.reminderBlockId || requestedReminderBlockId).trim();
             if (!reminderBlockId) return false;
-            const getRes = await postJSON('/api/attr/getBlockAttrs', { id: reminderBlockId });
-            if (!getRes.ok) { return false; }
-            const currentAttrs = getRes.data?.data || {};
+            const currentAttrs = resolvedReminder.attrs || {};
             const taskContext = await __getReminderTaskContext(reminderBlockId, currentAttrs);
             let currentReminder = null;
             try {
@@ -31837,23 +31866,21 @@ window.__setTomatoFloatState = function (payload) {
     }
     async function getBlockReminder(blockId) {
         try {
-            const attrContext = await resolveReminderTaskAttrContext(blockId);
-            const reminderBlockId = String(attrContext.writeId || blockId || '').trim();
-            const getRes = await postJSON('/api/attr/getBlockAttrs', { id: reminderBlockId });
-            if (getRes.ok) {
-                const attrs = getRes.data?.data || {};
-                const taskContext = await __getReminderTaskContext(reminderBlockId, attrs);
-                const reminderAttr = attrs['custom-tomato-reminder'];
-                if (reminderAttr) return __sanitizeReminderData(JSON.parse(reminderAttr), { blockId: reminderBlockId, ...taskContext });
-            }
+            const resolvedReminder = await resolveReminderBlockAttrContext(blockId);
+            const reminderBlockId = String(resolvedReminder.reminderBlockId || blockId || '').trim();
+            const attrs = resolvedReminder.attrs || {};
+            const taskContext = await __getReminderTaskContext(reminderBlockId, attrs);
+            const reminderAttr = attrs['custom-tomato-reminder'];
+            if (reminderAttr) return __sanitizeReminderData(JSON.parse(reminderAttr), { blockId: reminderBlockId, ...taskContext });
         } catch (e) { Logger.warn('获取块提醒设置失败:', e); }
         return null;
     }
     async function deleteBlockReminder(blockId) {
         try {
             const requestedReminderId = String(blockId || '').trim();
-            const attrContext = await resolveReminderTaskAttrContext(requestedReminderId);
-            const reminderId = String(attrContext.writeId || requestedReminderId).trim();
+            const resolvedReminder = await resolveReminderBlockAttrContext(requestedReminderId);
+            const attrContext = resolvedReminder.attrContext;
+            const reminderId = String(resolvedReminder.reminderBlockId || requestedReminderId).trim();
             const existingReminder = await getBlockReminder(blockId);
             if (existingReminder) {
                 try {
