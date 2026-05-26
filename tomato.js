@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.9.6
+// @version      1.9.7
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -112,7 +112,7 @@
         openTimelineSettings: () => showTimelineSettingsDialog(),
         openHistory: (page) => showHistoryDialog(page),
     };
-    
+
     // ========== 配置项 ==========
     const DEFAULT_TOMATO_DURATIONS = [5, 15, 25, 30, 45, 60, 90, 120];
     const DEFAULT_BREAK_DURATIONS = [5, 10, 15, 30];
@@ -354,7 +354,7 @@
                 __tomatoFileTextCache.delete(fileKey);
             }
         }
-        
+
         return result?.code === 0;
     }
 
@@ -1534,7 +1534,7 @@
             currentDuration,
             startTime
         });
-        
+
         // 🔧 修复：同步状态变化时，如果是恢复运行状态，清除暂停颜色
         if (syncState.status === 'RUNNING') {
             window.__tomatoPausedColor = null;
@@ -2241,7 +2241,11 @@
             enableHourAttr: true,  // 是否启用小时格式属性
             hourAttrName: 'custom-tomato-time',  // 小时格式属性名称
             enableMinuteAttr: false,  // 是否启用分钟格式属性
-            minuteAttrName: 'custom-tomato-minutes'  // 分钟格式属性名称
+            minuteAttrName: 'custom-tomato-minutes',  // 分钟格式属性名称
+            enableCountAttr: true,  // 是否启用实际番茄数属性
+            countAttrName: 'custom-tomato-count',  // 实际番茄数属性名称
+            enableEstimateAttr: true,  // 是否启用预计番茄数属性
+            estimateAttrName: 'custom-tomato-estimate-count'  // 预计番茄数属性名称
         },
         // 外观设置
         appearance: {
@@ -2339,7 +2343,38 @@
         userSettings.sync.enabled = userSettings.sync.enabled !== false;
         if (typeof userSettings.sync.autoTriggerSiyuanSync !== 'boolean') userSettings.sync.autoTriggerSiyuanSync = true;
         if (typeof userSettings.sync.syncTaskAssociation !== 'boolean') userSettings.sync.syncTaskAssociation = true;
+        ensureTaskBlockTomatoTimeConfig();
     };
+
+    function ensureTaskBlockTomatoTimeConfig() {
+        const defaults = {
+            enabled: true,
+            enableHourAttr: true,
+            hourAttrName: 'custom-tomato-time',
+            enableMinuteAttr: false,
+            minuteAttrName: 'custom-tomato-minutes',
+            enableCountAttr: true,
+            countAttrName: 'custom-tomato-count',
+            enableEstimateAttr: true,
+            estimateAttrName: 'custom-tomato-estimate-count'
+        };
+        const cfg = (userSettings.taskBlockTomatoTime && typeof userSettings.taskBlockTomatoTime === 'object')
+            ? userSettings.taskBlockTomatoTime
+            : {};
+        userSettings.taskBlockTomatoTime = {
+            ...cfg,
+            enabled: cfg.enabled !== false,
+            enableHourAttr: cfg.enableHourAttr !== false,
+            hourAttrName: String(cfg.hourAttrName || '').trim() || defaults.hourAttrName,
+            enableMinuteAttr: cfg.enableMinuteAttr === true,
+            minuteAttrName: String(cfg.minuteAttrName || '').trim() || defaults.minuteAttrName,
+            enableCountAttr: cfg.enableCountAttr !== false,
+            countAttrName: String(cfg.countAttrName || '').trim() || defaults.countAttrName,
+            enableEstimateAttr: cfg.enableEstimateAttr !== false,
+            estimateAttrName: String(cfg.estimateAttrName || '').trim() || defaults.estimateAttrName
+        };
+        return userSettings.taskBlockTomatoTime;
+    }
 
     const getTomatoDurations = () => {
         try { return userSettings?.main?.tomatoDurations || DEFAULT_TOMATO_DURATIONS; } catch (e) { return DEFAULT_TOMATO_DURATIONS; }
@@ -3724,88 +3759,9 @@
                 return;
             }
 
-            const now = new Date();
-            const nowDateKey = formatDateKey(now);
-            const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-
-            // 找出所有过期的提醒（任何类型，只要时间已过且未完成）
-            const expiredReminders = reminders.filter(item => {
-                // 只检查启用的提醒
-                if (!item.enabled) {
-                    return false;
-                }
-
-                const times = item.times || [];
-                if (times.length === 0) {
-                    return false;
-                }
-
-                const interval = item.interval || 'once';
-                const startDate = item.startDate || formatDateKey(item.createdAt);
-                const start = toDateSafe(startDate);
-
-                if (!(start instanceof Date) || isNaN(start.getTime())) {
-                    return false;
-                }
-
-                if (interval === 'once') {
-                    // 一次性提醒：检查开始日期
-                    if (startDate > nowDateKey) {
-                        return false; // 还没到提醒时间
-                    }
-
-                    // 检查所有时间点
-                    for (const time of times) {
-                        const timeParsed = __parseTime(time);
-                        if (!timeParsed) continue;
-
-                        const reminderDateTime = new Date(startDate + 'T' + timeParsed.key);
-                        const reminderKey = __reminderOccurrenceKey(startDate, timeParsed.key);
-
-                        // 如果提醒时间已过，且未完成
-                        if (reminderDateTime < now) {
-                            // 排除今日未过期的（今日还没到的提醒不算过期）
-                            const isToday = startDate === nowDateKey;
-                            const isTimePassed = timeParsed.key <= nowTime;
-                            if (isToday && !isTimePassed) {
-                                continue;
-                            }
-
-                            const completedSet = __getReminderCompletedSet(item);
-                            if (!completedSet.has(reminderKey)) {
-                                return true; // 有过期未完成的
-                            }
-                        }
-                    }
-                } else {
-                    // 重复提醒
-                    // 如果 startDate 在今天之后，说明任务还没开始
-                    if (startDate > nowDateKey) {
-                        return false; // 还没到提醒时间
-                    }
-
-                    // 对于每个时间点单独处理
-                    for (const time of times) {
-                        const timeParsed = __parseTime(time);
-                        if (!timeParsed) continue;
-
-                        // 找到从 startDate 开始最近的一个提醒时间点
-                        const reminderDateTime = new Date(startDate + 'T' + timeParsed.key);
-
-                        // 如果这个提醒时间在现在之前，说明它已经过期
-                        if (reminderDateTime < now) {
-                            // 检查是否已完成
-                            const reminderKey = __reminderOccurrenceKey(startDate, timeParsed.key);
-                            const completedSet = __getReminderCompletedSet(item);
-                            if (!completedSet.has(reminderKey)) {
-                                return true; // 有过期未完成的
-                            }
-                        }
-                    }
-                }
-
-                return false;
-            });
+            const expiredReminders = __collectExpiredReminderEntries(reminders, new Date())
+                .map(entry => entry.reminder)
+                .filter(Boolean);
 
             if (expiredReminders.length > 0) {
                 // 延迟显示，让页面先渲染完成
@@ -3862,8 +3818,32 @@
         }
     }
 
+    function __collectExpiredReminderEntries(reminders, nowDate = new Date()) {
+        const now = toDateSafe(nowDate || new Date());
+        if (!(now instanceof Date) || isNaN(now.getTime())) return [];
+        const entries = [];
+        const seen = new Set();
+        for (const reminder of (Array.isArray(reminders) ? reminders : [])) {
+            try {
+                if (!reminder || reminder.enabled === false) continue;
+                const lastDueAt = __getLastDueReminderDateTime(reminder, now);
+                if (!(lastDueAt instanceof Date) || isNaN(lastDueAt.getTime())) continue;
+                if (lastDueAt.getTime() >= now.getTime()) continue;
+                const nextAt = getNextReminderDateTime(reminder, now);
+                if (nextAt && Number.isFinite(nextAt.getTime?.()) && nextAt.getTime() === lastDueAt.getTime()) continue;
+                const blockId = String(reminder.blockId || '').trim();
+                const dedupeKey = blockId || `${formatDateKey(lastDueAt)} ${lastDueAt.getHours()}:${lastDueAt.getMinutes()} ${entries.length}`;
+                if (seen.has(dedupeKey)) continue;
+                seen.add(dedupeKey);
+                entries.push({ reminder, at: lastDueAt });
+            } catch (e) {}
+        }
+        entries.sort((a, b) => (b.at?.getTime?.() || 0) - (a.at?.getTime?.() || 0));
+        return entries;
+    }
+
     /**
-     * 统计所有已过期的提醒数量（包括今日及之前的所有过期）
+     * 统计已过期的提醒任务数量（每个提醒任务只统计一次）
      */
     async function countExpiredReminders() {
         try {
@@ -3872,88 +3852,7 @@
                 return 0;
             }
 
-            const now = new Date();
-            const nowDateKey = formatDateKey(now);
-            const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-
-            let count = 0;
-            for (const item of reminders) {
-                if (!item.enabled) continue;
-
-                const times = item.times || [];
-                if (times.length === 0) continue;
-
-                const interval = item.interval || 'once';
-                const startDate = item.startDate || formatDateKey(item.createdAt);
-                const start = toDateSafe(startDate);
-
-                if (!(start instanceof Date) || isNaN(start.getTime())) continue;
-
-                for (const time of times) {
-                    const timeParsed = __parseTime(time);
-                    if (!timeParsed) continue;
-
-                    if (interval === 'once') {
-                        // 一次性提醒
-                        if (startDate > nowDateKey) continue;
-
-                        const reminderDateTime = new Date(startDate + 'T' + timeParsed.key);
-                        if (reminderDateTime < now) {
-                            // 排除今日未过期的（今日还没到的提醒不算过期）
-                            const isToday = startDate === nowDateKey;
-                            const isTimePassed = timeParsed.key <= nowTime;
-                            if (isToday && !isTimePassed) {
-                                continue;
-                            }
-
-                            const reminderKey = __reminderOccurrenceKey(startDate, timeParsed.key);
-
-                            // 保护性检查：确保 completedOccurrences 数组存在
-                            const safeItem = item.completedOccurrences && Array.isArray(item.completedOccurrences)
-                                ? item
-                                : { ...item, completedOccurrences: [] };
-
-                            const completedSet = __getReminderCompletedSet(safeItem);
-                            if (!completedSet.has(reminderKey)) {
-                                count++;
-                            }
-                        }
-                    } else {
-                        // 重复提醒
-                        // 如果 startDate 在今天之后，说明任务还没开始
-                        if (startDate > nowDateKey) {
-                            continue; // 还没到提醒时间，跳过
-                        }
-
-                        // 对于每个时间点单独处理
-                        for (const time of times) {
-                            const timeParsed = __parseTime(time);
-                            if (!timeParsed) continue;
-
-                            // 找到从 startDate 开始最近的一个提醒时间点
-                            const reminderDateTime = new Date(startDate + 'T' + timeParsed.key);
-
-                            // 如果这个提醒时间在现在之前，说明它已经过期
-                            if (reminderDateTime < now) {
-                                // 检查是否已完成
-                                const reminderKey = __reminderOccurrenceKey(startDate, timeParsed.key);
-
-                                // 保护性检查：确保 completedOccurrences 数组存在
-                                const safeItem = item.completedOccurrences && Array.isArray(item.completedOccurrences)
-                                    ? item
-                                    : { ...item, completedOccurrences: [] };
-
-                                const completedSet = __getReminderCompletedSet(safeItem);
-                                if (!completedSet.has(reminderKey)) {
-                                    count++;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            return count;
+            return __collectExpiredReminderEntries(reminders, new Date()).length;
         } catch (e) {
             return 0;
         }
@@ -12411,6 +12310,8 @@
                 routineButtonColor: routineButtonHighlightColor
             };
             
+            let didAppendRecord = false;
+
             // 🔧 如果开启隐藏短记录：以秒为准，避免因分钟四舍五入导致“1分钟短记录”
             if (userSettings.hideShortRecords && Number(durationSecToSave || 0) < 60) {
                 Logger.info('🔍 recordEndTime: 时长小于1分钟且开启隐藏短记录，跳过保存');
@@ -12427,8 +12328,6 @@
                     records.push(recordData);
                     return true;
                 };
-                let didAppendRecord = false;
-
                 if (timerMode === 'break' || timerMode === 'stopwatch-break') {
                     recordData.mode = timerMode === 'break' ? 'break' : 'stopwatch-break';
                     // 🔧 v9.5：休息记录使用保存的 sessionId
@@ -12495,6 +12394,11 @@
                     durationSecToSave,
                     timerMode
                 });
+            }
+            if (currentTaskBlockId && timerMode === 'countdown' && isCompleted && !isReset && !isStopwatch && didAppendRecord) {
+                Logger.info('🔍 调用 updateTaskBlockTomatoCount:', currentTaskBlockId);
+                await updateTaskBlockTomatoCount(currentTaskBlockId, 1);
+                Logger.info('🔍 updateTaskBlockTomatoCount 执行完成');
             }
         } catch (e) {
             // 错误日志保留用于调试
@@ -22468,6 +22372,205 @@ window.__setTomatoFloatState = function (payload) {
         navigateToBlock(blockId);
     }
 
+    function getTaskHorizonSharedApi() {
+        try {
+            const api = globalThis?.['siyuan-plugin-task-horizon'];
+            return api && typeof api === 'object' ? api : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function findTomatoBlockElementById(blockId) {
+        const id = String(blockId || '').trim();
+        if (!id) return null;
+        try {
+            const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+                ? CSS.escape(id)
+                : id.replace(/["\\]/g, '\\$&');
+            return document.querySelector(`[data-node-id="${escaped}"]`);
+        } catch (e) {
+            try {
+                return Array.from(document.querySelectorAll('[data-node-id]'))
+                    .find((el) => String(el?.dataset?.nodeId || el?.getAttribute?.('data-node-id') || '').trim() === id) || null;
+            } catch (e2) {
+                return null;
+            }
+        }
+    }
+
+    function resolveTomatoTaskAttrContextFromDom(blockId) {
+        const requestedTaskId = String(blockId || '').trim();
+        if (!requestedTaskId) return null;
+        const readId = (el) => String(el?.dataset?.nodeId || el?.getAttribute?.('data-node-id') || '').trim();
+        const isTaskLi = (el) => {
+            if (!(el instanceof Element)) return false;
+            if (!el.matches?.('.li,[data-type="NodeListItem"]')) return false;
+            const subtype = String(el.getAttribute?.('data-subtype') || el.dataset?.subtype || '').trim().toLowerCase();
+            if (subtype === 't') return true;
+            return !!el.querySelector?.(':scope > .protyle-action--task,:scope > .protyle-action__task,:scope > [data-task]');
+        };
+        const el = findTomatoBlockElementById(requestedTaskId);
+        if (!(el instanceof Element)) return null;
+        const listEl = el.matches?.('.list,[data-type="NodeList"]') ? el : null;
+        let taskLi = el.matches?.('.li,[data-type="NodeListItem"]') ? el : el.closest?.('.li,[data-type="NodeListItem"]');
+        if (!taskLi && listEl) {
+            const directItems = Array.from(listEl.children || []).filter(isTaskLi);
+            if (directItems.length === 1) taskLi = directItems[0];
+        }
+        if (!taskLi || !readId(taskLi)) return null;
+        const parentList = taskLi.parentElement instanceof Element
+            && taskLi.parentElement.matches?.('.list,[data-type="NodeList"]')
+            ? taskLi.parentElement
+            : null;
+        const taskId = readId(taskLi);
+        const listId = readId(parentList);
+        const listSubtype = String(parentList?.getAttribute?.('data-subtype') || parentList?.dataset?.subtype || '').trim().toLowerCase();
+        const directTaskItems = Array.from(parentList?.children || []).filter(isTaskLi);
+        const attrHostId = (listId && listSubtype === 't' && directTaskItems.length === 1 && directTaskItems[0] === taskLi)
+            ? listId
+            : taskId;
+        return {
+            requestedTaskId,
+            taskId,
+            attrHostId,
+            writeId: attrHostId || taskId || requestedTaskId,
+        };
+    }
+
+    async function resolveTomatoTaskAttrContext(blockId) {
+        const requestedTaskId = String(blockId || '').trim();
+        if (!requestedTaskId) {
+            return { requestedTaskId: '', taskId: '', attrHostId: '', writeId: '' };
+        }
+        const normalize = (source = {}) => {
+            const taskId = String(source.taskId || source.id || requestedTaskId).trim() || requestedTaskId;
+            const attrHostId = String(source.attrHostId || source.attr_host_id || taskId).trim() || taskId;
+            return {
+                requestedTaskId,
+                taskId,
+                attrHostId,
+                writeId: attrHostId || taskId || requestedTaskId,
+            };
+        };
+        try {
+            const bridgeGetter = getTaskHorizonSharedApi()?.quickbarBridge?.getTaskCustomPropsByAnyId;
+            if (typeof bridgeGetter === 'function') {
+                const result = await bridgeGetter(requestedTaskId, { forceFresh: true });
+                if (result && typeof result === 'object' && (result.taskId || result.attrHostId)) {
+                    return normalize(result);
+                }
+            }
+        } catch (e) {}
+        try {
+            const buildTaskLike = globalThis.__taskHorizonBuildTaskLikeFromBlockId;
+            if (typeof buildTaskLike === 'function') {
+                const task = await buildTaskLike(requestedTaskId);
+                if (task && typeof task === 'object') return normalize(task);
+            }
+        } catch (e) {}
+        return resolveTomatoTaskAttrContextFromDom(requestedTaskId) || normalize();
+    }
+
+    async function getTomatoBlockAttrs(blockId) {
+        const id = String(blockId || '').trim();
+        if (!id) return null;
+        const getRes = await postJSON('/api/attr/getBlockAttrs', { id });
+        if (!getRes.ok) return null;
+        return getRes.data?.data || {};
+    }
+
+    async function getTomatoTaskAttrRows(context) {
+        const ctx = context && typeof context === 'object' ? context : {};
+        const writeId = String(ctx.writeId || ctx.attrHostId || ctx.taskId || ctx.requestedTaskId || '').trim();
+        const requestedId = String(ctx.requestedTaskId || '').trim();
+        const taskId = String(ctx.taskId || '').trim();
+        const writeAttrs = writeId ? (await getTomatoBlockAttrs(writeId)) || {} : {};
+        let requestedAttrs = {};
+        if (requestedId && requestedId !== writeId) {
+            requestedAttrs = (await getTomatoBlockAttrs(requestedId)) || {};
+        }
+        let taskAttrs = {};
+        if (taskId && taskId !== writeId && taskId !== requestedId) {
+            taskAttrs = (await getTomatoBlockAttrs(taskId)) || {};
+        }
+        return {
+            writeAttrs,
+            requestedAttrs,
+            taskAttrs,
+            mergedAttrs: { ...requestedAttrs, ...taskAttrs, ...writeAttrs },
+        };
+    }
+
+    function readTomatoAttrValue(attrRows, attrName) {
+        const key = String(attrName || '').trim();
+        if (!key) return '';
+        const hostValue = attrRows?.writeAttrs?.[key];
+        if (String(hostValue ?? '').trim()) return hostValue;
+        const requestedValue = attrRows?.requestedAttrs?.[key];
+        if (String(requestedValue ?? '').trim()) return requestedValue;
+        return attrRows?.taskAttrs?.[key] ?? '';
+    }
+
+    function dispatchTomatoTaskAttrUpdated(context, attrKey, value, extra = {}) {
+        const ctx = context && typeof context === 'object' ? context : {};
+        const requestedTaskId = String(ctx.requestedTaskId || ctx.taskId || ctx.writeId || '').trim();
+        const taskId = String(ctx.taskId || requestedTaskId || ctx.writeId || '').trim();
+        const attrHostId = String(ctx.attrHostId || ctx.writeId || taskId || requestedTaskId).trim();
+        const key = String(attrKey || '').trim();
+        if (!key || (!taskId && !attrHostId)) return;
+        try {
+            window.dispatchEvent(new CustomEvent('tm-task-attr-updated', {
+                detail: {
+                    taskId: taskId || attrHostId,
+                    requestedTaskId: requestedTaskId || taskId || attrHostId,
+                    attrHostId: attrHostId || taskId,
+                    attrKey: key,
+                    value: String(value ?? ''),
+                    source: 'docktomato',
+                    ...extra,
+                }
+            }));
+        } catch (e) {}
+    }
+
+    async function persistTomatoTaskAttrs(context, attrs, options = {}) {
+        const ctx = context && typeof context === 'object' ? context : {};
+        const writeId = String(ctx.writeId || ctx.attrHostId || ctx.taskId || ctx.requestedTaskId || '').trim();
+        const payload = attrs && typeof attrs === 'object' ? attrs : {};
+        const entries = Object.entries(payload).filter(([key]) => String(key || '').trim());
+        if (!writeId || !entries.length) return false;
+        const taskId = String(ctx.taskId || ctx.requestedTaskId || writeId).trim() || writeId;
+        const applier = getTaskHorizonSharedApi()?.applyTaskAttrUpdateWithUndo;
+        let savedByTaskHorizon = false;
+        if (typeof applier === 'function' && options?.useTaskHorizon !== false) {
+            try {
+                for (const [attrKey, value] of entries) {
+                    await applier(taskId, attrKey, String(value ?? ''), {
+                        source: 'docktomato',
+                        refresh: false,
+                        refreshCalendar: false,
+                        withFilters: false,
+                        broadcast: false,
+                        recordUndo: false,
+                        silent: true,
+                    });
+                }
+                savedByTaskHorizon = true;
+            } catch (e) {
+                savedByTaskHorizon = false;
+            }
+        }
+        if (!savedByTaskHorizon) {
+            const setRes = await postJSON('/api/attr/setBlockAttrs', { id: writeId, attrs: payload });
+            if (!(setRes.ok && setRes.data?.code === 0)) {
+                return false;
+            }
+        }
+        entries.forEach(([attrKey, value]) => dispatchTomatoTaskAttrUpdated(ctx, attrKey, value));
+        return true;
+    }
+
     // ✅ 修复版本：更新任务块的番茄时间属性 - 增加详细的错误处理
     async function updateTaskBlockTomatoTime(blockId, durationSeconds) {
         // 🔧 修复：参数改为秒数，以便更精确地处理小于1分钟的记录
@@ -22475,7 +22578,6 @@ window.__setTomatoFloatState = function (payload) {
             Logger.info('🔍 更新任务块自定义属性: 参数无效', { blockId, durationSeconds });
             return;
         }
-        
         // 检查是否启用任务块番茄时间功能
         if (userSettings.taskBlockTomatoTime?.enabled === false) {
             Logger.info('🔍 任务块番茄时间功能已禁用，跳过更新');
@@ -22488,31 +22590,23 @@ window.__setTomatoFloatState = function (payload) {
             durationSeconds,
             durationMinutes: Number(durationMinutes.toFixed(2))
         });
-        
         // 获取配置
-        const config = userSettings.taskBlockTomatoTime || {};
+        const config = ensureTaskBlockTomatoTimeConfig();
         const enableHourAttr = config.enableHourAttr !== false;
         const hourAttrName = config.hourAttrName || 'custom-tomato-time';
         const enableMinuteAttr = config.enableMinuteAttr === true;
         const minuteAttrName = config.minuteAttrName || 'custom-tomato-minutes';
-        
+
         Logger.info('🔍 属性配置:', { enableHourAttr, hourAttrName, enableMinuteAttr, minuteAttrName });
-        
+
         try {
-            // 获取当前属性值
-            const getRes = await postJSON('/api/attr/getBlockAttrs', { id: blockId });
-
-            if (!getRes.ok) {
-                Logger.warn('⚠️ 获取任务块属性失败，跳过更新:', blockId, '状态:', getRes.status);
+            const attrContext = await resolveTomatoTaskAttrContext(blockId);
+            const writeId = String(attrContext.writeId || '').trim();
+            if (!writeId) {
+                Logger.warn('⚠️ 未解析到任务属性宿主，跳过更新:', blockId);
                 return;
             }
-            const getResult = getRes.data;
-
-            // 检查响应格式
-            if (!getResult || !getResult.data) {
-                Logger.error('❌ 获取属性响应格式错误:', getResult);
-                return;
-            }
+            const attrRows = await getTomatoTaskAttrRows(attrContext);
 
             // 构建要更新的属性
             const setAttrs = {};
@@ -22526,7 +22620,7 @@ window.__setTomatoFloatState = function (payload) {
             } else {
                 // 小时格式属性（如果启用）- 使用精确的小数
                 if (enableHourAttr) {
-                    const currentHourValue = parseFloat(getResult.data?.[hourAttrName]) || 0;
+                    const currentHourValue = parseFloat(readTomatoAttrValue(attrRows, hourAttrName)) || 0;
                     const newHourValue = currentHourValue + (durationMinutes / 60);
                     setAttrs[hourAttrName] = newHourValue.toFixed(2);
                     updateCount++;
@@ -22534,7 +22628,7 @@ window.__setTomatoFloatState = function (payload) {
 
                 // 分钟格式属性（如果启用）- 🔧 修复：使用小数分钟值精确记录
                 if (enableMinuteAttr) {
-                    const currentMinuteValue = parseFloat(getResult.data?.[minuteAttrName]) || 0;
+                    const currentMinuteValue = parseFloat(readTomatoAttrValue(attrRows, minuteAttrName)) || 0;
                     // 直接累加小数分钟值，保持精度
                     const newMinuteValue = currentMinuteValue + durationMinutes;
                     // 保留2位小数
@@ -22549,25 +22643,81 @@ window.__setTomatoFloatState = function (payload) {
                 return;
             }
 
-            const setRes = await postJSON('/api/attr/setBlockAttrs', { id: blockId, attrs: setAttrs });
-
-            if (setRes.ok) {
-                const setResult = setRes.data;
-                if (setResult.code === 0) {
-                    Logger.info(`✅ 任务块 ${blockId} 番茄时间已更新`);
-                    Logger.info(`   - ${hourAttrName}: ${setAttrs[hourAttrName]}小时`);
-                    if (enableMinuteAttr) {
-                        Logger.info(`   - ${minuteAttrName}: ${setAttrs[minuteAttrName]}分钟`);
-                    }
-                } else {
-                    Logger.warn('⚠️ 设置属性API返回错误:', setResult);
+            const saved = await persistTomatoTaskAttrs(attrContext, setAttrs);
+            if (saved) {
+                Logger.info(`✅ 任务块 ${writeId} 番茄时间已更新`);
+                Logger.info(`   - ${hourAttrName}: ${setAttrs[hourAttrName]}小时`);
+                if (enableMinuteAttr) {
+                    Logger.info(`   - ${minuteAttrName}: ${setAttrs[minuteAttrName]}分钟`);
                 }
             } else {
-                Logger.warn('⚠️ 设置任务块属性失败:', blockId, '状态:', setRes.status);
+                Logger.warn('⚠️ 设置任务块属性失败:', writeId);
             }
-            
+
         } catch (error) {
             Logger.error('❌ 更新任务块番茄时间失败:', { blockId, error: error?.message || error });
+        }
+    }
+
+    function normalizeTaskBlockTomatoCountValue(value) {
+        const raw = String(value ?? '').trim();
+        if (!raw) return '';
+        const num = Number(raw);
+        if (!Number.isFinite(num)) return '';
+        return String(Math.max(0, Math.floor(num)));
+    }
+
+    async function updateTaskBlockTomatoCount(blockId, delta = 1) {
+        const id = String(blockId || '').trim();
+        const step = Number(delta);
+        if (!id || !Number.isFinite(step) || step === 0) return false;
+        const config = ensureTaskBlockTomatoTimeConfig();
+        if (config.enabled === false || config.enableCountAttr === false) return false;
+        const attrName = String(config.countAttrName || '').trim() || 'custom-tomato-count';
+        try {
+            const attrContext = await resolveTomatoTaskAttrContext(id);
+            const writeId = String(attrContext.writeId || '').trim();
+            if (!writeId) {
+                Logger.warn('⚠️ 未解析到任务属性宿主，跳过番茄数更新:', id);
+                return false;
+            }
+            const attrRows = await getTomatoTaskAttrRows(attrContext);
+            const current = parseInt(String(readTomatoAttrValue(attrRows, attrName) ?? '').trim(), 10);
+            const next = Math.max(0, (Number.isFinite(current) ? current : 0) + Math.round(step));
+            const saved = await persistTomatoTaskAttrs(attrContext, { [attrName]: String(next) });
+            if (saved) {
+                Logger.info(`✅ 任务块 ${writeId} 实际番茄数已更新: ${attrName}=${next}`);
+                return true;
+            }
+            Logger.warn('⚠️ 设置任务块番茄数属性失败:', writeId);
+            return false;
+        } catch (error) {
+            Logger.error('❌ 更新任务块实际番茄数失败:', { blockId: id, error: error?.message || error });
+            return false;
+        }
+    }
+
+    async function setTaskBlockEstimatedTomatoCount(blockId, count) {
+        const id = String(blockId || '').trim();
+        if (!id) return false;
+        const config = ensureTaskBlockTomatoTimeConfig();
+        if (config.enabled === false || config.enableEstimateAttr === false) return false;
+        const attrName = String(config.estimateAttrName || '').trim() || 'custom-tomato-estimate-count';
+        const normalized = normalizeTaskBlockTomatoCountValue(count);
+        try {
+            const attrContext = await resolveTomatoTaskAttrContext(id);
+            const writeId = String(attrContext.writeId || '').trim();
+            if (!writeId) return false;
+            const saved = await persistTomatoTaskAttrs(attrContext, { [attrName]: normalized });
+            if (saved) {
+                Logger.info(`✅ 任务块 ${writeId} 预计番茄数已更新: ${attrName}=${normalized}`);
+                return true;
+            }
+            Logger.warn('⚠️ 设置任务块预计番茄数属性失败:', writeId);
+            return false;
+        } catch (error) {
+            Logger.error('❌ 更新任务块预计番茄数失败:', { blockId: id, error: error?.message || error });
+            return false;
         }
     }
 
@@ -22951,7 +23101,7 @@ window.__setTomatoFloatState = function (payload) {
             return elements;
         }
     };
-    
+
     // ========== MutationObserver 管理器 ==========
     // 合并多个 Observer 实例，优化性能
     const ObserverManager = {
@@ -23052,7 +23202,7 @@ window.__setTomatoFloatState = function (payload) {
         
         return { id: blockId, name: blockName };
     }
-    
+
     // ========== 通用子菜单创建函数 ==========
     // 减少重复的菜单创建代码
     function createTomatoSubMenu(onItemClick, blockInfo) {
@@ -24967,15 +25117,7 @@ window.__setTomatoFloatState = function (payload) {
         if (!audioSettings) {
             audioSettings = ensureAudioSettingsDefaults();
         }
-        if (!userSettings.taskBlockTomatoTime) {
-            userSettings.taskBlockTomatoTime = {
-                enabled: true,
-                enableHourAttr: true,
-                hourAttrName: 'custom-tomato-time',
-                enableMinuteAttr: false,
-                minuteAttrName: 'custom-tomato-minutes'
-            };
-        }
+        ensureTaskBlockTomatoTimeConfig();
 
         // 清理可能存在的旧对话框
         document.getElementById('tomato-settings-dialog')?.remove();
@@ -26050,12 +26192,7 @@ window.__setTomatoFloatState = function (payload) {
      * 渲染任务块设置页面
      */
     function renderTaskBlockSettings(container) {
-        const taskBlockConfig = userSettings.taskBlockTomatoTime || {
-            enabled: true,
-            hourAttrName: 'custom-tomato-time',
-            enableMinuteAttr: false,
-            minuteAttrName: 'custom-tomato-minutes'
-        };
+        const taskBlockConfig = ensureTaskBlockTomatoTimeConfig();
 
         // 启用开关
         const enableContainer = document.createElement('div');
@@ -26182,6 +26319,108 @@ window.__setTomatoFloatState = function (payload) {
             minuteAttrContainer.appendChild(minuteAttrLabel);
             minuteAttrContainer.appendChild(minuteAttrInput);
             container.appendChild(minuteAttrContainer);
+        }
+
+        // 实际番茄数开关
+        const countEnableContainer = document.createElement('div');
+        countEnableContainer.style.cssText = `
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 12px; background: var(--b3-theme-surface-light);
+            border-radius: 6px; margin-bottom: 12px;
+        `;
+        const countEnableLabel = document.createElement('span');
+        countEnableLabel.textContent = '启用实际番茄数累计';
+        countEnableLabel.style.cssText = 'font-size: 14px;';
+        const countEnableSwitch = document.createElement('input');
+        countEnableSwitch.type = 'checkbox';
+        countEnableSwitch.checked = taskBlockConfig.enableCountAttr !== false;
+        countEnableSwitch.style.cssText = 'width: 20px; height: 20px; cursor: pointer;';
+        countEnableSwitch.onchange = async (e) => {
+            taskBlockConfig.enableCountAttr = e.target.checked;
+            userSettings.taskBlockTomatoTime = taskBlockConfig;
+            await saveUserSettings();
+            showSettingsDialog();
+        };
+        countEnableContainer.appendChild(countEnableLabel);
+        countEnableContainer.appendChild(countEnableSwitch);
+        container.appendChild(countEnableContainer);
+
+        if (taskBlockConfig.enableCountAttr !== false) {
+            const countAttrContainer = document.createElement('div');
+            countAttrContainer.style.cssText = `
+                padding: 12px; background: var(--b3-theme-surface-light);
+                border-radius: 6px; margin-bottom: 12px;
+            `;
+            const countAttrLabel = document.createElement('div');
+            countAttrLabel.textContent = '实际番茄数属性名称';
+            countAttrLabel.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
+            const countAttrInput = document.createElement('input');
+            countAttrInput.type = 'text';
+            countAttrInput.value = taskBlockConfig.countAttrName || 'custom-tomato-count';
+            countAttrInput.style.cssText = `
+                width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--b3-theme-surface);
+                border-radius: 4px; font-size: 13px;
+                background: var(--b3-theme-background); color: var(--b3-theme-on-background);
+            `;
+            countAttrInput.onchange = async () => {
+                taskBlockConfig.countAttrName = countAttrInput.value.trim() || 'custom-tomato-count';
+                userSettings.taskBlockTomatoTime = taskBlockConfig;
+                await saveUserSettings();
+            };
+            countAttrContainer.appendChild(countAttrLabel);
+            countAttrContainer.appendChild(countAttrInput);
+            container.appendChild(countAttrContainer);
+        }
+
+        // 预计番茄数开关
+        const estimateEnableContainer = document.createElement('div');
+        estimateEnableContainer.style.cssText = `
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 12px; background: var(--b3-theme-surface-light);
+            border-radius: 6px; margin-bottom: 12px;
+        `;
+        const estimateEnableLabel = document.createElement('span');
+        estimateEnableLabel.textContent = '启用预计番茄数属性';
+        estimateEnableLabel.style.cssText = 'font-size: 14px;';
+        const estimateEnableSwitch = document.createElement('input');
+        estimateEnableSwitch.type = 'checkbox';
+        estimateEnableSwitch.checked = taskBlockConfig.enableEstimateAttr !== false;
+        estimateEnableSwitch.style.cssText = 'width: 20px; height: 20px; cursor: pointer;';
+        estimateEnableSwitch.onchange = async (e) => {
+            taskBlockConfig.enableEstimateAttr = e.target.checked;
+            userSettings.taskBlockTomatoTime = taskBlockConfig;
+            await saveUserSettings();
+            showSettingsDialog();
+        };
+        estimateEnableContainer.appendChild(estimateEnableLabel);
+        estimateEnableContainer.appendChild(estimateEnableSwitch);
+        container.appendChild(estimateEnableContainer);
+
+        if (taskBlockConfig.enableEstimateAttr !== false) {
+            const estimateAttrContainer = document.createElement('div');
+            estimateAttrContainer.style.cssText = `
+                padding: 12px; background: var(--b3-theme-surface-light);
+                border-radius: 6px; margin-bottom: 12px;
+            `;
+            const estimateAttrLabel = document.createElement('div');
+            estimateAttrLabel.textContent = '预计番茄数属性名称';
+            estimateAttrLabel.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
+            const estimateAttrInput = document.createElement('input');
+            estimateAttrInput.type = 'text';
+            estimateAttrInput.value = taskBlockConfig.estimateAttrName || 'custom-tomato-estimate-count';
+            estimateAttrInput.style.cssText = `
+                width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--b3-theme-surface);
+                border-radius: 4px; font-size: 13px;
+                background: var(--b3-theme-background); color: var(--b3-theme-on-background);
+            `;
+            estimateAttrInput.onchange = async () => {
+                taskBlockConfig.estimateAttrName = estimateAttrInput.value.trim() || 'custom-tomato-estimate-count';
+                userSettings.taskBlockTomatoTime = taskBlockConfig;
+                await saveUserSettings();
+            };
+            estimateAttrContainer.appendChild(estimateAttrLabel);
+            estimateAttrContainer.appendChild(estimateAttrInput);
+            container.appendChild(estimateAttrContainer);
         }
     }
 
@@ -27532,15 +27771,7 @@ window.__setTomatoFloatState = function (payload) {
             // 确保 audioSettings 对象存在（兼容旧配置）
             ensureAudioSettingsDefaults();
             // 确保 taskBlockTomatoTime 对象存在（兼容旧配置）
-            if (!userSettings.taskBlockTomatoTime) {
-                userSettings.taskBlockTomatoTime = {
-                    enabled: true,
-                    enableHourAttr: true,
-                    hourAttrName: 'custom-tomato-time',
-                    enableMinuteAttr: false,
-                    minuteAttrName: 'custom-tomato-minutes'
-                };
-            }
+            ensureTaskBlockTomatoTimeConfig();
             // 确保 audioSettings 引用 userSettings 中的配置
             audioSettings = ensureAudioSettingsDefaults();
             Logger.info('🍅 audioSettings 初始化:', JSON.stringify(audioSettings));
@@ -30819,9 +31050,11 @@ window.__setTomatoFloatState = function (payload) {
             const startKey = __getStartDateKey(reminder);
             const interval = __normalizeReminderInterval(reminder.interval || 'daily');
             const every = interval === 'once' ? 1 : __getReminderEvery(reminder);
+            const endKey = __normalizeReminderDateKey(reminder?.endDate || '');
             const activeFromMs = __getReminderScheduleUpdatedAtMs(reminder);
 
             const pickLatestOnDate = (dateKey, requirePastTime) => {
+                if (endKey && dateKey > endKey) return null;
                 const base = new Date(dateKey + 'T00:00:00');
                 if (isNaN(base.getTime())) return null;
                 for (let i = times.length - 1; i >= 0; i--) {
@@ -30855,6 +31088,7 @@ window.__setTomatoFloatState = function (payload) {
                 if (isNaN(anchor.getTime())) return null;
                 const today0 = new Date(to);
                 today0.setHours(0, 0, 0, 0);
+                if (endKey && formatDateKey(today0) > endKey) today0.setTime(new Date(endKey + 'T00:00:00').getTime());
                 const dayMs = 86400000;
                 let diffDays = Math.floor((today0.getTime() - anchor.getTime()) / dayMs);
                 if (!Number.isFinite(diffDays) || diffDays < 0) return null;
@@ -30876,6 +31110,7 @@ window.__setTomatoFloatState = function (payload) {
                 if (isNaN(anchor.getTime())) return null;
                 let candidate = new Date(to);
                 candidate.setHours(0, 0, 0, 0);
+                if (endKey && formatDateKey(candidate) > endKey) candidate = new Date(endKey + 'T00:00:00');
                 for (let i = 0; i < 1830; i++) {
                     if (candidate.getTime() < anchor.getTime()) break;
                     if (__isReminderWorkdayOccurrence(candidate, anchor, every)) {
@@ -30894,6 +31129,7 @@ window.__setTomatoFloatState = function (payload) {
                 const targetDow = anchor.getDay();
                 const today0 = new Date(to);
                 today0.setHours(0, 0, 0, 0);
+                if (endKey && formatDateKey(today0) > endKey) today0.setTime(new Date(endKey + 'T00:00:00').getTime());
                 const back = (today0.getDay() - targetDow + 7) % 7;
                 let candidate = new Date(today0);
                 candidate.setDate(candidate.getDate() - back);
@@ -30919,8 +31155,9 @@ window.__setTomatoFloatState = function (payload) {
                 if (isNaN(anchor.getTime())) return null;
                 const anchorY = anchor.getFullYear();
                 const anchorM = anchor.getMonth();
-                const toY = to.getFullYear();
-                const toM = to.getMonth();
+                const cappedTo = endKey && nowKey > endKey ? new Date(endKey + 'T00:00:00') : to;
+                const toY = cappedTo.getFullYear();
+                const toM = cappedTo.getMonth();
                 const monthlyMode = __getReminderMonthlyMode(reminder);
                 let monthsFromAnchor = (toY - anchorY) * 12 + (toM - anchorM);
                 if (!Number.isFinite(monthsFromAnchor) || monthsFromAnchor < 0) return null;
@@ -30957,7 +31194,8 @@ window.__setTomatoFloatState = function (payload) {
                 const targetMonth = anchor.getMonth();
                 const targetDay = anchor.getDate();
                 const anchorY = anchor.getFullYear();
-                const toY = to.getFullYear();
+                const cappedTo = endKey && nowKey > endKey ? new Date(endKey + 'T00:00:00') : to;
+                const toY = cappedTo.getFullYear();
                 let yearsFromAnchor = toY - anchorY;
                 if (!Number.isFinite(yearsFromAnchor) || yearsFromAnchor < 0) return null;
                 yearsFromAnchor = yearsFromAnchor - (yearsFromAnchor % every);
@@ -31391,6 +31629,10 @@ window.__setTomatoFloatState = function (payload) {
         };
     }
 
+    async function resolveReminderTaskAttrContext(blockId) {
+        return await resolveTomatoTaskAttrContext(blockId);
+    }
+
     async function __syncReminderLoopToTaskRepeat(blockId, ruleInput, taskContextInput = null, options = {}) {
         const id = String(blockId || '').trim();
         if (!id) return null;
@@ -31419,22 +31661,16 @@ window.__setTomatoFloatState = function (payload) {
             }
         }
         try {
+            const attrContext = await resolveReminderTaskAttrContext(id);
+            const writeId = String(attrContext.writeId || id).trim() || id;
             const attrs = {
                 [TASK_REPEAT_RULE_ATTR]: JSON.stringify(rule),
                 [TASK_REPEAT_STATE_ATTR]: JSON.stringify(state),
             };
-            const setRes = await postJSON('/api/attr/setBlockAttrs', { id, attrs });
+            const setRes = await postJSON('/api/attr/setBlockAttrs', { id: writeId, attrs });
             if (setRes.ok && setRes.data?.code === 0) {
-                try {
-                    window.dispatchEvent(new CustomEvent('tm-task-attr-updated', {
-                        detail: { taskId: id, attrKey: TASK_REPEAT_RULE_ATTR, value: attrs[TASK_REPEAT_RULE_ATTR] }
-                    }));
-                } catch (e) {}
-                try {
-                    window.dispatchEvent(new CustomEvent('tm-task-attr-updated', {
-                        detail: { taskId: id, attrKey: TASK_REPEAT_STATE_ATTR, value: attrs[TASK_REPEAT_STATE_ATTR] }
-                    }));
-                } catch (e) {}
+                dispatchTomatoTaskAttrUpdated(attrContext, TASK_REPEAT_RULE_ATTR, attrs[TASK_REPEAT_RULE_ATTR]);
+                dispatchTomatoTaskAttrUpdated(attrContext, TASK_REPEAT_STATE_ATTR, attrs[TASK_REPEAT_STATE_ATTR]);
                 try { postJSON('/api/sqlite/flushTransaction', {}).catch(() => {}); } catch (e) {}
                 try { __scheduleReminderSiyuanSync(); } catch (e) {}
                 return { ok: true, rule, state, via: 'attrs' };
@@ -31522,11 +31758,22 @@ window.__setTomatoFloatState = function (payload) {
         completeAssociatedTask: async (blockId, options = {}) => {
             return await stopAssociatedTaskAfterDone(blockId, options);
         },
+        setEstimatedTomatoCount: async (blockId, count) => {
+            return await setTaskBlockEstimatedTomatoCount(blockId, count);
+        },
+        incrementTaskBlockTomatoCount: async (blockId, delta = 1) => {
+            return await updateTaskBlockTomatoCount(blockId, delta);
+        },
+        getTaskBlockTomatoAttrConfig: () => {
+            try { return { ...ensureTaskBlockTomatoTimeConfig() }; } catch (e) { return null; }
+        },
     };
-    
     async function saveBlockReminder(blockId, reminderData, options = {}) {
         try {
-            const reminderBlockId = String(blockId || reminderData?.blockId || '').trim();
+            const requestedReminderBlockId = String(blockId || reminderData?.blockId || '').trim();
+            const attrContext = await resolveReminderTaskAttrContext(requestedReminderBlockId);
+            const reminderBlockId = String(attrContext.writeId || requestedReminderBlockId).trim();
+            if (!reminderBlockId) return false;
             const getRes = await postJSON('/api/attr/getBlockAttrs', { id: reminderBlockId });
             if (!getRes.ok) { return false; }
             const currentAttrs = getRes.data?.data || {};
@@ -31575,11 +31822,8 @@ window.__setTomatoFloatState = function (payload) {
             };
             const setRes = await postJSON('/api/attr/setBlockAttrs', { id: reminderBlockId, attrs });
             if (setRes.ok && setRes.data?.code === 0) {
-                try {
-                    window.dispatchEvent(new CustomEvent('tm-task-attr-updated', {
-                        detail: { taskId: reminderBlockId, attrKey: 'bookmark', value: '⏰' }
-                    }));
-                } catch (e) {}
+                dispatchTomatoTaskAttrUpdated(attrContext, 'bookmark', '⏰');
+                dispatchTomatoTaskAttrUpdated(attrContext, 'custom-tomato-reminder', attrs['custom-tomato-reminder']);
                 try { refreshReminderDockPanel(); } catch (e) {}
                 try { updateReminderBadge(); } catch (e) {}
                 try { postJSON('/api/sqlite/flushTransaction', {}).catch(() => {}); } catch (e) {}
@@ -31591,23 +31835,25 @@ window.__setTomatoFloatState = function (payload) {
         } catch (e) {}
         return false;
     }
-    
     async function getBlockReminder(blockId) {
         try {
-            const getRes = await postJSON('/api/attr/getBlockAttrs', { id: blockId });
+            const attrContext = await resolveReminderTaskAttrContext(blockId);
+            const reminderBlockId = String(attrContext.writeId || blockId || '').trim();
+            const getRes = await postJSON('/api/attr/getBlockAttrs', { id: reminderBlockId });
             if (getRes.ok) {
                 const attrs = getRes.data?.data || {};
-                const taskContext = await __getReminderTaskContext(blockId, attrs);
+                const taskContext = await __getReminderTaskContext(reminderBlockId, attrs);
                 const reminderAttr = attrs['custom-tomato-reminder'];
-                if (reminderAttr) return __sanitizeReminderData(JSON.parse(reminderAttr), { blockId, ...taskContext });
+                if (reminderAttr) return __sanitizeReminderData(JSON.parse(reminderAttr), { blockId: reminderBlockId, ...taskContext });
             }
         } catch (e) { Logger.warn('获取块提醒设置失败:', e); }
         return null;
     }
-    
     async function deleteBlockReminder(blockId) {
         try {
-            const reminderId = String(blockId || '').trim();
+            const requestedReminderId = String(blockId || '').trim();
+            const attrContext = await resolveReminderTaskAttrContext(requestedReminderId);
+            const reminderId = String(attrContext.writeId || requestedReminderId).trim();
             const existingReminder = await getBlockReminder(blockId);
             if (existingReminder) {
                 try {
@@ -31617,18 +31863,15 @@ window.__setTomatoFloatState = function (payload) {
             }
             // 删除提醒时，同时移除书签属性
             const setRes = await postJSON('/api/attr/setBlockAttrs', {
-                id: blockId,
+                id: reminderId,
                 attrs: {
                     'custom-tomato-reminder': '',
                     'bookmark': ''
                 }
             });
             if (setRes.ok && setRes.data?.code === 0) {
-                try {
-                    window.dispatchEvent(new CustomEvent('tm-task-attr-updated', {
-                        detail: { taskId: String(blockId || '').trim(), attrKey: 'bookmark', value: '' }
-                    }));
-                } catch (e) {}
+                dispatchTomatoTaskAttrUpdated(attrContext, 'bookmark', '');
+                dispatchTomatoTaskAttrUpdated(attrContext, 'custom-tomato-reminder', '');
                 try { __setReminderDeviceRegistryEntry(reminderId, null); } catch (e) {}
                 // 🔧 修复：删除提醒时立即清理孤立的系统通知预约，避免到点仍弹窗
                 try {
@@ -32968,31 +33211,22 @@ window.__setTomatoFloatState = function (payload) {
             return;
         }
 
-        const entries = [];
-        const shouldIncludePendingToday = (r) => {
-            if (!todayKey) return true;
-            if (!r || r.enabled === false) return false;
-            if (!Array.isArray(r.times) || r.times.length === 0) return false;
-            return checkShouldRemindToday(r, todayKey);
-        };
-        for (const r of reminders) {
-            try {
-                if (!r || r.enabled === false) continue;
-                let nextAt = null;
-                nextAt = getNextReminderDateTime(r, now);
-                if (view === 'unfinished' && nextAt && Number.isFinite(nextAt.getTime())) {
-                    if (!todayKey || formatDateKey(nextAt) === todayKey) {
-                        entries.push({ kind: 'pending', reminder: r, at: nextAt });
+        const entries = view === 'expired'
+            ? __collectExpiredReminderEntries(reminders, now).map(entry => ({ kind: 'expired', reminder: entry.reminder, at: entry.at }))
+            : [];
+        if (view === 'unfinished') {
+            for (const r of reminders) {
+                try {
+                    if (!r || r.enabled === false) continue;
+                    const nextAt = getNextReminderDateTime(r, now);
+                    if (nextAt && Number.isFinite(nextAt.getTime())) {
+                        if (!todayKey || formatDateKey(nextAt) === todayKey) {
+                            entries.push({ kind: 'pending', reminder: r, at: nextAt });
+                        }
                     }
+                } catch (e) {
+                    try { Logger.warn('提醒Dock跳过异常提醒:', r?.blockId || '', e?.message || String(e)); } catch (e2) {}
                 }
-                const lastDueAt = __getLastDueReminderDateTime(r, now);
-                if (view === 'expired' && lastDueAt && Number.isFinite(lastDueAt.getTime()) && lastDueAt.getTime() < now.getTime()) {
-                    if (!nextAt || lastDueAt.getTime() !== nextAt.getTime()) {
-                        entries.push({ kind: 'expired', reminder: r, at: lastDueAt });
-                    }
-                }
-            } catch (e) {
-                try { Logger.warn('提醒Dock跳过异常提醒:', r?.blockId || '', e?.message || String(e)); } catch (e2) {}
             }
         }
 
