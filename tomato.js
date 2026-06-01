@@ -2319,6 +2319,8 @@
         return Array.isArray(fallback) ? fallback.slice() : [];
     };
 
+    let userSettingsAutoFixPending = false;
+
     const ensureUserSettings = () => {
         if (!userSettings || typeof userSettings !== 'object') userSettings = {};
         if (!userSettings.main || typeof userSettings.main !== 'object') userSettings.main = {};
@@ -2348,6 +2350,14 @@
         } else {
             userSettings.historyEditor.fillMinutes = Math.max(1, Math.min(180, Math.round(userSettings.historyEditor.fillMinutes)));
         }
+        if (!Array.isArray(userSettings.routineButtons)) userSettings.routineButtons = [];
+        userSettings.routineButtons.forEach((btn) => {
+            if (!btn || typeof btn !== 'object') return;
+            if (!String(btn.id || '').trim()) {
+                btn.id = createRoutineButtonId();
+                userSettingsAutoFixPending = true;
+            }
+        });
 
         if (!userSettings.sync || typeof userSettings.sync !== 'object') userSettings.sync = {};
         userSettings.sync.enabled = userSettings.sync.enabled !== false;
@@ -3471,6 +3481,12 @@
             } catch (localError) {}
         }
         try { ensureUserSettings(); } catch (e) {}
+        try {
+            if (userSettingsAutoFixPending) {
+                userSettingsAutoFixPending = false;
+                await saveUserSettings();
+            }
+        } catch (e) {}
         try { applyFocusModeDimOpacity(); } catch (e) {}
         try { __publishTomatoFocusModeState(); } catch (e) {}
         try { Logger.setDebugEnabled(isDebugMode()); } catch (e) {}
@@ -3855,8 +3871,9 @@
                     'stopwatch-break': '☕ 正计时休息',
                     'idle': '📋 闲置'
                 };
-                const summary = record.taskBlockName 
-                    ? `${modeLabels[record.mode] || '🍅 专注'}: ${record.taskBlockName}`
+                const displayTaskName = getRecordDisplayTaskName(record);
+                const summary = displayTaskName
+                    ? `${modeLabels[record.mode] || '🍅 专注'}: ${displayTaskName}`
                     : (modeLabels[record.mode] || '🍅 专注');
                 
                 // 构建描述
@@ -7912,6 +7929,95 @@
 
     const __routineIconObjectUrlCache = new Map();
 
+    function createRoutineButtonId() {
+        return 'routine_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    }
+
+    function getRoutineButtonIdentity(btn, index = null) {
+        const explicitId = String(btn?.id || '').trim();
+        if (explicitId) return explicitId;
+        const blockId = String(btn?.blockId || '').trim();
+        if (blockId) return `bid:${blockId}`;
+        const name = String(btn?.name || '').trim();
+        if (name) return `name:${name}`;
+        if (index !== null && index !== undefined && index !== '') return `idx:${index}`;
+        return '';
+    }
+
+    function getRoutineButtonRecordMeta(btn, index = null) {
+        if (!btn || typeof btn !== 'object') return null;
+        const id = getRoutineButtonIdentity(btn, index);
+        const name = String(btn?.name || '').trim();
+        if (!id && !name) return null;
+        const blockId = String(btn?.blockId || '').trim();
+        const icon = String(btn?.icon || '').trim();
+        const groupId = String(btn?.groupId || '').trim() || null;
+        return {
+            id: id || null,
+            key: id ? `routine:${id}` : (name ? `name:${name}` : `idx:${index ?? ''}`),
+            blockId: blockId || null,
+            name: name || '',
+            icon: icon || '',
+            groupId,
+            color: (typeof btn?.color === 'string' && btn.color.trim()) ? btn.color.trim() : null
+        };
+    }
+
+    function applyRoutineButtonMetaToRecord(record, meta) {
+        if (!record || typeof record !== 'object') return;
+        record.routineButtonId = meta?.id || null;
+        record.routineButtonName = meta?.name || null;
+        record.routineButtonIcon = meta?.icon || null;
+        record.routineButtonGroupId = meta?.groupId || null;
+        record.routineButtonBlockId = meta?.blockId || null;
+        record.routineButtonColor = meta?.color || null;
+    }
+
+    function getActiveRoutineButtonRecordMeta() {
+        const idx = Number.parseInt(String(activeRoutineButtonIndex ?? ''), 10);
+        if (!Number.isFinite(idx) || idx < 0) return null;
+        const btn = Array.isArray(userSettings?.routineButtons) ? userSettings.routineButtons[idx] : null;
+        return getRoutineButtonRecordMeta(btn, idx);
+    }
+
+    function findRoutineButtonMetaForRecord(record, buttonsInput = null) {
+        const buttons = Array.isArray(buttonsInput) ? buttonsInput : (Array.isArray(userSettings?.routineButtons) ? userSettings.routineButtons : []);
+        const routineButtonId = String(record?.routineButtonId || '').trim();
+        if (routineButtonId) {
+            for (let i = 0; i < buttons.length; i++) {
+                const meta = getRoutineButtonRecordMeta(buttons[i], i);
+                if (meta?.id && meta.id === routineButtonId) return meta;
+            }
+        }
+
+        const blockId = String(record?.routineButtonBlockId || record?.taskBlockId || '').trim();
+        if (blockId) {
+            for (let i = 0; i < buttons.length; i++) {
+                const meta = getRoutineButtonRecordMeta(buttons[i], i);
+                if (meta?.blockId && meta.blockId === blockId) return meta;
+            }
+        }
+
+        const name = String(record?.routineButtonName || record?.taskBlockName || '').trim();
+        if (name) {
+            for (let i = 0; i < buttons.length; i++) {
+                const meta = getRoutineButtonRecordMeta(buttons[i], i);
+                if (meta?.name && meta.name === name) return meta;
+            }
+        }
+
+        return null;
+    }
+
+    function getRecordDisplayTaskName(record, buttonsInput = null) {
+        const taskName = String(record?.taskBlockName || '').trim();
+        if (taskName) return taskName;
+        const routineName = String(record?.routineButtonName || '').trim();
+        if (routineName) return routineName;
+        const meta = findRoutineButtonMetaForRecord(record, buttonsInput);
+        return String(meta?.name || '').trim();
+    }
+
     function updateRoutineButtonRunningHighlight(force = false) {
         const toolbar = document.getElementById('tomato-routine-toolbar');
         if (!toolbar) return;
@@ -9693,6 +9799,7 @@
         dialog.querySelector('.btn-save').onclick = async () => {
             const timerType = dialog.querySelector('.input-timer-type').value;
             const newConfig = {
+                id: isEdit ? (String(config?.id || '').trim() || createRoutineButtonId()) : createRoutineButtonId(),
                 blockId: dialog.querySelector('.input-block-id').value.trim(),
                 name: dialog.querySelector('.input-name').value.trim(),
                 icon: dialog.querySelector('.input-icon').value.trim(),
@@ -11881,12 +11988,10 @@
                 buttonColor = record.routineButtonColor.trim();
             }
 
-            // 如果记录没有保存按钮颜色，尝试根据 taskBlockId 查找按钮配置
-            if (!buttonColor && record.taskBlockId) {
-                const btn = routineButtons.find(b => String(b?.blockId) === String(record.taskBlockId));
-                if (btn && btn.color && typeof btn.color === 'string' && btn.color.trim()) {
-                    buttonColor = btn.color.trim();
-                }
+            // 如果记录没有保存按钮颜色，尝试根据按钮身份 / 块 ID / 名称查找按钮配置
+            if (!buttonColor) {
+                const meta = findRoutineButtonMetaForRecord(record, routineButtons);
+                if (meta?.color) buttonColor = meta.color;
             }
 
             // 使用按钮颜色或默认颜色
@@ -11906,7 +12011,7 @@
 
             drawTimelineSegment(startM, endM, color, opacity, offsetMin, totalMin, label, {
                 taskBlockId: record.taskBlockId,
-                taskBlockName: record.taskBlockName,
+                taskBlockName: record.taskBlockName || getRecordDisplayTaskName(record, routineButtons),
                 databaseBlockId: record.databaseBlockId,
                 startIso: new Date(segStartMs).toISOString(),
                 endIso: new Date(segEndMs).toISOString(),
@@ -13194,6 +13299,7 @@
             Number(record?.durationSec || 0) === Number(recordData.durationSec || 0) &&
             Number(record?.durationMin || 0) === Number(recordData.durationMin || 0) &&
             String(record?.taskBlockId || '') === String(recordData.taskBlockId || '') &&
+            String(record?.routineButtonId || '') === String(recordData.routineButtonId || '') &&
             String(record?.databaseBlockId || '') === String(recordData.databaseBlockId || '') &&
             Boolean(record?.wasReset) === Boolean(recordData.wasReset) &&
             Boolean(record?.isCompleted) === Boolean(recordData.isCompleted)
@@ -13210,6 +13316,7 @@
             Number(record?.durationSec || 0) === Number(recordData.durationSec || 0) &&
             Number(record?.durationMin || 0) === Number(recordData.durationMin || 0) &&
             String(record?.taskBlockId || '') === String(recordData.taskBlockId || '') &&
+            String(record?.routineButtonId || '') === String(recordData.routineButtonId || '') &&
             String(record?.databaseBlockId || '') === String(recordData.databaseBlockId || '') &&
             Boolean(record?.wasReset) === Boolean(recordData.wasReset) &&
             Boolean(record?.isCompleted) === Boolean(recordData.isCompleted)
@@ -13303,6 +13410,7 @@
             const assocTaskBlockName = (segmentTaskBlockName ?? currentTaskBlockName) || null;
             const assocDatabaseBlockId = (segmentDatabaseBlockId ?? currentDatabaseBlockId) || null;
             const shouldSaveTaskAssociation = !!(assocTaskBlockId || assocTaskBlockName || assocDatabaseBlockId);
+            const routineMeta = getActiveRoutineButtonRecordMeta();
             
             // 🔧 v9.5 修改：检查是否需要为新番茄生成新的 sessionId
             // 只有当没有 sessionId，或者用户手动开始了一个全新的番茄钟（从头开始）时才生成新的
@@ -13345,7 +13453,12 @@
                     : (Number.isFinite(plannedDurationOverride) ? plannedDurationOverride : currentDuration),
                 distractionCount: distractionDelta,
                 // 🔧 新增：按钮颜色，用于时间轴高亮显示
-                routineButtonColor: routineButtonHighlightColor
+                routineButtonId: routineMeta?.id || null,
+                routineButtonName: routineMeta?.name || null,
+                routineButtonIcon: routineMeta?.icon || null,
+                routineButtonGroupId: routineMeta?.groupId || null,
+                routineButtonBlockId: routineMeta?.blockId || null,
+                routineButtonColor: routineMeta?.color || routineButtonHighlightColor
             };
             const attachedLuminaRecords = consumePendingLuminaRecordsForRecord(recordData, startTimeMs, now.getTime());
             if (attachedLuminaRecords.length > 0) {
@@ -16071,27 +16184,37 @@ function calculateWeeklyStats(dailyStatsArray) {
             groupNameById.set(id, String(g?.name || '分组'));
         });
 
-        const blockIdToGroup = new Map();
-        const nameToGroup = new Map();
+        const buttonMetas = buttons.map((btn, idx) => getRoutineButtonRecordMeta(btn, idx)).filter(Boolean);
+        const idToBtnMeta = new Map();
         const blockIdToBtnMeta = new Map();
         const nameToBtnMeta = new Map();
-        buttons.forEach(btn => {
-            const groupId = String(btn?.groupId || '').trim() || null;
-            const blockId = String(btn?.blockId || '').trim();
-            const name = String(btn?.name || '').trim();
-            if (blockId) blockIdToGroup.set(blockId, groupId);
-            if (name && !nameToGroup.has(name)) nameToGroup.set(name, groupId);
-            const icon = String(btn?.icon || '').trim();
-            const meta = {
-                groupId,
-                blockId: blockId || null,
-                name: name || '',
-                icon: icon || '',
-                key: blockId ? `bid:${blockId}` : (name ? `name:${name}` : `btn:${Math.random().toString(36).slice(2)}`)
-            };
-            if (blockId && !blockIdToBtnMeta.has(blockId)) blockIdToBtnMeta.set(blockId, meta);
-            if (name && !nameToBtnMeta.has(name)) nameToBtnMeta.set(name, meta);
+        buttonMetas.forEach(meta => {
+            if (meta.id && !idToBtnMeta.has(meta.id)) idToBtnMeta.set(meta.id, meta);
+            if (meta.blockId && !blockIdToBtnMeta.has(meta.blockId)) blockIdToBtnMeta.set(meta.blockId, meta);
+            if (meta.name && !nameToBtnMeta.has(meta.name)) nameToBtnMeta.set(meta.name, meta);
         });
+
+        const resolveRecordRoutineMeta = (record) => {
+            const routineButtonId = String(record?.routineButtonId || '').trim();
+            if (routineButtonId && idToBtnMeta.has(routineButtonId)) return idToBtnMeta.get(routineButtonId);
+
+            const blockId = String(record?.routineButtonBlockId || record?.taskBlockId || '').trim();
+            if (blockId && blockIdToBtnMeta.has(blockId)) return blockIdToBtnMeta.get(blockId);
+
+            const name = String(record?.routineButtonName || record?.taskBlockName || '').trim();
+            if (name && nameToBtnMeta.has(name)) return nameToBtnMeta.get(name);
+
+            if (routineButtonId || name) {
+                return {
+                    groupId: String(record?.routineButtonGroupId || '').trim() || null,
+                    blockId: blockId || null,
+                    name: name || '按钮',
+                    icon: String(record?.routineButtonIcon || '').trim(),
+                    key: routineButtonId ? `routine:${routineButtonId}` : (name ? `name:${name}` : `record:${record?.timestamp || record?.start || ''}`)
+                };
+            }
+            return null;
+        };
 
         const buckets = new Map();
         const add = (id, label, kind, minutes) => {
@@ -16149,26 +16272,14 @@ function calculateWeeklyStats(dailyStatsArray) {
             const minutes = Number(r?.durationMin || 0);
             if (!Number.isFinite(minutes) || minutes <= 0) return;
 
-            let matchedGroupId = null;
-            let matched = false;
-            let matchedMeta = null;
-            const taskBlockId = String(r?.taskBlockId || '').trim();
-            const taskBlockName = String(r?.taskBlockName || '').trim();
-            if (taskBlockId && blockIdToGroup.has(taskBlockId)) {
-                matchedGroupId = blockIdToGroup.get(taskBlockId);
-                matched = true;
-                matchedMeta = blockIdToBtnMeta.get(taskBlockId) || null;
-            } else if (taskBlockName && nameToGroup.has(taskBlockName)) {
-                matchedGroupId = nameToGroup.get(taskBlockName);
-                matched = true;
-                matchedMeta = nameToBtnMeta.get(taskBlockName) || null;
-            }
+            const matchedMeta = resolveRecordRoutineMeta(r);
+            const matchedGroupId = matchedMeta ? (String(matchedMeta.groupId || '').trim() || null) : null;
 
             const isFocus = mode === 'countdown' || mode === 'stopwatch';
             const isBreak = mode === 'break' || mode === 'stopwatch-break';
             if (!isFocus && !isBreak) return;
 
-            if (matched) {
+            if (matchedMeta) {
                 const gid = matchedGroupId ? String(matchedGroupId) : '__ungrouped';
                 const label = matchedGroupId ? (groupNameById.get(String(matchedGroupId)) || '分组') : '未分组';
                 add(gid, label, isFocus ? 'focus' : 'break', minutes);
@@ -18141,9 +18252,9 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const allowRoutineHighlight = true;
                 const saved = typeof record?.routineButtonColor === 'string' ? record.routineButtonColor.trim() : '';
                 if (saved) return saved;
-                if (allowRoutineHighlight && record?.taskBlockId) {
-                    const btn = routineButtons.find(b => String(b?.blockId) === String(record.taskBlockId));
-                    if (btn?.color && typeof btn.color === 'string' && btn.color.trim()) return btn.color.trim();
+                if (allowRoutineHighlight) {
+                    const meta = findRoutineButtonMetaForRecord(record, routineButtons);
+                    if (meta?.color) return meta.color;
                 }
                 const { tomatoColor, stopwatchColor, breakColor } = getTimelineHighlightPalette();
                 if (mode === 'countdown') return tomatoColor;
@@ -18166,12 +18277,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         : (mode === 'break' || mode === 'stopwatch-break'
                             ? '☕ 休息'
                             : (mode === 'idle' ? '🕳️ 空白' : '记录')));
-                let name = (typeof record?.taskBlockName === 'string' && record.taskBlockName.trim()) ? record.taskBlockName.trim() : '';
-                if (!name && record?.taskBlockId) {
-                    const btn = routineButtons.find(b => String(b?.blockId) === String(record.taskBlockId));
-                    const btnName = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : '';
-                    if (btnName) name = btnName;
-                }
+                const name = getRecordDisplayTaskName(record, routineButtons);
                 return name ? `${modeText} / ${name}` : modeText;
             } catch (e) {
                 return '记录';
@@ -18286,10 +18392,11 @@ function calculateWeeklyStats(dailyStatsArray) {
             let mode = 'idle';
             let taskBlockId = null;
             let taskBlockName = null;
-            let routineButtonColor = null;
             let plannedDuration = null;
+            let routineMeta = null;
             if (sel >= 0 && sel < routineButtons.length) {
                 const btn = routineButtons[sel];
+                routineMeta = getRoutineButtonRecordMeta(btn, sel);
                 const type = String(btn?.timerType || 'stopwatch');
                 const useBreak = btn?.useBreakMode === true;
                 if (useBreak) {
@@ -18297,9 +18404,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                 } else {
                     mode = (type === 'pomodoro') ? 'countdown' : 'stopwatch';
                 }
-                taskBlockId = (typeof btn?.blockId === 'string' && btn.blockId.trim()) ? btn.blockId.trim() : null;
-                taskBlockName = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : null;
-                routineButtonColor = (typeof btn?.color === 'string' && btn.color.trim()) ? btn.color.trim() : null;
+                taskBlockId = routineMeta?.blockId || null;
+                taskBlockName = routineMeta?.name || null;
                 plannedDuration = (mode === 'countdown' || mode === 'break') ? Math.max(1, Math.round(durationMin)) : null;
             }
 
@@ -18323,10 +18429,10 @@ function calculateWeeklyStats(dailyStatsArray) {
                 databaseBlockId: null,
                 plannedDuration,
                 distractionCount: 0,
-                routineButtonColor,
                 manual: true,
                 category: mode === 'idle' ? 'idle' : 'manual'
             };
+            applyRoutineButtonMetaToRecord(newRecord, routineMeta);
 
             const records = await loadHistoryRecords();
             records.push(newRecord);
@@ -18647,18 +18753,16 @@ function calculateWeeklyStats(dailyStatsArray) {
                     records[idx].taskBlockId = null;
                     records[idx].taskBlockName = null;
                     records[idx].databaseBlockId = null;
-                    records[idx].routineButtonColor = null;
+                    applyRoutineButtonMetaToRecord(records[idx], null);
                 } else {
                     const selIdx = Number(assocValue);
                     const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
                     if (!btn) return false;
-                    const blockId = (typeof btn?.blockId === 'string' && btn.blockId.trim()) ? btn.blockId.trim() : null;
-                    const name = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : null;
-                    const color = (typeof btn?.color === 'string' && btn.color.trim()) ? btn.color.trim() : null;
-                    records[idx].taskBlockId = blockId;
-                    records[idx].taskBlockName = name;
+                    const meta = getRoutineButtonRecordMeta(btn, selIdx);
+                    records[idx].taskBlockId = meta?.blockId || null;
+                    records[idx].taskBlockName = meta?.name || null;
                     records[idx].databaseBlockId = null;
-                    records[idx].routineButtonColor = color;
+                    applyRoutineButtonMetaToRecord(records[idx], meta);
                 }
                 const success = await saveHistoryRecords(records);
                 if (success) {
@@ -18932,20 +19036,21 @@ function calculateWeeklyStats(dailyStatsArray) {
                             records[idx].taskBlockId = null;
                             records[idx].taskBlockName = null;
                             records[idx].databaseBlockId = null;
-                            records[idx].routineButtonColor = null;
+                            applyRoutineButtonMetaToRecord(records[idx], null);
                         } else {
                             const selIdx = Number(value);
                             const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
                             if (!btn) return;
+                            const meta = getRoutineButtonRecordMeta(btn, selIdx);
                             const timerType = String(btn?.timerType || 'stopwatch');
                             const useBreak = btn?.useBreakMode === true;
                             const nextMode = useBreak
                                 ? (timerType === 'pomodoro' ? 'break' : 'stopwatch-break')
                                 : (timerType === 'pomodoro' ? 'countdown' : 'stopwatch');
-                            records[idx].taskBlockId = (typeof btn?.blockId === 'string' && btn.blockId.trim()) ? btn.blockId.trim() : null;
-                            records[idx].taskBlockName = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : null;
+                            records[idx].taskBlockId = meta?.blockId || null;
+                            records[idx].taskBlockName = meta?.name || null;
                             records[idx].databaseBlockId = null;
-                            records[idx].routineButtonColor = (typeof btn?.color === 'string' && btn.color.trim()) ? btn.color.trim() : null;
+                            applyRoutineButtonMetaToRecord(records[idx], meta);
                             records[idx].mode = nextMode;
                             if (nextMode === 'countdown' || nextMode === 'break') {
                                 const base = Number.isFinite(Number(records[idx].plannedDuration)) && Number(records[idx].plannedDuration) > 0
@@ -18966,20 +19071,21 @@ function calculateWeeklyStats(dailyStatsArray) {
                             record.taskBlockId = null;
                             record.taskBlockName = null;
                             record.databaseBlockId = null;
-                            record.routineButtonColor = null;
+                            applyRoutineButtonMetaToRecord(record, null);
                         } else {
                             const selIdx = Number(value);
                             const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
                             if (btn) {
+                                const meta = getRoutineButtonRecordMeta(btn, selIdx);
                                 const timerType = String(btn?.timerType || 'stopwatch');
                                 const useBreak = btn?.useBreakMode === true;
                                 const nextMode = useBreak
                                     ? (timerType === 'pomodoro' ? 'break' : 'stopwatch-break')
                                     : (timerType === 'pomodoro' ? 'countdown' : 'stopwatch');
-                                record.taskBlockId = (typeof btn?.blockId === 'string' && btn.blockId.trim()) ? btn.blockId.trim() : null;
-                                record.taskBlockName = (typeof btn?.name === 'string' && btn.name.trim()) ? btn.name.trim() : null;
+                                record.taskBlockId = meta?.blockId || null;
+                                record.taskBlockName = meta?.name || null;
                                 record.databaseBlockId = null;
-                                record.routineButtonColor = (typeof btn?.color === 'string' && btn.color.trim()) ? btn.color.trim() : null;
+                                applyRoutineButtonMetaToRecord(record, meta);
                                 record.mode = nextMode;
                                 if (nextMode === 'countdown' || nextMode === 'break') {
                                     const base = Number.isFinite(Number(record.plannedDuration)) && Number(record.plannedDuration) > 0
@@ -19791,17 +19897,18 @@ function calculateWeeklyStats(dailyStatsArray) {
         const plannedText = record.mode === 'countdown' && record.plannedDuration && record.plannedDuration !== record.durationMin ?
             ` (预设${record.plannedDuration}分)` : '';
         
-        // 🔧 新增：任务块信息 - 添加点击跳转功能
-        const taskBlockText = record.taskBlockName
+        // 🔧 新增：任务块/日常按钮信息 - 添加点击跳转功能
+        const displayTaskName = getRecordDisplayTaskName(record);
+        const taskBlockText = displayTaskName
             ? (record.taskBlockId
                 ? `<span class="tomato-task-link" data-block-id="${record.taskBlockId}" style="
-                    font-size: 11px; margin-top: 2px; color: var(--b3-theme-primary); 
+                    font-size: 11px; margin-top: 2px; color: var(--b3-theme-primary);
                     cursor: pointer; display: inline-flex; align-items: center; gap: 3px;
-                ">📋 ${record.taskBlockName}</span>`
+                ">📋 ${displayTaskName}</span>`
                 : `<span style="
                     font-size: 11px; margin-top: 2px; color: var(--b3-theme-on-surface-light);
                     display: inline-flex; align-items: center; gap: 3px;
-                ">📋 ${record.taskBlockName}</span>`)
+                ">📋 ${displayTaskName}</span>`)
             : '';
         
         // 合并相同任务时间（只统计当天）
