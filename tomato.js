@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.9.7
+// @version      1.9.8
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -133,6 +133,8 @@
     const NEW_SYNC_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-sync.json`;
     const NEW_AUDIO_STORAGE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-audio/`;
     const REMINDER_DOCK_TYPE = '::tomato-reminder';
+    const DEFAULT_LUMINA_CONFIG_PATH = '/data/storage/petal/siyuan-lumina/shuoshuo-config';
+    const TOMATO_LUMINA_RECORD_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M232.49,55.51l-32-32a12,12,0,0,0-17,0l-96,96A12,12,0,0,0,84,128v32a12,12,0,0,0,12,12h32a12,12,0,0,0,8.49-3.51l96-96A12,12,0,0,0,232.49,55.51ZM192,49l15,15L196,75,181,60Zm-69,99H108V133l56-56,15,15Zm105-7.43V208a20,20,0,0,1-20,20H48a20,20,0,0,1-20-20V48A20,20,0,0,1,48,28h67.43a12,12,0,0,1,0,24H52V204H204V140.57a12,12,0,0,1,24,0Z"/></svg>';
 
     let HISTORY_FILE_PATH = NEW_HISTORY_FILE_PATH;
     let SETTINGS_FILE_PATH = NEW_SETTINGS_FILE_PATH;
@@ -1216,13 +1218,13 @@
         let filteredRecords = allRecords;
         try {
             if (!userSettings.showBreakRecords) {
-                filteredRecords = filteredRecords.filter(r => r.mode !== 'break' && r.mode !== 'stopwatch-break');
+                filteredRecords = filteredRecords.filter(r => hasLuminaHistoryRecords(r) || (r.mode !== 'break' && r.mode !== 'stopwatch-break'));
             }
             if (!userSettings.showIdleRecords) {
-                filteredRecords = filteredRecords.filter(r => r?.mode !== 'idle');
+                filteredRecords = filteredRecords.filter(r => hasLuminaHistoryRecords(r) || r?.mode !== 'idle');
             }
             if (userSettings.hideShortRecords) {
-                filteredRecords = filteredRecords.filter(r => r && typeof r.durationSec === 'number' && r.durationSec >= 60);
+                filteredRecords = filteredRecords.filter(r => hasLuminaHistoryRecords(r) || (r && typeof r.durationSec === 'number' && r.durationSec >= 60));
             }
         } catch (e) {}
 
@@ -2196,6 +2198,7 @@
             enableMobileSupport: DEFAULT_ENABLE_MOBILE_SUPPORT,
             showMobileBreadcrumbButton: true,
             enableDesktopMinimizedFloatWindow: true,
+            enableDesktopMinimizedFloatWindowPausedOrBreak: false,
             enableFocusMode: true,
             focusModeDimOpacity: 0.5,
             extendTomatoOnDistraction: true,
@@ -2284,7 +2287,13 @@
             expandedHeightPx: 27,
             hotAreaHeightPx: 15,
             collapsedOpacity: 0.7,
-            expandedOpacity: 1
+            expandedOpacity: 1,
+            luminaLink: {
+                enabled: false,
+                configPath: DEFAULT_LUMINA_CONFIG_PATH,
+                attachToHistory: true,
+                appendTimerStatus: true
+            }
         },
         // 日常事务按钮配置
         routineButtons: []
@@ -2319,6 +2328,7 @@
         userSettings.main.enableMobileSupport = userSettings.main.enableMobileSupport !== false;
         if (typeof userSettings.main.showMobileBreadcrumbButton !== 'boolean') userSettings.main.showMobileBreadcrumbButton = true;
         if (typeof userSettings.main.enableDesktopMinimizedFloatWindow !== 'boolean') userSettings.main.enableDesktopMinimizedFloatWindow = true;
+        if (typeof userSettings.main.enableDesktopMinimizedFloatWindowPausedOrBreak !== 'boolean') userSettings.main.enableDesktopMinimizedFloatWindowPausedOrBreak = false;
         if (typeof userSettings.main.enableFocusMode !== 'boolean') userSettings.main.enableFocusMode = true;
         {
             const v = Number(userSettings.main.focusModeDimOpacity);
@@ -2343,6 +2353,7 @@
         userSettings.sync.enabled = userSettings.sync.enabled !== false;
         if (typeof userSettings.sync.autoTriggerSiyuanSync !== 'boolean') userSettings.sync.autoTriggerSiyuanSync = true;
         if (typeof userSettings.sync.syncTaskAssociation !== 'boolean') userSettings.sync.syncTaskAssociation = true;
+        ensureTimelineLuminaLinkSettings();
         ensureTaskBlockTomatoTimeConfig();
     };
 
@@ -2393,6 +2404,9 @@
     };
     const isDesktopMinimizedFloatWindowEnabled = () => {
         try { return !isMobileDevice() && userSettings?.main?.enableDesktopMinimizedFloatWindow !== false; } catch (e) { return false; }
+    };
+    const isDesktopMinimizedFloatWindowPausedOrBreakEnabled = () => {
+        try { return userSettings?.main?.enableDesktopMinimizedFloatWindowPausedOrBreak === true; } catch (e) { return false; }
     };
     const isSyncEnabled = () => {
         try { return userSettings?.sync?.enabled !== false; } catch (e) { return DEFAULT_SYNC_ENABLED; }
@@ -2654,6 +2668,627 @@
     
     // 新增：数据库块相关状态
     let currentDatabaseBlockId = null;
+    let pendingTimelineLuminaRecords = [];
+
+    function ensureTimelineLuminaLinkSettings() {
+        if (!userSettings.timeline || typeof userSettings.timeline !== 'object') userSettings.timeline = {};
+        const cfg = (userSettings.timeline.luminaLink && typeof userSettings.timeline.luminaLink === 'object')
+            ? userSettings.timeline.luminaLink
+            : {};
+        userSettings.timeline.luminaLink = {
+            ...cfg,
+            enabled: cfg.enabled === true,
+            configPath: String(cfg.configPath || DEFAULT_LUMINA_CONFIG_PATH).trim() || DEFAULT_LUMINA_CONFIG_PATH,
+            attachToHistory: cfg.attachToHistory !== false,
+            appendTimerStatus: cfg.appendTimerStatus !== false
+        };
+        return userSettings.timeline.luminaLink;
+    }
+
+    function getTimelineLuminaLinkSettings() {
+        return ensureTimelineLuminaLinkSettings();
+    }
+
+    function isTimelineLuminaLinkEnabled() {
+        return getTimelineLuminaLinkSettings().enabled === true;
+    }
+
+    function hasLuminaHistoryRecords(record) {
+        return Array.isArray(record?.luminaRecords) && record.luminaRecords.length > 0;
+    }
+
+    function normalizeLuminaRecordEntry(entry) {
+        const createdAt = Number(entry?.createdAt || Date.now());
+        const date = String(entry?.date || formatLuminaDateTimeAttr(createdAt));
+        return {
+            content: String(entry?.content || '').trim(),
+            status: String(entry?.status || '').trim(),
+            blockId: String(entry?.blockId || '').trim(),
+            createdAt,
+            date
+        };
+    }
+
+    function appendLuminaRecordToHistoryRecord(record, entry) {
+        if (!record || !entry) return false;
+        const normalized = normalizeLuminaRecordEntry(entry);
+        if (!normalized.content) return false;
+        const list = Array.isArray(record.luminaRecords) ? record.luminaRecords.slice() : [];
+        const duplicate = list.some(item => String(item?.blockId || '') === normalized.blockId && normalized.blockId);
+        if (!duplicate) list.push(normalized);
+        record.luminaRecords = list;
+        return true;
+    }
+
+    function formatLuminaDateTimeAttr(timestamp = Date.now()) {
+        const date = new Date(timestamp);
+        const year = date.getFullYear();
+        const month = date.getMonth() + 1;
+        const day = date.getDate();
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}`;
+    }
+
+    function formatLuminaDateOnly(timestamp = Date.now()) {
+        return String(formatLuminaDateTimeAttr(timestamp).split(' ')[0] || '');
+    }
+
+    function formatLuminaDiaryTime(timestamp = Date.now()) {
+        const date = new Date(timestamp);
+        return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+    }
+
+    function getLuminaTimerModeLabel(modeValue = null) {
+        const mode = String(modeValue || timerMode || '').trim();
+        if (mode === 'break' || mode === 'stopwatch-break') return '休息计时';
+        if (mode === 'stopwatch') return '正计时';
+        if (mode === 'countdown') return '番茄计时';
+        return '';
+    }
+
+    function getLuminaTimerModeIcon(modeValue = null) {
+        const mode = String(modeValue || timerMode || '').trim();
+        if (mode === 'break' || mode === 'stopwatch-break') return '☕';
+        if (mode === 'stopwatch') return '⏱️';
+        if (mode === 'countdown') return '🍅';
+        return '';
+    }
+
+    function normalizeRoutineIconForLuminaStatus(iconValue) {
+        const raw = String(iconValue || '').trim();
+        if (!raw || raw.startsWith('img:') || raw.includes('<') || raw.includes('>')) return '';
+        if (/^([0-9a-f]{4,})(-[0-9a-f]{4,})*$/i.test(raw)) {
+            try {
+                const cps = raw.split('-')
+                    .filter(Boolean)
+                    .map(p => parseInt(p, 16))
+                    .filter(n => Number.isFinite(n) && n > 0);
+                if (cps.length) return String.fromCodePoint(...cps);
+            } catch (e) {}
+        }
+        try {
+            if (/\p{Extended_Pictographic}/u.test(raw)) return raw.split(/\s+/)[0] || '';
+        } catch (e) {
+            if (raw.length <= 4 && /[^\x00-\x7F]/.test(raw)) return raw;
+        }
+        return '';
+    }
+
+    function getActiveRoutineIconForLuminaStatus(taskBlockId = '') {
+        const idx = String(activeRoutineButtonIndex ?? '').trim();
+        if (!idx) return '';
+        const config = userSettings?.routineButtons?.[idx];
+        if (!config) return '';
+        const activeId = String(activeRoutineButtonBlockId || '').trim();
+        const configId = String(config?.blockId || '').trim();
+        const taskId = String(taskBlockId || '').trim();
+        if (taskId && configId && configId !== taskId && activeId !== taskId) return '';
+        return normalizeRoutineIconForLuminaStatus(config.icon);
+    }
+
+    function getActiveRoutineNameForLuminaTag(taskBlockId = '') {
+        const activity = getEffectiveTimerActivity();
+        if (!activity.running && !activity.paused) return '';
+        const idx = String(activeRoutineButtonIndex ?? '').trim();
+        if (!idx) return '';
+        const config = userSettings?.routineButtons?.[idx];
+        if (!config) return '';
+        const activeId = String(activeRoutineButtonBlockId || '').trim();
+        const configId = String(config?.blockId || '').trim();
+        const taskId = String(taskBlockId || '').trim();
+        if (taskId && configId && configId !== taskId && activeId !== taskId) return '';
+        return __sanitizeTaskAssociationName(config.name) || String(config.name || '').trim();
+    }
+
+    function getTimerModeLuminaFallbackTag(modeValue = null) {
+        const activity = getEffectiveTimerActivity();
+        if (!activity.running && !activity.paused) return '';
+        const mode = String(modeValue || syncState?.mode || timerMode || '').trim();
+        if (mode === 'countdown') return '番茄';
+        if (mode === 'stopwatch') return '正计时';
+        if (mode === 'break' || mode === 'stopwatch-break') return '休息';
+        return '';
+    }
+
+    async function buildLuminaTimerStatusTail() {
+        const cfg = getTimelineLuminaLinkSettings();
+        if (cfg.appendTimerStatus === false) return '';
+        const activity = getEffectiveTimerActivity();
+        if (!activity.running && !activity.paused) return '';
+        const mode = String(syncState?.mode || timerMode || '').trim();
+        const label = getLuminaTimerModeLabel(mode);
+        if (!label) return '';
+        const statusIcon = getLuminaTimerModeIcon(mode);
+        const statusLabel = statusIcon ? `${statusIcon} ${label}` : label;
+        const taskBlockId = String(syncState?.taskBlockId || currentTaskBlockId || '').trim();
+        const rawTaskName = syncState?.taskBlockName || currentTaskBlockName || '';
+        let taskName = __sanitizeTaskAssociationName(rawTaskName);
+        if (taskBlockId && __isGenericTaskAssociationName(taskName)) {
+            try { taskName = await __resolveTaskAssociationName(taskBlockId, taskName); } catch (e) {}
+        }
+        taskName = __sanitizeTaskAssociationName(taskName);
+        const routineIcon = getActiveRoutineIconForLuminaStatus(taskBlockId);
+        const taskLabel = routineIcon && taskName ? `${routineIcon} ${taskName}` : taskName;
+        return taskLabel ? `${statusLabel} · ${taskLabel}` : statusLabel;
+    }
+
+    function getLuminaActiveTimerSnapshot(timestamp = Date.now()) {
+        const activity = getEffectiveTimerActivity();
+        if (!activity.running && !activity.paused) return null;
+        const mode = String(syncState?.mode || timerMode || '').trim();
+        let timerStartMs = 0;
+        if (mode === 'stopwatch' || mode === 'stopwatch-break') {
+            timerStartMs = Number(stopwatchSegmentStartTimeMs || stopwatchStartTimeMs || syncState?.stopwatchStartTimeMs || syncState?.startTime || startTime || 0);
+        } else {
+            timerStartMs = Number(currentStartTimeMs || syncState?.startTime || startTime || 0);
+        }
+        if (!Number.isFinite(timerStartMs) || timerStartMs <= 0) timerStartMs = 0;
+        return {
+            mode,
+            timerStartMs,
+            createdAt: Number(timestamp) || Date.now(),
+            sessionId: currentSessionId || pendingBreakSessionId || ''
+        };
+    }
+
+    function consumePendingLuminaRecordsForRecord(recordData, timerStartMs = 0, timerEndMs = Date.now()) {
+        const list = Array.isArray(pendingTimelineLuminaRecords) ? pendingTimelineLuminaRecords : [];
+        if (!list.length || !recordData) return [];
+        const recordMode = String(recordData.mode || '').trim();
+        const startMs = Number(timerStartMs || toDateSafe(recordData.start).getTime() || 0);
+        const endMs = Number(timerEndMs || toDateSafe(recordData.end || recordData.start).getTime() || Date.now());
+        const matched = [];
+        const rest = [];
+        list.forEach(entry => {
+            const entryStart = Number(entry?.timerStartMs || 0);
+            const entryCreated = Number(entry?.createdAt || 0);
+            const sameStart = entryStart > 0 && startMs > 0 && Math.abs(entryStart - startMs) < 1500;
+            const withinRecord = entryCreated >= startMs - 1500 && entryCreated <= endMs + 1500;
+            const sameMode = !entry?.timerMode || !recordMode || String(entry.timerMode) === recordMode;
+            if ((sameStart || withinRecord) && sameMode) matched.push(normalizeLuminaRecordEntry(entry));
+            else rest.push(entry);
+        });
+        pendingTimelineLuminaRecords = rest;
+        return matched;
+    }
+
+    function extractBlockIdFromBlockOpResult(data, preferLast = false) {
+        const roots = Array.isArray(data) ? data : (data ? [data] : []);
+        const ids = [];
+        roots.forEach(item => {
+            if (!item) return;
+            if (typeof item === 'string') {
+                ids.push(item);
+                return;
+            }
+            if (typeof item.id === 'string') ids.push(item.id);
+            if (typeof item.blockId === 'string') ids.push(item.blockId);
+            const ops = Array.isArray(item.doOperations) ? item.doOperations : [];
+            ops.forEach(op => {
+                if (typeof op?.id === 'string') ids.push(op.id);
+                if (typeof op?.blockId === 'string') ids.push(op.blockId);
+            });
+        });
+        return preferLast ? (ids[ids.length - 1] || null) : (ids[0] || null);
+    }
+
+    async function readTimelineLuminaConfig() {
+        const cfg = getTimelineLuminaLinkSettings();
+        const path = String(cfg.configPath || DEFAULT_LUMINA_CONFIG_PATH).trim() || DEFAULT_LUMINA_CONFIG_PATH;
+        try { if (__tomatoFileTextCache instanceof Map) __tomatoFileTextCache.delete(path); } catch (e) {}
+        const file = await __tomatoGetFileText(path);
+        if (!file?.exists) throw new Error('未读取到轻语配置');
+        const raw = safeJsonParse(file.text);
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('轻语配置格式无效');
+        const syncMode = raw.syncMode === 'doc' ? 'doc' : 'dailynote';
+        const notebookId = String(raw.notebookId || raw.syncNotebookId || '').trim();
+        const syncDocId = String(raw.syncDocId || '').trim();
+        return {
+            raw,
+            path,
+            syncMode,
+            notebookId,
+            syncDocId,
+            dailyNotePathTemplate: String(raw.dailyNotePathTemplate || '').trim(),
+            dailyNoteIconType: String(raw.dailyNoteIconType || '').trim(),
+            dailyNoteIconColorWeekday: String(raw.dailyNoteIconColorWeekday || '').trim(),
+            dailyNoteIconColorWeekend: String(raw.dailyNoteIconColorWeekend || '').trim()
+        };
+    }
+
+    async function getLuminaDailyNoteTemplate(config) {
+        let template = String(config?.dailyNotePathTemplate || '').trim();
+        if (template) return template;
+        const notebookId = String(config?.notebookId || '').trim();
+        if (notebookId) {
+            try {
+                const res = await postJSON('/api/notebook/getNotebookConf', { notebook: notebookId });
+                if (res?.data?.code === 0) {
+                    template = String(res.data?.data?.conf?.dailyNoteSavePath || '').trim();
+                }
+            } catch (e) {}
+        }
+        return template || '/daily note/{{now | date "2006/01"}}/{{now | date "2006-01-02"}}';
+    }
+
+    function getLuminaISOWeekInfo(date) {
+        const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+        const day = d.getUTCDay() || 7;
+        d.setUTCDate(d.getUTCDate() + 4 - day);
+        const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+        const week = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+        return { year: d.getUTCFullYear(), week };
+    }
+
+    function formatLuminaGoDate(fmt, date) {
+        const year = date.getFullYear();
+        const month = date.getMonth() + 1;
+        const day = date.getDate();
+        const hour = date.getHours();
+        const minute = date.getMinutes();
+        const second = date.getSeconds();
+        const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const weekdaysShort = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+        const monthsShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        let result = '';
+        let i = 0;
+        while (i < fmt.length) {
+            if (fmt.startsWith('2006', i)) { result += String(year); i += 4; }
+            else if (fmt.startsWith('January', i)) { result += months[month - 1]; i += 7; }
+            else if (fmt.startsWith('Jan', i)) { result += monthsShort[month - 1]; i += 3; }
+            else if (fmt.startsWith('Monday', i)) { result += weekdays[date.getDay()]; i += 6; }
+            else if (fmt.startsWith('Mon', i)) { result += weekdaysShort[date.getDay()]; i += 3; }
+            else if (fmt.startsWith('15', i)) { result += String(hour).padStart(2, '0'); i += 2; }
+            else if (fmt.startsWith('04', i)) { result += String(minute).padStart(2, '0'); i += 2; }
+            else if (fmt.startsWith('05', i)) { result += String(second).padStart(2, '0'); i += 2; }
+            else if (fmt.startsWith('03', i)) { result += String(hour % 12 || 12).padStart(2, '0'); i += 2; }
+            else if (fmt.startsWith('02', i)) { result += String(day).padStart(2, '0'); i += 2; }
+            else if (fmt.startsWith('01', i)) { result += String(month).padStart(2, '0'); i += 2; }
+            else if (fmt.startsWith('PM', i) || fmt.startsWith('pm', i)) {
+                result += hour >= 12 ? (fmt[i] === 'P' ? 'PM' : 'pm') : (fmt[i] === 'P' ? 'AM' : 'am');
+                i += 2;
+            } else {
+                result += fmt[i];
+                i += 1;
+            }
+        }
+        return result;
+    }
+
+    function runLuminaDateFunc(name, date) {
+        const weekdaysCN = ['日', '一', '二', '三', '四', '五', '六'];
+        const weekdaysCNFull = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+        const weekdaysEN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const seasonMap = ['冬', '冬', '春', '春', '春', '夏', '夏', '夏', '秋', '秋', '秋', '冬'];
+        const seasonMapEN = ['Winter', 'Winter', 'Spring', 'Spring', 'Spring', 'Summer', 'Summer', 'Summer', 'Autumn', 'Autumn', 'Autumn', 'Winter'];
+        const iso = getLuminaISOWeekInfo(date);
+        if (name === 'ISOWeek') return String(iso.week);
+        if (name === 'ISOYear') return String(iso.year);
+        if (name === 'Weekday') return String(date.getDay());
+        if (name === 'WeekdayCN') return weekdaysCN[date.getDay()];
+        if (name === 'WeekdayCN2') return '周' + weekdaysCN[date.getDay()];
+        if (name === 'WeekdayCNFull') return weekdaysCNFull[date.getDay()];
+        if (name === 'WeekdayEN') return weekdaysEN[date.getDay()];
+        if (name === 'Season') return seasonMap[date.getMonth()];
+        if (name === 'SeasonEN') return seasonMapEN[date.getMonth()];
+        if (name === 'ISOMonth') return String(date.getMonth() + 1).padStart(2, '0');
+        if (name === 'ISOWeekDate') return `${iso.year}-W${String(iso.week).padStart(2, '0')}-${date.getDay() || 7}`;
+        if (name === 'WeekOfYear') {
+            const d = new Date(date);
+            const currentWeekday = (d.getDay() + 6) % 7;
+            const mondayOfThisWeek = new Date(d);
+            mondayOfThisWeek.setDate(d.getDate() - currentWeekday);
+            const firstDayOfYear = new Date(mondayOfThisWeek.getFullYear(), 0, 1);
+            const daysFromYearStart = Math.floor((mondayOfThisWeek - firstDayOfYear) / (24 * 60 * 60 * 1000));
+            return String(Math.floor((daysFromYearStart + 7) / 7));
+        }
+        return `{{now | ${name}}}`;
+    }
+
+    function renderLuminaDailyNotePath(template, date) {
+        let result = String(template || '').trim();
+        if (!result) return '';
+        result = result.replace(/\{\{\s*now\s*\|\s*date\s*"([^"]+)"\s*\}\}/g, (_, fmt) => formatLuminaGoDate(fmt, date));
+        result = result.replace(/\{\{\s*now\s*\|\s*(\w+)\s*\}\}/g, (_, name) => runLuminaDateFunc(name, date));
+        const year = date.getFullYear();
+        const month = date.getMonth() + 1;
+        const day = date.getDate();
+        const hour = date.getHours();
+        const minute = date.getMinutes();
+        const second = date.getSeconds();
+        const weekday = date.getDay();
+        const weekdaysCN = ['日', '一', '二', '三', '四', '五', '六'];
+        const weekdaysCNFull = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+        const weekdaysEN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const seasonMap = ['冬', '冬', '春', '春', '春', '夏', '夏', '夏', '秋', '秋', '秋', '冬'];
+        const seasonMapEN = ['Winter', 'Winter', 'Spring', 'Spring', 'Spring', 'Summer', 'Summer', 'Summer', 'Autumn', 'Autumn', 'Autumn', 'Winter'];
+        const iso = getLuminaISOWeekInfo(date);
+        const weekOfYear = runLuminaDateFunc('WeekOfYear', date);
+        const placeholders = {
+            '{YYYY}': String(year),
+            '{YY}': String(year).slice(-2),
+            '{MM}': String(month).padStart(2, '0'),
+            '{M}': String(month),
+            '{DD}': String(day).padStart(2, '0'),
+            '{D}': String(day),
+            '{hh}': String(hour).padStart(2, '0'),
+            '{h}': String(hour),
+            '{mm}': String(minute).padStart(2, '0'),
+            '{m}': String(minute),
+            '{ss}': String(second).padStart(2, '0'),
+            '{s}': String(second),
+            '{Weekday}': String(weekday),
+            '{WeekdayCN}': weekdaysCN[weekday],
+            '{WeekdayCNFull}': weekdaysCNFull[weekday],
+            '{WeekdayCN2}': '周' + weekdaysCN[weekday],
+            '{WeekdayEN}': weekdaysEN[weekday],
+            '{Season}': seasonMap[month - 1],
+            '{SeasonEN}': seasonMapEN[month - 1],
+            '{WeekOfYear}': String(weekOfYear),
+            '{ISOWeek}': String(iso.week),
+            '{ISOYear}': String(iso.year)
+        };
+        Object.keys(placeholders).sort((a, b) => b.length - a.length).forEach(key => {
+            result = result.split(key).join(placeholders[key]);
+        });
+        return result.trim();
+    }
+
+    async function getOrCreateTimelineLuminaDailyNoteDoc(config, date) {
+        const notebookId = String(config?.notebookId || '').trim();
+        if (!notebookId) throw new Error('轻语未配置日记笔记本');
+        const template = await getLuminaDailyNoteTemplate(config);
+        const hPath = renderLuminaDailyNotePath(template, date);
+        if (!hPath) throw new Error('轻语日记路径模板无效');
+        const idsRes = await postJSON('/api/filetree/getIDsByHPath', { notebook: notebookId, path: hPath });
+        const ids = Array.isArray(idsRes?.data?.data) ? idsRes.data.data : [];
+        if (ids.length > 0) return { docId: ids[0], hPath, isNew: false };
+        const createRes = await postJSON('/api/filetree/createDocWithMd', { notebook: notebookId, path: hPath, markdown: '' });
+        if (createRes?.data?.code !== 0 || !createRes.data?.data) throw new Error(createRes?.data?.msg || '创建轻语日记失败');
+        const docId = typeof createRes.data.data === 'string' ? createRes.data.data : (createRes.data.data.id || createRes.data.data.blockId);
+        if (!docId) throw new Error('创建轻语日记后未返回文档 ID');
+        await applyLuminaDailyNoteIcon(config, docId, date);
+        return { docId, hPath, isNew: true };
+    }
+
+    async function applyLuminaDailyNoteIcon(config, docId, date) {
+        const iconType = String(config?.dailyNoteIconType || '').trim();
+        if (!iconType || !docId) return;
+        try {
+            const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+            const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+            const rawColor = isWeekend ? config.dailyNoteIconColorWeekend : config.dailyNoteIconColorWeekday;
+            const color = String(rawColor || '').trim();
+            const colorParam = color ? `&color=${encodeURIComponent(color.startsWith('#') ? color : '#' + color)}` : '';
+            const iconUrl = `api/icon/getDynamicIcon?type=${iconType}&date=${dateStr}${colorParam}`;
+            await postJSON('/api/attr/setBlockAttrs', { id: docId, attrs: { icon: iconUrl } });
+        } catch (e) {}
+    }
+
+    async function appendTimelineLuminaMarkdownToDoc(parentID, markdown) {
+        const res = await postJSON('/api/block/appendBlock', {
+            parentID,
+            dataType: 'markdown',
+            data: markdown
+        });
+        if (res?.data?.code !== 0) throw new Error(res?.data?.msg || '写入轻语记录失败');
+        return extractBlockIdFromBlockOpResult(res.data?.data, false);
+    }
+
+    function escapeSqlString(value) {
+        return String(value || '').replace(/'/g, "''");
+    }
+
+    async function appendTimelineLuminaToDocWithDateGroup(docId, markdown, timestamp) {
+        const rootId = String(docId || '').trim();
+        if (!rootId) throw new Error('轻语未配置指定文档');
+        const dateStr = formatLuminaDateOnly(timestamp);
+        const safeDocId = escapeSqlString(rootId);
+        const safeDateStr = escapeSqlString(dateStr);
+        const h2Res = await postJSON('/api/query/sql', {
+            stmt: `SELECT id, created FROM blocks WHERE root_id = '${safeDocId}' AND type = 'h' AND subtype = 'h2' AND (content = '${safeDateStr}' OR content LIKE '${safeDateStr} %') ORDER BY created LIMIT 1`
+        });
+        const h2Rows = Array.isArray(h2Res?.data?.data) ? h2Res.data.data : [];
+        let previousId = null;
+        if (h2Rows.length > 0) {
+            const h2Id = h2Rows[0].id;
+            const h2Created = h2Rows[0].created;
+            const safeCreated = escapeSqlString(h2Created);
+            const nextH2Res = await postJSON('/api/query/sql', {
+                stmt: `SELECT created FROM blocks WHERE root_id = '${safeDocId}' AND type = 'h' AND subtype = 'h2' AND created > '${safeCreated}' ORDER BY created LIMIT 1`
+            });
+            const nextH2Rows = Array.isArray(nextH2Res?.data?.data) ? nextH2Res.data.data : [];
+            const nextH2Created = nextH2Rows[0]?.created ? escapeSqlString(nextH2Rows[0].created) : '';
+            let lastBlockQuery = `SELECT id, created FROM blocks WHERE root_id = '${safeDocId}' AND type NOT IN ('d', 'l', 'b', 's') AND parent_id = '${safeDocId}' AND created > '${safeCreated}'`;
+            if (nextH2Created) lastBlockQuery += ` AND created < '${nextH2Created}'`;
+            lastBlockQuery += ' ORDER BY created DESC LIMIT 1';
+            const lastBlockRes = await postJSON('/api/query/sql', { stmt: lastBlockQuery });
+            const lastRows = Array.isArray(lastBlockRes?.data?.data) ? lastBlockRes.data.data : [];
+            previousId = lastRows[0]?.id || h2Id;
+        } else {
+            const lastBlockRes = await postJSON('/api/query/sql', {
+                stmt: `SELECT id, created FROM blocks WHERE root_id = '${safeDocId}' AND type NOT IN ('d', 'l', 'b', 's') AND parent_id = '${safeDocId}' ORDER BY created DESC LIMIT 1`
+            });
+            const lastRows = Array.isArray(lastBlockRes?.data?.data) ? lastBlockRes.data.data : [];
+            const h2Data = `## ${dateStr}\n\n`;
+            if (lastRows[0]?.id) {
+                const insertH2Res = await postJSON('/api/block/insertBlock', {
+                    dataType: 'markdown',
+                    data: h2Data,
+                    previousID: lastRows[0].id
+                });
+                previousId = extractBlockIdFromBlockOpResult(insertH2Res?.data?.data, true);
+            } else {
+                previousId = await appendTimelineLuminaMarkdownToDoc(rootId, h2Data);
+            }
+        }
+        if (!previousId) return appendTimelineLuminaMarkdownToDoc(rootId, markdown);
+        const insertRes = await postJSON('/api/block/insertBlock', {
+            dataType: 'markdown',
+            data: markdown,
+            previousID: previousId
+        });
+        if (insertRes?.data?.code !== 0) throw new Error(insertRes?.data?.msg || '写入轻语记录失败');
+        return extractBlockIdFromBlockOpResult(insertRes.data?.data, true);
+    }
+
+    function buildTimelineLuminaDiaryMarkdown(content, timestamp) {
+        const dateText = formatLuminaDateOnly(timestamp);
+        const timeText = formatLuminaDiaryTime(timestamp);
+        const lines = String(content || '').replace(/\u200B|\u200C|\u200D|\uFEFF/g, '').trim().split(/\r?\n/);
+        const safeLines = lines.length ? lines : [''];
+        let markdown = `> [!NOTE] ✏️ ${dateText} ${timeText}`;
+        safeLines.forEach(line => {
+            markdown += `\n> ${line.trim()}`;
+        });
+        return `${markdown} `;
+    }
+
+    async function writeTimelineLuminaRecord(content, options = {}) {
+        const cfg = getTimelineLuminaLinkSettings();
+        if (cfg.enabled !== true) throw new Error('轻语联动未开启');
+        const timestamp = Number(options.timestamp || Date.now());
+        const status = String(options.status || '').trim();
+        const fullContent = String(content || '').trim();
+        if (!fullContent) throw new Error('记录内容为空');
+        const config = await readTimelineLuminaConfig();
+        if (config.syncMode === 'dailynote' && !config.notebookId) throw new Error('请先在轻语中配置日记笔记本');
+        if (config.syncMode === 'doc' && !config.syncDocId) throw new Error('请先在轻语中配置指定文档');
+        const markdown = buildTimelineLuminaDiaryMarkdown(fullContent, timestamp);
+        let blockId = null;
+        let targetText = '';
+        if (config.syncMode === 'doc') {
+            blockId = await appendTimelineLuminaToDocWithDateGroup(config.syncDocId, markdown, timestamp);
+            targetText = `指定文档 ${config.syncDocId}`;
+        } else {
+            const daily = await getOrCreateTimelineLuminaDailyNoteDoc(config, new Date(timestamp));
+            blockId = await appendTimelineLuminaMarkdownToDoc(daily.docId, markdown);
+            targetText = daily.hPath || daily.docId;
+        }
+        if (!blockId) throw new Error('写入成功但未获取到记录块 ID');
+        const attrs = {
+            'custom-lumina-content': fullContent,
+            'custom-lumina-date': formatLuminaDateTimeAttr(timestamp)
+        };
+        const routineTag = getActiveRoutineNameForLuminaTag(syncState?.taskBlockId || currentTaskBlockId || '');
+        const fallbackTag = routineTag ? '' : getTimerModeLuminaFallbackTag(syncState?.mode || timerMode || '');
+        const luminaTag = routineTag || fallbackTag;
+        if (luminaTag) attrs['custom-lumina-tag'] = luminaTag;
+        if (status) attrs['custom-tomato-status'] = status;
+        const attrRes = await postJSON('/api/attr/setBlockAttrs', { id: blockId, attrs });
+        if (attrRes?.data?.code !== 0) throw new Error(attrRes?.data?.msg || '轻语记录属性写入失败');
+        return {
+            blockId,
+            targetText,
+            content: fullContent,
+            status,
+            tag: luminaTag,
+            createdAt: timestamp,
+            date: attrs['custom-lumina-date']
+        };
+    }
+
+    function findHistoryRecordCoveringTimestamp(records, timestamp) {
+        const ts = Number(timestamp || 0);
+        if (!Number.isFinite(ts) || ts <= 0) return -1;
+        const list = Array.isArray(records) ? records : [];
+        return list.findIndex(record => {
+            if (!record || record.mode === 'lumina-note') return false;
+            const startMs = toDateSafe(record.start).getTime();
+            const endMs = toDateSafe(record.end || record.start).getTime();
+            if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return false;
+            return ts >= Math.min(startMs, endMs) && ts <= Math.max(startMs, endMs);
+        });
+    }
+
+    function createLuminaOnlyHistoryRecord(entry) {
+        const normalized = normalizeLuminaRecordEntry(entry);
+        const date = new Date(normalized.createdAt || Date.now());
+        const end = new Date(date.getTime() + 1000);
+        return {
+            start: date.toISOString(),
+            end: end.toISOString(),
+            durationMin: 0,
+            durationSec: 0,
+            mode: 'lumina-note',
+            timestamp: date.getTime(),
+            date: formatDateKey(date),
+            dateTime: date.toLocaleString('zh-CN'),
+            timePeriod: getTimePeriod(date.getHours()),
+            category: 'lumina-note',
+            luminaRecords: [normalized]
+        };
+    }
+
+    async function attachTimelineLuminaRecordToHistory(entry, activeSnapshot = null) {
+        const cfg = getTimelineLuminaLinkSettings();
+        if (cfg.attachToHistory === false) return;
+        const normalized = normalizeLuminaRecordEntry(entry);
+        if (!normalized.content) return;
+        try {
+            const records = await loadHistoryRecords({ all: true });
+            const coverIdx = findHistoryRecordCoveringTimestamp(records, normalized.createdAt);
+            if (coverIdx >= 0 && appendLuminaRecordToHistoryRecord(records[coverIdx], normalized)) {
+                await saveHistoryRecords(records);
+                markTimelineHistoryDirty();
+                await refreshHistoryDialogIfOpen();
+                return;
+            }
+            if (activeSnapshot && activeSnapshot.timerStartMs > 0) {
+                pendingTimelineLuminaRecords.push({
+                    ...normalized,
+                    timerStartMs: activeSnapshot.timerStartMs,
+                    timerMode: activeSnapshot.mode,
+                    sessionId: activeSnapshot.sessionId || ''
+                });
+                return;
+            }
+            records.push(createLuminaOnlyHistoryRecord(normalized));
+            await saveHistoryRecords(records);
+            markTimelineHistoryDirty();
+            await refreshHistoryDialogIfOpen();
+        } catch (e) {
+            Logger.warn('轻语记录写入番茄历史失败:', e);
+        }
+    }
+
+    async function describeTimelineLuminaTarget() {
+        try {
+            const config = await readTimelineLuminaConfig();
+            if (config.syncMode === 'doc') {
+                if (!config.syncDocId) return { ok: false, text: '轻语未配置指定文档，请先配置轻语日记' };
+                return { ok: true, text: `指定文档：${config.syncDocId}` };
+            }
+            if (!config.notebookId) return { ok: false, text: '轻语未配置日记笔记本，请先配置轻语日记' };
+            const template = await getLuminaDailyNoteTemplate(config);
+            const hPath = renderLuminaDailyNotePath(template, new Date());
+            return { ok: true, text: `每日日记：${config.notebookId}${hPath ? ` / ${hPath}` : ''}` };
+        } catch (e) {
+            return { ok: false, text: `${e?.message || '无法检测轻语配置'}，请先配置轻语日记` };
+        }
+    }
 
     function showMiniToast(text) {
         try {
@@ -4988,6 +5623,7 @@
             if (typeof userSettings.timeline.hotAreaHeightPx !== 'number') userSettings.timeline.hotAreaHeightPx = 15;
             if (typeof userSettings.timeline.collapsedOpacity !== 'number') userSettings.timeline.collapsedOpacity = 0.7;
             if (typeof userSettings.timeline.expandedOpacity !== 'number') userSettings.timeline.expandedOpacity = 1;
+            ensureTimelineLuminaLinkSettings();
         };
 
         const parseTimeToMinutes = (timeStr) => {
@@ -5043,6 +5679,29 @@
         header.appendChild(closeBtn);
         dialog.appendChild(header);
 
+        const tabs = document.createElement('div');
+        tabs.style.cssText = `
+            display: flex; gap: 6px; padding: 10px 12px 0;
+            border-bottom: 1px solid var(--b3-theme-surface-light);
+        `;
+        const createTabBtn = (labelText, pageName) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = labelText;
+            btn.dataset.page = pageName;
+            btn.style.cssText = `
+                flex: 1; padding: 8px 10px; border: none; border-radius: 6px 6px 0 0;
+                background: transparent; color: var(--b3-theme-on-background);
+                cursor: pointer; font-size: 13px;
+            `;
+            return btn;
+        };
+        const basicTabBtn = createTabBtn('基础设置', 'basic');
+        const luminaTabBtn = createTabBtn('轻语联动', 'lumina');
+        tabs.appendChild(basicTabBtn);
+        tabs.appendChild(luminaTabBtn);
+        dialog.appendChild(tabs);
+
         const content = document.createElement('div');
         content.style.cssText = `padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;`;
 
@@ -5067,6 +5726,113 @@
             r.appendChild(inputEl);
             return r;
         };
+
+        const luminaContent = document.createElement('div');
+        luminaContent.style.cssText = `padding: 16px; display: none; flex-direction: column; gap: 12px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;`;
+
+        const luminaCfg = getTimelineLuminaLinkSettings();
+        const luminaEnabledInput = document.createElement('input');
+        luminaEnabledInput.type = 'checkbox';
+        luminaEnabledInput.checked = luminaCfg.enabled === true;
+        luminaEnabledInput.style.cssText = `cursor: pointer; transform: scale(1.15);`;
+        luminaContent.appendChild(row('启用轻语联动', luminaEnabledInput));
+
+        const luminaConfigPathInput = document.createElement('input');
+        luminaConfigPathInput.type = 'text';
+        luminaConfigPathInput.value = luminaCfg.configPath || DEFAULT_LUMINA_CONFIG_PATH;
+        luminaConfigPathInput.placeholder = DEFAULT_LUMINA_CONFIG_PATH;
+        luminaConfigPathInput.style.cssText = `
+            width: 100%; box-sizing: border-box; padding: 7px 8px;
+            border: 1px solid var(--b3-theme-surface-light); border-radius: 4px;
+            background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+            font-size: 12px; font-family: monospace;
+        `;
+        luminaContent.appendChild(rowStack('轻语配置路径', luminaConfigPathInput));
+
+        const luminaAttachHistoryInput = document.createElement('input');
+        luminaAttachHistoryInput.type = 'checkbox';
+        luminaAttachHistoryInput.checked = luminaCfg.attachToHistory !== false;
+        luminaAttachHistoryInput.style.cssText = `cursor: pointer; transform: scale(1.15);`;
+        luminaContent.appendChild(row('写入番茄钟历史', luminaAttachHistoryInput));
+
+        const luminaAppendStatusInput = document.createElement('input');
+        luminaAppendStatusInput.type = 'checkbox';
+        luminaAppendStatusInput.checked = luminaCfg.appendTimerStatus !== false;
+        luminaAppendStatusInput.style.cssText = `cursor: pointer; transform: scale(1.15);`;
+        luminaContent.appendChild(row('追加计时状态尾巴', luminaAppendStatusInput));
+
+        const luminaTargetStatus = document.createElement('div');
+        luminaTargetStatus.style.cssText = `
+            padding: 10px; border-radius: 6px; border: 1px solid var(--b3-theme-surface-light);
+            background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+            font-size: 12px; line-height: 1.5; word-break: break-all;
+        `;
+        luminaTargetStatus.textContent = '正在检测轻语写入目标...';
+        luminaContent.appendChild(rowStack('当前写入目标', luminaTargetStatus));
+
+        const luminaSaveRow = document.createElement('div');
+        luminaSaveRow.style.cssText = `display: flex; gap: 8px;`;
+        const luminaRefreshBtn = document.createElement('button');
+        luminaRefreshBtn.type = 'button';
+        luminaRefreshBtn.textContent = '重新检测';
+        luminaRefreshBtn.style.cssText = `
+            flex: 1; padding: 9px 8px; border: 1px solid var(--b3-theme-surface-light);
+            border-radius: 4px; background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+            cursor: pointer;
+        `;
+        const luminaSaveBtn = document.createElement('button');
+        luminaSaveBtn.type = 'button';
+        luminaSaveBtn.textContent = '保存联动配置';
+        luminaSaveBtn.style.cssText = `
+            flex: 1.4; padding: 9px 8px; border: none; border-radius: 4px;
+            background: var(--b3-theme-primary); color: #fff; cursor: pointer;
+        `;
+        luminaSaveRow.appendChild(luminaRefreshBtn);
+        luminaSaveRow.appendChild(luminaSaveBtn);
+        luminaContent.appendChild(luminaSaveRow);
+
+        const syncLuminaInputsDisabled = () => {
+            const disabled = !luminaEnabledInput.checked;
+            [luminaAttachHistoryInput, luminaAppendStatusInput].forEach(el => {
+                el.disabled = disabled;
+                el.style.opacity = disabled ? '0.55' : '1';
+            });
+        };
+        const refreshLuminaTargetStatus = async () => {
+            luminaTargetStatus.textContent = '正在检测轻语写入目标...';
+            luminaTargetStatus.style.color = 'var(--b3-theme-on-surface)';
+            const cfg = getTimelineLuminaLinkSettings();
+            cfg.configPath = String(luminaConfigPathInput.value || DEFAULT_LUMINA_CONFIG_PATH).trim() || DEFAULT_LUMINA_CONFIG_PATH;
+            const result = await describeTimelineLuminaTarget();
+            luminaTargetStatus.textContent = result.text;
+            luminaTargetStatus.style.color = result.ok ? 'var(--b3-theme-on-surface)' : 'var(--b3-theme-error)';
+        };
+        const saveLuminaSettingsFromDialog = async () => {
+            const cfg = getTimelineLuminaLinkSettings();
+            cfg.enabled = luminaEnabledInput.checked === true;
+            cfg.configPath = String(luminaConfigPathInput.value || DEFAULT_LUMINA_CONFIG_PATH).trim() || DEFAULT_LUMINA_CONFIG_PATH;
+            cfg.attachToHistory = luminaAttachHistoryInput.checked !== false;
+            cfg.appendTimerStatus = luminaAppendStatusInput.checked !== false;
+            luminaConfigPathInput.value = cfg.configPath;
+            syncLuminaInputsDisabled();
+            await saveUserSettings();
+            try {
+                const toolbar = document.getElementById('tomato-routine-toolbar');
+                if (toolbar) renderRoutineButtons(toolbar);
+            } catch (e) {}
+            try { if (userSettings.timeline?.enabled) updateTimelineBar(true); } catch (e) {}
+            await refreshLuminaTargetStatus();
+        };
+        luminaEnabledInput.onchange = saveLuminaSettingsFromDialog;
+        luminaAttachHistoryInput.onchange = saveLuminaSettingsFromDialog;
+        luminaAppendStatusInput.onchange = saveLuminaSettingsFromDialog;
+        luminaConfigPathInput.onchange = saveLuminaSettingsFromDialog;
+        luminaRefreshBtn.onclick = refreshLuminaTargetStatus;
+        luminaSaveBtn.onclick = async () => {
+            await saveLuminaSettingsFromDialog();
+            showToast('轻语联动配置已保存', 1500);
+        };
+        syncLuminaInputsDisabled();
 
         const enabledInput = document.createElement('input');
         enabledInput.type = 'checkbox';
@@ -5573,9 +6339,197 @@
         };
         content.appendChild(saveBtn);
 
+        const setActiveTimelineSettingsPage = (pageName) => {
+            const isLuminaPage = pageName === 'lumina';
+            content.style.display = isLuminaPage ? 'none' : 'flex';
+            luminaContent.style.display = isLuminaPage ? 'flex' : 'none';
+            [basicTabBtn, luminaTabBtn].forEach(btn => {
+                const active = btn.dataset.page === pageName;
+                btn.style.background = active ? 'var(--b3-theme-surface)' : 'transparent';
+                btn.style.color = active ? 'var(--b3-theme-primary)' : 'var(--b3-theme-on-background)';
+                btn.style.fontWeight = active ? '600' : '400';
+            });
+            if (isLuminaPage) refreshLuminaTargetStatus();
+        };
+        basicTabBtn.onclick = () => setActiveTimelineSettingsPage('basic');
+        luminaTabBtn.onclick = () => setActiveTimelineSettingsPage('lumina');
+
         dialog.appendChild(content);
+        dialog.appendChild(luminaContent);
         backdrop.appendChild(dialog);
         document.body.appendChild(backdrop);
+        setActiveTimelineSettingsPage('basic');
+    }
+
+    function showTomatoLuminaRecordDialog() {
+        removeById('tomato-lumina-record-dialog', 'tomato-lumina-record-backdrop');
+        if (!isTimelineLuminaLinkEnabled()) {
+            showToast('请先在时间轴设置中开启轻语联动', 1800);
+            return;
+        }
+
+        const backdrop = document.createElement('div');
+        backdrop.id = 'tomato-lumina-record-backdrop';
+        backdrop.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.42); z-index: 2147483651;
+        `;
+
+        const dialog = document.createElement('div');
+        dialog.id = 'tomato-lumina-record-dialog';
+        dialog.style.cssText = `
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 420px; max-width: calc(100vw - 24px);
+            background: var(--b3-theme-background); color: var(--b3-theme-on-background);
+            border: 1px solid var(--b3-theme-surface-light); border-radius: 8px;
+            box-shadow: 0 10px 28px rgba(0,0,0,0.28); z-index: 2147483652;
+            display: flex; flex-direction: column; overflow: hidden;
+        `;
+
+        const header = document.createElement('div');
+        header.style.cssText = `
+            padding: 14px 16px; border-bottom: 1px solid var(--b3-theme-surface-light);
+            display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        `;
+        const title = document.createElement('div');
+        title.textContent = '记录到轻语';
+        title.style.cssText = 'font-size: 16px; font-weight: 600;';
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.textContent = '×';
+        closeBtn.style.cssText = `
+            border: none; background: transparent; color: var(--b3-theme-on-background);
+            cursor: pointer; font-size: 20px; line-height: 1; padding: 2px 4px;
+        `;
+        const close = () => {
+            dialog.remove();
+            backdrop.remove();
+        };
+        closeBtn.onclick = close;
+        header.appendChild(title);
+        header.appendChild(closeBtn);
+
+        const body = document.createElement('div');
+        body.style.cssText = `padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;`;
+
+        const textarea = document.createElement('textarea');
+        textarea.rows = 6;
+        textarea.placeholder = '写下这一刻...';
+        const isMobileInput = isMobileDevice();
+        if (!isMobileInput) {
+            textarea.enterKeyHint = 'done';
+            textarea.setAttribute('enterkeyhint', 'done');
+        }
+        textarea.style.cssText = `
+            width: 100%; box-sizing: border-box; resize: vertical; min-height: 120px;
+            border: 1px solid var(--b3-theme-surface-light); border-radius: 6px;
+            background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+            padding: 10px; font-size: 14px; line-height: 1.5; outline: none;
+        `;
+        body.appendChild(textarea);
+
+        const statusPreview = document.createElement('div');
+        statusPreview.style.cssText = `
+            padding: 9px 10px; border-radius: 6px; background: var(--b3-theme-surface);
+            border: 1px solid var(--b3-theme-surface-light); color: var(--b3-theme-on-surface);
+            font-size: 12px; line-height: 1.5; min-height: 18px;
+        `;
+        statusPreview.textContent = '正在读取计时状态...';
+        body.appendChild(statusPreview);
+
+        const actions = document.createElement('div');
+        actions.style.cssText = `
+            display: flex; justify-content: flex-end; gap: 8px;
+            padding: 12px 16px; border-top: 1px solid var(--b3-theme-surface-light);
+            background: var(--b3-theme-background);
+        `;
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.textContent = '取消';
+        cancelBtn.style.cssText = `
+            padding: 8px 14px; border: 1px solid var(--b3-theme-surface-light);
+            border-radius: 4px; background: var(--b3-theme-surface);
+            color: var(--b3-theme-on-surface); cursor: pointer;
+        `;
+        cancelBtn.onclick = close;
+        const saveBtn = document.createElement('button');
+        saveBtn.type = 'button';
+        saveBtn.textContent = '保存';
+        saveBtn.style.cssText = `
+            padding: 8px 16px; border: none; border-radius: 4px;
+            background: var(--b3-theme-primary); color: #fff; cursor: pointer;
+        `;
+        actions.appendChild(cancelBtn);
+        actions.appendChild(saveBtn);
+
+        dialog.appendChild(header);
+        dialog.appendChild(body);
+        dialog.appendChild(actions);
+        backdrop.appendChild(dialog);
+        document.body.appendChild(backdrop);
+
+        const refreshStatusPreview = async () => {
+            try {
+                const status = await buildLuminaTimerStatusTail();
+                statusPreview.textContent = status || '当前无运行或暂停计时';
+                statusPreview.style.opacity = status ? '1' : '0.72';
+            } catch (e) {
+                statusPreview.textContent = '当前无运行或暂停计时';
+                statusPreview.style.opacity = '0.72';
+            }
+        };
+        refreshStatusPreview();
+        setTimeout(() => { try { textarea.focus(); } catch (e) {} }, 30);
+
+        textarea.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            if (e.isComposing || e.keyCode === 229) return;
+            if (isMobileInput) return;
+            if (e.altKey) {
+                e.preventDefault();
+                const start = textarea.selectionStart ?? textarea.value.length;
+                const end = textarea.selectionEnd ?? start;
+                try {
+                    textarea.setRangeText('\n', start, end, 'end');
+                } catch (err) {
+                    textarea.value = `${textarea.value.slice(0, start)}\n${textarea.value.slice(end)}`;
+                    textarea.selectionStart = textarea.selectionEnd = start + 1;
+                }
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                return;
+            }
+            e.preventDefault();
+            if (!saveBtn.disabled) saveBtn.click();
+        });
+
+        saveBtn.onclick = async () => {
+            const rawContent = String(textarea.value || '').trim();
+            if (!rawContent) {
+                showToast('请输入记录内容', 1600);
+                return;
+            }
+            const timestamp = Date.now();
+            const activeSnapshot = getLuminaActiveTimerSnapshot(timestamp);
+            let status = '';
+            try { status = await buildLuminaTimerStatusTail(); } catch (e) { status = ''; }
+            const fullContent = status ? `${rawContent}\n${status}` : rawContent;
+            saveBtn.disabled = true;
+            cancelBtn.disabled = true;
+            saveBtn.textContent = '保存中...';
+            try {
+                const result = await writeTimelineLuminaRecord(fullContent, { timestamp, status });
+                await attachTimelineLuminaRecordToHistory({ ...result, content: rawContent }, activeSnapshot);
+                showToast('已记录到轻语', 1800);
+                close();
+            } catch (e) {
+                Logger.warn('轻语记录保存失败:', e);
+                showToast(e?.message || '轻语记录保存失败', 2400);
+            } finally {
+                saveBtn.disabled = false;
+                cancelBtn.disabled = false;
+                saveBtn.textContent = '保存';
+            }
+        };
     }
 
     function getRuntimeBackendType() {
@@ -6728,6 +7682,7 @@
         if (typeof userSettings.timeline.hotAreaHeightPx !== 'number') userSettings.timeline.hotAreaHeightPx = 15;
         if (typeof userSettings.timeline.collapsedOpacity !== 'number') userSettings.timeline.collapsedOpacity = 0.7;
         if (typeof userSettings.timeline.expandedOpacity !== 'number') userSettings.timeline.expandedOpacity = 1;
+        ensureTimelineLuminaLinkSettings();
     }
 
     function getTimelineHighlightPalette() {
@@ -7027,12 +7982,61 @@
         }
     }
 
+    function createTimelineLuminaRecordButton() {
+        const btn = document.createElement('div');
+        btn.className = 'tomato-lumina-record-btn';
+        btn.title = '记录到轻语';
+        btn.innerHTML = `${TOMATO_LUMINA_RECORD_ICON_SVG}<span class="tomato-lumina-record-text">记录</span>`;
+        btn.style.cssText = `
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            min-width: 24px;
+            height: 24px;
+            padding: 0 7px;
+            margin-top: -3px;
+            background: var(--b3-theme-background-light, #f5f5f5);
+            border: 1px solid var(--b3-theme-border, #d9d9d9);
+            border-radius: 4px;
+            cursor: pointer;
+            color: var(--b3-theme-primary, #1E88E5);
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 1;
+            transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+            pointer-events: inherit;
+            user-select: none;
+            -webkit-user-select: none;
+            box-sizing: border-box;
+        `;
+        const svg = btn.querySelector('svg');
+        if (svg) {
+            svg.style.width = '15px';
+            svg.style.height = '15px';
+            svg.style.display = 'block';
+            svg.style.flexShrink = '0';
+        }
+        btn.onmouseenter = () => {
+            btn.style.background = 'var(--b3-theme-surface-light, rgba(0,0,0,0.06))';
+            btn.style.borderColor = 'var(--b3-theme-primary, #1E88E5)';
+        };
+        btn.onmouseleave = () => {
+            btn.style.background = 'var(--b3-theme-background-light, #f5f5f5)';
+            btn.style.borderColor = 'var(--b3-theme-border, #d9d9d9)';
+        };
+        return btn;
+    }
+
     // 渲染日常事务按钮
     function renderRoutineButtons(toolbar) {
         if (!toolbar) return;
 
         const addBtn = toolbar.querySelector('.tomato-routine-add-btn');
         if (addBtn) addBtn.remove();
+        let luminaRecordBtn = toolbar.querySelector('.tomato-lumina-record-btn');
+        if (luminaRecordBtn) luminaRecordBtn.remove();
+        else luminaRecordBtn = createTimelineLuminaRecordButton();
 
         toolbar.querySelectorAll('.tomato-routine-btn, .tomato-routine-group, .tomato-routine-divider').forEach(el => el.remove());
 
@@ -7061,12 +8065,16 @@
             toolbar.style.overscrollBehaviorX = 'auto';
         }
 
-        if (addBtn && groupLayout === 'rows') {
+        const showLuminaRecordBtn = isTimelineLuminaLinkEnabled();
+        if (luminaRecordBtn) luminaRecordBtn.style.display = showLuminaRecordBtn ? 'inline-flex' : 'none';
+
+        if ((addBtn || (luminaRecordBtn && showLuminaRecordBtn)) && groupLayout === 'rows') {
             const addRow = document.createElement('div');
             addRow.className = 'tomato-routine-group';
             addRow.dataset.groupId = '';
             addRow.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:3px;padding:0;width:100%;';
-            addRow.appendChild(addBtn);
+            if (addBtn) addRow.appendChild(addBtn);
+            if (luminaRecordBtn && showLuminaRecordBtn) addRow.appendChild(luminaRecordBtn);
             toolbar.appendChild(addRow);
         }
 
@@ -7257,7 +8265,10 @@
             }
         });
 
-        if (addBtn && groupLayout !== 'rows') toolbar.appendChild(addBtn);
+        if (groupLayout !== 'rows') {
+            if (addBtn) toolbar.appendChild(addBtn);
+            if (luminaRecordBtn && showLuminaRecordBtn) toolbar.appendChild(luminaRecordBtn);
+        }
         updateRoutineButtonRunningHighlight(true);
     }
 
@@ -8960,6 +9971,16 @@
             // 使用 elementsFromPoint 检测点击位置
             const elementsAtPoint = document.elementsFromPoint(clickX, clickY);
             const topmostElement = elementsAtPoint?.[0];
+
+            const luminaRecordBtnEl = topmostElement?.closest?.('.tomato-lumina-record-btn');
+            if (luminaRecordBtnEl) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                e.stopPropagation();
+                if (!isTimelineLuminaLinkEnabled()) return;
+                showTomatoLuminaRecordDialog();
+                return;
+            }
             
             // 检查点击是否在 addButton 上
             const addBtnEl = topmostElement?.closest?.('.tomato-routine-add-btn');
@@ -9046,7 +10067,8 @@
             if (routineToolbarEl) {
                 const clickedOnAnyRoutineBtn = elementsAtPoint?.some(el => 
                     el.classList?.contains('tomato-routine-btn') || 
-                    el.classList?.contains('tomato-routine-add-btn')
+                    el.classList?.contains('tomato-routine-add-btn') ||
+                    el.classList?.contains('tomato-lumina-record-btn')
                 );
                 if (!clickedOnAnyRoutineBtn && routineToolbarEl.contains(topmostElement)) {
                     e.stopImmediatePropagation();
@@ -12177,6 +13199,22 @@
             Boolean(record?.isCompleted) === Boolean(recordData.isCompleted)
         );
     }
+
+    function findExactHistoryDuplicateIndex(records, recordData) {
+        const list = Array.isArray(records) ? records : [];
+        if (!recordData) return -1;
+        return list.findIndex(record =>
+            String(record?.start || '') === String(recordData.start || '') &&
+            String(record?.end || '') === String(recordData.end || '') &&
+            String(record?.mode || '') === String(recordData.mode || '') &&
+            Number(record?.durationSec || 0) === Number(recordData.durationSec || 0) &&
+            Number(record?.durationMin || 0) === Number(recordData.durationMin || 0) &&
+            String(record?.taskBlockId || '') === String(recordData.taskBlockId || '') &&
+            String(record?.databaseBlockId || '') === String(recordData.databaseBlockId || '') &&
+            Boolean(record?.wasReset) === Boolean(recordData.wasReset) &&
+            Boolean(record?.isCompleted) === Boolean(recordData.isCompleted)
+        );
+    }
     
     async function recordEndTime(isReset = false, isStopwatch = false, options = null) {
         const isCompleted = options?.isCompleted === true;
@@ -12309,15 +13347,25 @@
                 // 🔧 新增：按钮颜色，用于时间轴高亮显示
                 routineButtonColor: routineButtonHighlightColor
             };
+            const attachedLuminaRecords = consumePendingLuminaRecordsForRecord(recordData, startTimeMs, now.getTime());
+            if (attachedLuminaRecords.length > 0) {
+                recordData.luminaRecords = attachedLuminaRecords;
+            }
             
             let didAppendRecord = false;
 
             // 🔧 如果开启隐藏短记录：以秒为准，避免因分钟四舍五入导致“1分钟短记录”
-            if (userSettings.hideShortRecords && Number(durationSecToSave || 0) < 60) {
+            if (userSettings.hideShortRecords && Number(durationSecToSave || 0) < 60 && !hasLuminaHistoryRecords(recordData)) {
                 Logger.info('🔍 recordEndTime: 时长小于1分钟且开启隐藏短记录，跳过保存');
             } else {
                 const pushRecordIfNeeded = () => {
-                    if (hasExactHistoryDuplicate(records, recordData)) {
+                    const duplicateIndex = findExactHistoryDuplicateIndex(records, recordData);
+                    if (duplicateIndex >= 0) {
+                        if (hasLuminaHistoryRecords(recordData) && appendLuminaRecordToHistoryRecord(records[duplicateIndex], recordData.luminaRecords[0])) {
+                            const extra = recordData.luminaRecords.slice(1);
+                            extra.forEach(entry => appendLuminaRecordToHistoryRecord(records[duplicateIndex], entry));
+                            return true;
+                        }
                         Logger.info('🔍 recordEndTime: 检测到完全重复记录，跳过保存', {
                             start: recordData.start,
                             end: recordData.end,
@@ -12476,6 +13524,7 @@
 
     async function setTaskAssociation(taskBlockId, taskBlockName, databaseBlockId) {
         const prevTaskBlockId = currentTaskBlockId;
+        const prevTaskBlockName = currentTaskBlockName;
         const prevDatabaseBlockId = currentDatabaseBlockId;
         localAssociationChangedAtMs = Date.now();
         const resolvedTaskBlockId = String(taskBlockId || '').trim() || null;
@@ -12517,6 +13566,21 @@
                     databaseBlockId: currentDatabaseBlockId,
                 }, true);
             } catch (e) {}
+        }
+
+        const associationChanged = String(prevTaskBlockId || '') !== String(currentTaskBlockId || '')
+            || String(prevDatabaseBlockId || '') !== String(currentDatabaseBlockId || '');
+        if (associationChanged) {
+            const detail = {
+                taskBlockId: currentTaskBlockId,
+                taskBlockName: currentTaskBlockName,
+                databaseBlockId: currentDatabaseBlockId,
+                prevTaskBlockId,
+                prevTaskBlockName,
+                prevDatabaseBlockId,
+            };
+            try { globalThis.__taskHorizonOnTomatoAssociationChanged?.(detail); } catch (e) {}
+            try { window.dispatchEvent(new CustomEvent('tomato:association-changed', { detail })); } catch (e) {}
         }
 
         if ((prevTaskBlockId || prevDatabaseBlockId) && !currentTaskBlockId && !currentDatabaseBlockId) {
@@ -14175,16 +15239,16 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         let filteredRecords = allRecords;
         if (!userSettings.showBreakRecords) {
-            filteredRecords = allRecords.filter(r => r.mode !== 'break' && r.mode !== 'stopwatch-break');
+            filteredRecords = allRecords.filter(r => hasLuminaHistoryRecords(r) || (r.mode !== 'break' && r.mode !== 'stopwatch-break'));
         }
         if (!userSettings.showIdleRecords) {
-            filteredRecords = filteredRecords.filter(r => r?.mode !== 'idle');
+            filteredRecords = filteredRecords.filter(r => hasLuminaHistoryRecords(r) || r?.mode !== 'idle');
         }
         
         if (userSettings.hideShortRecords) {
             // 使用 durationSec 确保过滤掉所有小于60秒的记录
             // 注意：durationMin 可能因四舍五入而>=1，所以需要检查 durationSec
-            filteredRecords = filteredRecords.filter(r => r.durationSec >= 60);
+            filteredRecords = filteredRecords.filter(r => hasLuminaHistoryRecords(r) || r.durationSec >= 60);
         }
 
         const existing = document.getElementById('tomy-tomato-history-dialog');
@@ -16497,9 +17561,9 @@ function calculateWeeklyStats(dailyStatsArray) {
         };
         const buildFilteredRecords = (records) => {
             let out = Array.isArray(records) ? records.slice() : [];
-            if (!userSettings.showBreakRecords) out = out.filter(r => r?.mode !== 'break' && r?.mode !== 'stopwatch-break');
-            if (!userSettings.showIdleRecords) out = out.filter(r => r?.mode !== 'idle');
-            if (userSettings.hideShortRecords) out = out.filter(r => Number(r?.durationSec || 0) >= 60);
+            if (!userSettings.showBreakRecords) out = out.filter(r => hasLuminaHistoryRecords(r) || (r?.mode !== 'break' && r?.mode !== 'stopwatch-break'));
+            if (!userSettings.showIdleRecords) out = out.filter(r => hasLuminaHistoryRecords(r) || r?.mode !== 'idle');
+            if (userSettings.hideShortRecords) out = out.filter(r => hasLuminaHistoryRecords(r) || Number(r?.durationSec || 0) >= 60);
             return out;
         };
         const rebuildHistoryState = (records) => {
@@ -18690,7 +19754,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         const modeEmoji = record.mode === 'countdown' ? '🍅' : 
                          record.mode === 'break' ? '☕' : 
-                         record.mode === 'stopwatch-break' ? '☕' : '⏱️';
+                         record.mode === 'stopwatch-break' ? '☕' :
+                         record.mode === 'lumina-note' ? '📝' : '⏱️';
         const startDate = new Date(record.start);
         const endDate = new Date(record.end);
         
@@ -18718,7 +19783,9 @@ function calculateWeeklyStats(dailyStatsArray) {
             }
             return `${min}分钟`;
         };
-        durationText = formatDuration(record.durationSec, record.durationMin);
+        durationText = record.mode === 'lumina-note'
+            ? '文字记录'
+            : formatDuration(record.durationSec, record.durationMin);
         
         const resetText = (record.wasReset && record.mode !== 'stopwatch' && record.mode !== 'stopwatch-break') ? '<span style="color:#FF9800; font-weight:bold">🔄重置</span> ' : '';
         const plannedText = record.mode === 'countdown' && record.plannedDuration && record.plannedDuration !== record.durationMin ?
@@ -18765,6 +19832,26 @@ function calculateWeeklyStats(dailyStatsArray) {
                 </div>`;
             }
         }
+
+        const luminaRecords = Array.isArray(record.luminaRecords) ? record.luminaRecords : [];
+        const luminaRecordsHtml = luminaRecords.length > 0
+            ? `<div style="display:flex; flex-direction:column; gap:4px; margin-top:6px;">${luminaRecords.map(entry => {
+                const status = String(entry?.status || '').trim();
+                let preview = String(entry?.content || '').replace(/\s+/g, ' ').trim();
+                if (status && preview.endsWith(status)) {
+                    preview = preview.slice(0, -status.length).replace(/\s+$/g, '').trim();
+                }
+                const shortPreview = preview.length > 96 ? `${preview.slice(0, 96)}...` : preview;
+                const blockId = String(entry?.blockId || '').trim();
+                const clickableStyle = blockId ? 'cursor:pointer; color: var(--b3-theme-primary);' : 'color: var(--b3-theme-on-surface-light);';
+                return `<div class="tomato-lumina-record-link" data-block-id="${escapeHtml(blockId)}" style="
+                    font-size: 11px; line-height: 1.45; ${clickableStyle}
+                    display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+                " title="${blockId ? '跳转到轻语记录' : ''}">
+                    <span>📝 ${escapeHtml(shortPreview || '轻语记录')}</span>
+                </div>`;
+            }).join('')}</div>`
+            : '';
         
         const leftContent = document.createElement('div');
         leftContent.style.cssText = `flex: 1; min-width: 0;`;
@@ -18776,6 +19863,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             </div>
             ${taskBlockText}
             ${mergedDurationText}
+            ${luminaRecordsHtml}
         `;
         
         const rightContent = document.createElement('div');
@@ -19111,6 +20199,26 @@ function calculateWeeklyStats(dailyStatsArray) {
     // 🔧 新增：任务块名称点击事件（事件委托）- 跳转后关闭历史界面
     function setupTaskLinkListeners(container) {
         EventManager.add(container, 'click', (e) => {
+            const luminaLink = e.target.closest('.tomato-lumina-record-link');
+            if (luminaLink) {
+                const blockId = luminaLink.dataset.blockId;
+                if (!blockId) return;
+                if (isMobileDevice() && !__canUseOfficialOpenBlock()) {
+                    Logger.info('🖱️ 移动端点击轻语记录链接，但未检测到插件 openBlock 能力，跳过跳转');
+                    return;
+                }
+                e.preventDefault();
+                e.stopPropagation();
+                navigateToBlock(blockId);
+                setTimeout(() => {
+                    const dialog = document.getElementById('tomy-tomato-history-dialog');
+                    const backdrop = document.getElementById('tomy-tomato-history-backdrop');
+                    if (dialog) dialog.remove();
+                    if (backdrop) backdrop.remove();
+                }, 100);
+                return;
+            }
+
             const link = e.target.closest('.tomato-task-link');
             if (link) {
                 if (isMobileDevice() && !__canUseOfficialOpenBlock()) {
@@ -19291,6 +20399,15 @@ function calculateWeeklyStats(dailyStatsArray) {
     function hasUnfinishedTimerState() {
         const { running, paused } = getEffectiveTimerActivity();
         return !!(running || paused);
+    }
+
+    function shouldShowDesktopMinimizedFloatWindowForTimerState() {
+        const activity = getEffectiveTimerActivity();
+        if (!activity.running && !activity.paused) return false;
+        if (isDesktopMinimizedFloatWindowPausedOrBreakEnabled()) return true;
+        if (activity.paused) return false;
+        const mode = String((activity.syncActive && syncState?.mode) ? syncState.mode : timerMode || '').trim();
+        return mode !== 'break' && mode !== 'stopwatch-break';
     }
 
     function getDesktopFloatWindowWidthForSeconds(totalSeconds) {
@@ -19902,7 +21019,7 @@ window.__setTomatoFloatState = function (payload) {
             } catch (e) {}
             return;
         }
-        if (!desktopFloatWindowState.isMinimized || !hasUnfinishedTimerState()) {
+        if (!desktopFloatWindowState.isMinimized || !shouldShowDesktopMinimizedFloatWindowForTimerState()) {
             closeDesktopMinimizedFloatWindow();
             return;
         }
@@ -25439,6 +26556,18 @@ window.__setTomatoFloatState = function (payload) {
             togglesSection.appendChild(hint);
         }
 
+        mkToggleRow('暂停或休息时也显示桌面悬浮窗', isDesktopMinimizedFloatWindowPausedOrBreakEnabled(), async (e) => {
+            userSettings.main.enableDesktopMinimizedFloatWindowPausedOrBreak = e.target.checked;
+            await saveUserSettings();
+            try { scheduleDesktopMinimizedFloatWindowSync('settings-desktop-float-paused-break-toggle'); } catch (err) {}
+        });
+        {
+            const hint = document.createElement('div');
+            hint.textContent = '关闭时，仅番茄/正计时运行中会在思源最小化后弹出';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
+            togglesSection.appendChild(hint);
+        }
+
         mkToggleRow('聚焦模式（高亮任务/数据库时淡化其它内容）', userSettings?.main?.enableFocusMode !== false, async (e) => {
             userSettings.main.enableFocusMode = e.target.checked;
             await saveUserSettings();
@@ -28278,16 +29407,27 @@ window.__setTomatoFloatState = function (payload) {
                                 taskBlockName: currentSyncState.taskBlockName || null,
                                 databaseBlockId: currentSyncState.databaseBlockId || null
                             };
+                            const expiredStartMs = Number(currentSyncState.startTime || 0);
+                            const expiredEndMs = expiredStartMs + Number(currentSyncState.duration || 0) * 1000;
+                            const attachedLuminaRecords = consumePendingLuminaRecordsForRecord(recordData, expiredStartMs, expiredEndMs);
+                            if (attachedLuminaRecords.length > 0) {
+                                recordData.luminaRecords = attachedLuminaRecords;
+                            }
 
                             try {
                                 const records = await loadHistoryRecords();
                                 // 🔧 修复：去重检查 - 防止代码重启时重复保存同一个番茄钟周期
                                 // 只根据开始时间和模式判断，因为同一周期内的重载durationSec会不同
-                                const isDuplicate = records.some(r =>
+                                const duplicateIndex = records.findIndex(r =>
                                     r.start === recordData.start &&
                                     r.mode === recordData.mode
                                 );
+                                const isDuplicate = duplicateIndex >= 0;
                                 if (isDuplicate) {
+                                    if (hasLuminaHistoryRecords(recordData)) {
+                                        recordData.luminaRecords.forEach(entry => appendLuminaRecordToHistoryRecord(records[duplicateIndex], entry));
+                                        await saveHistoryRecords(records);
+                                    }
                                     Logger.info('🔄 历史记录已存在，跳过重复保存（start:', recordData.start, ', mode:', recordData.mode, '）');
                                 } else {
                                     records.push(recordData);
@@ -29087,6 +30227,7 @@ window.__setTomatoFloatState = function (payload) {
     let reminderSettingsLoaded = false;
     let reminderCheckTimer = null;
     let reminderAudio = null;
+    const __activeReminderNotificationIds = new Map();
     
     const REMINDER_INTERVAL_TYPES = {
         once: { label: '仅一次', value: 'once' },
@@ -29104,6 +30245,24 @@ window.__setTomatoFloatState = function (payload) {
     const TASK_COMPLETION_TIME_ATTR = 'custom-completion-time';
     
     const __reminderOccurrenceKey = (dateKey, timeKey) => `${String(dateKey || '').trim()} ${String(timeKey || '').trim()}`.trim();
+
+    const __getReminderNotificationMapKey = (blockId, dateKey, timeKey) => {
+        const id = String(blockId || '').trim();
+        const occurrenceKey = __reminderOccurrenceKey(dateKey, timeKey);
+        return id && occurrenceKey ? `${id}::${occurrenceKey}` : '';
+    };
+
+    const __rememberActiveReminderNotification = (blockId, dateKey, timeKey, notificationId) => {
+        const id = normalizeNotificationId(notificationId);
+        if (id === null || id < 0) return;
+        const key = __getReminderNotificationMapKey(blockId, dateKey, timeKey);
+        if (!key) return;
+        const list = Array.isArray(__activeReminderNotificationIds.get(key))
+            ? __activeReminderNotificationIds.get(key).slice()
+            : [];
+        if (!list.includes(id)) list.push(id);
+        __activeReminderNotificationIds.set(key, list.slice(-4));
+    };
 
     const __normalizeReminderDateKey = (value) => {
         if (value instanceof Date && !Number.isNaN(value.getTime())) return formatDateKey(value);
@@ -29624,6 +30783,150 @@ window.__setTomatoFloatState = function (payload) {
             try { await cancelDeviceNotificationCompat(id); } catch (e) {}
         }
     }
+
+    const __isReminderDeviceScheduleEntryCompleted = (entry, completedSet) => {
+        if (!(completedSet instanceof Set) || !completedSet.size || !entry) return false;
+        const occurrenceKey = String(entry?.occurrenceKey || '').trim()
+            || __reminderOccurrenceKey(entry?.dateKey, entry?.timeKey);
+        return !!occurrenceKey && completedSet.has(occurrenceKey);
+    };
+
+    async function __cancelCompletedReminderDeviceScheduleEntries(reminder) {
+        const blockId = String(reminder?.blockId || '').trim();
+        const completedSet = __getReminderCompletedSet(reminder);
+        const result = { attrChanged: false, registryChanged: false, canceled: 0 };
+        if (!blockId || !completedSet.size) return result;
+
+        const splitCompletedEntries = async (entries) => {
+            const src = Array.isArray(entries) ? entries : [];
+            if (!src.length) return { next: src, changed: false, canceled: 0 };
+            const next = [];
+            const completed = [];
+            for (const entry of src) {
+                if (__isReminderDeviceScheduleEntryCompleted(entry, completedSet)) completed.push(entry);
+                else next.push(entry);
+            }
+            if (!completed.length) return { next: src, changed: false, canceled: 0 };
+            await __cancelReminderDeviceScheduleEntries(completed);
+            return { next, changed: true, canceled: completed.length };
+        };
+
+        try {
+            const currentSchedule = __getReminderDeviceSchedule(reminder);
+            if (currentSchedule?.entries?.length) {
+                const filtered = await splitCompletedEntries(currentSchedule.entries);
+                if (filtered.changed) {
+                    result.attrChanged = true;
+                    result.canceled += filtered.canceled;
+                    if (filtered.next.length) {
+                        __setReminderDeviceSchedule(reminder, { ...currentSchedule, entries: filtered.next });
+                    } else {
+                        __setReminderDeviceSchedule(reminder, null);
+                    }
+                }
+            }
+        } catch (e) {}
+
+        try {
+            const registry = __getReminderDeviceScheduleRegistry();
+            const registrySchedule = registry[blockId];
+            if (registrySchedule?.entries?.length) {
+                const filtered = await splitCompletedEntries(registrySchedule.entries);
+                if (filtered.changed) {
+                    result.registryChanged = true;
+                    result.canceled += filtered.canceled;
+                    if (filtered.next.length) registry[blockId] = { ...registrySchedule, entries: filtered.next };
+                    else delete registry[blockId];
+                    __saveReminderDeviceScheduleRegistry(registry);
+                }
+            }
+        } catch (e) {}
+
+        if (result.canceled > 0) {
+            try { Logger.info(`🧹 已取消 ${result.canceled} 个已完成提醒的预约通知`); } catch (e) {}
+        }
+        return result;
+    }
+
+    const __isReminderScheduleEntryOccurrence = (entry, occurrenceKey, dateKey, timeKey) => {
+        if (!entry || !occurrenceKey) return false;
+        const entryOccurrenceKey = String(entry?.occurrenceKey || '').trim();
+        if (entryOccurrenceKey && entryOccurrenceKey === occurrenceKey) return true;
+        return String(entry?.dateKey || '').trim() === String(dateKey || '').trim()
+            && String(entry?.timeKey || '').trim() === String(timeKey || '').trim();
+    };
+
+    async function __cancelReminderOccurrenceNotifications(blockId, dateKey, timeKey, reminder = null) {
+        const id = String(blockId || reminder?.blockId || '').trim();
+        const occurrenceKey = __reminderOccurrenceKey(dateKey, timeKey);
+        if (!id || !occurrenceKey) return false;
+
+        let changed = false;
+        const activeKey = __getReminderNotificationMapKey(id, dateKey, timeKey);
+        const activeIds = Array.isArray(__activeReminderNotificationIds.get(activeKey))
+            ? __activeReminderNotificationIds.get(activeKey).slice()
+            : [];
+        if (activeIds.length) {
+            for (const notificationId of activeIds) {
+                try { await cancelDeviceNotificationCompat(notificationId); } catch (e) {}
+            }
+            __activeReminderNotificationIds.delete(activeKey);
+            changed = true;
+        }
+
+        const filterEntries = async (entries) => {
+            const src = Array.isArray(entries) ? entries : [];
+            if (!src.length) return { next: src, changed: false };
+            const next = [];
+            const matched = [];
+            for (const entry of src) {
+                if (__isReminderScheduleEntryOccurrence(entry, occurrenceKey, dateKey, timeKey)) matched.push(entry);
+                else next.push(entry);
+            }
+            if (matched.length) {
+                await __cancelReminderDeviceScheduleEntries(matched);
+                return { next, changed: true };
+            }
+            return { next: src, changed: false };
+        };
+
+        try {
+            const registry = __getReminderDeviceScheduleRegistry();
+            const schedule = registry[id];
+            if (schedule?.entries?.length) {
+                const result = await filterEntries(schedule.entries);
+                if (result.changed) {
+                    changed = true;
+                    if (result.next.length) registry[id] = { ...schedule, entries: result.next };
+                    else delete registry[id];
+                    __saveReminderDeviceScheduleRegistry(registry);
+                }
+            }
+        } catch (e) {}
+
+        if (reminder && typeof reminder === 'object') {
+            try {
+                const scheduleMap = __getReminderDeviceScheduleMap(reminder);
+                for (const [deviceId, schedule] of Object.entries(scheduleMap)) {
+                    if (!schedule?.entries?.length) continue;
+                    const result = await filterEntries(schedule.entries);
+                    if (!result.changed) continue;
+                    changed = true;
+                    if (result.next.length) scheduleMap[deviceId] = { ...schedule, entries: result.next };
+                    else delete scheduleMap[deviceId];
+                }
+            } catch (e) {}
+        }
+
+        try {
+            if (reminderAudio) {
+                reminderAudio.pause();
+                reminderAudio.currentTime = 0;
+            }
+        } catch (e) {}
+        return changed;
+    }
+
     async function __reconcileReminderDeviceSchedule(reminder, options = {}) {
         // 🔧 修复：桌面端使用实时提醒模式，不预先预约系统通知
         // 只有真正的移动端（手机/平板）才使用预先预约机制
@@ -29719,8 +31022,20 @@ window.__setTomatoFloatState = function (payload) {
         if (!id) return false;
         const reminder = reminderData ? { ...reminderData, blockId: id } : await getBlockReminder(id);
         if (!reminder) return false;
+        const completedCleanup = await __cancelCompletedReminderDeviceScheduleEntries(reminder);
+        try {
+            const currentSchedule = __getReminderDeviceSchedule(reminder);
+            const registrySchedule = __getReminderCurrentDeviceRegistrySchedule(id);
+            if (__hasValidReminderDeviceScheduleEntries(registrySchedule) && !__hasValidReminderDeviceScheduleEntries(currentSchedule)) {
+                __setReminderDeviceSchedule(reminder, {
+                    ...(currentSchedule && typeof currentSchedule === 'object' ? currentSchedule : {}),
+                    ...registrySchedule,
+                    entries: Array.isArray(registrySchedule.entries) ? registrySchedule.entries.slice() : [],
+                });
+            }
+        } catch (e) {}
         const result = await __reconcileReminderDeviceSchedule(reminder, options);
-        if (!result.changed) return false;
+        if (!result.changed && !completedCleanup.attrChanged) return false;
         return await saveBlockReminder(id, reminder, {
             skipReminderScheduleSync: true,
             skipSiyuanSync: true,
@@ -29858,6 +31173,7 @@ window.__setTomatoFloatState = function (payload) {
             }
             next.completedOccurrences = arr.slice(0, 30);
             next.updatedAt = new Date().toISOString();
+            try { await __cancelReminderOccurrenceNotifications(blockId, dateKey, timeKey, next); } catch (e) {}
             const ok = await saveBlockReminder(blockId, next);
             if (ok) {
                 try { await __syncReminderDeviceSchedule(blockId, next, { silent: true }); } catch (e) {}
@@ -31382,7 +32698,9 @@ window.__setTomatoFloatState = function (payload) {
         if (reminderSettings.systemNotificationEnabled) {
             if (isMobile) {
                 // 移动端：使用预先预约机制
-                sendDeviceNotificationCompat(title, fullMessage, { timeoutType: 'never' }).catch(() => {});
+                sendDeviceNotificationCompat(title, fullMessage, { timeoutType: 'never' })
+                    .then((notificationId) => __rememberActiveReminderNotification(reminder?.blockId, currentDate, time, notificationId))
+                    .catch(() => {});
                 // 移动端需要预先预约未来的提醒
                 if (shouldPreferDeviceNotificationBackend() && reminder?.blockId) {
                     Promise.resolve().then(() => __syncReminderDeviceSchedule(reminder.blockId, reminder, { silent: true })).catch(() => {});
@@ -31405,7 +32723,8 @@ window.__setTomatoFloatState = function (payload) {
                         }
                     } catch (e) {}
                     // 发送实时通知
-                    sendDeviceNotificationCompat(title, fullMessage, { timeoutType: 'never' }).catch(() => {});
+                    const notificationId = await sendDeviceNotificationCompat(title, fullMessage, { timeoutType: 'never' }).catch(() => -1);
+                    __rememberActiveReminderNotification(reminder?.blockId, currentDate, time, notificationId);
                 })();
             }
         }
@@ -31549,6 +32868,13 @@ window.__setTomatoFloatState = function (payload) {
             } catch (e) {}
         },
         getBlocks: queryAllReminderBlocks,
+        completeOccurrence: __markReminderOccurrenceCompleted,
+        uncompleteOccurrence: __unmarkReminderOccurrenceCompleted,
+        setOccurrenceDone: (blockId, dateKey, timeKey, done) => {
+            return done === false
+                ? __unmarkReminderOccurrenceCompleted(blockId, dateKey, timeKey)
+                : __markReminderOccurrenceCompleted(blockId, dateKey, timeKey);
+        },
         initDock: initReminderDock,
         tryEventBus: tryRegisterDockViaEventBus,
         // 诊断函数
