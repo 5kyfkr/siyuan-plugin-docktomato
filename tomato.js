@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.9.8
+// @version      1.9.9
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -3558,6 +3558,27 @@
     };
     let __tomatoHistoryLoadPromise = null;
     let __tomatoHistoryLoadPromiseAll = null;
+    const HISTORY_LOCAL_STORAGE_KEY = 'siyuan-tomato-history';
+    const HISTORY_LOCAL_FALLBACK_META_KEY = 'siyuan-tomato-history-fallback-meta';
+
+    function getHistoryRecordsFreshness(records) {
+        const list = Array.isArray(records) ? records : [];
+        let maxMs = 0;
+        for (const r of list) {
+            const ms = toDateSafe(r?.end || r?.start)?.getTime?.() || Number(r?.timestamp || 0) || 0;
+            if (Number.isFinite(ms) && ms > maxMs) maxMs = ms;
+        }
+        return { count: list.length, maxMs };
+    }
+
+    function shouldPreferLocalHistoryRecords(localRecords, fileRecords, hasFallbackMeta) {
+        if (!Array.isArray(localRecords) || localRecords.length === 0) return false;
+        if (hasFallbackMeta) return true;
+        const localFresh = getHistoryRecordsFreshness(localRecords);
+        const fileFresh = getHistoryRecordsFreshness(fileRecords);
+        return localFresh.count >= fileFresh.count && localFresh.maxMs > fileFresh.maxMs;
+    }
+
     async function loadHistoryRecords(options = {}) {
         const all = options?.all === true;
         if (all) {
@@ -3598,6 +3619,20 @@
                     }
                     const parsed = JSON.parse(raw);
                     const normalized = normalizeRecords(parsed);
+                    try {
+                        const localRaw = String(localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY) || '');
+                        const hasFallbackMeta = !!localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+                        if (localRaw.trim()) {
+                            const localParsed = JSON.parse(localRaw);
+                            const localNormalized = normalizeRecords(localParsed);
+                            if (shouldPreferLocalHistoryRecords(localNormalized, normalized, hasFallbackMeta)) {
+                                __tomatoHistoryParseCache = all
+                                    ? { source: 'localStorage', raw: localRaw, records: __tomatoHistoryParseCache?.records || null, recordsAll: localNormalized }
+                                    : { source: 'localStorage', raw: localRaw, records: localNormalized, recordsAll: __tomatoHistoryParseCache?.recordsAll || null };
+                                return localNormalized;
+                            }
+                        }
+                    } catch (e) {}
                     __tomatoHistoryParseCache = all
                         ? { source: 'file', raw, records: __tomatoHistoryParseCache?.records || null, recordsAll: normalized }
                         : { source: 'file', raw, records: normalized, recordsAll: __tomatoHistoryParseCache?.recordsAll || null };
@@ -3608,7 +3643,7 @@
             }
 
             try {
-                const raw = String(localStorage.getItem('siyuan-tomato-history') || '');
+                const raw = String(localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY) || '');
                 if (!raw.trim()) return [];
                 if (__tomatoHistoryParseCache?.source === 'localStorage' && __tomatoHistoryParseCache?.raw === raw) {
                     const cached = all ? __tomatoHistoryParseCache?.recordsAll : __tomatoHistoryParseCache?.records;
@@ -3663,6 +3698,10 @@
                     }
                 }
                 __tomatoHistoryParseCache = { source: '', raw: '', records: null, recordsAll: null };
+                try {
+                    localStorage.removeItem(HISTORY_LOCAL_STORAGE_KEY);
+                    localStorage.removeItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+                } catch (e) {}
                 try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'file' } })); } catch (e) {}
                 return true;
             } else {
@@ -3670,7 +3709,9 @@
             }
         } catch (fileError) {
             try {
-                localStorage.setItem('siyuan-tomato-history', dataToSave);
+                localStorage.setItem(HISTORY_LOCAL_STORAGE_KEY, dataToSave);
+                localStorage.setItem(HISTORY_LOCAL_FALLBACK_META_KEY, JSON.stringify({ updatedAt: Date.now() }));
+                __tomatoHistoryParseCache = { source: '', raw: '', records: null, recordsAll: null };
                 try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'localStorage' } })); } catch (e) {}
                 return true;
             } catch (localError) {
@@ -5261,13 +5302,43 @@
     }
 
     function ensureTomatoCommonStyles() {
-        if (document.getElementById('tomato-common-style')) return;
+        const existingStyle = document.getElementById('tomato-common-style');
+        if (existingStyle) {
+            const text = String(existingStyle.textContent || '');
+            if (text.includes('tomatoPopupSurfaceIn')) return;
+            existingStyle.remove();
+        }
         const style = document.createElement('style');
         style.id = 'tomato-common-style';
         style.textContent = `
             @keyframes tomatoSlideUp {
                 from { transform: translateY(100%); }
                 to { transform: translateY(0); }
+            }
+
+            @keyframes tomatoPopupOverlayFadeIn {
+                from { opacity: 0; }
+                to { opacity: 1; }
+            }
+
+            @keyframes tomatoPopupSurfaceIn {
+                from {
+                    opacity: 0;
+                    transform: translate(-50%, calc(-50% + 18px)) scale(0.985);
+                }
+                to {
+                    opacity: 1;
+                    transform: translate(-50%, -50%) scale(1);
+                }
+            }
+
+            .tomato-popup-overlay-enter {
+                animation: tomatoPopupOverlayFadeIn 180ms cubic-bezier(0.2, 0, 0, 1) both;
+            }
+
+            .tomato-popup-surface-enter {
+                animation: tomatoPopupSurfaceIn 220ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
+                will-change: transform, opacity;
             }
 
             #tomato-task-submenu,
@@ -5360,6 +5431,8 @@
             }
 
             @media (prefers-reduced-motion: reduce) {
+                .tomato-popup-overlay-enter,
+                .tomato-popup-surface-enter,
                 .tomato-bottomsheet,
                 #tomato-settings-dialog {
                     animation: none !important;
@@ -6379,6 +6452,7 @@
     }
 
     function showTomatoLuminaRecordDialog() {
+        ensureTomatoCommonStyles();
         removeById('tomato-lumina-record-dialog', 'tomato-lumina-record-backdrop');
         if (!isTimelineLuminaLinkEnabled()) {
             showToast('请先在时间轴设置中开启轻语联动', 1800);
@@ -6387,6 +6461,7 @@
 
         const backdrop = document.createElement('div');
         backdrop.id = 'tomato-lumina-record-backdrop';
+        backdrop.className = 'tomato-popup-overlay-enter';
         backdrop.style.cssText = `
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.42); z-index: 2147483651;
@@ -6394,6 +6469,7 @@
 
         const dialog = document.createElement('div');
         dialog.id = 'tomato-lumina-record-dialog';
+        dialog.className = 'tomato-popup-surface-enter';
         dialog.style.cssText = `
             position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
             width: 420px; max-width: calc(100vw - 24px);
@@ -6778,6 +6854,7 @@
         const safeBody = String(body ?? '').trim();
         const safeChannel = String(opts.channel ?? DEVICE_NOTIFICATION_CHANNEL).trim();
         const delayInSeconds = Math.max(0, Math.round(Number(opts.delayInSeconds) || 0));
+        const stopAfterFirstBridgeCall = opts.stopAfterFirstBridgeCall === true;
         const timeoutType = String(
             opts.timeoutType || (opts.requireInteraction === true ? 'never' : (isOfficialMobileNotificationRuntime() ? 'default' : 'never'))
         ).trim() || 'default';
@@ -6793,6 +6870,7 @@
                     return id;
                 }
                 sendDeviceNotificationCompat._lastFailureReason = 'send-no-numeric-return';
+                if (stopAfterFirstBridgeCall) return -1;
             }
             try {
                 const msgHandler = globalThis?.webkit?.messageHandlers?.sendNotification;
@@ -6947,7 +7025,10 @@
     }
 
     function showSystemNotification(title, body, options) {
-        const opts = options && typeof options === 'object' ? options : {};
+        const opts = options && typeof options === 'object' ? { ...options } : {};
+        if (!isOfficialMobileNotificationRuntime()) {
+            opts.stopAfterFirstBridgeCall = true;
+        }
         sendDeviceNotificationCompat(title, body, opts).catch(() => {});
     }
 
@@ -11875,7 +11956,8 @@
                 refreshing: false,
                 dirty: true,
                 version: 0,
-                renderedVersion: -1
+                renderedVersion: -1,
+                refreshToken: 0
             });
         }
         return timelineHistoryCacheByDateKey.get(key);
@@ -11888,10 +11970,8 @@
         yesterday.setDate(yesterday.getDate() - 1);
         const yesterdayKey = formatDateKey(yesterday);
         
-        for (const [key, cache] of timelineHistoryCacheByDateKey) {
-            if (key === todayKey || key === yesterdayKey) {
-                cache.dirty = true;
-            }
+        for (const [, cache] of timelineHistoryCacheByDateKey) {
+            cache.dirty = true;
         }
 
         try {
@@ -11903,6 +11983,27 @@
         } catch (e) {}
     }
 
+    function primeTimelineHistoryCaches(records) {
+        if (!Array.isArray(records) || !timelineHistoryCacheByDateKey.size) return;
+        for (const [dateKey, cache] of timelineHistoryCacheByDateKey) {
+            const d = toDateSafe(`${dateKey}T00:00:00`);
+            const startMs = d?.getTime?.();
+            if (!Number.isFinite(startMs)) continue;
+            const endMs = startMs + 86400000;
+            cache.records = records.filter(r => {
+                if (!r?.start || !r?.end) return false;
+                const rs = toDateSafe(r.start)?.getTime?.() || 0;
+                const re = toDateSafe(r.end)?.getTime?.() || 0;
+                if (!Number.isFinite(rs) || !Number.isFinite(re) || re <= rs) return false;
+                return rs < endMs && re > startMs;
+            });
+            cache.refreshToken = (Number(cache.refreshToken) || 0) + 1;
+            cache.refreshing = false;
+            cache.dirty = false;
+            cache.version += 1;
+        }
+    }
+
     function refreshTimelineHistoryCacheForDateIfNeeded(dateKey) {
         const cache = getTimelineHistoryCache(dateKey);
         const needsRefresh = cache.dirty;
@@ -11910,6 +12011,8 @@
 
         cache.refreshing = true;
         cache.dirty = false;
+        const refreshToken = (Number(cache.refreshToken) || 0) + 1;
+        cache.refreshToken = refreshToken;
 
         (async () => {
             const all = await loadHistoryRecords();
@@ -11919,7 +12022,7 @@
                 if (!Number.isFinite(startMs)) return null;
                 return { startMs, endMs: startMs + 86400000 };
             })();
-            cache.records = (all || []).filter(r => {
+            const nextRecords = (all || []).filter(r => {
                 if (!r || !dayRange) return false;
                 const startIso = r.start;
                 const endIso = r.end;
@@ -11929,9 +12032,11 @@
                 if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return false;
                 return startMs < dayRange.endMs && endMs > dayRange.startMs;
             });
+            if (cache.refreshToken !== refreshToken) return;
+            cache.records = nextRecords;
             cache.version += 1;
         })().catch(() => {
-            cache.dirty = true;
+            if (cache.refreshToken === refreshToken) cache.dirty = true;
         }).finally(() => {
             // 🔧 关键修复：检查缓存是否仍有效（未被 markTimelineHistoryDirty 清除）
             // 如果缓存已被清除，说明这是旧的刷新操作，应该丢弃结果
@@ -11941,6 +12046,7 @@
                 cache.refreshing = false;
                 return;
             }
+            if (cache.refreshToken !== refreshToken) return;
             cache.refreshing = false;
             try {
                 if (userSettings?.timeline?.enabled) updateTimelineBar(true);
@@ -13466,6 +13572,7 @@
             }
             
             let didAppendRecord = false;
+            let didSaveHistoryRecords = false;
 
             // 🔧 如果开启隐藏短记录：以秒为准，避免因分钟四舍五入导致“1分钟短记录”
             if (userSettings.hideShortRecords && Number(durationSecToSave || 0) < 60 && !hasLuminaHistoryRecords(recordData)) {
@@ -13507,7 +13614,7 @@
                 }
 
                 if (didAppendRecord) {
-                    await saveHistoryRecords(records);
+                    didSaveHistoryRecords = await saveHistoryRecords(records);
                 }
                 lastSavedDistractionCount = syncedDistractionTotal || 0;
                 // 🔧 清除按钮高亮设置（记录已保存）
@@ -13520,9 +13627,13 @@
                         await SyncManager.updateLocal(syncState, true);
                     } catch (e) {}
                 }
-                if (didAppendRecord) {
+                if (didAppendRecord && didSaveHistoryRecords) {
                     Logger.info('✅ 记录已保存');
                     markTimelineHistoryDirty();
+                    primeTimelineHistoryCaches(records);
+                    try { if (userSettings?.timeline?.enabled) updateTimelineBar(true); } catch (e) {}
+                } else if (didAppendRecord) {
+                    Logger.warn('历史记录保存失败，跳过时间轴缓存更新');
                 }
             }
 
