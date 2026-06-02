@@ -20595,6 +20595,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     let desktopFloatWindow = null;
     let desktopFloatWindowReady = false;
     let desktopFloatWindowLastPayloadKey = '';
+    let desktopFloatWindowDragState = null;
     let desktopFloatWindowSyncTimer = null;
     let desktopFloatWindowMonitoredWindow = null;
     const DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT = 90;
@@ -20677,18 +20678,91 @@ function calculateWeeklyStats(dailyStatsArray) {
         let remote = null;
         let BrowserWindow = null;
         let currentWindow = null;
+        let Menu = null;
         let screen = null;
         try { electron = window.require?.('electron') || null; } catch (e) {}
         try { remote = electron?.remote || window.require?.('@electron/remote') || null; } catch (e) {}
         try { BrowserWindow = remote?.BrowserWindow || electron?.BrowserWindow || null; } catch (e) {}
         try { currentWindow = remote?.getCurrentWindow?.() || null; } catch (e) {}
+        try { Menu = remote?.Menu || electron?.Menu || null; } catch (e) {}
         try { screen = electron?.screen || remote?.screen || null; } catch (e) {}
         return {
             supported: !!(BrowserWindow && currentWindow),
             BrowserWindow,
             currentWindow,
+            Menu,
             screen
         };
+    }
+
+    function canDesktopFloatWindowRecordDistraction() {
+        const { running } = getEffectiveTimerActivity();
+        return !!running && (timerMode === 'countdown' || timerMode === 'stopwatch');
+    }
+
+    function getDesktopFloatWindowDistractionLabel() {
+        const willExtend = timerMode === 'countdown' && userSettings?.main?.extendTomatoOnDistraction !== false;
+        return willExtend ? '😵 记录分心（+1分钟）' : '😵 记录分心';
+    }
+
+    function showDesktopFloatWindowContextMenu(win) {
+        if (!win || win.isDestroyed?.()) return;
+        const support = getDesktopFloatWindowElectronSupport();
+        const Menu = support.Menu;
+        if (!Menu || typeof Menu.buildFromTemplate !== 'function') return;
+        try {
+            const template = [];
+            if (canDesktopFloatWindowRecordDistraction()) {
+                template.push({
+                    label: getDesktopFloatWindowDistractionLabel(),
+                    click: () => {
+                        Promise.resolve().then(async () => {
+                            if (!canDesktopFloatWindowRecordDistraction()) return;
+                            await recordDistraction();
+                            desktopFloatWindowLastPayloadKey = '';
+                            try { await refreshDesktopMinimizedFloatWindow(); } catch (e) {}
+                        }).catch(() => {});
+                    }
+                });
+                template.push({ type: 'separator' });
+            }
+            template.push({
+                label: isRunning ? '暂停' : '继续',
+                enabled: hasUnfinishedTimerState(),
+                click: () => {
+                    Promise.resolve().then(async () => {
+                        try {
+                            if (isRunning) await pauseTimer();
+                            else await startTimer();
+                        } catch (e) {}
+                        desktopFloatWindowLastPayloadKey = '';
+                        try { await refreshDesktopMinimizedFloatWindow(); } catch (e) {}
+                    }).catch(() => {});
+                }
+            }, {
+                label: desktopFloatWindowState.alwaysOnTop !== false ? '取消置顶' : '置顶',
+                click: () => {
+                    const next = !(desktopFloatWindowState.alwaysOnTop !== false);
+                    desktopFloatWindowState.alwaysOnTop = next;
+                    try {
+                        if (typeof win.setAlwaysOnTop === 'function') {
+                            try { win.setAlwaysOnTop(next, next ? 'screen-saver' : 'normal'); }
+                            catch (e) { win.setAlwaysOnTop(next); }
+                        }
+                    } catch (e) {}
+                    desktopFloatWindowLastPayloadKey = '';
+                    Promise.resolve().then(() => refreshDesktopMinimizedFloatWindow()).catch(() => {});
+                }
+            }, {
+                label: '关闭悬浮窗',
+                click: () => {
+                    desktopFloatWindowState.dismissed = true;
+                    try { win.hide(); } catch (e) {}
+                }
+            });
+            const menu = Menu.buildFromTemplate(template);
+            menu.popup({ window: win });
+        } catch (e) {}
     }
 
     function getDesktopFloatWindowTimeText() {
@@ -20786,7 +20860,6 @@ body {
     flex-direction: column;
     gap: 4px;
     user-select: none;
-    -webkit-app-region: drag;
 }
 .topline {
     display: flex;
@@ -20898,6 +20971,7 @@ try { __ipcRenderer = (__electron && __electron.ipcRenderer) || null; } catch (e
 var __payloadState = null;
 var __liveTimer = null;
 var __lastRequestedWidth = 0;
+var __draggingFloatWindow = false;
 
 function __formatSeconds(totalSeconds) {
     totalSeconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
@@ -21040,6 +21114,32 @@ window.__setTomatoFloatState = function (payload) {
         });
     }
     if (shell) {
+        shell.addEventListener('mousedown', function (e) {
+            if (e.button !== 0) return;
+            if (e.target && e.target.closest && e.target.closest('.toolbtn')) return;
+            if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
+            __draggingFloatWindow = true;
+            e.preventDefault();
+            try { __ipcRenderer.send('docktomato-float-window-command', 'drag-start', e.screenX, e.screenY); } catch (err) {}
+        });
+        window.addEventListener('mousemove', function (e) {
+            if (!__draggingFloatWindow) return;
+            e.preventDefault();
+            if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
+            try { __ipcRenderer.send('docktomato-float-window-command', 'drag-move', e.screenX, e.screenY); } catch (err) {}
+        });
+        window.addEventListener('mouseup', function () {
+            if (!__draggingFloatWindow) return;
+            __draggingFloatWindow = false;
+            if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
+            try { __ipcRenderer.send('docktomato-float-window-command', 'drag-end'); } catch (err) {}
+        });
+        window.addEventListener('blur', function () {
+            if (!__draggingFloatWindow) return;
+            __draggingFloatWindow = false;
+            if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
+            try { __ipcRenderer.send('docktomato-float-window-command', 'drag-end'); } catch (err) {}
+        });
         shell.addEventListener('mouseenter', __syncPinState);
         shell.addEventListener('mousedown', __syncPinState);
     }
@@ -21105,6 +21205,12 @@ window.__setTomatoFloatState = function (payload) {
                 });
             } catch (e) {}
             try {
+                win.webContents.on('context-menu', (event) => {
+                    try { event?.preventDefault?.(); } catch (e) {}
+                    showDesktopFloatWindowContextMenu(win);
+                });
+            } catch (e) {}
+            try {
                 win.webContents.on('ipc-message', (_event, channel, ...args) => {
                     if (channel !== 'docktomato-float-window-command') return;
                     const command = String(args?.[0] || '').trim();
@@ -21137,6 +21243,52 @@ window.__setTomatoFloatState = function (payload) {
                         if (Number.isFinite(requestedWidth) && requestedWidth > 0) {
                             resizeDesktopMinimizedFloatWindow(win, requestedWidth);
                         }
+                        return;
+                    }
+                    if (command === 'drag-start') {
+                        const startX = Number(args?.[1]);
+                        const startY = Number(args?.[2]);
+                        if (!Number.isFinite(startX) || !Number.isFinite(startY)) return;
+                        try {
+                            const bounds = win.getBounds();
+                            desktopFloatWindowDragState = {
+                                startX,
+                                startY,
+                                originX: Number(bounds?.x) || 0,
+                                originY: Number(bounds?.y) || 0,
+                                width: Number(bounds?.width) || DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT,
+                                height: Number(bounds?.height) || DESKTOP_FLOAT_WINDOW_HEIGHT
+                            };
+                        } catch (e) {
+                            desktopFloatWindowDragState = null;
+                        }
+                        return;
+                    }
+                    if (command === 'drag-move') {
+                        if (!desktopFloatWindowDragState) return;
+                        const cursorX = Number(args?.[1]);
+                        const cursorY = Number(args?.[2]);
+                        if (!Number.isFinite(cursorX) || !Number.isFinite(cursorY)) return;
+                        const x = Math.round(desktopFloatWindowDragState.originX + cursorX - desktopFloatWindowDragState.startX);
+                        const y = Math.round(desktopFloatWindowDragState.originY + cursorY - desktopFloatWindowDragState.startY);
+                        try {
+                            win.setBounds({
+                                x,
+                                y,
+                                width: desktopFloatWindowDragState.width,
+                                height: desktopFloatWindowDragState.height
+                            }, false);
+                            desktopFloatWindowState.bounds = {
+                                x,
+                                y,
+                                width: desktopFloatWindowDragState.width,
+                                height: desktopFloatWindowDragState.height
+                            };
+                        } catch (e) {}
+                        return;
+                    }
+                    if (command === 'drag-end') {
+                        desktopFloatWindowDragState = null;
                         return;
                     }
                     if (command === 'dismiss') {
