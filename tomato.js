@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      1.9.9
+// @version      2.0.0
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -3442,9 +3442,8 @@
     let routineStatsState = {
         range: 'today',
         selectionType: 'preset',
-        selectedDate: '',
-        selectedWeek: '',
-        selectedMonth: '',
+        selectedRangeStart: '',
+        selectedRangeEnd: '',
         includeUnrecorded: true,
         expandedGroups: {}
     };
@@ -12854,49 +12853,59 @@
     }
 
     async function handleTimerEndFromSyncOrLocal() {
-        const endType = timerMode === 'break' ? 'break-end' : 'tomato-end';
-        ensureSyncEndDialogOpen(endType, syncState?.startTime || startTime, Math.max(1, Math.round(currentDuration * 60)));
-        await recordEndTime(false, false, { isCompleted: timerMode === 'countdown' });
-        
-        // 🔧 v9.5：番茄钟完成后，恢复 sessionId 供休息记录使用
-        if (timerMode === 'countdown' && pendingBreakSessionId) {
-            currentSessionId = pendingBreakSessionId;
-            Logger.info('🔍 handleTimerEndFromSyncOrLocal: 恢复番茄钟 sessionId =', currentSessionId);
-        }
-        
-        stopTimer();
-        remainingSeconds = 0;
-        updateDisplay();
-
-        // 🔧 播放霓虹完成动画
-        const isNeonMode = userSettings.appearance?.enableNeonEffect && userSettings.appearance?.theme !== 'default';
-        if (isNeonMode && progressBar) {
-            const progress = progressBar;
-            const currentWidth = progress.style.width;
-            progress.style.setProperty('--current-width', currentWidth);
-            progress.classList.add('completing');
-
-            // 动画结束后移除类
-            setTimeout(() => {
-                progress.classList.remove('completing');
-            }, 2000);
-        }
-
-        try {
-            if (timerMode === 'break') {
-                await playEndSound('break-end');
-            } else {
-                await playEndSound('work-end');
+        return withTimerFinalizationLock('timer-end', async () => {
+            const endMode = timerMode;
+            const endType = endMode === 'break' ? 'break-end' : 'tomato-end';
+            if (timerId !== null) {
+                clearInterval(timerId);
+                timerId = null;
             }
-        } catch (audioError) {
-            Logger.warn('🍅 播放提示音失败:', audioError);
-        }
+            isRunning = false;
+            isTimerPaused = false;
 
-        if (timerMode === 'break') {
-            showToastDialog('⏰ 休息结束', '继续你的计时吧！', 'break-end', currentTaskBlockId, currentTaskBlockName);
-        } else {
-            showToastDialog('🍅 时间到！', '该休息一下了～', 'tomato-end', currentTaskBlockId, currentTaskBlockName);
-        }
+            ensureSyncEndDialogOpen(endType, syncState?.startTime || startTime, Math.max(1, Math.round(currentDuration * 60)));
+            await recordEndTime(false, false, { isCompleted: endMode === 'countdown' });
+
+            // 🔧 v9.5：番茄钟完成后，恢复 sessionId 供休息记录使用
+            if (endMode === 'countdown' && pendingBreakSessionId) {
+                currentSessionId = pendingBreakSessionId;
+                Logger.info('🔍 handleTimerEndFromSyncOrLocal: 恢复番茄钟 sessionId =', currentSessionId);
+            }
+
+            await stopTimer();
+            remainingSeconds = 0;
+            updateDisplay();
+
+            // 🔧 播放霓虹完成动画
+            const isNeonMode = userSettings.appearance?.enableNeonEffect && userSettings.appearance?.theme !== 'default';
+            if (isNeonMode && progressBar) {
+                const progress = progressBar;
+                const currentWidth = progress.style.width;
+                progress.style.setProperty('--current-width', currentWidth);
+                progress.classList.add('completing');
+
+                // 动画结束后移除类
+                setTimeout(() => {
+                    progress.classList.remove('completing');
+                }, 2000);
+            }
+
+            try {
+                if (endMode === 'break') {
+                    await playEndSound('break-end');
+                } else {
+                    await playEndSound('work-end');
+                }
+            } catch (audioError) {
+                Logger.warn('🍅 播放提示音失败:', audioError);
+            }
+
+            if (endMode === 'break') {
+                showToastDialog('⏰ 休息结束', '继续你的计时吧！', 'break-end', currentTaskBlockId, currentTaskBlockName);
+            } else {
+                showToastDialog('🍅 时间到！', '该休息一下了～', 'tomato-end', currentTaskBlockId, currentTaskBlockName);
+            }
+        });
     }
 
     // 🔧 新增：统一的本地计时器循环
@@ -13380,6 +13389,7 @@
     // 🔧 v9.5 新增：保存番茄钟完成后的 sessionId，供休息记录使用
     let pendingBreakSessionId = null;
     let isTimerFinalizing = false;
+    const recordEndTimeInFlightKeys = new Set();
 
     async function withTimerFinalizationLock(actionName, action) {
         if (isTimerFinalizing) {
@@ -13428,7 +13438,64 @@
             Boolean(record?.isCompleted) === Boolean(recordData.isCompleted)
         );
     }
-    
+
+    function isSameLogicalHistoryRecord(record, recordData) {
+        if (!record || !recordData) return false;
+        if (String(record?.start || '') !== String(recordData.start || '')) return false;
+        if (String(record?.mode || '') !== String(recordData.mode || '')) return false;
+        if (String(record?.taskBlockId || '') !== String(recordData.taskBlockId || '')) return false;
+        if (String(record?.routineButtonId || '') !== String(recordData.routineButtonId || '')) return false;
+        if (String(record?.databaseBlockId || '') !== String(recordData.databaseBlockId || '')) return false;
+        if (Boolean(record?.wasReset) !== Boolean(recordData.wasReset)) return false;
+
+        const recordHasCompleted = Object.prototype.hasOwnProperty.call(record, 'isCompleted');
+        const incomingHasCompleted = Object.prototype.hasOwnProperty.call(recordData, 'isCompleted');
+        if (recordHasCompleted && incomingHasCompleted && Boolean(record?.isCompleted) !== Boolean(recordData.isCompleted)) {
+            return false;
+        }
+        return true;
+    }
+
+    function findHistoryDuplicateIndex(records, recordData) {
+        const exactIndex = findExactHistoryDuplicateIndex(records, recordData);
+        if (exactIndex >= 0) return exactIndex;
+        const list = Array.isArray(records) ? records : [];
+        return list.findIndex(record => isSameLogicalHistoryRecord(record, recordData));
+    }
+
+    function normalizeTomatoRecordKeyPart(value) {
+        return String(value ?? '').trim().replace(/[|\r\n]+/g, '_');
+    }
+
+    function buildRecordEndTimeInFlightKey(startTimestamp, mode, taskBlockId, databaseBlockId, isReset, isCompleted) {
+        const start = String(startTimestamp || '').trim();
+        const m = String(mode || '').trim();
+        if (!start || !m) return '';
+        return [
+            start,
+            m,
+            taskBlockId || '',
+            databaseBlockId || '',
+            isReset ? 'reset' : 'normal',
+            isCompleted ? 'completed' : 'partial',
+        ].map(normalizeTomatoRecordKeyPart).join('|');
+    }
+
+    function buildTomatoTaskDurationApplyKey(recordData, fallbackTaskBlockId = '') {
+        const start = String(recordData?.start || '').trim();
+        const mode = String(recordData?.mode || '').trim();
+        const taskBlockId = String(recordData?.taskBlockId || fallbackTaskBlockId || '').trim();
+        if (!start || !mode || !taskBlockId) return '';
+        return [
+            start,
+            mode,
+            taskBlockId,
+            recordData?.databaseBlockId || '',
+            recordData?.wasReset ? 'reset' : 'normal',
+            recordData?.isCompleted ? 'completed' : 'partial',
+        ].map(normalizeTomatoRecordKeyPart).join('|');
+    }
+
     async function recordEndTime(isReset = false, isStopwatch = false, options = null) {
         const isCompleted = options?.isCompleted === true;
         const plannedDurationOverride = options?.plannedDurationOverride ?? null;
@@ -13502,6 +13569,22 @@
             finalElapsedMin = Math.floor(finalElapsedSec / 60);
         }
 
+        const inFlightTaskBlockId = (segmentTaskBlockId ?? currentTaskBlockId) || '';
+        const inFlightDatabaseBlockId = (segmentDatabaseBlockId ?? currentDatabaseBlockId) || '';
+        const recordEndTimeInFlightKey = buildRecordEndTimeInFlightKey(
+            startTimestamp,
+            timerMode,
+            inFlightTaskBlockId,
+            inFlightDatabaseBlockId,
+            isReset,
+            isCompleted
+        );
+        if (recordEndTimeInFlightKey && recordEndTimeInFlightKeys.has(recordEndTimeInFlightKey)) {
+            Logger.info('🔍 recordEndTime: 跳过正在保存的重复记录', { key: recordEndTimeInFlightKey });
+            return false;
+        }
+        if (recordEndTimeInFlightKey) recordEndTimeInFlightKeys.add(recordEndTimeInFlightKey);
+
         try {
             const records = await loadHistoryRecords();
             const durationMinToSave = finalElapsedMin;
@@ -13535,7 +13618,7 @@
                 currentSessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
                 Logger.info('🔍 recordEndTime: 生成新的 sessionId =', currentSessionId, ', shouldBeNewTomato =', shouldBeNewTomato, ', isResumingFromBreak =', isResumingFromBreak);
             }
-            
+
             const recordData = {
                 start: startTimestamp,
                 end: now.toISOString(),
@@ -13570,16 +13653,20 @@
             if (attachedLuminaRecords.length > 0) {
                 recordData.luminaRecords = attachedLuminaRecords;
             }
-            
+            const taskDurationApplyKey = buildTomatoTaskDurationApplyKey(recordData, currentTaskBlockId);
+
             let didAppendRecord = false;
+            let didCreateHistoryRecord = false;
             let didSaveHistoryRecords = false;
+            let didSkipHistoryForShortRecord = false;
 
             // 🔧 如果开启隐藏短记录：以秒为准，避免因分钟四舍五入导致“1分钟短记录”
             if (userSettings.hideShortRecords && Number(durationSecToSave || 0) < 60 && !hasLuminaHistoryRecords(recordData)) {
                 Logger.info('🔍 recordEndTime: 时长小于1分钟且开启隐藏短记录，跳过保存');
+                didSkipHistoryForShortRecord = true;
             } else {
                 const pushRecordIfNeeded = () => {
-                    const duplicateIndex = findExactHistoryDuplicateIndex(records, recordData);
+                    const duplicateIndex = findHistoryDuplicateIndex(records, recordData);
                     if (duplicateIndex >= 0) {
                         if (hasLuminaHistoryRecords(recordData) && appendLuminaRecordToHistoryRecord(records[duplicateIndex], recordData.luminaRecords[0])) {
                             const extra = recordData.luminaRecords.slice(1);
@@ -13594,6 +13681,7 @@
                         return false;
                     }
                     records.push(recordData);
+                    didCreateHistoryRecord = true;
                     return true;
                 };
                 if (timerMode === 'break' || timerMode === 'stopwatch-break') {
@@ -13654,23 +13742,26 @@
             }
 
             Logger.info('🔍 自定义属性更新检查:', { taskBlockId: currentTaskBlockId, durationSecToSave, timerMode });
-            if (currentTaskBlockId && durationSecToSave > 0 && timerMode !== 'break' && timerMode !== 'stopwatch-break') {
+            const shouldUpdateTaskDurationAttrs = didSkipHistoryForShortRecord || (didCreateHistoryRecord && didSaveHistoryRecords);
+            const shouldUpdateTomatoCount = currentTaskBlockId && timerMode === 'countdown' && isCompleted && !isReset && !isStopwatch && didCreateHistoryRecord && didSaveHistoryRecords;
+            if (currentTaskBlockId && durationSecToSave > 0 && timerMode !== 'break' && timerMode !== 'stopwatch-break' && shouldUpdateTaskDurationAttrs) {
                 // 🔧 修复：传递秒数以便更精确地处理小于1分钟的记录
                 // 🔧 修复：添加 await 确保异步函数正确执行
                 Logger.info('🔍 调用 updateTaskBlockTomatoTime:', currentTaskBlockId, durationSecToSave);
-                await updateTaskBlockTomatoTime(currentTaskBlockId, durationSecToSave);
+                await updateTaskBlockTomatoTime(currentTaskBlockId, durationSecToSave, {
+                    applyKey: taskDurationApplyKey,
+                    countDelta: shouldUpdateTomatoCount ? 1 : 0,
+                });
                 Logger.info('🔍 updateTaskBlockTomatoTime 执行完成');
             } else {
                 Logger.info('🔍 跳过自定义属性更新，条件不满足:', {
                     hasTaskBlockId: !!currentTaskBlockId,
                     durationSecToSave,
-                    timerMode
+                    timerMode,
+                    didCreateHistoryRecord,
+                    didSaveHistoryRecords,
+                    didSkipHistoryForShortRecord
                 });
-            }
-            if (currentTaskBlockId && timerMode === 'countdown' && isCompleted && !isReset && !isStopwatch && didAppendRecord) {
-                Logger.info('🔍 调用 updateTaskBlockTomatoCount:', currentTaskBlockId);
-                await updateTaskBlockTomatoCount(currentTaskBlockId, 1);
-                Logger.info('🔍 updateTaskBlockTomatoCount 执行完成');
             }
         } catch (e) {
             // 错误日志保留用于调试
@@ -13692,6 +13783,8 @@
         segmentDatabaseBlockId = null;
         currentStartTimestamp = null;
         currentStartTimeMs = 0;
+        if (recordEndTimeInFlightKey) recordEndTimeInFlightKeys.delete(recordEndTimeInFlightKey);
+        return true;
     }
 
     /**
@@ -16216,58 +16309,32 @@ function calculateWeeklyStats(dailyStatsArray) {
             };
         };
 
-        const getMonthEnd = (year, monthIndex0) => {
-            const d = new Date(year, monthIndex0 + 1, 0);
+        const parseDateKey = (value) => {
+            const m = String(value || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            if (!m) return null;
+            const year = Number(m[1]);
+            const month = Number(m[2]);
+            const day = Number(m[3]);
+            const d = new Date(year, month - 1, day);
+            if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+            return d;
+        };
+
+        const endOfDay = (date) => {
+            const d = new Date(date);
             d.setHours(23, 59, 59, 999);
             return d;
         };
 
-        const getISOWeekStart = (year, week) => {
-            const jan4 = new Date(year, 0, 4);
-            const week1Start = getWeekStartDate(jan4);
-            const start = new Date(week1Start);
-            start.setDate(start.getDate() + (week - 1) * 7);
-            start.setHours(0, 0, 0, 0);
-            return start;
-        };
-
-        if (type === 'date') {
-            const v = String(routineStatsState?.selectedDate || '').trim();
-            if (v && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
-                const start = new Date(v);
-                start.setHours(0, 0, 0, 0);
-                const end = new Date(start);
-                end.setHours(23, 59, 59, 999);
-                return toRange(`日期 ${v}`, start, end);
-            }
-        }
-
-        if (type === 'week') {
-            const v = String(routineStatsState?.selectedWeek || '').trim();
-            const m = v.match(/^(\d{4})-W(\d{2})$/);
-            if (m) {
-                const year = Number(m[1]);
-                const week = Number(m[2]);
-                if (Number.isFinite(year) && Number.isFinite(week) && week >= 1 && week <= 53) {
-                    const start = getISOWeekStart(year, week);
-                    const end = getWeekEndDate(start);
-                    return toRange(`周 ${v}`, start, end);
-                }
-            }
-        }
-
-        if (type === 'month') {
-            const v = String(routineStatsState?.selectedMonth || '').trim();
-            const m = v.match(/^(\d{4})-(\d{2})$/);
-            if (m) {
-                const year = Number(m[1]);
-                const month = Number(m[2]);
-                if (Number.isFinite(year) && Number.isFinite(month) && month >= 1 && month <= 12) {
-                    const start = new Date(year, month - 1, 1);
-                    start.setHours(0, 0, 0, 0);
-                    const end = getMonthEnd(year, month - 1);
-                    return toRange(`月 ${v}`, start, end);
-                }
+        if (type === 'range') {
+            const startDate = parseDateKey(routineStatsState?.selectedRangeStart);
+            const endDate = parseDateKey(routineStatsState?.selectedRangeEnd);
+            if (startDate || endDate) {
+                const a = startDate || endDate;
+                const b = endDate || startDate;
+                const start = a.getTime() <= b.getTime() ? a : b;
+                const end = a.getTime() <= b.getTime() ? b : a;
+                return toRange('日期范围', start, endOfDay(end));
             }
         }
 
@@ -16628,9 +16695,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             align-items: center;
         `;
 
-        const sortedDates = (Array.isArray(historyState?.dateList) ? historyState.dateList.slice() : []).sort((a, b) => new Date(a) - new Date(b));
-        const minDate = sortedDates.length ? sortedDates[0] : '';
-        const maxDate = sortedDates.length ? sortedDates[sortedDates.length - 1] : '';
+        const todayForRange = formatDateKey(new Date());
 
         const mkLabel = (text) => {
             const t = document.createElement('div');
@@ -16656,34 +16721,65 @@ function calculateWeeklyStats(dailyStatsArray) {
             return input;
         };
 
-        const dateLabel = mkLabel('日期');
-        const dateInput = mkInput('date', routineStatsState?.selectedDate || '');
-        if (minDate) dateInput.min = minDate;
-        if (maxDate) dateInput.max = maxDate;
-        dateInput.onchange = () => {
-            routineStatsState.selectionType = 'date';
-            routineStatsState.selectedDate = dateInput.value;
+        const rangeModeActive = (routineStatsState?.selectionType || 'preset') === 'range';
+        const rangeStartValue = rangeModeActive
+            ? String(routineStatsState?.selectedRangeStart || range.start || '').trim()
+            : range.start;
+        const rangeEndValue = rangeModeActive
+            ? String(routineStatsState?.selectedRangeEnd || range.end || '').trim()
+            : range.end;
+        const rangeLabel = mkLabel('日期范围');
+        const rangeInputs = document.createElement('div');
+        rangeInputs.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+        const rangeStartInput = mkInput('date', rangeStartValue);
+        const rangeEndInput = mkInput('date', rangeEndValue);
+        rangeStartInput.max = todayForRange;
+        rangeEndInput.min = rangeStartValue || '';
+        rangeEndInput.max = todayForRange;
+        rangeStartInput.style.minWidth = '128px';
+        rangeEndInput.style.minWidth = '128px';
+        rangeStartInput.setAttribute('aria-label', '开始日期');
+        rangeEndInput.setAttribute('aria-label', '结束日期');
+        const rangeSep = document.createElement('span');
+        rangeSep.textContent = '至';
+        rangeSep.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);';
+        const applyDateRange = (changedSide) => {
+            let startValue = String(rangeStartInput.value || '').trim();
+            let endValue = String(rangeEndInput.value || '').trim();
+            if (!startValue && !endValue) {
+                routineStatsState.selectionType = 'preset';
+                routineStatsState.selectedRangeStart = '';
+                routineStatsState.selectedRangeEnd = '';
+            } else {
+                if (startValue && !endValue) {
+                    endValue = startValue;
+                    rangeEndInput.value = endValue;
+                }
+                if (endValue && !startValue) {
+                    startValue = endValue;
+                    rangeStartInput.value = startValue;
+                }
+                if (startValue && endValue && startValue > endValue) {
+                    if (changedSide === 'start') {
+                        endValue = startValue;
+                        rangeEndInput.value = endValue;
+                    } else {
+                        startValue = endValue;
+                        rangeStartInput.value = startValue;
+                    }
+                }
+                routineStatsState.selectionType = 'range';
+                routineStatsState.selectedRangeStart = startValue;
+                routineStatsState.selectedRangeEnd = endValue;
+            }
             const contentArea = document.getElementById('tomy-tomato-history-content');
             if (contentArea) showPage('routine');
         };
-
-        const weekLabel = mkLabel('周');
-        const weekInput = mkInput('week', routineStatsState?.selectedWeek || '');
-        weekInput.onchange = () => {
-            routineStatsState.selectionType = 'week';
-            routineStatsState.selectedWeek = weekInput.value;
-            const contentArea = document.getElementById('tomy-tomato-history-content');
-            if (contentArea) showPage('routine');
-        };
-
-        const monthLabel = mkLabel('月');
-        const monthInput = mkInput('month', routineStatsState?.selectedMonth || '');
-        monthInput.onchange = () => {
-            routineStatsState.selectionType = 'month';
-            routineStatsState.selectedMonth = monthInput.value;
-            const contentArea = document.getElementById('tomy-tomato-history-content');
-            if (contentArea) showPage('routine');
-        };
+        rangeStartInput.onchange = () => applyDateRange('start');
+        rangeEndInput.onchange = () => applyDateRange('end');
+        rangeInputs.appendChild(rangeStartInput);
+        rangeInputs.appendChild(rangeSep);
+        rangeInputs.appendChild(rangeEndInput);
 
         const resetBtn = document.createElement('button');
         resetBtn.textContent = '使用快捷范围';
@@ -16719,12 +16815,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         toggleLabel.appendChild(toggle);
         toggleLabel.appendChild(toggleText);
 
-        controlPanel.appendChild(dateLabel);
-        controlPanel.appendChild(dateInput);
-        controlPanel.appendChild(weekLabel);
-        controlPanel.appendChild(weekInput);
-        controlPanel.appendChild(monthLabel);
-        controlPanel.appendChild(monthInput);
+        controlPanel.appendChild(rangeLabel);
+        controlPanel.appendChild(rangeInputs);
         controlPanel.appendChild(resetBtn);
         controlPanel.appendChild(toggleLabel);
         container.appendChild(controlPanel);
@@ -23999,6 +24091,42 @@ window.__setTomatoFloatState = function (payload) {
         return attrRows?.taskAttrs?.[key] ?? '';
     }
 
+    const TOMATO_TASK_DURATION_APPLIED_ATTR = 'custom-tomato-applied-records';
+    const TOMATO_TASK_DURATION_APPLIED_LIMIT = 80;
+
+    function normalizeTomatoTaskDurationAppliedKeys(value) {
+        const raw = String(value ?? '').trim();
+        if (!raw) return [];
+        let parsed = null;
+        try {
+            parsed = JSON.parse(raw);
+        } catch (e) {}
+        const source = Array.isArray(parsed)
+            ? parsed
+            : (parsed && Array.isArray(parsed.keys) ? parsed.keys : raw.split(/[\n,]+/));
+        const seen = new Set();
+        const out = [];
+        source.forEach((item) => {
+            const key = String(item ?? '').trim();
+            if (!key || seen.has(key)) return;
+            seen.add(key);
+            out.push(key);
+        });
+        return out.slice(0, TOMATO_TASK_DURATION_APPLIED_LIMIT);
+    }
+
+    function serializeTomatoTaskDurationAppliedKeys(currentKeys, nextKey) {
+        const seen = new Set();
+        const out = [];
+        [nextKey, ...normalizeTomatoTaskDurationAppliedKeys(currentKeys)].forEach((item) => {
+            const key = String(item ?? '').trim();
+            if (!key || seen.has(key)) return;
+            seen.add(key);
+            out.push(key);
+        });
+        return JSON.stringify(out.slice(0, TOMATO_TASK_DURATION_APPLIED_LIMIT));
+    }
+
     function dispatchTomatoTaskAttrUpdated(context, attrKey, value, extra = {}) {
         const ctx = context && typeof context === 'object' ? context : {};
         const requestedTaskId = String(ctx.requestedTaskId || ctx.taskId || ctx.writeId || '').trim();
@@ -24059,18 +24187,21 @@ window.__setTomatoFloatState = function (payload) {
     }
 
     // ✅ 修复版本：更新任务块的番茄时间属性 - 增加详细的错误处理
-    async function updateTaskBlockTomatoTime(blockId, durationSeconds) {
+    async function updateTaskBlockTomatoTime(blockId, durationSeconds, options = {}) {
         // 🔧 修复：参数改为秒数，以便更精确地处理小于1分钟的记录
         if (!blockId || !durationSeconds || durationSeconds <= 0) {
             Logger.info('🔍 更新任务块自定义属性: 参数无效', { blockId, durationSeconds });
-            return;
+            return false;
         }
         // 检查是否启用任务块番茄时间功能
         if (userSettings.taskBlockTomatoTime?.enabled === false) {
             Logger.info('🔍 任务块番茄时间功能已禁用，跳过更新');
-            return;
+            return false;
         }
 
+        const opts = (options && typeof options === 'object') ? options : {};
+        const applyKey = String(opts.applyKey || '').trim();
+        const countDelta = Number(opts.countDelta || 0);
         const durationMinutes = durationSeconds / 60;
         Logger.info('🔍 更新任务块自定义属性:', {
             blockId,
@@ -24083,17 +24214,26 @@ window.__setTomatoFloatState = function (payload) {
         const hourAttrName = config.hourAttrName || 'custom-tomato-time';
         const enableMinuteAttr = config.enableMinuteAttr === true;
         const minuteAttrName = config.minuteAttrName || 'custom-tomato-minutes';
+        const enableCountAttr = config.enableCountAttr !== false;
+        const countAttrName = config.countAttrName || 'custom-tomato-count';
 
-        Logger.info('🔍 属性配置:', { enableHourAttr, hourAttrName, enableMinuteAttr, minuteAttrName });
+        Logger.info('🔍 属性配置:', { enableHourAttr, hourAttrName, enableMinuteAttr, minuteAttrName, enableCountAttr, countAttrName });
 
         try {
             const attrContext = await resolveTomatoTaskAttrContext(blockId);
             const writeId = String(attrContext.writeId || '').trim();
             if (!writeId) {
                 Logger.warn('⚠️ 未解析到任务属性宿主，跳过更新:', blockId);
-                return;
+                return false;
             }
             const attrRows = await getTomatoTaskAttrRows(attrContext);
+            const appliedKeys = applyKey
+                ? normalizeTomatoTaskDurationAppliedKeys(readTomatoAttrValue(attrRows, TOMATO_TASK_DURATION_APPLIED_ATTR))
+                : [];
+            if (applyKey && appliedKeys.includes(applyKey)) {
+                Logger.info('🔍 任务块番茄耗时已应用过，跳过重复累加:', { blockId, applyKey });
+                return false;
+            }
 
             // 构建要更新的属性
             const setAttrs = {};
@@ -24122,27 +24262,42 @@ window.__setTomatoFloatState = function (payload) {
                     setAttrs[minuteAttrName] = newMinuteValue.toFixed(2);
                     updateCount++;
                 }
-            }
 
+                if (enableCountAttr && Number.isFinite(countDelta) && countDelta !== 0) {
+                    const currentCount = parseInt(String(readTomatoAttrValue(attrRows, countAttrName) ?? '').trim(), 10);
+                    const nextCount = Math.max(0, (Number.isFinite(currentCount) ? currentCount : 0) + Math.round(countDelta));
+                    setAttrs[countAttrName] = String(nextCount);
+                    updateCount++;
+                }
+            }
             // 如果没有要更新的属性，直接返回
             if (updateCount === 0) {
                 Logger.info('🔍 没有要更新的属性');
-                return;
+                return false;
+            }
+            if (applyKey) {
+                setAttrs[TOMATO_TASK_DURATION_APPLIED_ATTR] = serializeTomatoTaskDurationAppliedKeys(appliedKeys, applyKey);
             }
 
-            const saved = await persistTomatoTaskAttrs(attrContext, setAttrs);
+            const saved = await persistTomatoTaskAttrs(attrContext, setAttrs, applyKey ? { useTaskHorizon: false } : {});
             if (saved) {
                 Logger.info(`✅ 任务块 ${writeId} 番茄时间已更新`);
                 Logger.info(`   - ${hourAttrName}: ${setAttrs[hourAttrName]}小时`);
                 if (enableMinuteAttr) {
                     Logger.info(`   - ${minuteAttrName}: ${setAttrs[minuteAttrName]}分钟`);
                 }
+                if (Object.prototype.hasOwnProperty.call(setAttrs, countAttrName)) {
+                    Logger.info(`   - ${countAttrName}: ${setAttrs[countAttrName]}个`);
+                }
+                return true;
             } else {
                 Logger.warn('⚠️ 设置任务块属性失败:', writeId);
+                return false;
             }
 
         } catch (error) {
             Logger.error('❌ 更新任务块番茄时间失败:', { blockId, error: error?.message || error });
+            return false;
         }
     }
 
