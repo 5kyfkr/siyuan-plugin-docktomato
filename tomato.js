@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      2.0.0
+// @version      2.0.1
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -117,6 +117,20 @@
     const DEFAULT_TOMATO_DURATIONS = [5, 15, 25, 30, 45, 60, 90, 120];
     const DEFAULT_BREAK_DURATIONS = [5, 10, 15, 30];
     const DEFAULT_TOMATO_TIME = 30; // 默认番茄时间（分钟）
+    const DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH = 95;
+    const MIN_DESKTOP_FLOAT_WINDOW_WIDTH = 80;
+    const MAX_DESKTOP_FLOAT_WINDOW_WIDTH = 180;
+    const DEFAULT_DESKTOP_FLOAT_WINDOW_TOP_PADDING = 4;
+    const MIN_DESKTOP_FLOAT_WINDOW_TOP_PADDING = 0;
+    const MAX_DESKTOP_FLOAT_WINDOW_TOP_PADDING = 12;
+    const DEFAULT_DESKTOP_FLOAT_WINDOW_COLOR_MODE = 'dark';
+    const DEFAULT_DESKTOP_FLOAT_WINDOW_OPACITY = 1;
+    const MIN_DESKTOP_FLOAT_WINDOW_OPACITY = 0.35;
+    const MAX_DESKTOP_FLOAT_WINDOW_OPACITY = 1;
+    const DESKTOP_FLOAT_WINDOW_COLOR_MODES = ['follow', 'dark', 'light'];
+    const DEFAULT_TIMER_STYLE = 'classic';
+    const TIMER_STYLE_CIRCULAR = 'circular';
+    const TIMER_STYLE_VALUES = ['classic', TIMER_STYLE_CIRCULAR];
     const DEVICE_NOTIFICATION_CHANNEL = 'siyuan-plugin-docktomato';
 
     const PLUGIN_STORAGE_PARENT_DIR = '/data/storage/petal';
@@ -2198,6 +2212,11 @@
             enableMobileSupport: DEFAULT_ENABLE_MOBILE_SUPPORT,
             showMobileBreadcrumbButton: true,
             enableDesktopMinimizedFloatWindow: true,
+            enableDesktopFloatWindowAlwaysVisible: false,
+            desktopFloatWindowDefaultWidth: DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH,
+            desktopFloatWindowTopPadding: DEFAULT_DESKTOP_FLOAT_WINDOW_TOP_PADDING,
+            desktopFloatWindowColorMode: DEFAULT_DESKTOP_FLOAT_WINDOW_COLOR_MODE,
+            desktopFloatWindowOpacity: DEFAULT_DESKTOP_FLOAT_WINDOW_OPACITY,
             enableDesktopMinimizedFloatWindowPausedOrBreak: false,
             enableFocusMode: true,
             focusModeDimOpacity: 0.5,
@@ -2263,7 +2282,8 @@
             autoSwitchTheme: false,     // 是否根据时间自动切换主题
             customColor: '#ff6b9d',     // 自定义主颜色
             showIndicator: true,        // 是否显示进度指示器
-            enableStopwatchBar: true    // 是否启用正计时进度条
+            enableStopwatchBar: true,   // 是否启用正计时进度条
+            timerStyle: DEFAULT_TIMER_STYLE // 计时显示样式: 'classic'(现有样式) | 'circular'(圆形计时)
         },
         timeline: {
             enabled: false,
@@ -2319,6 +2339,42 @@
         return Array.isArray(fallback) ? fallback.slice() : [];
     };
 
+    const normalizeDesktopFloatWindowWidth = (value) => {
+        const width = Math.round(Number(value));
+        if (!Number.isFinite(width)) return DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH;
+        return Math.max(MIN_DESKTOP_FLOAT_WINDOW_WIDTH, Math.min(MAX_DESKTOP_FLOAT_WINDOW_WIDTH, width));
+    };
+
+    const normalizeDesktopFloatWindowTopPadding = (value) => {
+        const padding = Math.round(Number(value));
+        if (!Number.isFinite(padding)) return DEFAULT_DESKTOP_FLOAT_WINDOW_TOP_PADDING;
+        return Math.max(MIN_DESKTOP_FLOAT_WINDOW_TOP_PADDING, Math.min(MAX_DESKTOP_FLOAT_WINDOW_TOP_PADDING, padding));
+    };
+
+    const normalizeDesktopFloatWindowColorMode = (value) => {
+        const mode = String(value || '').trim().toLowerCase();
+        return DESKTOP_FLOAT_WINDOW_COLOR_MODES.includes(mode) ? mode : DEFAULT_DESKTOP_FLOAT_WINDOW_COLOR_MODE;
+    };
+
+    const normalizeDesktopFloatWindowOpacity = (value) => {
+        let opacity = Number(value);
+        if (!Number.isFinite(opacity)) return DEFAULT_DESKTOP_FLOAT_WINDOW_OPACITY;
+        if (opacity > 1) opacity = opacity / 100;
+        return Math.max(MIN_DESKTOP_FLOAT_WINDOW_OPACITY, Math.min(MAX_DESKTOP_FLOAT_WINDOW_OPACITY, opacity));
+    };
+
+    const normalizeTimerStyle = (value) => {
+        const style = String(value || '').trim().toLowerCase();
+        return TIMER_STYLE_VALUES.includes(style) ? style : DEFAULT_TIMER_STYLE;
+    };
+
+    const getTimerStyle = () => {
+        try { return normalizeTimerStyle(userSettings?.appearance?.timerStyle); } catch (e) { return DEFAULT_TIMER_STYLE; }
+    };
+
+    const isCircularTimerStyleEnabled = () => getTimerStyle() === TIMER_STYLE_CIRCULAR;
+    const isDesktopFloatWindowCircularTimerStyleEnabled = () => isCircularTimerStyleEnabled();
+
     let userSettingsAutoFixPending = false;
 
     const ensureUserSettings = () => {
@@ -2330,6 +2386,11 @@
         userSettings.main.enableMobileSupport = userSettings.main.enableMobileSupport !== false;
         if (typeof userSettings.main.showMobileBreadcrumbButton !== 'boolean') userSettings.main.showMobileBreadcrumbButton = true;
         if (typeof userSettings.main.enableDesktopMinimizedFloatWindow !== 'boolean') userSettings.main.enableDesktopMinimizedFloatWindow = true;
+        if (typeof userSettings.main.enableDesktopFloatWindowAlwaysVisible !== 'boolean') userSettings.main.enableDesktopFloatWindowAlwaysVisible = false;
+        userSettings.main.desktopFloatWindowDefaultWidth = normalizeDesktopFloatWindowWidth(userSettings.main.desktopFloatWindowDefaultWidth);
+        userSettings.main.desktopFloatWindowTopPadding = normalizeDesktopFloatWindowTopPadding(userSettings.main.desktopFloatWindowTopPadding);
+        userSettings.main.desktopFloatWindowColorMode = normalizeDesktopFloatWindowColorMode(userSettings.main.desktopFloatWindowColorMode);
+        userSettings.main.desktopFloatWindowOpacity = normalizeDesktopFloatWindowOpacity(userSettings.main.desktopFloatWindowOpacity);
         if (typeof userSettings.main.enableDesktopMinimizedFloatWindowPausedOrBreak !== 'boolean') userSettings.main.enableDesktopMinimizedFloatWindowPausedOrBreak = false;
         if (typeof userSettings.main.enableFocusMode !== 'boolean') userSettings.main.enableFocusMode = true;
         {
@@ -2358,6 +2419,33 @@
                 userSettingsAutoFixPending = true;
             }
         });
+
+        if (!userSettings.appearance || typeof userSettings.appearance !== 'object') userSettings.appearance = {};
+        if (!String(userSettings.appearance.theme || '').trim()) userSettings.appearance.theme = 'classic';
+        if (typeof userSettings.appearance.enableNeonEffect !== 'boolean') userSettings.appearance.enableNeonEffect = true;
+        if (typeof userSettings.appearance.enableBreathing !== 'boolean') userSettings.appearance.enableBreathing = true;
+        if (!['slow', 'normal', 'fast'].includes(String(userSettings.appearance.breathingSpeed || ''))) userSettings.appearance.breathingSpeed = 'normal';
+        {
+            const min = Number(userSettings.appearance.breathingMinOpacity);
+            userSettings.appearance.breathingMinOpacity = Number.isFinite(min) ? Math.max(0.05, Math.min(1, min)) : 0.5;
+            const max = Number(userSettings.appearance.breathingMaxOpacity);
+            userSettings.appearance.breathingMaxOpacity = Number.isFinite(max) ? Math.max(0.05, Math.min(1, max)) : 1;
+            if (userSettings.appearance.breathingMinOpacity > userSettings.appearance.breathingMaxOpacity) {
+                const tmp = userSettings.appearance.breathingMinOpacity;
+                userSettings.appearance.breathingMinOpacity = userSettings.appearance.breathingMaxOpacity;
+                userSettings.appearance.breathingMaxOpacity = tmp;
+            }
+        }
+        if (typeof userSettings.appearance.enableSmoothAnimation !== 'boolean') userSettings.appearance.enableSmoothAnimation = true;
+        {
+            const intensity = Number(userSettings.appearance.neonIntensity);
+            userSettings.appearance.neonIntensity = Number.isFinite(intensity) ? Math.max(0.2, Math.min(1, intensity)) : 0.8;
+        }
+        if (typeof userSettings.appearance.autoSwitchTheme !== 'boolean') userSettings.appearance.autoSwitchTheme = false;
+        if (typeof userSettings.appearance.customColor !== 'string') userSettings.appearance.customColor = '#ff6b9d';
+        if (typeof userSettings.appearance.showIndicator !== 'boolean') userSettings.appearance.showIndicator = true;
+        if (typeof userSettings.appearance.enableStopwatchBar !== 'boolean') userSettings.appearance.enableStopwatchBar = true;
+        userSettings.appearance.timerStyle = normalizeTimerStyle(userSettings.appearance.timerStyle);
 
         if (!userSettings.sync || typeof userSettings.sync !== 'object') userSettings.sync = {};
         userSettings.sync.enabled = userSettings.sync.enabled !== false;
@@ -2414,6 +2502,21 @@
     };
     const isDesktopMinimizedFloatWindowEnabled = () => {
         try { return !isMobileDevice() && userSettings?.main?.enableDesktopMinimizedFloatWindow !== false; } catch (e) { return false; }
+    };
+    const isDesktopFloatWindowAlwaysVisibleEnabled = () => {
+        try { return userSettings?.main?.enableDesktopFloatWindowAlwaysVisible === true; } catch (e) { return false; }
+    };
+    const getDesktopFloatWindowConfiguredWidth = () => {
+        try { return normalizeDesktopFloatWindowWidth(userSettings?.main?.desktopFloatWindowDefaultWidth); } catch (e) { return DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH; }
+    };
+    const getDesktopFloatWindowConfiguredTopPadding = () => {
+        try { return normalizeDesktopFloatWindowTopPadding(userSettings?.main?.desktopFloatWindowTopPadding); } catch (e) { return DEFAULT_DESKTOP_FLOAT_WINDOW_TOP_PADDING; }
+    };
+    const getDesktopFloatWindowConfiguredColorMode = () => {
+        try { return normalizeDesktopFloatWindowColorMode(userSettings?.main?.desktopFloatWindowColorMode); } catch (e) { return DEFAULT_DESKTOP_FLOAT_WINDOW_COLOR_MODE; }
+    };
+    const getDesktopFloatWindowConfiguredOpacity = () => {
+        try { return normalizeDesktopFloatWindowOpacity(userSettings?.main?.desktopFloatWindowOpacity); } catch (e) { return DEFAULT_DESKTOP_FLOAT_WINDOW_OPACITY; }
     };
     const isDesktopMinimizedFloatWindowPausedOrBreakEnabled = () => {
         try { return userSettings?.main?.enableDesktopMinimizedFloatWindowPausedOrBreak === true; } catch (e) { return false; }
@@ -4441,6 +4544,9 @@
         }, 5000);
     }
 
+    let expiredReminderNotificationTimer = null;
+    let lastExpiredReminderPopupKey = '';
+
     // 检测并显示过期提醒事项通知
     async function checkAndShowExpiredReminders() {
         try {
@@ -4456,8 +4562,23 @@
                 .filter(Boolean);
 
             if (expiredReminders.length > 0) {
+                const popupDayKey = formatDateKey(new Date());
+                const popupKey = [
+                    popupDayKey,
+                    ...expiredReminders
+                        .map(item => String(item?.blockId || item?.id || item?.blockName || '').trim())
+                        .filter(Boolean)
+                        .sort()
+                ].join('|');
+                if (popupKey && popupKey === lastExpiredReminderPopupKey) return;
+                lastExpiredReminderPopupKey = popupKey;
+                if (expiredReminderNotificationTimer) {
+                    clearTimeout(expiredReminderNotificationTimer);
+                    expiredReminderNotificationTimer = null;
+                }
                 // 延迟显示，让页面先渲染完成
-                setTimeout(() => {
+                expiredReminderNotificationTimer = setTimeout(() => {
+                    expiredReminderNotificationTimer = null;
                     showExpiredRemindersNotification(expiredReminders);
                 }, 500);
             }
@@ -4587,6 +4708,7 @@
     // 在初始化完成后调用
     setTimeout(async () => {
         await checkAndShowExpiredReminders();
+        lastExpiredCheckDate = formatDateKey(new Date());
         await updateReminderBadge();
 
         // 启动定时检查：每天早上8点检查过期事项
@@ -12727,6 +12849,466 @@
         return routineIcon || getDefaultTimerPrefix(mode);
     }
 
+    function getTimerTaskTextForDisplay() {
+        return String(currentTaskBlockName || syncState?.taskBlockName || '').trim()
+            || (currentTaskBlockId ? '关联任务' : (currentDatabaseBlockId ? '关联数据库' : '未关联任务'));
+    }
+
+    function getCircularTimerAccentColor(mode) {
+        if (mode === 'break' || mode === 'stopwatch-break') return 'var(--b3-theme-on-surface-light, #8a8f98)';
+        if (mode === 'stopwatch') return '#2fbf71';
+        return 'var(--b3-theme-primary, #1E88E5)';
+    }
+
+    function getTimerDisplayModel() {
+        const { running: effectiveRunning, paused: effectivePaused } = getEffectiveTimerActivity();
+        const effectiveActive = !!(effectiveRunning || effectivePaused);
+        const mode = String(timerMode || 'countdown');
+        const isStopwatchMode = mode === 'stopwatch' || mode === 'stopwatch-break';
+        const durationSeconds = Math.max(1, Math.round(Number(currentDuration) || 0) * 60);
+        let displaySeconds = 0;
+        let elapsedDisplaySeconds = 0;
+        let progress = 0;
+
+        if (isStopwatchMode) {
+            elapsedDisplaySeconds = Math.max(0, Math.floor(Number(elapsedSeconds) || 0));
+            if (mode === 'stopwatch') elapsedDisplaySeconds += Math.max(0, Math.floor(Number(stopwatchDisplayOffset) || 0));
+            displaySeconds = elapsedDisplaySeconds;
+            progress = (elapsedDisplaySeconds % 60) / 60;
+        } else {
+            const remaining = Math.max(0, Math.floor(Number((effectiveActive || remainingSeconds > 0) ? remainingSeconds : durationSeconds) || 0));
+            displaySeconds = remaining;
+            elapsedDisplaySeconds = Math.max(0, durationSeconds - remaining);
+            progress = Math.max(0, Math.min(1, elapsedDisplaySeconds / durationSeconds));
+        }
+
+        return {
+            mode,
+            prefix: getDisplayPrefixForTimer(mode),
+            timeText: formatTime(displaySeconds),
+            displaySeconds,
+            elapsedDisplaySeconds,
+            durationSeconds,
+            progress,
+            running: !!effectiveRunning,
+            paused: !!effectivePaused,
+            active: effectiveActive,
+            isStopwatchMode,
+            taskText: getTimerTaskTextForDisplay()
+        };
+    }
+
+    function addCircularTimerStyles() {
+        if (document.getElementById('tomato-circular-timer-style')) return;
+        const style = document.createElement('style');
+        style.id = 'tomato-circular-timer-style';
+        style.textContent = `
+            #siyuan-tomato-timer.tomato-circular-widget {
+                overflow: visible;
+                gap: 4px;
+            }
+            .tomato-timer-display-shell[data-timer-style="circular"] {
+                display: inline-flex !important;
+                align-items: center;
+                justify-content: center;
+                overflow: visible;
+                vertical-align: middle;
+                pointer-events: auto !important;
+            }
+            .tomato-circular-timer {
+                --tomato-circular-size: 42px;
+                --tomato-circular-ring: var(--b3-theme-primary, #1E88E5);
+                --tomato-circular-track: var(--b3-theme-surface-light, rgba(127,127,127,0.22));
+                --tomato-circular-action-width: 178px;
+                --tomato-circular-action-overlap: 14px;
+                position: relative;
+                width: var(--tomato-circular-size);
+                height: var(--tomato-circular-size);
+                display: inline-grid;
+                place-items: center;
+                border-radius: 50%;
+                isolation: isolate;
+                overflow: visible;
+                color: var(--b3-theme-on-background, #20242a);
+                cursor: pointer;
+            }
+            .tomato-circular-timer--mobile {
+                --tomato-circular-size: 50px;
+                --tomato-circular-action-width: 188px;
+            }
+            .tomato-circular-timer--small-mobile {
+                --tomato-circular-size: 42px;
+                --tomato-circular-action-width: 176px;
+            }
+            .tomato-circular-timer::before {
+                content: "";
+                position: absolute;
+                inset: 3px;
+                border-radius: 50%;
+                background:
+                    radial-gradient(circle at 42% 32%, rgba(255,255,255,0.28), transparent 34%),
+                    var(--b3-theme-background, #f7f8fa);
+                box-shadow:
+                    inset 0 0 0 1px rgba(127,127,127,0.12),
+                    inset 0 -5px 12px rgba(0,0,0,0.08),
+                    0 5px 13px rgba(0,0,0,0.16);
+                z-index: 1;
+            }
+            .tomato-circular-ring {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+                z-index: 2;
+                overflow: visible;
+            }
+            .tomato-circular-ring-track,
+            .tomato-circular-ring-progress {
+                fill: none;
+                stroke-width: 3.8;
+            }
+            .tomato-circular-ring-track {
+                stroke: var(--tomato-circular-track);
+            }
+            .tomato-circular-ring-progress {
+                stroke: var(--tomato-circular-ring);
+                stroke-linecap: round;
+                transform: rotate(-90deg);
+                transform-origin: 50% 50%;
+                transition: stroke-dashoffset 240ms ease-out, stroke 160ms ease;
+            }
+            .tomato-circular-ticks {
+                position: absolute;
+                inset: 0;
+                border-radius: 50%;
+                z-index: 2;
+                pointer-events: none;
+                opacity: 0;
+                transition: opacity 140ms ease;
+            }
+            .tomato-circular-timer[data-mode="stopwatch"] .tomato-circular-ring,
+            .tomato-circular-timer[data-mode="stopwatch-break"] .tomato-circular-ring {
+                opacity: 0;
+            }
+            .tomato-circular-timer[data-mode="stopwatch"] .tomato-circular-ticks,
+            .tomato-circular-timer[data-mode="stopwatch-break"] .tomato-circular-ticks {
+                opacity: 1;
+            }
+            .tomato-circular-tick {
+                position: absolute;
+                left: 50%;
+                top: 50%;
+                width: 1px;
+                height: calc(var(--tomato-circular-size) * 0.09);
+                border-radius: 999px;
+                background: rgba(127,127,127,0.26);
+                opacity: 0.24;
+                transform-origin: center center;
+                transition: opacity 120ms linear, background-color 120ms linear, height 120ms ease, box-shadow 120ms ease;
+            }
+            .tomato-circular-tick:nth-child(5n + 1) {
+                height: calc(var(--tomato-circular-size) * 0.11);
+                opacity: 0.34;
+            }
+            .tomato-circular-tick.is-tail {
+                background: var(--tomato-circular-ring);
+            }
+            .tomato-circular-tick.is-head {
+                background: var(--tomato-circular-ring);
+                box-shadow: 0 0 0 2px rgba(47, 191, 113, 0.16);
+            }
+            .tomato-circular-face {
+                position: relative;
+                z-index: 3;
+                width: 72%;
+                height: 72%;
+                border-radius: 50%;
+                display: grid;
+                place-items: center;
+                text-align: center;
+                pointer-events: none;
+            }
+            .tomato-circular-icon {
+                display: none;
+            }
+            .tomato-circular-time {
+                max-width: 100%;
+                color: var(--b3-theme-on-background, #20242a);
+                font-family: var(--b3-font-family-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+                font-size: 10px;
+                line-height: 1;
+                font-weight: 650;
+                font-variant-numeric: tabular-nums;
+                font-feature-settings: "tnum" 1;
+                white-space: nowrap;
+                transform: scaleX(0.9);
+            }
+            .tomato-circular-timer[data-long-time="1"] .tomato-circular-time {
+                font-size: 8px;
+                transform: scaleX(0.82);
+            }
+            .tomato-circular-actions {
+                position: absolute;
+                top: 50%;
+                left: calc(100% - var(--tomato-circular-action-overlap));
+                width: var(--tomato-circular-action-width);
+                min-height: 54px;
+                display: grid;
+                grid-template-rows: auto auto;
+                gap: 3px;
+                align-content: center;
+                padding: 7px 10px 7px 24px;
+                border: 1px solid var(--b3-theme-surface-light, rgba(127,127,127,0.2));
+                border-radius: 999px;
+                background: var(--b3-theme-background, #fff);
+                color: var(--b3-theme-on-background, #20242a);
+                box-shadow: 0 10px 24px rgba(0,0,0,0.18);
+                opacity: 0;
+                pointer-events: none;
+                transform: translate(8px, -50%) scale(0.98);
+                transition: opacity 150ms ease, transform 180ms ease;
+                z-index: 0;
+            }
+            .tomato-circular-timer[data-actions-side="left"] .tomato-circular-actions {
+                left: auto;
+                right: calc(100% - var(--tomato-circular-action-overlap));
+                padding: 7px 24px 7px 10px;
+                transform: translate(-8px, -50%) scale(0.98);
+            }
+            .tomato-circular-timer:hover .tomato-circular-actions,
+            .tomato-circular-timer:focus-within .tomato-circular-actions,
+            .tomato-circular-timer.show-actions .tomato-circular-actions {
+                opacity: 1;
+                pointer-events: auto;
+                transform: translate(0, -50%) scale(1);
+            }
+            .tomato-circular-action-buttons {
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+                gap: 4px;
+                min-width: 0;
+            }
+            .tomato-circular-action-btn {
+                width: 24px;
+                height: 24px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border: 0;
+                border-radius: 6px;
+                background: transparent;
+                color: var(--b3-theme-on-surface, #5d6672);
+                cursor: pointer;
+                padding: 0;
+                font-size: 13px;
+                line-height: 1;
+            }
+            .tomato-circular-action-btn:hover,
+            .tomato-circular-action-btn:focus-visible {
+                background: var(--b3-theme-surface-light, rgba(127,127,127,0.14));
+                color: var(--tomato-circular-ring);
+                outline: none;
+            }
+            .tomato-circular-action-task {
+                min-width: 0;
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                font-size: 11px;
+                line-height: 1.2;
+                font-weight: 600;
+                color: var(--b3-theme-on-surface, #3b4450);
+            }
+            .tomato-circular-task-icon {
+                flex: 0 0 auto;
+                color: var(--tomato-circular-ring);
+                font-size: 12px;
+            }
+            .tomato-circular-task-text {
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .tomato-circular-ring-progress,
+                .tomato-circular-tick,
+                .tomato-circular-actions {
+                    transition: none !important;
+                }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function createCircularTimerElement(surface = 'status') {
+        addCircularTimerStyles();
+        const timer = document.createElement('span');
+        timer.className = `tomato-circular-timer tomato-circular-timer--${surface}`;
+        timer.tabIndex = 0;
+        timer.innerHTML = `
+            <svg class="tomato-circular-ring" viewBox="0 0 48 48" aria-hidden="true">
+                <circle class="tomato-circular-ring-track" cx="24" cy="24" r="20"></circle>
+                <circle class="tomato-circular-ring-progress" cx="24" cy="24" r="20"></circle>
+            </svg>
+            <span class="tomato-circular-ticks" aria-hidden="true"></span>
+            <span class="tomato-circular-face">
+                <span class="tomato-circular-icon"></span>
+                <span class="tomato-circular-time">00:00</span>
+            </span>
+            <span class="tomato-circular-actions">
+                <span class="tomato-circular-action-buttons">
+                    <button class="tomato-circular-action-btn tomato-circular-toggle" type="button" title="暂停" aria-label="暂停">⏸</button>
+                    <button class="tomato-circular-action-btn tomato-circular-more" type="button" title="更多" aria-label="更多">⋯</button>
+                </span>
+                <span class="tomato-circular-action-task" title="未关联任务">
+                    <span class="tomato-circular-task-icon">📎</span>
+                    <span class="tomato-circular-task-text">未关联任务</span>
+                </span>
+            </span>
+        `;
+        const ticks = timer.querySelector('.tomato-circular-ticks');
+        if (ticks) {
+            for (let i = 0; i < 60; i += 1) {
+                const tick = document.createElement('span');
+                const deg = i * 6;
+                const rad = deg * Math.PI / 180;
+                tick.className = 'tomato-circular-tick';
+                tick.dataset.tick = String(i);
+                tick.style.left = `${50 + Math.sin(rad) * 42}%`;
+                tick.style.top = `${50 - Math.cos(rad) * 42}%`;
+                tick.style.transform = `translate(-50%, -50%) rotate(${deg}deg)`;
+                ticks.appendChild(tick);
+            }
+        }
+        const progress = timer.querySelector('.tomato-circular-ring-progress');
+        if (progress) {
+            const len = 2 * Math.PI * 20;
+            progress.style.strokeDasharray = String(len);
+            progress.style.strokeDashoffset = String(len);
+        }
+
+        const toggle = timer.querySelector('.tomato-circular-toggle');
+        const more = timer.querySelector('.tomato-circular-more');
+        const runToggle = async () => {
+            try {
+                if (isRunning) await pauseTimer();
+                else await startTimer();
+            } catch (e) {
+                try { Logger.error('切换计时失败:', e); } catch (err) {}
+            }
+        };
+        if (toggle) {
+            toggle.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                await runToggle();
+            };
+        }
+        if (more) {
+            more.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                syncCircularTimerActionSide(timer);
+                timer.classList.add('show-actions');
+                const rect = timer.getBoundingClientRect();
+                const x = timer.dataset.actionsSide === 'left' ? rect.left : rect.right;
+                showContextMenu(x, rect.top);
+            };
+        }
+        timer.addEventListener('click', async (e) => {
+            if (e.target?.closest?.('.tomato-circular-actions')) return;
+            await runToggle();
+        });
+        timer.addEventListener('mouseenter', () => syncCircularTimerActionSide(timer));
+        timer.addEventListener('focusin', () => syncCircularTimerActionSide(timer));
+        timer.addEventListener('mouseleave', () => timer.classList.remove('show-actions'));
+        return timer;
+    }
+
+    function syncCircularTimerActionSide(timer) {
+        if (!timer) return;
+        const actions = timer.querySelector('.tomato-circular-actions');
+        if (!actions) return;
+        const rect = timer.getBoundingClientRect();
+        const leftBound = 4;
+        const rightBound = window.innerWidth - 4;
+        const computed = getComputedStyle(timer);
+        const actionWidth = Number.parseFloat(computed.getPropertyValue('--tomato-circular-action-width')) || 178;
+        const overlap = Number.parseFloat(computed.getPropertyValue('--tomato-circular-action-overlap')) || 14;
+        const extension = Math.max(0, actionWidth - overlap);
+        const rightFits = rect.right + extension <= rightBound;
+        const leftFits = rect.left - extension >= leftBound;
+        const rightSpace = rightBound - rect.right;
+        const leftSpace = rect.left - leftBound;
+        timer.dataset.actionsSide = (rightFits || (!leftFits && rightSpace >= leftSpace)) ? 'right' : 'left';
+    }
+
+    function ensureTimerDisplayShell(displayEl, surface = 'status') {
+        if (!displayEl) return;
+        const style = isCircularTimerStyleEnabled() ? TIMER_STYLE_CIRCULAR : DEFAULT_TIMER_STYLE;
+        if (displayEl.dataset.timerStyle === style && displayEl.dataset.timerSurface === surface) return;
+        displayEl.dataset.timerStyle = style;
+        displayEl.dataset.timerSurface = surface;
+        displayEl.classList.add('tomato-timer-display-shell');
+        displayEl.textContent = '';
+        if (style === TIMER_STYLE_CIRCULAR) {
+            displayEl.appendChild(createCircularTimerElement(surface));
+            return;
+        }
+        if (surface === 'mobile') {
+            displayEl.innerHTML = '<span class="tomato-float-icon" style="display:inline-block;line-height:1;width:1.2em;text-align:center;"></span><span class="tomato-float-time" style="display:inline-block;line-height:1;min-width:5ch;text-align:center;font-variant-numeric: tabular-nums; font-feature-settings: &quot;tnum&quot; 1; white-space: nowrap;"></span>';
+        }
+    }
+
+    function renderCircularTimerDisplay(displayEl, model = null) {
+        if (!displayEl) return false;
+        const timer = displayEl.querySelector('.tomato-circular-timer');
+        if (!timer) return false;
+        const data = model || getTimerDisplayModel();
+        const ringProgress = timer.querySelector('.tomato-circular-ring-progress');
+        const timeEl = timer.querySelector('.tomato-circular-time');
+        const iconEl = timer.querySelector('.tomato-circular-icon');
+        const taskEl = timer.querySelector('.tomato-circular-task-text');
+        const taskWrap = timer.querySelector('.tomato-circular-action-task');
+        const toggle = timer.querySelector('.tomato-circular-toggle');
+        const circumference = 2 * Math.PI * 20;
+        const progress = Math.max(0, Math.min(1, Number(data.progress) || 0));
+        timer.dataset.mode = data.mode;
+        timer.dataset.longTime = String(data.timeText || '').length >= 8 ? '1' : '0';
+        timer.classList.toggle('is-running', !!data.running);
+        timer.classList.toggle('is-paused', !!data.paused);
+        timer.style.setProperty('--tomato-circular-ring', getCircularTimerAccentColor(data.mode));
+        timer.title = `${data.prefix || ''} ${data.timeText || ''}`.trim();
+        if (ringProgress) ringProgress.style.strokeDashoffset = String(circumference * (1 - progress));
+        if (timeEl) timeEl.textContent = data.timeText || '00:00';
+        if (iconEl) iconEl.textContent = data.prefix || '';
+        if (taskEl) taskEl.textContent = data.taskText || '未关联任务';
+        if (taskWrap) taskWrap.title = data.taskText || '未关联任务';
+        if (toggle) {
+            toggle.textContent = data.running ? '⏸' : '▶';
+            toggle.title = data.running ? '暂停' : (data.paused ? '继续' : '开始');
+            toggle.setAttribute('aria-label', toggle.title);
+        }
+
+        const ticks = timer.querySelectorAll('.tomato-circular-tick');
+        if (ticks.length) {
+            const headSecond = Math.floor((Number(data.elapsedDisplaySeconds) || 0) % 60);
+            const trailSeconds = 30;
+            ticks.forEach((tick, index) => {
+                const distance = (headSecond - index + 60) % 60;
+                const inTrail = data.isStopwatchMode && data.elapsedDisplaySeconds > 0 && distance <= trailSeconds;
+                const fade = inTrail ? 1 - (distance / trailSeconds) : 0;
+                const idleOpacity = index % 5 === 0 ? 0.34 : 0.22;
+                tick.classList.toggle('is-tail', inTrail);
+                tick.classList.toggle('is-head', inTrail && distance === 0);
+                tick.style.opacity = data.isStopwatchMode ? String(Math.max(idleOpacity, 0.2 + fade * 0.78).toFixed(3)) : '';
+                tick.style.height = inTrail ? `calc(var(--tomato-circular-size) * ${(0.074 + fade * 0.044).toFixed(3)})` : '';
+            });
+        }
+        return true;
+    }
     function updateDisplay() {
         // 🔧 v9.0 修复：如果 timeDisplay 不存在且用户已关闭悬浮窗，不重新创建
         if (!timeDisplay) {
@@ -12737,6 +13319,14 @@
         }
 
         const setDisplayText = (prefix, timeText) => {
+            if (timeDisplay?.dataset?.timerStyle === TIMER_STYLE_CIRCULAR) {
+                timeDisplay.dataset.timerStyle = DEFAULT_TIMER_STYLE;
+                timeDisplay.dataset.timerSurface = '';
+                timeDisplay.textContent = '';
+                if (timeDisplay.closest?.('#siyuan-tomato-float-bar')) {
+                    timeDisplay.innerHTML = '<span class="tomato-float-icon" style="display:inline-block;line-height:1;width:1.2em;text-align:center;"></span><span class="tomato-float-time" style="display:inline-block;line-height:1;min-width:5ch;text-align:center;font-variant-numeric: tabular-nums; font-feature-settings: &quot;tnum&quot; 1; white-space: nowrap;"></span>';
+                }
+            }
             const timeEl = timeDisplay?.querySelector?.('.tomato-float-time');
             if (timeEl) {
                 const iconEl = timeDisplay.querySelector('.tomato-float-icon');
@@ -12747,7 +13337,6 @@
             timeDisplay.textContent = `${prefix} ${timeText}`.trim();
         };
 
-        let text;
         const prefix = getDisplayPrefixForTimer(timerMode);
         const { running: effectiveRunning, paused: effectivePaused } = getEffectiveTimerActivity();
         const effectiveActive = !!(effectiveRunning || effectivePaused);
@@ -12769,11 +13358,16 @@
                 // 🔧 关键修复：优先使用本地 isRunning 状态决定图标
                 // 避免云端同步延迟导致暂停后图标没更新
                 controlButton.innerHTML = isRunning ? '⏸️' : '▶️';
+                controlButton.style.display = 'flex';
             }
         } catch (e) {}
         try {
             const floatBar = document.getElementById('siyuan-tomato-float-bar');
-            if (floatBar) floatBar.classList.toggle('running', effectiveRunning);
+            if (floatBar) {
+                floatBar.classList.toggle('running', effectiveRunning);
+                floatBar.classList.remove('tomato-circular-float-bar');
+            }
+            if (container) container.classList.remove('tomato-circular-widget');
         } catch (e) {}
         try { scheduleDesktopMinimizedFloatWindowSync('update-display'); } catch (e) {}
         updateProgressBar();
@@ -13349,6 +13943,7 @@
         const floatBar = document.getElementById('siyuan-tomato-float-bar');
         if (floatBar) floatBar.classList.remove('running');
         clearRoutineButtonRunningHighlight(true);
+        endTimerFocus('stop-timer');
 
         if (timerMode === 'countdown' || timerMode === 'break') {
             syncState.mode = timerMode;
@@ -14408,6 +15003,7 @@
                     Logger.info('🔄 休息模式重置状态已同步到云端');
                 }
                 clearRoutineButtonRunningHighlight(true);
+                endTimerFocus('reset-current-mode');
                 return;
             }
             
@@ -14510,7 +15106,7 @@
             if (controlButton) controlButton.innerHTML = '▶️';
             updateDisplay();
             clearRoutineButtonRunningHighlight(true);
-            // 🔧 修复：暂停时保持高亮（任务块关联仍然存在）
+            endTimerFocus('reset-current-mode');
 
             if (timerMode === 'countdown' || timerMode === 'break') {
                 try { await cancelTrackedTimerNotification('reset-timer', false); } catch (e) {}
@@ -14565,6 +15161,7 @@
             if (controlButton) controlButton.innerHTML = '▶️';
             updateDisplay();
             clearRoutineButtonRunningHighlight(true);
+            endTimerFocus('complete-current-tomato');
             try { hideProgressBar(); } catch (e) {}
 
             if (isSyncEnabled() && SyncManager.updateLocal) {
@@ -20301,7 +20898,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         // 🔧 修复：检查是否有正在进行的计时任务
         // 如果有，跳转后需要恢复高亮状态
-        const shouldRestoreHighlight = !!currentTaskBlockId;
+        const shouldRestoreHighlight = !!currentTaskBlockId && hasActiveTimerSegment();
         
         // 方法1：检查块是否在当前活动文档中
         let blockElement = findBlockElement(blockId);
@@ -20445,7 +21042,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             exitProtyleFocusMode();
 
             // 🔧 修复：如果有计时任务，恢复高亮状态
-            if (currentTaskBlockId && blockId === currentTaskBlockId) {
+            if (currentTaskBlockId && blockId === currentTaskBlockId && hasActiveTimerSegment()) {
                 Logger.info('✅ 文档加载成功，已跳转到块，恢复高亮状态');
                 highlightTaskBlock(currentTaskBlockId);
                 startHighlightKeepAlive();
@@ -20688,15 +21285,26 @@ function calculateWeeklyStats(dailyStatsArray) {
     let desktopFloatWindowReady = false;
     let desktopFloatWindowLastPayloadKey = '';
     let desktopFloatWindowDragState = null;
+    let desktopFloatWindowIgnoreMoveUntilMs = 0;
+    let desktopFloatWindowProgrammaticBounds = null;
     let desktopFloatWindowSyncTimer = null;
     let desktopFloatWindowMonitoredWindow = null;
-    const DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT = 90;
-    const DESKTOP_FLOAT_WINDOW_WIDTH_EXPANDED = 120;
-    const DESKTOP_FLOAT_WINDOW_HEIGHT = 78;
+    let desktopFloatWindowThemeObserver = null;
+    let desktopFloatWindowLastResolvedColorMode = '';
+    const DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT = DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH;
+    const DESKTOP_FLOAT_WINDOW_WIDTH_EXPANDED = DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT + 25;
+    const DESKTOP_FLOAT_WINDOW_HEIGHT_COLLAPSED = 44;
+    const DESKTOP_FLOAT_WINDOW_HEIGHT_EXPANDED = 68;
+    const DESKTOP_FLOAT_WINDOW_DEFAULT_RIGHT_MARGIN = 20;
+    const DESKTOP_FLOAT_WINDOW_EXPANDED_EXTRA_LEFT_OFFSET = 10;
+    const DESKTOP_FLOAT_WINDOW_CIRCULAR_SIZE = 72;
+    const DESKTOP_FLOAT_WINDOW_CIRCULAR_EXPANDED_WIDTH = 115;
     let desktopFloatWindowState = {
         isMinimized: false,
         alwaysOnTop: true,
         bounds: null,
+        expanded: false,
+        circularExpandedLeft: true,
         dismissed: false
     };
     const desktopFloatWindowHandlers = {
@@ -20721,13 +21329,136 @@ function calculateWeeklyStats(dailyStatsArray) {
         return mode !== 'break' && mode !== 'stopwatch-break';
     }
 
-    function getDesktopFloatWindowWidthForSeconds(totalSeconds) {
-        const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
-        return seconds >= 3600 ? DESKTOP_FLOAT_WINDOW_WIDTH_EXPANDED : DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT;
+    function getDesktopFloatWindowCompactWidth() {
+        if (isDesktopFloatWindowCircularTimerStyleEnabled()) return DESKTOP_FLOAT_WINDOW_CIRCULAR_SIZE;
+        return getDesktopFloatWindowConfiguredWidth();
     }
 
+    function getDesktopFloatWindowExpandedWidth() {
+        if (isDesktopFloatWindowCircularTimerStyleEnabled()) return DESKTOP_FLOAT_WINDOW_CIRCULAR_EXPANDED_WIDTH;
+        return getDesktopFloatWindowCompactWidth() + (DESKTOP_FLOAT_WINDOW_WIDTH_EXPANDED - DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT);
+    }
+
+    function getDesktopFloatWindowTopPadding() {
+        return getDesktopFloatWindowConfiguredTopPadding();
+    }
+
+    function getDesktopFloatWindowHeightOffset() {
+        return getDesktopFloatWindowTopPadding() - DEFAULT_DESKTOP_FLOAT_WINDOW_TOP_PADDING;
+    }
+
+    function getDesktopFloatWindowCollapsedHeight() {
+        if (isDesktopFloatWindowCircularTimerStyleEnabled()) return Math.max(DESKTOP_FLOAT_WINDOW_CIRCULAR_SIZE, DESKTOP_FLOAT_WINDOW_CIRCULAR_SIZE + getDesktopFloatWindowHeightOffset());
+        return Math.max(40, DESKTOP_FLOAT_WINDOW_HEIGHT_COLLAPSED + getDesktopFloatWindowHeightOffset());
+    }
+
+    function getDesktopFloatWindowExpandedHeight() {
+        if (isDesktopFloatWindowCircularTimerStyleEnabled()) return Math.max(DESKTOP_FLOAT_WINDOW_CIRCULAR_SIZE, DESKTOP_FLOAT_WINDOW_CIRCULAR_SIZE + getDesktopFloatWindowHeightOffset());
+        return Math.max(64, DESKTOP_FLOAT_WINDOW_HEIGHT_EXPANDED + getDesktopFloatWindowHeightOffset());
+    }
+
+    function getDesktopFloatWindowResolvedColorMode() {
+        const configured = getDesktopFloatWindowConfiguredColorMode();
+        if (configured !== 'follow') return configured;
+        return isDesktopFloatWindowSiyuanLightMode() ? 'light' : 'dark';
+    }
+
+    function isDesktopFloatWindowSiyuanLightMode() {
+        const rawMode = window.siyuan?.config?.appearance?.mode;
+        if (rawMode === 0 || rawMode === '0') return true;
+        if (rawMode === 1 || rawMode === '1') return false;
+        const marker = [
+            String(rawMode ?? ''),
+            document.documentElement?.dataset?.theme || '',
+            document.documentElement?.dataset?.themeMode || '',
+            document.body?.dataset?.theme || '',
+            document.body?.dataset?.themeMode || '',
+            document.documentElement?.className || '',
+            document.body?.className || ''
+        ].join(' ').toLowerCase();
+        if (/\b(dark|black|night)\b/.test(marker)) return false;
+        if (/\b(light|white|day)\b/.test(marker)) return true;
+        try {
+            const style = getComputedStyle(document.documentElement);
+            const bg = style.getPropertyValue('--b3-theme-background') || style.backgroundColor || getComputedStyle(document.body).backgroundColor;
+            const rgb = parseDesktopFloatWindowCssColor(bg);
+            if (rgb) return ((rgb.r * 299) + (rgb.g * 587) + (rgb.b * 114)) / 1000 >= 160;
+        } catch (e) {}
+        return false;
+    }
+
+    function parseDesktopFloatWindowCssColor(value) {
+        const color = String(value || '').trim();
+        if (!color) return null;
+        const rgbMatch = color.match(/rgba?\(([^)]+)\)/i);
+        if (rgbMatch) {
+            const parts = rgbMatch[1].split(',').map((part) => Number(String(part).trim()));
+            if (parts.length >= 3 && parts.slice(0, 3).every(Number.isFinite)) {
+                return { r: parts[0], g: parts[1], b: parts[2] };
+            }
+        }
+        const hexMatch = color.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+        if (!hexMatch) return null;
+        let hex = hexMatch[1];
+        if (hex.length === 3) hex = hex.split('').map((ch) => ch + ch).join('');
+        return {
+            r: parseInt(hex.slice(0, 2), 16),
+            g: parseInt(hex.slice(2, 4), 16),
+            b: parseInt(hex.slice(4, 6), 16)
+        };
+    }
+
+    function getDesktopFloatWindowColors() {
+        const mode = getDesktopFloatWindowResolvedColorMode();
+        if (mode === 'light') {
+            return {
+                mode,
+                browserBackground: '#ffffff',
+                pageBackground: '#ffffff',
+                shellBackground: 'rgba(255, 255, 255, 0.96)',
+                textColor: '#1f2328',
+                borderColor: 'rgba(15, 23, 42, 0.12)',
+                shadowColor: 'rgba(15, 23, 42, 0.18)',
+                toolButtonBackground: 'rgba(15, 23, 42, 0.06)',
+                toolButtonHoverBackground: 'rgba(15, 23, 42, 0.12)',
+                toolButtonColor: '#2f3846',
+                activeButtonBackground: 'rgba(37, 99, 235, 0.14)',
+                activeButtonColor: '#2563eb',
+                circularTrackColor: 'rgba(15, 23, 42, 0.14)',
+                circularFaceBackground: '#f7f9fb',
+                circularMutedColor: '#667085'
+            };
+        }
+        return {
+            mode: 'dark',
+            browserBackground: '#14181c',
+            pageBackground: '#14181c',
+            shellBackground: 'rgba(20, 24, 28, 0.94)',
+            textColor: '#f4f7fb',
+            borderColor: 'rgba(255,255,255,0.10)',
+            shadowColor: 'rgba(0,0,0,0.22)',
+            toolButtonBackground: 'rgba(255,255,255,0.08)',
+            toolButtonHoverBackground: 'rgba(255,255,255,0.16)',
+            toolButtonColor: '#dbe7f3',
+            activeButtonBackground: 'rgba(56, 142, 255, 0.22)',
+            activeButtonColor: '#8fc1ff',
+            circularTrackColor: 'rgba(255,255,255,0.18)',
+            circularFaceBackground: '#1c232b',
+            circularMutedColor: '#aab7c5'
+        };
+    }
+
+    function getDesktopFloatWindowWidthForSeconds(totalSeconds) {
+        const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+        return seconds >= 3600 ? getDesktopFloatWindowExpandedWidth() : getDesktopFloatWindowCompactWidth();
+    }
     function getDesktopFloatWindowDesiredWidth(payload = null) {
         const p = payload || getDesktopFloatWindowPayload();
+        if (p?.timerStyle === TIMER_STYLE_CIRCULAR) {
+            return desktopFloatWindowState.expanded
+                ? getDesktopFloatWindowExpandedWidth()
+                : getDesktopFloatWindowCompactWidth();
+        }
         if (p?.liveTimerKind === 'countdown' && p.liveTargetTimeMs) {
             const remain = Math.ceil((Number(p.liveTargetTimeMs) - Date.now()) / 1000);
             return getDesktopFloatWindowWidthForSeconds(Math.max(0, remain));
@@ -20740,29 +21471,143 @@ function calculateWeeklyStats(dailyStatsArray) {
         return getDesktopFloatWindowWidthForSeconds(/^\d{2}:\d{2}:\d{2}$/.test(staticText) ? 3600 : 0);
     }
 
-    function resizeDesktopMinimizedFloatWindow(win, width) {
+    function shouldDesktopCircularFloatWindowExpandLeft(win = null) {
+        if (!isDesktopFloatWindowCircularTimerStyleEnabled()) return false;
+        const support = getDesktopFloatWindowElectronSupport();
+        let bounds = null;
+        try { bounds = win?.getBounds?.() || desktopFloatWindowState.bounds || null; } catch (e) {}
+        if (!bounds) bounds = desktopFloatWindowState.bounds;
+        const display = bounds && support.screen?.getDisplayMatching
+            ? support.screen.getDisplayMatching({
+                x: Math.round(Number(bounds.x) || 0),
+                y: Math.round(Number(bounds.y) || 0),
+                width: Math.max(1, Math.round(Number(bounds.width) || getDesktopFloatWindowCompactWidth())),
+                height: Math.max(1, Math.round(Number(bounds.height) || getDesktopFloatWindowCollapsedHeight()))
+            })
+            : support.screen?.getPrimaryDisplay?.();
+        const workArea = display?.workArea;
+        if (!workArea || !bounds) return true;
+        const circleX = Math.round(Number(bounds.x) || workArea.x);
+        const circleWidth = getDesktopFloatWindowCompactWidth();
+        const extension = Math.max(0, getDesktopFloatWindowExpandedWidth() - circleWidth);
+        const rightSpace = (workArea.x + workArea.width) - (circleX + circleWidth);
+        const leftSpace = circleX - workArea.x;
+        if (leftSpace >= extension) return true;
+        if (rightSpace >= extension) return false;
+        return leftSpace >= rightSpace;
+    }
+
+    function resizeDesktopMinimizedFloatWindow(win, width, options = {}) {
         if (!win || win.isDestroyed?.()) return;
-        const nextWidth = Math.max(DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT, Math.round(Number(width) || DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT));
+        const compactWidth = getDesktopFloatWindowCompactWidth();
+        const nextWidth = Math.max(compactWidth, Math.round(Number(width) || compactWidth));
+        const nextHeight = getDesktopFloatWindowCurrentHeight();
+        const savedBounds = desktopFloatWindowState.bounds;
+        const hasSavedBounds = savedBounds && Number.isFinite(savedBounds.x) && Number.isFinite(savedBounds.y);
         let bounds = null;
         try { bounds = win.getBounds(); } catch (e) {}
         const currentWidth = Number(bounds?.width || 0);
-        if (currentWidth === nextWidth) return;
-        const x = Number.isFinite(bounds?.x) ? bounds.x : undefined;
-        const y = Number.isFinite(bounds?.y) ? bounds.y : undefined;
+        const currentHeight = Number(bounds?.height || 0);
+        const currentX = Number.isFinite(bounds?.x) ? Math.round(bounds.x) : 0;
+        const currentY = Number.isFinite(bounds?.y) ? Math.round(bounds.y) : 0;
+        let nextX = hasSavedBounds ? Math.round(Number(savedBounds.x)) : currentX;
+        if (isDesktopFloatWindowCircularTimerStyleEnabled()) {
+            const circleWidth = getDesktopFloatWindowCompactWidth();
+            const currentIsExpanded = currentWidth > circleWidth;
+            const shouldExpandLeft = nextWidth > circleWidth
+                ? (currentIsExpanded ? !!desktopFloatWindowState.circularExpandedLeft : shouldDesktopCircularFloatWindowExpandLeft(win))
+                : !!desktopFloatWindowState.circularExpandedLeft;
+            if (nextWidth > circleWidth) desktopFloatWindowState.circularExpandedLeft = shouldExpandLeft;
+            const storedCircleX = hasSavedBounds ? Math.round(Number(savedBounds.x)) : currentX;
+            const visualCircleX = currentIsExpanded
+                ? storedCircleX
+                : currentX;
+            if (nextWidth > circleWidth) {
+                nextX = shouldExpandLeft ? visualCircleX - (nextWidth - circleWidth) : visualCircleX;
+            } else {
+                nextX = visualCircleX;
+            }
+        }
+        const nextY = hasSavedBounds
+            ? getDesktopFloatWindowDisplayYFromStoredBounds(savedBounds, nextHeight)
+            : (options?.anchorBottom === true && Number.isFinite(bounds?.y) && currentHeight > 0
+            ? Math.round(currentY + currentHeight - nextHeight)
+            : currentY);
+        if (currentX === nextX && currentY === nextY && currentWidth === nextWidth && currentHeight === nextHeight) return;
+        setDesktopFloatWindowBounds(win, {
+            x: nextX,
+            y: nextY,
+            width: nextWidth,
+            height: nextHeight
+        }, { store: !isDesktopFloatWindowCircularTimerStyleEnabled() || nextWidth <= compactWidth });
+    }
+
+    function setDesktopFloatWindowBounds(win, bounds, options = {}) {
+        if (!win || win.isDestroyed?.() || !bounds) return false;
+        const compactWidth = getDesktopFloatWindowCompactWidth();
+        const targetBounds = {
+            x: Math.round(Number(bounds.x) || 0),
+            y: Math.round(Number(bounds.y) || 0),
+            width: Math.max(1, Math.round(Number(bounds.width) || compactWidth)),
+            height: Math.max(1, Math.round(Number(bounds.height) || getDesktopFloatWindowCurrentHeight()))
+        };
+        desktopFloatWindowIgnoreMoveUntilMs = Date.now() + 180;
+        desktopFloatWindowProgrammaticBounds = { ...targetBounds, until: Date.now() + 1200 };
         try {
-            win.setBounds({
-                x: Number.isFinite(x) ? x : 0,
-                y: Number.isFinite(y) ? y : 0,
-                width: nextWidth,
-                height: DESKTOP_FLOAT_WINDOW_HEIGHT
-            }, false);
-            desktopFloatWindowState.bounds = {
-                x: Number.isFinite(x) ? x : 0,
-                y: Number.isFinite(y) ? y : 0,
-                width: nextWidth,
-                height: DESKTOP_FLOAT_WINDOW_HEIGHT
-            };
-        } catch (e) {}
+            win.setBounds(targetBounds, false);
+            if (options?.store !== false) {
+                desktopFloatWindowState.bounds = getDesktopFloatWindowStoredBoundsFromDisplayBounds(targetBounds);
+            }
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function setDesktopMinimizedFloatWindowExpanded(win, expanded) {
+        if (!win || win.isDestroyed?.()) return;
+        const nextExpanded = !!expanded;
+        if (desktopFloatWindowState.expanded === nextExpanded) return;
+        desktopFloatWindowState.expanded = nextExpanded;
+        resizeDesktopMinimizedFloatWindow(win, getDesktopFloatWindowDesiredWidth(getDesktopFloatWindowPayload()), { anchorBottom: true });
+        desktopFloatWindowLastPayloadKey = '';
+        Promise.resolve().then(() => refreshDesktopMinimizedFloatWindow()).catch(() => {});
+    }
+
+    function getDesktopFloatWindowCurrentHeight() {
+        return desktopFloatWindowState.expanded ? getDesktopFloatWindowExpandedHeight() : getDesktopFloatWindowCollapsedHeight();
+    }
+
+    function getDesktopFloatWindowStoredBoundsFromDisplayBounds(bounds = {}) {
+        const width = Math.round(Number(bounds?.width) || getDesktopFloatWindowCompactWidth());
+        const height = Math.round(Number(bounds?.height) || getDesktopFloatWindowCurrentHeight());
+        let x = Math.round(Number(bounds?.x) || 0);
+        let y = Math.round(Number(bounds?.y) || 0);
+        const collapsedHeight = getDesktopFloatWindowCollapsedHeight();
+        if (isDesktopFloatWindowCircularTimerStyleEnabled()) {
+            const circleWidth = getDesktopFloatWindowCompactWidth();
+            if (width > circleWidth && desktopFloatWindowState.circularExpandedLeft) {
+                x = Math.round(x + width - circleWidth);
+            }
+            return { x, y, width: circleWidth, height: collapsedHeight };
+        }
+        if (desktopFloatWindowState.expanded && height > collapsedHeight) {
+            y = Math.round(y + height - collapsedHeight);
+            return { x, y, width, height: collapsedHeight };
+        }
+        return { x, y, width, height };
+    }
+
+    function getDesktopFloatWindowDisplayYFromStoredBounds(savedBounds, targetHeight) {
+        const savedY = Math.round(Number(savedBounds?.y) || 0);
+        const savedHeight = Math.round(Number(savedBounds?.height) || getDesktopFloatWindowCollapsedHeight());
+        return Math.round(savedY + savedHeight - targetHeight);
+    }
+
+    function getDesktopFloatWindowDefaultRightMargin(width) {
+        const w = Math.round(Number(width) || getDesktopFloatWindowCompactWidth());
+        return DESKTOP_FLOAT_WINDOW_DEFAULT_RIGHT_MARGIN
+            + (w >= getDesktopFloatWindowExpandedWidth() ? DESKTOP_FLOAT_WINDOW_EXPANDED_EXTRA_LEFT_OFFSET : 0);
     }
 
     function getDesktopFloatWindowElectronSupport() {
@@ -20797,63 +21642,161 @@ function calculateWeeklyStats(dailyStatsArray) {
         return willExtend ? '😵 记录分心（+1分钟）' : '😵 记录分心';
     }
 
+    function buildDesktopFloatWindowMenuTemplate(win) {
+        const template = [];
+        const pushSeparator = () => {
+            if (template.length && template[template.length - 1]?.type !== 'separator') template.push({ type: 'separator' });
+        };
+        const runAction = (action) => {
+            Promise.resolve().then(action).then(async () => {
+                desktopFloatWindowLastPayloadKey = '';
+                try { await refreshDesktopMinimizedFloatWindow(); } catch (e) {}
+            }).catch(() => {});
+        };
+
+        const currentAudioSettings = getAudioSettings();
+        const hasBackgroundAudio = !!(currentAudioSettings.workBackgroundSound || currentAudioSettings.breakBackgroundSound);
+        if (currentAudioSettings.backgroundEnabled !== false && hasBackgroundAudio) {
+            const isMuted = currentAudioSettings.backgroundMuted === true;
+            template.push({
+                label: isMuted ? '🔊 取消静音背景音' : '🔇 静音背景音',
+                click: () => runAction(async () => { await setBackgroundAudioMuted(!isMuted); })
+            });
+            pushSeparator();
+        }
+
+        if (canDesktopFloatWindowRecordDistraction()) {
+            template.push({
+                label: getDesktopFloatWindowDistractionLabel(),
+                click: () => runAction(async () => {
+                    if (!canDesktopFloatWindowRecordDistraction()) return;
+                    await recordDistraction();
+                })
+            });
+            pushSeparator();
+        }
+
+        template.push({ label: '🍅 番茄', enabled: false });
+        if (currentTaskBlockName || currentDatabaseBlockId) {
+            template.push({
+                label: `📎 关联: ${getTimerTaskTextForDisplay()}`,
+                enabled: false
+            });
+        }
+        if (currentTaskBlockId || currentDatabaseBlockId) {
+            template.push({
+                label: '❌ 清除关联任务',
+                click: () => runAction(async () => {
+                    await clearCurrentRecordAssociation();
+                    await setTaskAssociation(null, null, null);
+                    document.querySelectorAll('.tomato-task-highlight').forEach(el => el.classList.remove('tomato-task-highlight'));
+                    document.querySelectorAll('.tomato-db-row-highlight').forEach(el => el.classList.remove('tomato-db-row-highlight'));
+                    updateTaskBlockIcon();
+                    updateDisplay();
+                })
+            });
+        }
+        if (timerMode === 'countdown' && (isRunning || isTimerPaused)) {
+            template.push({
+                label: '✅ 完成番茄',
+                click: () => runAction(async () => { await completeCurrentTomato(); })
+            });
+        }
+
+        const tomatoDurations = getTomatoDurations();
+        if (Array.isArray(tomatoDurations) && tomatoDurations.length) {
+            template.push({
+                label: '番茄时长',
+                submenu: tomatoDurations.map((duration) => ({
+                    label: `${duration} 分钟`,
+                    type: 'radio',
+                    checked: timerMode === 'countdown' && Number(currentDuration) === Number(duration),
+                    click: () => runAction(async () => { await switchToCountdownAndStart(duration); })
+                }))
+            });
+        }
+
+        const breakDurations = getBreakDurations();
+        const breakSubmenu = Array.isArray(breakDurations)
+            ? breakDurations.map((duration) => ({
+                label: `${duration} 分钟`,
+                type: 'radio',
+                checked: timerMode === 'break' && Number(currentDuration) === Number(duration),
+                click: () => runAction(async () => { await startBreakMode(duration); })
+            }))
+            : [];
+        breakSubmenu.push({
+            label: '正计时休息',
+            type: 'radio',
+            checked: timerMode === 'stopwatch-break',
+            click: () => runAction(async () => { await startStopwatchBreakMode(); })
+        });
+        template.push({ label: '☕ 休息', submenu: breakSubmenu });
+        pushSeparator();
+
+        template.push({
+            label: timerMode === 'stopwatch' ? '☕ 正计时休息' : '⏱️ 正计时模式',
+            click: () => runAction(async () => {
+                if (timerMode === 'stopwatch') await startStopwatchBreakMode();
+                else await switchToStopwatchAndStart();
+            })
+        }, {
+            label: isRunning ? '暂停' : '继续',
+            enabled: hasUnfinishedTimerState(),
+            click: () => runAction(async () => {
+                if (isRunning) await pauseTimer();
+                else await startTimer();
+            })
+        }, {
+            label: (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') ? '✅ 完成正计时' : '重置当前',
+            click: () => runAction(async () => { await resetCurrentMode(); })
+        }, {
+            label: '查看历史',
+            click: () => runAction(async () => { await showHistoryDialog(); })
+        });
+        pushSeparator();
+
+        template.push({
+            label: desktopFloatWindowState.alwaysOnTop !== false ? '取消置顶' : '置顶',
+            click: () => {
+                const next = !(desktopFloatWindowState.alwaysOnTop !== false);
+                desktopFloatWindowState.alwaysOnTop = next;
+                try {
+                    if (typeof win?.setAlwaysOnTop === 'function') {
+                        try { win.setAlwaysOnTop(next, next ? 'screen-saver' : 'normal'); }
+                        catch (e) { win.setAlwaysOnTop(next); }
+                    }
+                } catch (e) {}
+                desktopFloatWindowLastPayloadKey = '';
+                Promise.resolve().then(() => refreshDesktopMinimizedFloatWindow()).catch(() => {});
+            }
+        }, {
+            label: '关闭悬浮窗',
+            click: () => {
+                desktopFloatWindowState.dismissed = true;
+                try { win?.hide?.(); } catch (e) {}
+            }
+        });
+
+        return template.filter((item, index, arr) => !(item?.type === 'separator' && (index === 0 || index === arr.length - 1 || arr[index - 1]?.type === 'separator')));
+    }
+
     function showDesktopFloatWindowContextMenu(win) {
         if (!win || win.isDestroyed?.()) return;
         const support = getDesktopFloatWindowElectronSupport();
         const Menu = support.Menu;
         if (!Menu || typeof Menu.buildFromTemplate !== 'function') return;
         try {
-            const template = [];
-            if (canDesktopFloatWindowRecordDistraction()) {
-                template.push({
-                    label: getDesktopFloatWindowDistractionLabel(),
-                    click: () => {
-                        Promise.resolve().then(async () => {
-                            if (!canDesktopFloatWindowRecordDistraction()) return;
-                            await recordDistraction();
-                            desktopFloatWindowLastPayloadKey = '';
-                            try { await refreshDesktopMinimizedFloatWindow(); } catch (e) {}
-                        }).catch(() => {});
-                    }
-                });
-                template.push({ type: 'separator' });
-            }
-            template.push({
-                label: isRunning ? '暂停' : '继续',
-                enabled: hasUnfinishedTimerState(),
-                click: () => {
-                    Promise.resolve().then(async () => {
-                        try {
-                            if (isRunning) await pauseTimer();
-                            else await startTimer();
-                        } catch (e) {}
-                        desktopFloatWindowLastPayloadKey = '';
-                        try { await refreshDesktopMinimizedFloatWindow(); } catch (e) {}
-                    }).catch(() => {});
-                }
-            }, {
-                label: desktopFloatWindowState.alwaysOnTop !== false ? '取消置顶' : '置顶',
-                click: () => {
-                    const next = !(desktopFloatWindowState.alwaysOnTop !== false);
-                    desktopFloatWindowState.alwaysOnTop = next;
-                    try {
-                        if (typeof win.setAlwaysOnTop === 'function') {
-                            try { win.setAlwaysOnTop(next, next ? 'screen-saver' : 'normal'); }
-                            catch (e) { win.setAlwaysOnTop(next); }
-                        }
-                    } catch (e) {}
-                    desktopFloatWindowLastPayloadKey = '';
-                    Promise.resolve().then(() => refreshDesktopMinimizedFloatWindow()).catch(() => {});
-                }
-            }, {
-                label: '关闭悬浮窗',
-                click: () => {
-                    desktopFloatWindowState.dismissed = true;
-                    try { win.hide(); } catch (e) {}
-                }
-            });
+            const template = buildDesktopFloatWindowMenuTemplate(win);
             const menu = Menu.buildFromTemplate(template);
             menu.popup({ window: win });
+        } catch (e) {}
+    }
+
+    function applyDesktopFloatWindowOpacity(win = desktopFloatWindow) {
+        if (!win || win.isDestroyed?.()) return;
+        try {
+            if (typeof win.setOpacity === 'function') win.setOpacity(getDesktopFloatWindowConfiguredOpacity());
         } catch (e) {}
     }
 
@@ -20872,8 +21815,9 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     function getDesktopFloatWindowPayload() {
+        const displayModel = getTimerDisplayModel();
         const { running, paused } = getEffectiveTimerActivity();
-        const prefix = getDisplayPrefixForTimer(timerMode);
+        const prefix = displayModel.prefix;
         let statusText = '待开始';
         if (running) statusText = '进行中';
         else if (paused) statusText = '已暂停';
@@ -20882,8 +21826,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         else if (timerMode === 'stopwatch') modeText = '正计时';
         else if (timerMode === 'stopwatch-break') modeText = '正计时休息';
         const hideModeText = true;
-        const taskText = String(currentTaskBlockName || '').trim()
-            || (currentTaskBlockId ? '关联任务' : (currentDatabaseBlockId ? '关联数据库' : '未关联任务'));
+        const taskText = displayModel.taskText;
         let liveTimerKind = 'static';
         let liveTargetTimeMs = null;
         let liveStartTimeMs = null;
@@ -20912,11 +21855,37 @@ function calculateWeeklyStats(dailyStatsArray) {
             liveTimerKind,
             liveTargetTimeMs,
             liveStartTimeMs,
-            liveOffsetSeconds
+            liveOffsetSeconds,
+            timerStyle: getTimerStyle(),
+            circularActionsSide: desktopFloatWindowState.circularExpandedLeft ? 'left' : 'right',
+            mode: displayModel.mode,
+            durationSeconds: displayModel.durationSeconds,
+            elapsedDisplaySeconds: displayModel.elapsedDisplaySeconds,
+            progress: displayModel.progress,
+            isStopwatchMode: displayModel.isStopwatchMode
         };
     }
 
     function buildDesktopFloatWindowHtml() {
+        const colors = getDesktopFloatWindowColors();
+        const circularWindow = isDesktopFloatWindowCircularTimerStyleEnabled();
+        const pageBackground = circularWindow ? 'transparent' : colors.pageBackground;
+        const circularFaceGradient = colors.mode === 'light'
+            ? 'radial-gradient(circle at 42% 33%, #ffffff 0 37%, #f7f9fa 58%, #edf1f3 74%, #dce2e6 100%)'
+            : 'radial-gradient(circle at 42% 33%, #2c3641 0 38%, #202a34 60%, #19222b 78%, #121920 100%)';
+        const circularFaceHighlight = colors.mode === 'light'
+            ? 'radial-gradient(circle at 50% 38%, rgba(255,255,255,0.72), rgba(255,255,255,0))'
+            : 'radial-gradient(circle at 50% 38%, rgba(255,255,255,0.10), rgba(255,255,255,0))';
+        const circularActionsBackground = colors.mode === 'light'
+            ? 'linear-gradient(180deg, #f2f5f7 0%, #e7edf1 100%)'
+            : 'linear-gradient(180deg, rgba(38,47,57,0.98) 0%, rgba(27,35,44,0.98) 100%)';
+        const circularActionsBorder = colors.mode === 'light' ? 'rgba(255,255,255,0.82)' : 'rgba(255,255,255,0.12)';
+        const circularActionsShadow = colors.mode === 'light'
+            ? 'inset 0 1px 0 rgba(255,255,255,0.9)'
+            : 'inset 0 1px 0 rgba(255,255,255,0.08)';
+        const circularButtonHoverBackground = colors.mode === 'light' ? 'rgba(84,104,128,0.11)' : 'rgba(255,255,255,0.10)';
+        const circularTimeColor = colors.mode === 'light' ? '#171b20' : '#f4f7fb';
+        desktopFloatWindowLastResolvedColorMode = colors.mode;
         return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -20929,7 +21898,7 @@ html, body {
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background: #14181c;
+    background: ${pageBackground};
     font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 body {
@@ -20939,24 +21908,40 @@ body {
     padding: 0;
 }
 .shell {
+    position: relative;
     width: 100%;
     height: 100%;
     box-sizing: border-box;
-    padding: 7px 8px 8px;
+    padding: ${getDesktopFloatWindowTopPadding()}px 8px 5px;
     border-radius: 10px;
-    background: rgba(20, 24, 28, 0.94);
-    color: #f4f7fb;
-    border: 1px solid rgba(255,255,255,0.10);
-    box-shadow: 0 10px 22px rgba(0,0,0,0.22);
+    background: ${colors.shellBackground};
+    color: ${colors.textColor};
+    border: 1px solid ${colors.borderColor};
+    box-shadow: 0 10px 22px ${colors.shadowColor};
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    justify-content: flex-end;
     user-select: none;
+    -webkit-app-region: drag;
+    app-region: drag;
 }
 .topline {
+    position: absolute;
+    top: ${getDesktopFloatWindowTopPadding()}px;
+    left: 8px;
+    right: 8px;
     display: flex;
     align-items: center;
     gap: 4px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.16s ease-out;
+}
+.shell.is-expanded .topline,
+.shell:hover .topline,
+.shell:focus-within .topline {
+    opacity: 1;
+    pointer-events: auto;
 }
 .leftbox {
     display: flex;
@@ -20983,8 +21968,8 @@ body {
     height: 20px;
     border: none;
     border-radius: 6px;
-    background: rgba(255,255,255,0.08);
-    color: #dbe7f3;
+    background: ${colors.toolButtonBackground};
+    color: ${colors.toolButtonColor};
     cursor: pointer;
     display: inline-flex;
     align-items: center;
@@ -20992,13 +21977,14 @@ body {
     font-size: 11px;
     padding: 0;
     -webkit-app-region: no-drag;
+    app-region: no-drag;
 }
 .toolbtn:hover {
-    background: rgba(255,255,255,0.16);
+    background: ${colors.toolButtonHoverBackground};
 }
 .toolbtn.active {
-    background: rgba(56, 142, 255, 0.22);
-    color: #8fc1ff;
+    background: ${colors.activeButtonBackground};
+    color: ${colors.activeButtonColor};
 }
 .toolbtn.closebtn {
     font-size: 10px;
@@ -21006,18 +21992,28 @@ body {
 .time {
     display: flex;
     align-items: center;
-    gap: 5px;
-    font-size: 19px;
+    gap: 3px;
+    font-size: 18px;
     font-weight: 700;
     line-height: 1;
     letter-spacing: 0.01em;
     font-variant-numeric: tabular-nums;
+    min-width: 0;
+    white-space: nowrap;
 }
 .icon {
-    font-size: 15px;
-    width: 15px;
+    font-size: 14px;
+    width: 16px;
     text-align: center;
-    flex: 0 0 auto;
+    flex: 0 0 16px;
+    line-height: 1;
+    overflow: visible;
+}
+#time {
+    display: inline-block;
+    min-width: 0;
+    transform: scaleX(0.92);
+    transform-origin: left center;
 }
 .task {
     font-size: 10px;
@@ -21032,6 +22028,228 @@ body {
     grid-template-columns: minmax(0, 1fr);
     gap: 3px;
     min-width: 0;
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+}
+.shell.circular-mode {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border-radius: 0;
+    overflow: visible;
+}
+.shell.circular-mode .content {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
+    pointer-events: auto;
+}
+.shell.circular-mode .topline {
+    display: none;
+}
+.shell.circular-mode.is-expanded .content {
+    justify-content: flex-start;
+    padding-left: 4px;
+}
+.shell.circular-mode.is-expanded[data-actions-side="left"] .content {
+    justify-content: flex-end;
+    padding-right: 4px;
+}
+.shell.circular-mode .time,
+.shell.circular-mode .task {
+    display: none;
+}
+.circular {
+    --ring-color: ${colors.activeButtonColor};
+    --ring-track: ${colors.circularTrackColor};
+    --circle-size: 64px;
+    --action-width: 75px;
+    --action-height: 34px;
+    --action-overlap: 32px;
+    --action-near-pad: 14px;
+    position: relative;
+    width: var(--circle-size);
+    height: var(--circle-size);
+    display: none;
+    place-items: center;
+    border-radius: 50%;
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+    overflow: visible;
+    isolation: isolate;
+}
+.shell.circular-mode .circular {
+    display: grid;
+}
+.circular::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: ${circularFaceGradient};
+    box-shadow:
+        inset 0 0 0 1px rgba(255,255,255,${colors.mode === 'light' ? '0.92' : '0.08'}),
+        inset 0 -7px 14px rgba(0,0,0,${colors.mode === 'light' ? '0.08' : '0.20'});
+    z-index: 1;
+}
+.circular-ring {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 2;
+    overflow: visible;
+}
+.circular-ring-track,
+.circular-ring-progress {
+    fill: none;
+    stroke-width: 2.6;
+}
+.circular-ring-track {
+    stroke: var(--ring-track);
+}
+.circular-ring-progress {
+    stroke: var(--ring-color);
+    stroke-linecap: round;
+    transform: rotate(-90deg);
+    transform-origin: 50% 50%;
+    transition: stroke-dashoffset 220ms ease-out, stroke 160ms ease;
+}
+.circular-ticks {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    z-index: 2;
+    pointer-events: none;
+    opacity: 0;
+}
+.circular[data-mode="stopwatch"] .circular-ring,
+.circular[data-mode="stopwatch-break"] .circular-ring {
+    opacity: 0;
+}
+.circular[data-mode="stopwatch"] .circular-ticks,
+.circular[data-mode="stopwatch-break"] .circular-ticks {
+    opacity: 1;
+}
+.circular-tick {
+    position: absolute;
+    width: 1px;
+    height: 3.8px;
+    border-radius: 999px;
+    background: ${colors.circularMutedColor};
+    opacity: 0.22;
+    transform-origin: center center;
+    transition: background-color 120ms linear, opacity 120ms linear, height 120ms ease, box-shadow 120ms ease;
+}
+.circular-tick.is-tail {
+    background: var(--ring-color);
+}
+.circular-tick.is-head {
+    background: var(--ring-color);
+    opacity: 0.98 !important;
+}
+.circular-face {
+    position: relative;
+    z-index: 3;
+    width: 71%;
+    height: 71%;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    text-align: center;
+    background: ${circularFaceHighlight};
+}
+.circular-time {
+    display: inline-block;
+    color: ${circularTimeColor};
+    font-size: 15px;
+    line-height: 1;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    letter-spacing: 0;
+    transform-origin: center;
+}
+.circular[data-long-time="1"] .circular-time {
+    font-size: 15px;
+    transform: scaleX(0.72);
+}
+.circular-actions {
+    position: absolute;
+    top: 50%;
+    left: calc(100% - var(--action-overlap));
+    box-sizing: border-box;
+    width: var(--action-width);
+    height: var(--action-height);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 0 3px 0 var(--action-near-pad);
+    border-radius: 999px;
+    border: 1px solid ${circularActionsBorder};
+    background: ${circularActionsBackground};
+    color: ${colors.textColor};
+    box-shadow: ${circularActionsShadow};
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-6px, -50%) scale(0.98);
+    transition: opacity 150ms ease, transform 180ms ease;
+    z-index: 0;
+}
+.circular[data-actions-side="left"] .circular-actions {
+    left: auto;
+    right: calc(100% - var(--action-overlap));
+    justify-content: flex-start;
+    padding: 0 var(--action-near-pad) 0 3px;
+    transform: translate(6px, -50%) scale(0.98);
+}
+.shell.circular-mode:hover .circular-actions,
+.shell.circular-mode:focus-within .circular-actions,
+.circular.show-actions .circular-actions {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(0, -50%) scale(1);
+}
+.circular-action-buttons {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 2px;
+}
+.circular .toolbtn {
+    width: 17px;
+    height: 20px;
+    border-radius: 6px;
+    background: transparent;
+    color: ${colors.toolButtonColor};
+    font-size: 11px;
+    line-height: 1;
+}
+.circular #circular-toggle-run {
+    font-size: 13px;
+}
+.circular #circular-toggle-run[data-running=true] {
+    font-size: 14px;
+}
+.circular #circular-toggle-run[data-running=false] {
+    font-size: 11px;
+}
+.circular #circular-more {
+    font-size: 12px;
+}
+.circular .toolbtn:hover {
+    background: ${circularButtonHoverBackground};
+    color: ${colors.activeButtonColor};
+}
+.circular #circular-toggle-run {
+    color: var(--ring-color);
 }
 </style>
 </head>
@@ -21053,6 +22271,20 @@ body {
             <span id="time">00:00</span>
         </div>
         <div id="task" class="task">未关联任务</div>
+        <div id="circular" class="circular" data-mode="countdown">
+            <svg class="circular-ring" viewBox="0 0 48 48" aria-hidden="true">
+                <circle class="circular-ring-track" cx="24" cy="24" r="20"></circle>
+                <circle class="circular-ring-progress" cx="24" cy="24" r="20"></circle>
+            </svg>
+            <span id="circular-ticks" class="circular-ticks" aria-hidden="true"></span>
+            <span class="circular-face"><span id="circular-time" class="circular-time">00:00</span></span>
+            <span class="circular-actions">
+                <span class="circular-action-buttons">
+                    <button id="circular-toggle-run" class="toolbtn" title="暂停">⏸</button>
+                    <button id="circular-more" class="toolbtn" title="更多">⋯</button>
+                </span>
+            </span>
+        </div>
     </div>
 </div>
 <script>
@@ -21064,6 +22296,12 @@ var __payloadState = null;
 var __liveTimer = null;
 var __lastRequestedWidth = 0;
 var __draggingFloatWindow = false;
+var __floatWindowExpanded = false;
+var __floatWindowLastExpandedAt = 0;
+var __compactWidth = ${getDesktopFloatWindowCompactWidth()};
+var __expandedWidth = ${getDesktopFloatWindowExpandedWidth()};
+var __circleRadius = 21;
+var __circleLen = 2 * Math.PI * __circleRadius;
 
 function __formatSeconds(totalSeconds) {
     totalSeconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
@@ -21075,13 +22313,77 @@ function __formatSeconds(totalSeconds) {
     return pad(minutes) + ':' + pad(seconds);
 }
 
+function __secondsFromTimeText(text) {
+    var parts = String(text || '').split(':').map(function (part) { return Number(part); });
+    if (parts.length === 3) return Math.max(0, (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0));
+    if (parts.length === 2) return Math.max(0, (parts[0] || 0) * 60 + (parts[1] || 0));
+    return 0;
+}
+
+function __ensureCircularTicks() {
+    var layer = document.getElementById('circular-ticks');
+    if (!layer || layer.children.length) return;
+    for (var i = 0; i < 60; i += 1) {
+        var tick = document.createElement('span');
+        var deg = i * 6;
+        var rad = deg * Math.PI / 180;
+        tick.className = 'circular-tick';
+        tick.dataset.tick = String(i);
+        tick.style.left = String(50 + Math.sin(rad) * 42) + '%';
+        tick.style.top = String(50 - Math.cos(rad) * 42) + '%';
+        tick.style.transform = 'translate(-50%, -50%) rotate(' + deg + 'deg)';
+        layer.appendChild(tick);
+    }
+    var track = document.querySelector('.circular-ring-track');
+    var progress = document.querySelector('.circular-ring-progress');
+    if (track) track.setAttribute('r', String(__circleRadius));
+    if (progress) progress.setAttribute('r', String(__circleRadius));
+    if (progress) {
+        progress.style.strokeDasharray = String(__circleLen);
+        progress.style.strokeDashoffset = String(__circleLen);
+    }
+}
+
+function __syncCircularActionSide() {
+    var circular = document.getElementById('circular');
+    if (!circular) return;
+    var shell = document.getElementById('shell');
+    if (__payloadState && (__payloadState.circularActionsSide === 'left' || __payloadState.circularActionsSide === 'right')) {
+        circular.dataset.actionsSide = __payloadState.circularActionsSide;
+        if (shell && shell.dataset) shell.dataset.actionsSide = __payloadState.circularActionsSide;
+        return;
+    }
+    var rect = circular.getBoundingClientRect();
+    var actionWidth = 75;
+    var overlap = 32;
+    var extension = actionWidth - overlap;
+    var rightFits = rect.right + extension <= window.innerWidth - 4;
+    var leftFits = rect.left - extension >= 4;
+    var rightSpace = window.innerWidth - rect.right;
+    var leftSpace = rect.left;
+    circular.dataset.actionsSide = (leftFits || (!rightFits && leftSpace >= rightSpace)) ? 'left' : 'right';
+}
+
 function __syncDesiredWidth(totalSeconds) {
     var seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
-    var nextWidth = seconds >= 3600 ? 120 : 90;
+    var nextWidth = (__payloadState && __payloadState.timerStyle === 'circular')
+        ? (__floatWindowExpanded ? __expandedWidth : __compactWidth)
+        : (seconds >= 3600 ? __expandedWidth : __compactWidth);
     if (__lastRequestedWidth === nextWidth) return;
     __lastRequestedWidth = nextWidth;
     if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
     try { __ipcRenderer.send('docktomato-float-window-command', 'set-width', nextWidth); } catch (e) {}
+}
+
+function __syncFloatWindowExpanded(expanded) {
+    var nextExpanded = !!expanded;
+    if (__floatWindowExpanded === nextExpanded) return;
+    __floatWindowExpanded = nextExpanded;
+    if (nextExpanded) __floatWindowLastExpandedAt = Date.now();
+    var shell = document.getElementById('shell');
+    if (shell && shell.classList) shell.classList.toggle('is-expanded', nextExpanded);
+    if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
+    try { __ipcRenderer.send('docktomato-float-window-command', 'set-expanded', nextExpanded); } catch (e) {}
 }
 
 function __renderLiveTime() {
@@ -21092,6 +22394,7 @@ function __renderLiveTime() {
         var remain = Math.ceil((Number(__payloadState.liveTargetTimeMs) - Date.now()) / 1000);
         var countdownText = __formatSeconds(Math.max(0, remain));
         time.textContent = countdownText;
+        __renderCircularFromPayload(countdownText);
         __syncDesiredWidth(Math.max(0, remain));
         return;
     }
@@ -21099,15 +22402,51 @@ function __renderLiveTime() {
         var elapsed = Math.floor((Date.now() - Number(__payloadState.liveStartTimeMs)) / 1000) + Math.max(0, Math.floor(Number(__payloadState.liveOffsetSeconds) || 0));
         var elapsedText = __formatSeconds(Math.max(0, elapsed));
         time.textContent = elapsedText;
+        __renderCircularFromPayload(elapsedText, elapsed);
         __syncDesiredWidth(Math.max(0, elapsed));
         return;
     }
     var staticText = __payloadState.timeText || '00:00';
     time.textContent = staticText;
+    __renderCircularFromPayload(staticText);
     if (__payloadState.liveTimerKind === 'static') {
         var hhmmss = /^\d{2}:\d{2}:\d{2}$/;
         __syncDesiredWidth(hhmmss.test(staticText) ? 3600 : 0);
     }
+}
+
+function __renderCircularFromPayload(timeText, liveElapsed) {
+    if (!__payloadState) return;
+    var circular = document.getElementById('circular');
+    if (!circular) return;
+    __ensureCircularTicks();
+    var mode = __payloadState.mode || 'countdown';
+    var isStopwatch = mode === 'stopwatch' || mode === 'stopwatch-break';
+    var displaySeconds = Number.isFinite(liveElapsed) ? liveElapsed : __secondsFromTimeText(timeText || __payloadState.timeText);
+    var duration = Math.max(1, Math.floor(Number(__payloadState.durationSeconds) || 1));
+    var elapsed = isStopwatch ? displaySeconds : Math.max(0, duration - displaySeconds);
+    var progress = isStopwatch ? ((elapsed % 60) / 60) : Math.max(0, Math.min(1, elapsed / duration));
+    var progressEl = circular.querySelector('.circular-ring-progress');
+    var timeEl = document.getElementById('circular-time');
+    circular.dataset.mode = mode;
+    circular.dataset.longTime = String(timeText || '').split(':').length >= 3 ? '1' : '0';
+    circular.style.setProperty('--ring-color', (mode === 'stopwatch' ? '#2fbf71' : (mode === 'break' || mode === 'stopwatch-break' ? '${colors.circularMutedColor}' : '${colors.activeButtonColor}')));
+    if (progressEl) progressEl.style.strokeDashoffset = String(__circleLen * (1 - progress));
+    if (timeEl) timeEl.textContent = timeText || '00:00';
+    var ticks = circular.querySelectorAll('.circular-tick');
+    var headSecond = Math.floor((elapsed || 0) % 60);
+    var trail = 30;
+    Array.prototype.forEach.call(ticks, function (tick, index) {
+        var distance = (headSecond - index + 60) % 60;
+        var inTrail = isStopwatch && elapsed > 0 && distance <= trail;
+        var fade = inTrail ? 1 - (distance / trail) : 0;
+        var idleOpacity = 0.22;
+        tick.classList.toggle('is-tail', inTrail);
+        tick.classList.toggle('is-head', inTrail && distance === 0);
+        tick.style.opacity = isStopwatch ? String(Math.max(idleOpacity, 0.2 + fade * 0.78).toFixed(3)) : '';
+        tick.style.height = '';
+    });
+    __syncCircularActionSide();
 }
 
 function __syncLiveTimer() {
@@ -21133,21 +22472,24 @@ function __syncPinState() {
 }
 
 function __syncRunButtonState(payload) {
-    var btn = document.getElementById('toggle-run');
-    if (!btn) return;
+    var buttons = [document.getElementById('toggle-run'), document.getElementById('circular-toggle-run')].filter(Boolean);
+    if (!buttons.length) return;
     var running = !!payload.running;
     var paused = !!payload.paused;
     var canToggle = payload.canToggleRun !== false;
-    if (running) {
-        btn.textContent = '⏸';
-        btn.title = '暂停';
-    } else {
-        btn.textContent = '▶';
-        btn.title = paused ? '继续' : '开始';
-    }
-    btn.disabled = !canToggle;
-    btn.style.opacity = canToggle ? '1' : '0.45';
-    btn.style.cursor = canToggle ? 'pointer' : 'default';
+    buttons.forEach(function (btn) {
+        if (running) {
+            btn.textContent = '⏸';
+            btn.title = '暂停';
+        } else {
+            btn.textContent = '▶';
+            btn.title = paused ? '继续' : '开始';
+        }
+        if (btn.id === 'circular-toggle-run') btn.dataset.running = running ? 'true' : 'false';
+        btn.disabled = !canToggle;
+        btn.style.opacity = canToggle ? '1' : '0.45';
+        btn.style.cursor = canToggle ? 'pointer' : 'default';
+    });
 }
 
 window.__setTomatoFloatState = function (payload) {
@@ -21158,7 +22500,13 @@ window.__setTomatoFloatState = function (payload) {
     var icon = document.getElementById('icon');
     var time = document.getElementById('time');
     var task = document.getElementById('task');
+    var circular = document.getElementById('circular');
     if (shell && shell.dataset) shell.dataset.alwaysOnTop = payload.alwaysOnTop ? 'true' : 'false';
+    if (shell) shell.classList.toggle('circular-mode', payload.timerStyle === 'circular');
+    if (shell && shell.dataset) shell.dataset.actionsSide = payload.circularActionsSide === 'left' ? 'left' : 'right';
+    if (circular) circular.dataset.actionsSide = payload.circularActionsSide === 'left' ? 'left' : 'right';
+    var circularToggleButton = document.getElementById('circular-toggle-run');
+    if (circularToggleButton) circularToggleButton.dataset.running = payload.running ? 'true' : 'false';
     if (mode) {
         mode.textContent = payload.hideModeText ? '' : (payload.modeText || '番茄钟');
         mode.style.display = payload.hideModeText ? 'none' : '';
@@ -21166,6 +22514,7 @@ window.__setTomatoFloatState = function (payload) {
     if (icon) icon.textContent = payload.prefix || '🍅';
     if (time) time.textContent = payload.timeText || '00:00';
     if (task) task.textContent = payload.taskText || '未关联任务';
+    if (circular) __renderCircularFromPayload(payload.timeText || '00:00');
     if (shell) {
         shell.classList.toggle('running', !!payload.running);
         shell.classList.toggle('paused', !!payload.paused);
@@ -21177,9 +22526,35 @@ window.__setTomatoFloatState = function (payload) {
 
 (function () {
     var shell = document.getElementById('shell');
+    var content = document.querySelector('.content');
     var toggleRun = document.getElementById('toggle-run');
+    var circularToggleRun = document.getElementById('circular-toggle-run');
+    var circularMore = document.getElementById('circular-more');
     var pin = document.getElementById('pin');
     var close = document.getElementById('close');
+    var collapseTimer = null;
+    var COLLAPSE_DELAY_MS = 300;
+    var RESIZE_SETTLE_MS = 260;
+    function expandFloatWindow() {
+        if (collapseTimer) {
+            clearTimeout(collapseTimer);
+            collapseTimer = null;
+        }
+        __syncFloatWindowExpanded(true);
+    }
+    function collapseFloatWindow(e) {
+        var next = e && e.relatedTarget;
+        if (next && shell && shell.contains(next)) return;
+        if (collapseTimer) clearTimeout(collapseTimer);
+        var elapsed = Date.now() - __floatWindowLastExpandedAt;
+        var delay = Math.max(COLLAPSE_DELAY_MS, RESIZE_SETTLE_MS - elapsed);
+        collapseTimer = setTimeout(function () {
+            collapseTimer = null;
+            if (shell && shell.matches && shell.matches(':hover')) return;
+            if (shell && shell.contains && shell.contains(document.activeElement)) return;
+            __syncFloatWindowExpanded(false);
+        }, delay);
+    }
     if (toggleRun) {
         toggleRun.addEventListener('click', function (e) {
             e.preventDefault();
@@ -21187,6 +22562,24 @@ window.__setTomatoFloatState = function (payload) {
             if (toggleRun.disabled) return;
             if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
             try { __ipcRenderer.send('docktomato-float-window-command', 'toggle-run'); } catch (err) {}
+        });
+    }
+    if (circularToggleRun) {
+        circularToggleRun.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (circularToggleRun.disabled) return;
+            if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
+            try { __ipcRenderer.send('docktomato-float-window-command', 'toggle-run'); } catch (err) {}
+        });
+    }
+    if (circularMore) {
+        circularMore.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            __syncCircularActionSide();
+            if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
+            try { __ipcRenderer.send('docktomato-float-window-command', 'show-menu'); } catch (err) {}
         });
     }
     if (pin) {
@@ -21206,9 +22599,19 @@ window.__setTomatoFloatState = function (payload) {
         });
     }
     if (shell) {
-        shell.addEventListener('mousedown', function (e) {
+        shell.addEventListener('mouseenter', expandFloatWindow);
+        shell.addEventListener('mouseleave', collapseFloatWindow);
+        shell.addEventListener('focusin', expandFloatWindow);
+        shell.addEventListener('focusout', collapseFloatWindow);
+        shell.addEventListener('mouseenter', __syncPinState);
+        shell.addEventListener('mousedown', __syncPinState);
+    }
+    if (content) {
+        content.addEventListener('mouseenter', expandFloatWindow);
+        content.addEventListener('mouseleave', collapseFloatWindow);
+        content.addEventListener('mousedown', function (e) {
             if (e.button !== 0) return;
-            if (e.target && e.target.closest && e.target.closest('.toolbtn')) return;
+            if (e.target && e.target.closest && e.target.closest('button')) return;
             if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
             __draggingFloatWindow = true;
             e.preventDefault();
@@ -21232,8 +22635,6 @@ window.__setTomatoFloatState = function (payload) {
             if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
             try { __ipcRenderer.send('docktomato-float-window-command', 'drag-end'); } catch (err) {}
         });
-        shell.addEventListener('mouseenter', __syncPinState);
-        shell.addEventListener('mousedown', __syncPinState);
     }
     __syncPinState();
     __syncRunButtonState({});
@@ -21246,6 +22647,7 @@ window.__setTomatoFloatState = function (payload) {
     function closeDesktopMinimizedFloatWindow() {
         desktopFloatWindowLastPayloadKey = '';
         desktopFloatWindowReady = false;
+        desktopFloatWindowLastResolvedColorMode = '';
         const win = desktopFloatWindow;
         desktopFloatWindow = null;
         if (!win) return;
@@ -21262,8 +22664,8 @@ window.__setTomatoFloatState = function (payload) {
         if (!support.supported) return null;
         try {
             const win = new support.BrowserWindow({
-                width: DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT,
-                height: DESKTOP_FLOAT_WINDOW_HEIGHT,
+                width: getDesktopFloatWindowCompactWidth(),
+                height: getDesktopFloatWindowCollapsedHeight(),
                 show: false,
                 frame: false,
                 alwaysOnTop: desktopFloatWindowState.alwaysOnTop !== false,
@@ -21273,20 +22675,44 @@ window.__setTomatoFloatState = function (payload) {
                 maximizable: false,
                 fullscreenable: false,
                 focusable: true,
-                transparent: false,
-                backgroundColor: '#14181c',
-                hasShadow: true,
+                transparent: isDesktopFloatWindowCircularTimerStyleEnabled(),
+                backgroundColor: isDesktopFloatWindowCircularTimerStyleEnabled() ? '#00000000' : getDesktopFloatWindowColors().browserBackground,
+                hasShadow: !isDesktopFloatWindowCircularTimerStyleEnabled(),
                 webPreferences: {
                     nodeIntegration: true,
                     contextIsolation: false
                 }
             });
             desktopFloatWindow = win;
+            applyDesktopFloatWindowOpacity(win);
             desktopFloatWindowReady = false;
             desktopFloatWindowLastPayloadKey = '';
             try {
                 win.on('move', () => {
-                    try { desktopFloatWindowState.bounds = win.getBounds(); } catch (e) {}
+                    try {
+                        if (Date.now() < desktopFloatWindowIgnoreMoveUntilMs) return;
+                        const bounds = win.getBounds();
+                        if (desktopFloatWindowDragState) return;
+                        if (desktopFloatWindowProgrammaticBounds) {
+                            const expected = desktopFloatWindowProgrammaticBounds;
+                            if (Date.now() < Number(expected.until || 0)) {
+                                const sameSize = Math.abs((Number(bounds?.width) || 0) - expected.width) <= 1
+                                    && Math.abs((Number(bounds?.height) || 0) - expected.height) <= 1;
+                                if (sameSize) {
+                                    const samePosition = Math.abs((Number(bounds?.x) || 0) - expected.x) <= 1
+                                        && Math.abs((Number(bounds?.y) || 0) - expected.y) <= 1;
+                                    if (samePosition) desktopFloatWindowProgrammaticBounds = null;
+                                    return;
+                                }
+                            } else {
+                                desktopFloatWindowProgrammaticBounds = null;
+                            }
+                        }
+                        if (desktopFloatWindowState.expanded) {
+                            return;
+                        }
+                        desktopFloatWindowState.bounds = getDesktopFloatWindowStoredBoundsFromDisplayBounds(bounds);
+                    } catch (e) {}
                 });
             } catch (e) {}
             try {
@@ -21330,11 +22756,22 @@ window.__setTomatoFloatState = function (payload) {
                         }).catch(() => {});
                         return;
                     }
+                    if (command === 'show-menu') {
+                        showDesktopFloatWindowContextMenu(win);
+                        return;
+                    }
                     if (command === 'set-width') {
                         const requestedWidth = Number(args?.[1] ?? args?.[0]);
                         if (Number.isFinite(requestedWidth) && requestedWidth > 0) {
-                            resizeDesktopMinimizedFloatWindow(win, requestedWidth);
+                            const width = (desktopFloatWindowState.expanded && isDesktopFloatWindowCircularTimerStyleEnabled())
+                                ? getDesktopFloatWindowExpandedWidth()
+                                : requestedWidth;
+                            resizeDesktopMinimizedFloatWindow(win, width);
                         }
+                        return;
+                    }
+                    if (command === 'set-expanded') {
+                        setDesktopMinimizedFloatWindowExpanded(win, args?.[1] === true || String(args?.[1]) === 'true');
                         return;
                     }
                     if (command === 'drag-start') {
@@ -21343,14 +22780,16 @@ window.__setTomatoFloatState = function (payload) {
                         if (!Number.isFinite(startX) || !Number.isFinite(startY)) return;
                         try {
                             const bounds = win.getBounds();
+                            const width = getDesktopFloatWindowDesiredWidth(getDesktopFloatWindowPayload());
                             desktopFloatWindowDragState = {
                                 startX,
                                 startY,
                                 originX: Number(bounds?.x) || 0,
                                 originY: Number(bounds?.y) || 0,
-                                width: Number(bounds?.width) || DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT,
-                                height: Number(bounds?.height) || DESKTOP_FLOAT_WINDOW_HEIGHT
+                                width,
+                                height: getDesktopFloatWindowCurrentHeight()
                             };
+                            resizeDesktopMinimizedFloatWindow(win, width);
                         } catch (e) {
                             desktopFloatWindowDragState = null;
                         }
@@ -21364,22 +22803,19 @@ window.__setTomatoFloatState = function (payload) {
                         const x = Math.round(desktopFloatWindowDragState.originX + cursorX - desktopFloatWindowDragState.startX);
                         const y = Math.round(desktopFloatWindowDragState.originY + cursorY - desktopFloatWindowDragState.startY);
                         try {
-                            win.setBounds({
+                            setDesktopFloatWindowBounds(win, {
                                 x,
                                 y,
                                 width: desktopFloatWindowDragState.width,
                                 height: desktopFloatWindowDragState.height
-                            }, false);
-                            desktopFloatWindowState.bounds = {
-                                x,
-                                y,
-                                width: desktopFloatWindowDragState.width,
-                                height: desktopFloatWindowDragState.height
-                            };
+                            });
                         } catch (e) {}
                         return;
                     }
                     if (command === 'drag-end') {
+                        if (desktopFloatWindowDragState) {
+                            try { resizeDesktopMinimizedFloatWindow(win, desktopFloatWindowDragState.width); } catch (e) {}
+                        }
                         desktopFloatWindowDragState = null;
                         return;
                     }
@@ -21412,16 +22848,19 @@ window.__setTomatoFloatState = function (payload) {
         const savedBounds = desktopFloatWindowState.bounds;
         if (savedBounds && Number.isFinite(savedBounds.x) && Number.isFinite(savedBounds.y)) {
             try {
-                const savedWidth = Number(savedBounds.width) || DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT;
-                const normalizedWidth = savedWidth >= DESKTOP_FLOAT_WINDOW_WIDTH_EXPANDED
-                    ? DESKTOP_FLOAT_WINDOW_WIDTH_EXPANDED
-                    : DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT;
-                win.setBounds({
+                const compactWidth = getDesktopFloatWindowCompactWidth();
+                const expandedWidth = getDesktopFloatWindowExpandedWidth();
+                const savedWidth = Number(savedBounds.width) || compactWidth;
+                const normalizedWidth = savedWidth >= compactWidth + ((expandedWidth - compactWidth) / 2)
+                    ? expandedWidth
+                    : compactWidth;
+                const height = getDesktopFloatWindowCurrentHeight();
+                setDesktopFloatWindowBounds(win, {
                     x: Math.round(savedBounds.x),
-                    y: Math.round(savedBounds.y),
+                    y: getDesktopFloatWindowDisplayYFromStoredBounds(savedBounds, height),
                     width: normalizedWidth,
-                    height: DESKTOP_FLOAT_WINDOW_HEIGHT
-                }, false);
+                    height
+                });
                 return;
             } catch (e) {}
         }
@@ -21429,14 +22868,11 @@ window.__setTomatoFloatState = function (payload) {
         const display = support.screen?.getPrimaryDisplay?.();
         const workArea = display?.workArea;
         if (!workArea) return;
-        const width = DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT;
-        const height = DESKTOP_FLOAT_WINDOW_HEIGHT;
-        const x = Math.round(workArea.x + workArea.width - width - 20);
-        const y = Math.round(workArea.y + workArea.height - height - 20);
-        try {
-            win.setBounds({ x, y, width, height }, false);
-            desktopFloatWindowState.bounds = { x, y, width, height };
-        } catch (e) {}
+        const width = getDesktopFloatWindowDesiredWidth(getDesktopFloatWindowPayload());
+        const height = getDesktopFloatWindowCurrentHeight();
+        const x = Math.round(workArea.x + workArea.width - width - getDesktopFloatWindowDefaultRightMargin(width));
+        const y = Math.round(workArea.y + workArea.height - height - DESKTOP_FLOAT_WINDOW_DEFAULT_RIGHT_MARGIN);
+        setDesktopFloatWindowBounds(win, { x, y, width, height });
     }
 
     async function refreshDesktopMinimizedFloatWindow() {
@@ -21481,13 +22917,17 @@ window.__setTomatoFloatState = function (payload) {
             } catch (e) {}
             return;
         }
-        if (!desktopFloatWindowState.isMinimized || !shouldShowDesktopMinimizedFloatWindowForTimerState()) {
+        const shouldShowForWindowState = isDesktopFloatWindowAlwaysVisibleEnabled() || desktopFloatWindowState.isMinimized;
+        if (!shouldShowForWindowState || !shouldShowDesktopMinimizedFloatWindowForTimerState()) {
             closeDesktopMinimizedFloatWindow();
             return;
         }
+        handleDesktopFloatWindowThemeMaybeChanged();
         const win = await ensureDesktopMinimizedFloatWindow();
         if (!win) return;
-        positionDesktopMinimizedFloatWindow(win);
+        let visible = false;
+        try { visible = !!win.isVisible?.(); } catch (e) {}
+        if (!visible) positionDesktopMinimizedFloatWindow(win);
         await refreshDesktopMinimizedFloatWindow();
         try {
             if (!win.isVisible?.()) {
@@ -21515,7 +22955,46 @@ window.__setTomatoFloatState = function (payload) {
         }, 80);
     }
 
+    function handleDesktopFloatWindowThemeMaybeChanged() {
+        if (getDesktopFloatWindowConfiguredColorMode() !== 'follow') return;
+        const nextMode = getDesktopFloatWindowResolvedColorMode();
+        if (!desktopFloatWindowLastResolvedColorMode || desktopFloatWindowLastResolvedColorMode === nextMode) return;
+        closeDesktopMinimizedFloatWindow();
+        scheduleDesktopMinimizedFloatWindowSync('desktop-float-theme-change');
+    }
+
+    function installDesktopFloatWindowThemeObserver() {
+        if (getDesktopFloatWindowConfiguredColorMode() !== 'follow') {
+            uninstallDesktopFloatWindowThemeObserver();
+            return;
+        }
+        if (desktopFloatWindowThemeObserver || typeof MutationObserver === 'undefined') return;
+        desktopFloatWindowThemeObserver = new MutationObserver(() => {
+            try { handleDesktopFloatWindowThemeMaybeChanged(); } catch (e) {}
+        });
+        try {
+            desktopFloatWindowThemeObserver.observe(document.documentElement, {
+                attributes: true,
+                attributeFilter: ['class', 'style', 'data-theme', 'data-theme-mode']
+            });
+        } catch (e) {}
+        try {
+            if (document.body) {
+                desktopFloatWindowThemeObserver.observe(document.body, {
+                    attributes: true,
+                    attributeFilter: ['class', 'style', 'data-theme', 'data-theme-mode']
+                });
+            }
+        } catch (e) {}
+    }
+
+    function uninstallDesktopFloatWindowThemeObserver() {
+        try { desktopFloatWindowThemeObserver?.disconnect?.(); } catch (e) {}
+        desktopFloatWindowThemeObserver = null;
+    }
+
     function uninstallDesktopMinimizedFloatWindowMonitor() {
+        uninstallDesktopFloatWindowThemeObserver();
         const win = desktopFloatWindowMonitoredWindow;
         if (win && typeof win.off === 'function') {
             try { if (desktopFloatWindowHandlers.minimize) win.off('minimize', desktopFloatWindowHandlers.minimize); } catch (e) {}
@@ -21544,10 +23023,12 @@ window.__setTomatoFloatState = function (payload) {
             return false;
         }
         if (desktopFloatWindowMonitoredWindow === support.currentWindow) {
+            installDesktopFloatWindowThemeObserver();
             scheduleDesktopMinimizedFloatWindowSync('desktop-monitor-reuse');
             return true;
         }
         uninstallDesktopMinimizedFloatWindowMonitor();
+        installDesktopFloatWindowThemeObserver();
         desktopFloatWindowMonitoredWindow = support.currentWindow;
         desktopFloatWindowHandlers.minimize = () => {
             desktopFloatWindowState.isMinimized = true;
@@ -21602,6 +23083,7 @@ window.__setTomatoFloatState = function (payload) {
 
         // 根据屏幕宽度决定悬浮条大小和位置
         const isSmallMobile = screenWidth < 360;
+        const floatBarSize = isSmallMobile ? 44 : 52;
 
         // 样式
         floatBar.style.cssText = `
@@ -21620,7 +23102,8 @@ window.__setTomatoFloatState = function (payload) {
             user-select: none;
             touch-action: none;
             transition: box-shadow 0.2s ease;
-            ${isSmallMobile ? 'width: 44px; height: 44px;' : 'width: 52px; height: 52px;'}
+            width: ${floatBarSize}px;
+            height: ${floatBarSize}px;
         `;
 
         // 计时器显示区域
@@ -21714,8 +23197,8 @@ window.__setTomatoFloatState = function (payload) {
         // 吸附边缘（支持全屏幕位置）- 使用动态屏幕尺寸
         const snapToEdge = (x, y) => {
             const margin = 10;
-            const barWidth = 60;
-            const barHeight = 60;
+            const barWidth = floatBarSize + 8;
+            const barHeight = floatBarSize + 8;
             // 动态获取当前屏幕尺寸
             const currentScreenWidth = window.innerWidth;
             const currentScreenHeight = window.innerHeight;
@@ -21804,8 +23287,8 @@ window.__setTomatoFloatState = function (payload) {
             const currentScreenWidth = window.innerWidth;
             const currentScreenHeight = window.innerHeight;
 
-            currentX = clamp(initialX + deltaX, 0, currentScreenWidth - 60);
-            currentY = clamp(initialY + deltaY, 0, currentScreenHeight - 80);
+            currentX = clamp(initialX + deltaX, 0, currentScreenWidth - floatBarSize);
+            currentY = clamp(initialY + deltaY, 0, currentScreenHeight - (floatBarSize + 20));
 
             floatBar.style.left = currentX + 'px';
             floatBar.style.top = currentY + 'px';
@@ -21934,8 +23417,8 @@ window.__setTomatoFloatState = function (payload) {
                 // 更新位置
                 const currentScreenWidth = window.innerWidth;
                 const currentScreenHeight = window.innerHeight;
-                currentX = clamp(initialX + deltaX, 0, currentScreenWidth - 60);
-                currentY = clamp(initialY + deltaY, 0, currentScreenHeight - 80);
+                currentX = clamp(initialX + deltaX, 0, currentScreenWidth - floatBarSize);
+                currentY = clamp(initialY + deltaY, 0, currentScreenHeight - (floatBarSize + 20));
 
                 floatBar.style.left = currentX + 'px';
                 floatBar.style.top = currentY + 'px';
@@ -22054,8 +23537,8 @@ window.__setTomatoFloatState = function (payload) {
             const newScreenWidth = window.innerWidth;
             const newScreenHeight = window.innerHeight;
 
-            currentX = clamp(currentX, 0, newScreenWidth - 60);
-            currentY = clamp(currentY, 0, newScreenHeight - 80);
+            currentX = clamp(currentX, 0, newScreenWidth - floatBarSize);
+            currentY = clamp(currentY, 0, newScreenHeight - (floatBarSize + 20));
 
             floatBar.style.left = currentX + 'px';
             floatBar.style.top = currentY + 'px';
@@ -23790,6 +25273,20 @@ window.__setTomatoFloatState = function (payload) {
         // 清除聚焦模式
         applyFocusMode(false);
         applyDatabaseFocusMode(false);
+    }
+
+    function endTimerFocus(reason = '', detail = {}) {
+        const payload = {
+            reason: String(reason || '').trim(),
+            taskBlockId: String(detail?.taskBlockId || currentTaskBlockId || syncState?.taskBlockId || '').trim(),
+            taskBlockName: String(detail?.taskBlockName || currentTaskBlockName || syncState?.taskBlockName || '').trim(),
+            databaseBlockId: String(detail?.databaseBlockId || currentDatabaseBlockId || syncState?.databaseBlockId || '').trim(),
+            mode: String(detail?.mode || timerMode || syncState?.mode || '').trim(),
+        };
+        try { stopHighlightKeepAlive(); } catch (e) {}
+        try { clearTaskBlockHighlight(); } catch (e) {}
+        try { globalThis.__taskHorizonOnTomatoFocusEnded?.(payload); } catch (e) {}
+        try { window.dispatchEvent(new CustomEvent('tomato:focus-ended', { detail: payload })); } catch (e) {}
     }
 
     /**
@@ -27061,7 +28558,7 @@ window.__setTomatoFloatState = function (payload) {
             togglesSection.appendChild(hint);
         }
 
-        mkToggleRow('启用思源最小化后悬浮窗（桌面端）', userSettings?.main?.enableDesktopMinimizedFloatWindow !== false, async (e) => {
+        const desktopFloatEnabledSwitch = mkToggleRow('启用思源最小化后悬浮窗（桌面端）', userSettings?.main?.enableDesktopMinimizedFloatWindow !== false, async (e) => {
             userSettings.main.enableDesktopMinimizedFloatWindow = e.target.checked;
             await saveUserSettings();
             try {
@@ -27076,7 +28573,68 @@ window.__setTomatoFloatState = function (payload) {
         });
         {
             const hint = document.createElement('div');
-            hint.textContent = '仅桌面端生效，思源最小化后显示独立悬浮窗';
+            hint.textContent = '仅桌面端生效，默认在思源最小化后显示独立悬浮窗';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
+            togglesSection.appendChild(hint);
+        }
+
+        {
+            const row = document.createElement('div');
+            row.style.cssText = 'padding: 10px 0;';
+            const label = document.createElement('div');
+            label.textContent = '桌面悬浮窗计时样式';
+            label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
+            const select = document.createElement('select');
+            select.style.cssText = `
+                width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px;
+                border: 1px solid var(--b3-border-color); font-size: 13px;
+                background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+            `;
+            [
+                [DEFAULT_TIMER_STYLE, '方形样式'],
+                [TIMER_STYLE_CIRCULAR, '圆形样式']
+            ].forEach(([value, text]) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = text;
+                select.appendChild(option);
+            });
+            const appearance = userSettings.appearance || {};
+            select.value = normalizeTimerStyle(appearance.timerStyle);
+            select.onchange = async (e) => {
+                if (!userSettings.appearance || typeof userSettings.appearance !== 'object') userSettings.appearance = {};
+                userSettings.appearance.timerStyle = normalizeTimerStyle(e.target.value);
+                e.target.value = userSettings.appearance.timerStyle;
+                await saveUserSettings();
+                try {
+                    closeDesktopMinimizedFloatWindow();
+                    scheduleDesktopMinimizedFloatWindowSync('settings-desktop-float-timer-style-change');
+                } catch (err) {}
+            };
+            const hint = document.createElement('div');
+            hint.textContent = '仅影响桌面独立悬浮窗；底栏和移动悬浮条保持原来的文本样式。';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:6px 0 0 0;line-height:1.35;';
+            row.appendChild(label);
+            row.appendChild(select);
+            row.appendChild(hint);
+            togglesSection.appendChild(row);
+        }
+
+        mkToggleRow('桌面悬浮窗始终显示', isDesktopFloatWindowAlwaysVisibleEnabled(), async (e) => {
+            userSettings.main.enableDesktopFloatWindowAlwaysVisible = e.target.checked;
+            if (e.target.checked && userSettings.main.enableDesktopMinimizedFloatWindow === false) {
+                userSettings.main.enableDesktopMinimizedFloatWindow = true;
+                if (desktopFloatEnabledSwitch) desktopFloatEnabledSwitch.checked = true;
+            }
+            await saveUserSettings();
+            try {
+                if (isDesktopMinimizedFloatWindowEnabled()) installDesktopMinimizedFloatWindowMonitor();
+                scheduleDesktopMinimizedFloatWindowSync('settings-desktop-float-always-visible-toggle');
+            } catch (err) {}
+        });
+        {
+            const hint = document.createElement('div');
+            hint.textContent = '开启后，计时进行中时即使思源未最小化也会显示桌面悬浮窗';
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
             togglesSection.appendChild(hint);
         }
@@ -27088,9 +28646,168 @@ window.__setTomatoFloatState = function (payload) {
         });
         {
             const hint = document.createElement('div');
-            hint.textContent = '关闭时，仅番茄/正计时运行中会在思源最小化后弹出';
+            hint.textContent = '关闭时，仅番茄/正计时运行中会弹出桌面悬浮窗';
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
             togglesSection.appendChild(hint);
+        }
+
+        {
+            const row = document.createElement('div');
+            row.style.cssText = 'padding: 10px 0;';
+            const label = document.createElement('div');
+            label.textContent = '桌面悬浮窗颜色模式';
+            label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
+            const select = document.createElement('select');
+            select.style.cssText = `
+                width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px;
+                border: 1px solid var(--b3-border-color); font-size: 13px;
+                background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+            `;
+            [
+                ['follow', '跟随思源'],
+                ['dark', '固定深色'],
+                ['light', '固定浅色']
+            ].forEach(([value, text]) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = text;
+                select.appendChild(option);
+            });
+            select.value = getDesktopFloatWindowConfiguredColorMode();
+            select.onchange = async (e) => {
+                userSettings.main.desktopFloatWindowColorMode = normalizeDesktopFloatWindowColorMode(e.target.value);
+                e.target.value = userSettings.main.desktopFloatWindowColorMode;
+                await saveUserSettings();
+                try {
+                    installDesktopFloatWindowThemeObserver();
+                    closeDesktopMinimizedFloatWindow();
+                    scheduleDesktopMinimizedFloatWindowSync('settings-desktop-float-color-mode-change');
+                } catch (err) {}
+            };
+            const hint = document.createElement('div');
+            hint.textContent = '固定浅色为白底黑字；跟随思源会根据当前思源深浅色切换。';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:6px 0 0 0;line-height:1.35;';
+            row.appendChild(label);
+            row.appendChild(select);
+            row.appendChild(hint);
+            togglesSection.appendChild(row);
+        }
+
+        {
+            const row = document.createElement('div');
+            row.style.cssText = 'padding: 10px 0;';
+            const labelRow = document.createElement('div');
+            labelRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;';
+            const label = document.createElement('div');
+            label.textContent = '桌面悬浮窗透明度';
+            label.style.cssText = 'font-size: 13px;';
+            const valueLabel = document.createElement('div');
+            valueLabel.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);font-variant-numeric:tabular-nums;';
+            const input = document.createElement('input');
+            input.type = 'range';
+            input.min = String(Math.round(MIN_DESKTOP_FLOAT_WINDOW_OPACITY * 100));
+            input.max = String(Math.round(MAX_DESKTOP_FLOAT_WINDOW_OPACITY * 100));
+            input.step = '1';
+            input.value = String(Math.round(getDesktopFloatWindowConfiguredOpacity() * 100));
+            input.style.cssText = 'width:100%;box-sizing:border-box;';
+            const updateLabel = () => { valueLabel.textContent = `${Math.round(Number(input.value) || 100)}%`; };
+            input.oninput = () => {
+                updateLabel();
+                try {
+                    const preview = normalizeDesktopFloatWindowOpacity(input.value);
+                    if (desktopFloatWindow && !desktopFloatWindow.isDestroyed?.() && typeof desktopFloatWindow.setOpacity === 'function') desktopFloatWindow.setOpacity(preview);
+                } catch (err) {}
+            };
+            input.onchange = async (e) => {
+                const value = normalizeDesktopFloatWindowOpacity(e.target.value);
+                userSettings.main.desktopFloatWindowOpacity = value;
+                e.target.value = String(Math.round(value * 100));
+                updateLabel();
+                await saveUserSettings();
+                try { applyDesktopFloatWindowOpacity(); } catch (err) {}
+            };
+            const hint = document.createElement('div');
+            hint.textContent = '仅影响桌面独立悬浮窗，方形样式和圆形样式都会生效。';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:6px 0 0 0;line-height:1.35;';
+            labelRow.appendChild(label);
+            labelRow.appendChild(valueLabel);
+            row.appendChild(labelRow);
+            row.appendChild(input);
+            row.appendChild(hint);
+            updateLabel();
+            togglesSection.appendChild(row);
+        }
+
+        {
+            const row = document.createElement('div');
+            row.style.cssText = 'padding: 10px 0;';
+            const label = document.createElement('div');
+            label.textContent = '桌面悬浮窗默认宽度（px）';
+            label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.min = String(MIN_DESKTOP_FLOAT_WINDOW_WIDTH);
+            input.max = String(MAX_DESKTOP_FLOAT_WINDOW_WIDTH);
+            input.step = '1';
+            input.value = String(getDesktopFloatWindowConfiguredWidth());
+            input.style.cssText = `
+                width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px;
+                border: 1px solid var(--b3-border-color); font-size: 13px;
+                background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+            `;
+            input.onchange = async (e) => {
+                const value = normalizeDesktopFloatWindowWidth(e.target.value);
+                userSettings.main.desktopFloatWindowDefaultWidth = value;
+                e.target.value = String(value);
+                await saveUserSettings();
+                try {
+                    closeDesktopMinimizedFloatWindow();
+                    scheduleDesktopMinimizedFloatWindowSync('settings-desktop-float-width-change');
+                } catch (err) {}
+            };
+            const hint = document.createElement('div');
+            hint.textContent = `默认 ${DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH}px，可在 ${MIN_DESKTOP_FLOAT_WINDOW_WIDTH}-${MAX_DESKTOP_FLOAT_WINDOW_WIDTH}px 调整；超过 1 小时时会在此基础上自动加宽。`;
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:6px 0 0 0;line-height:1.35;';
+            row.appendChild(label);
+            row.appendChild(input);
+            row.appendChild(hint);
+            togglesSection.appendChild(row);
+        }
+
+        {
+            const row = document.createElement('div');
+            row.style.cssText = 'padding: 10px 0;';
+            const label = document.createElement('div');
+            label.textContent = '桌面悬浮窗上边距（px）';
+            label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.min = String(MIN_DESKTOP_FLOAT_WINDOW_TOP_PADDING);
+            input.max = String(MAX_DESKTOP_FLOAT_WINDOW_TOP_PADDING);
+            input.step = '1';
+            input.value = String(getDesktopFloatWindowConfiguredTopPadding());
+            input.style.cssText = `
+                width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px;
+                border: 1px solid var(--b3-border-color); font-size: 13px;
+                background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+            `;
+            input.onchange = async (e) => {
+                const value = normalizeDesktopFloatWindowTopPadding(e.target.value);
+                userSettings.main.desktopFloatWindowTopPadding = value;
+                e.target.value = String(value);
+                await saveUserSettings();
+                try {
+                    closeDesktopMinimizedFloatWindow();
+                    scheduleDesktopMinimizedFloatWindowSync('settings-desktop-float-top-padding-change');
+                } catch (err) {}
+            };
+            const hint = document.createElement('div');
+            hint.textContent = `默认 ${DEFAULT_DESKTOP_FLOAT_WINDOW_TOP_PADDING}px，可在 ${MIN_DESKTOP_FLOAT_WINDOW_TOP_PADDING}-${MAX_DESKTOP_FLOAT_WINDOW_TOP_PADDING}px 调整；调大后悬浮窗会向上补一点高度。`;
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:6px 0 0 0;line-height:1.35;';
+            row.appendChild(label);
+            row.appendChild(input);
+            row.appendChild(hint);
+            togglesSection.appendChild(row);
         }
 
         mkToggleRow('聚焦模式（高亮任务/数据库时淡化其它内容）', userSettings?.main?.enableFocusMode !== false, async (e) => {
@@ -28092,6 +29809,7 @@ window.__setTomatoFloatState = function (payload) {
             autoSwitchTheme: false,
             showIndicator: true,
             enableStopwatchBar: true,
+            timerStyle: DEFAULT_TIMER_STYLE,
             breathingMinOpacity: 0.5,
             breathingMaxOpacity: 1
         };
@@ -29775,9 +31493,10 @@ window.__setTomatoFloatState = function (payload) {
                         if (timeDisplay) updateDisplay();
                         updateTaskBlockIcon();
                         hideProgressBar();
+                        endTimerFocus('sync-remote-idle', newState);
 
                         try { await reconcileTrackedTimerNotification('sync-remote-idle', true); } catch (e) {}
-                        
+
                         Logger.info('🔄 SyncManager: 已同步重置状态');
                         try { maybeRefreshHistoryFromRemote(); } catch (e) {}
                         return;
@@ -29912,6 +31631,7 @@ window.__setTomatoFloatState = function (payload) {
                             if (controlButton) {
                                 controlButton.innerHTML = '▶️';
                             }
+                            endTimerFocus('sync-expired-idle', currentSyncState);
                         } else if (currentSyncState.status === 'RUNNING') {
                             Logger.info('🔄 云端计时正常运行后到期，标记为完成');
                             currentSyncState.status = 'COMPLETED';
@@ -29973,6 +31693,7 @@ window.__setTomatoFloatState = function (payload) {
                             if (controlButton) {
                                 controlButton.innerHTML = '▶️';
                             }
+                            endTimerFocus('sync-expired-completed', currentSyncState);
 
                             setTimeout(() => {
                                 showToastDialog('🍅 时间到！', '该休息一下了～', 'tomato-end', currentSyncState.taskBlockId, currentSyncState.taskBlockName);
@@ -29997,6 +31718,7 @@ window.__setTomatoFloatState = function (payload) {
                             if (controlButton) {
                                 controlButton.innerHTML = '▶️';
                             }
+                            endTimerFocus('sync-expired-paused-idle', currentSyncState);
                         }
                     } else {
                         Logger.info('🔄 SyncManager: 恢复云端运行状态');
@@ -32383,16 +34105,6 @@ window.__setTomatoFloatState = function (payload) {
             return '';
         }
     };
-    const __getReminderScheduleUpdatedAtMs = (reminder) => {
-        try {
-            const raw = String(reminder?.scheduleUpdatedAt || '').trim();
-            if (!raw) return 0;
-            const ms = toDateSafe(raw).getTime();
-            return Number.isFinite(ms) ? ms : 0;
-        } catch (e) {
-            return 0;
-        }
-    };
     const __normalizeSemanticText = (input) => {
         let s = String(input || '');
         if (!s) return '';
@@ -32883,7 +34595,6 @@ window.__setTomatoFloatState = function (payload) {
             const interval = __normalizeReminderInterval(reminder.interval || 'daily');
             const every = interval === 'once' ? 1 : __getReminderEvery(reminder);
             const endKey = __normalizeReminderDateKey(reminder?.endDate || '');
-            const activeFromMs = __getReminderScheduleUpdatedAtMs(reminder);
 
             const pickLatestOnDate = (dateKey, requirePastTime) => {
                 if (endKey && dateKey > endKey) return null;
@@ -32898,7 +34609,6 @@ window.__setTomatoFloatState = function (payload) {
                     const dt = new Date(base);
                     dt.setHours(p.hh, p.mm, 0, 0);
                     if (dt.getTime() > to.getTime()) continue;
-                    if (activeFromMs && dt.getTime() < activeFromMs) continue;
                     return dt;
                 }
                 return null;
@@ -33323,7 +35033,8 @@ window.__setTomatoFloatState = function (payload) {
                 const taskId = String(ev?.detail?.taskId || '').trim();
                 const attrKey = String(ev?.detail?.attrKey || '').trim();
                 if (!taskId) return;
-                if (![
+                const isReminderAttr = attrKey === 'custom-tomato-reminder';
+                if (!isReminderAttr && ![
                     TASK_START_DATE_ATTR,
                     TASK_COMPLETION_TIME_ATTR,
                     TASK_REPEAT_RULE_ATTR,
@@ -33337,9 +35048,11 @@ window.__setTomatoFloatState = function (payload) {
                     __reminderTaskAttrSyncTimers.delete(taskId);
                     try {
                         const reminder = await getBlockReminder(taskId);
-                        if (!reminder) return;
-                        try { await __syncReminderDeviceSchedule(taskId, reminder, { silent: true }); } catch (e) {}
-                        try { refreshReminderDockPanel(); } catch (e) {}
+                        if (reminder) {
+                            try { await __syncReminderDeviceSchedule(taskId, reminder, { silent: true }); } catch (e) {}
+                        }
+                        if (!reminder && !isReminderAttr) return;
+                        try { refreshReminderDockPanel(isReminderAttr); } catch (e) {}
                         try { updateReminderBadge(); } catch (e) {}
                     } catch (e) {}
                 }, 180);
@@ -33676,7 +35389,7 @@ window.__setTomatoFloatState = function (payload) {
                     rootId: currentReminder?.rootId,
                     ...taskContext,
                 });
-                if (!currentReminder || __getReminderScheduleSignature(currentReminder) !== __getReminderScheduleSignature(reminderToSave)) {
+                if (currentReminder && __getReminderScheduleSignature(currentReminder) !== __getReminderScheduleSignature(reminderToSave)) {
                     reminderToSave.scheduleUpdatedAt = new Date().toISOString();
                 }
                 // 编辑提醒时，如果属性里暂时没带上当前设备预约，就从本地预约注册表补回，
