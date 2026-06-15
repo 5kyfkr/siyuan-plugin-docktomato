@@ -22168,6 +22168,8 @@ body {
 }
 .circular-time {
     display: inline-block;
+    min-width: 0;
+    text-align: center;
     color: ${circularTimeColor};
     font-size: 15px;
     line-height: 1;
@@ -22178,8 +22180,8 @@ body {
     transform-origin: center;
 }
 .circular[data-long-time="1"] .circular-time {
-    font-size: 15px;
-    transform: scaleX(0.72);
+    font-size: 11px;
+    transform: none;
 }
 .circular-actions {
     position: absolute;
