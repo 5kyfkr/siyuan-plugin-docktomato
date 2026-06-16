@@ -1,6 +1,6 @@
 // @name         思源笔记底栏番茄钟
 // @namespace    https://ld246.com/article/1767077931114
-// @version      2.0.1
+// @version      2.0.2
 // @description  支持时间轴视图/任务提醒/日常事务记录/多端状态同步/移动端/数据库联动/块绑定/历史记录/任务管理器联动
 
 (function () {
@@ -2213,6 +2213,7 @@
             showMobileBreadcrumbButton: true,
             enableDesktopMinimizedFloatWindow: true,
             enableDesktopFloatWindowAlwaysVisible: false,
+            desktopFloatWindowDisplayMode: 'minimized',
             desktopFloatWindowDefaultWidth: DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH,
             desktopFloatWindowTopPadding: DEFAULT_DESKTOP_FLOAT_WINDOW_TOP_PADDING,
             desktopFloatWindowColorMode: DEFAULT_DESKTOP_FLOAT_WINDOW_COLOR_MODE,
@@ -2385,6 +2386,8 @@
         userSettings.main.debugMode = userSettings.main.debugMode === true;
         userSettings.main.enableMobileSupport = userSettings.main.enableMobileSupport !== false;
         if (typeof userSettings.main.showMobileBreadcrumbButton !== 'boolean') userSettings.main.showMobileBreadcrumbButton = true;
+        if (typeof userSettings.main.desktopFloatWindowDisplayMode !== 'string') userSettings.main.desktopFloatWindowDisplayMode = getDesktopFloatWindowDisplayMode();
+        userSettings.main.desktopFloatWindowDisplayMode = applyDesktopFloatWindowDisplayMode(userSettings.main.desktopFloatWindowDisplayMode);
         if (typeof userSettings.main.enableDesktopMinimizedFloatWindow !== 'boolean') userSettings.main.enableDesktopMinimizedFloatWindow = true;
         if (typeof userSettings.main.enableDesktopFloatWindowAlwaysVisible !== 'boolean') userSettings.main.enableDesktopFloatWindowAlwaysVisible = false;
         userSettings.main.desktopFloatWindowDefaultWidth = normalizeDesktopFloatWindowWidth(userSettings.main.desktopFloatWindowDefaultWidth);
@@ -2500,11 +2503,32 @@
     const isMobileBreadcrumbButtonEnabled = () => {
         try { return userSettings?.main?.showMobileBreadcrumbButton !== false; } catch (e) { return true; }
     };
-    const isDesktopMinimizedFloatWindowEnabled = () => {
-        try { return !isMobileDevice() && userSettings?.main?.enableDesktopMinimizedFloatWindow !== false; } catch (e) { return false; }
+    const isDesktopMinimizedFloatWindowSettingEnabled = () => {
+        try { return userSettings?.main?.enableDesktopMinimizedFloatWindow !== false; } catch (e) { return true; }
     };
     const isDesktopFloatWindowAlwaysVisibleEnabled = () => {
         try { return userSettings?.main?.enableDesktopFloatWindowAlwaysVisible === true; } catch (e) { return false; }
+    };
+    const isDesktopMinimizedFloatWindowEnabled = () => {
+        try { return !isMobileDevice() && getDesktopFloatWindowDisplayMode() !== 'off'; } catch (e) { return false; }
+    };
+    const getDesktopFloatWindowDisplayMode = () => {
+        try {
+            const stored = String(userSettings?.main?.desktopFloatWindowDisplayMode || '').trim();
+            if (stored === 'always' || stored === 'minimized' || stored === 'off') return stored;
+            if (isDesktopFloatWindowAlwaysVisibleEnabled()) return 'always';
+            return isDesktopMinimizedFloatWindowSettingEnabled() ? 'minimized' : 'off';
+        } catch (e) { return 'minimized'; }
+    };
+    const applyDesktopFloatWindowDisplayMode = (mode) => {
+        const normalized = String(mode || '').trim() === 'always'
+            ? 'always'
+            : (String(mode || '').trim() === 'off' ? 'off' : 'minimized');
+        if (!userSettings.main || typeof userSettings.main !== 'object') userSettings.main = {};
+        userSettings.main.desktopFloatWindowDisplayMode = normalized;
+        userSettings.main.enableDesktopMinimizedFloatWindow = normalized === 'minimized';
+        userSettings.main.enableDesktopFloatWindowAlwaysVisible = normalized === 'always';
+        return normalized;
     };
     const getDesktopFloatWindowConfiguredWidth = () => {
         try { return normalizeDesktopFloatWindowWidth(userSettings?.main?.desktopFloatWindowDefaultWidth); } catch (e) { return DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH; }
@@ -15392,6 +15416,7 @@
 
         const currentAudioSettings = getAudioSettings();
         const hasBackgroundAudio = !!(currentAudioSettings.workBackgroundSound || currentAudioSettings.breakBackgroundSound);
+        const shouldShowReopenDesktopFloatWindow = !isMobileDevice() && desktopFloatWindowState.dismissed;
         if (currentAudioSettings.backgroundEnabled !== false && hasBackgroundAudio) {
             const muteBackgroundItem = document.createElement('div');
             const isMuted = currentAudioSettings.backgroundMuted === true;
@@ -15427,9 +15452,32 @@
             };
             menu.appendChild(distractionItem);
 
-            const hrDistraction = document.createElement('hr');
-            hrDistraction.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
-            menu.appendChild(hrDistraction);
+            if (!shouldShowReopenDesktopFloatWindow) {
+                const hrDistraction = document.createElement('hr');
+                hrDistraction.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
+                menu.appendChild(hrDistraction);
+            }
+        }
+
+        if (shouldShowReopenDesktopFloatWindow) {
+            const reopenDesktopFloatWindowItem = document.createElement('div');
+            reopenDesktopFloatWindowItem.textContent = '🪟 开启悬浮窗';
+            reopenDesktopFloatWindowItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
+            reopenDesktopFloatWindowItem.onmouseenter = () => reopenDesktopFloatWindowItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
+            reopenDesktopFloatWindowItem.onmouseleave = () => reopenDesktopFloatWindowItem.style.backgroundColor = '';
+            reopenDesktopFloatWindowItem.onclick = async (e) => {
+                e.stopPropagation();
+                desktopFloatWindowState.dismissed = false;
+                try { installDesktopMinimizedFloatWindowMonitor(); } catch (err) {}
+                try { scheduleDesktopMinimizedFloatWindowSync('bottom-menu-open-desktop-float'); } catch (err) {}
+                menu.remove();
+                isContextMenuOpen = false;
+            };
+            menu.appendChild(reopenDesktopFloatWindowItem);
+
+            const hrDesktopFloat = document.createElement('hr');
+            hrDesktopFloat.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
+            menu.appendChild(hrDesktopFloat);
         }
 
         const tomatoTitle = document.createElement('div');
@@ -21455,9 +21503,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     function getDesktopFloatWindowDesiredWidth(payload = null) {
         const p = payload || getDesktopFloatWindowPayload();
         if (p?.timerStyle === TIMER_STYLE_CIRCULAR) {
-            return desktopFloatWindowState.expanded
-                ? getDesktopFloatWindowExpandedWidth()
-                : getDesktopFloatWindowCompactWidth();
+            return getDesktopFloatWindowExpandedWidth();
         }
         if (p?.liveTimerKind === 'countdown' && p.liveTargetTimeMs) {
             const remain = Math.ceil((Number(p.liveTargetTimeMs) - Date.now()) / 1000);
@@ -21575,6 +21621,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     function getDesktopFloatWindowCurrentHeight() {
+        if (desktopFloatWindow && !isDesktopFloatWindowCircularTimerStyleEnabled()) return getDesktopFloatWindowExpandedHeight();
         return desktopFloatWindowState.expanded ? getDesktopFloatWindowExpandedHeight() : getDesktopFloatWindowCollapsedHeight();
     }
 
@@ -21605,6 +21652,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     function getDesktopFloatWindowDefaultRightMargin(width) {
+        if (isDesktopFloatWindowCircularTimerStyleEnabled()) return DESKTOP_FLOAT_WINDOW_DEFAULT_RIGHT_MARGIN;
         const w = Math.round(Number(width) || getDesktopFloatWindowCompactWidth());
         return DESKTOP_FLOAT_WINDOW_DEFAULT_RIGHT_MARGIN
             + (w >= getDesktopFloatWindowExpandedWidth() ? DESKTOP_FLOAT_WINDOW_EXPANDED_EXTRA_LEFT_OFFSET : 0);
@@ -21869,7 +21917,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     function buildDesktopFloatWindowHtml() {
         const colors = getDesktopFloatWindowColors();
         const circularWindow = isDesktopFloatWindowCircularTimerStyleEnabled();
-        const pageBackground = circularWindow ? 'transparent' : colors.pageBackground;
+        const pageBackground = 'transparent';
         const circularFaceGradient = colors.mode === 'light'
             ? 'radial-gradient(circle at 42% 33%, #ffffff 0 37%, #f7f9fa 58%, #edf1f3 74%, #dce2e6 100%)'
             : 'radial-gradient(circle at 42% 33%, #2c3641 0 38%, #202a34 60%, #19222b 78%, #121920 100%)';
@@ -21903,14 +21951,15 @@ html, body {
 }
 body {
     display: flex;
-    align-items: stretch;
+    align-items: flex-end;
     justify-content: stretch;
     padding: 0;
 }
 .shell {
     position: relative;
     width: 100%;
-    height: 100%;
+    height: ${getDesktopFloatWindowCollapsedHeight()}px;
+    flex: 0 0 auto;
     box-sizing: border-box;
     padding: ${getDesktopFloatWindowTopPadding()}px 8px 5px;
     border-radius: 10px;
@@ -21924,6 +21973,12 @@ body {
     user-select: none;
     -webkit-app-region: drag;
     app-region: drag;
+    transition: height 140ms ease-out;
+}
+.shell.is-expanded:not(.circular-mode),
+.shell:not(.circular-mode):hover,
+.shell:not(.circular-mode):focus-within {
+    height: ${getDesktopFloatWindowExpandedHeight()}px;
 }
 .topline {
     position: absolute;
@@ -22032,6 +22087,9 @@ body {
     app-region: no-drag;
 }
 .shell.circular-mode {
+    width: 100%;
+    height: 100%;
+    flex: 1 1 auto;
     background: transparent;
     border-color: transparent;
     box-shadow: none;
@@ -22040,6 +22098,7 @@ body {
     padding: 0;
     border-radius: 0;
     overflow: visible;
+    transition: none;
 }
 .shell.circular-mode .content {
     box-sizing: border-box;
@@ -22047,19 +22106,18 @@ body {
     height: 100%;
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
+    padding-left: 4px;
+    padding-right: 0;
     overflow: visible;
     pointer-events: auto;
 }
 .shell.circular-mode .topline {
     display: none;
 }
-.shell.circular-mode.is-expanded .content {
-    justify-content: flex-start;
-    padding-left: 4px;
-}
-.shell.circular-mode.is-expanded[data-actions-side="left"] .content {
+.shell.circular-mode[data-actions-side="left"] .content {
     justify-content: flex-end;
+    padding-left: 0;
     padding-right: 4px;
 }
 .shell.circular-mode .time,
@@ -22074,6 +22132,7 @@ body {
     --action-height: 34px;
     --action-overlap: 32px;
     --action-near-pad: 14px;
+    --action-slide: calc(var(--action-width) / 2);
     position: relative;
     width: var(--circle-size);
     height: var(--circle-size);
@@ -22201,8 +22260,8 @@ body {
     box-shadow: ${circularActionsShadow};
     opacity: 0;
     pointer-events: none;
-    transform: translate(-6px, -50%) scale(0.98);
-    transition: opacity 150ms ease, transform 180ms ease;
+    transform: translate(calc(-1 * var(--action-slide)), -50%);
+    transition: opacity 150ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
     z-index: 0;
 }
 .circular[data-actions-side="left"] .circular-actions {
@@ -22210,14 +22269,15 @@ body {
     right: calc(100% - var(--action-overlap));
     justify-content: flex-start;
     padding: 0 var(--action-near-pad) 0 3px;
-    transform: translate(6px, -50%) scale(0.98);
+    transform: translate(var(--action-slide), -50%);
 }
 .shell.circular-mode:hover .circular-actions,
+.shell.circular-mode.is-expanded .circular-actions,
 .shell.circular-mode:focus-within .circular-actions,
 .circular.show-actions .circular-actions {
     opacity: 1;
     pointer-events: auto;
-    transform: translate(0, -50%) scale(1);
+    transform: translate(0, -50%);
 }
 .circular-action-buttons {
     display: flex;
@@ -22253,10 +22313,15 @@ body {
 .circular #circular-toggle-run {
     color: var(--ring-color);
 }
+@media (prefers-reduced-motion: reduce) {
+    .circular-actions {
+        transition: opacity 1ms linear;
+    }
+}
 </style>
 </head>
 <body>
-<div id="shell" class="shell">
+<div id="shell" class="shell" data-actions-side="${desktopFloatWindowState.circularExpandedLeft ? 'left' : 'right'}">
     <div class="topline">
         <div class="leftbox">
             <button id="toggle-run" class="toolbtn" title="暂停">⏸</button>
@@ -22273,7 +22338,7 @@ body {
             <span id="time">00:00</span>
         </div>
         <div id="task" class="task">未关联任务</div>
-        <div id="circular" class="circular" data-mode="countdown">
+        <div id="circular" class="circular" data-mode="countdown" data-actions-side="${desktopFloatWindowState.circularExpandedLeft ? 'left' : 'right'}">
             <svg class="circular-ring" viewBox="0 0 48 48" aria-hidden="true">
                 <circle class="circular-ring-track" cx="24" cy="24" r="20"></circle>
                 <circle class="circular-ring-progress" cx="24" cy="24" r="20"></circle>
@@ -22369,7 +22434,7 @@ function __syncCircularActionSide() {
 function __syncDesiredWidth(totalSeconds) {
     var seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
     var nextWidth = (__payloadState && __payloadState.timerStyle === 'circular')
-        ? (__floatWindowExpanded ? __expandedWidth : __compactWidth)
+        ? __expandedWidth
         : (seconds >= 3600 ? __expandedWidth : __compactWidth);
     if (__lastRequestedWidth === nextWidth) return;
     __lastRequestedWidth = nextWidth;
@@ -22536,8 +22601,72 @@ window.__setTomatoFloatState = function (payload) {
     var close = document.getElementById('close');
     var collapseTimer = null;
     var COLLAPSE_DELAY_MS = 300;
+    var CIRCULAR_COLLAPSE_DELAY_MS = 80;
     var RESIZE_SETTLE_MS = 260;
-    function expandFloatWindow() {
+    var HOVER_BOUNDS_TOLERANCE_PX = 4;
+    var HOVER_EDGE_RECHECK_MS = 450;
+    var hoverSettleUntilMs = 0;
+    var lastPointerScreenX = null;
+    var lastPointerScreenY = null;
+    function updatePointerScreenPosition(e) {
+        if (!e) return;
+        if (Number.isFinite(e.screenX)) lastPointerScreenX = e.screenX;
+        if (Number.isFinite(e.screenY)) lastPointerScreenY = e.screenY;
+    }
+    function isPointerWithinFloatWindow(tolerance) {
+        if (!shell || lastPointerScreenX == null || lastPointerScreenY == null) return false;
+        var leftValue = Number.isFinite(window.screenX) ? window.screenX : window.screenLeft;
+        var topValue = Number.isFinite(window.screenY) ? window.screenY : window.screenTop;
+        var left = Number(leftValue) || 0;
+        var top = Number(topValue) || 0;
+        var width = Math.max(0, Number(window.outerWidth) || Number(window.innerWidth) || 0);
+        var height = Math.max(0, Number(window.outerHeight) || Number(window.innerHeight) || 0);
+        var right = left + width;
+        var bottom = top + height;
+        var pad = Math.max(0, Number(tolerance) || 0);
+        if (pad <= 0) return lastPointerScreenX > left && lastPointerScreenX < right && lastPointerScreenY > top && lastPointerScreenY < bottom;
+        return lastPointerScreenX >= left - pad && lastPointerScreenX <= right + pad && lastPointerScreenY >= top - pad && lastPointerScreenY <= bottom + pad;
+    }
+    function isCircularFloatWindow() {
+        return !!((__payloadState && __payloadState.timerStyle === 'circular') || (shell && shell.classList && shell.classList.contains('circular-mode')));
+    }
+    function shouldKeepFloatWindowExpanded(allowWindowBounds) {
+        if (shell && shell.matches && shell.matches(':hover')) return true;
+        return allowWindowBounds ? isPointerWithinFloatWindow(0) : false;
+    }
+    function blurFloatWindowActiveElement() {
+        var active = document.activeElement;
+        if (!active || !shell || !shell.contains || !shell.contains(active)) return;
+        if (typeof active.blur !== 'function') return;
+        try { active.blur(); } catch (e) {}
+    }
+    function scheduleCollapseCheck(delay, edgeRecheck) {
+        if (collapseTimer) clearTimeout(collapseTimer);
+        collapseTimer = setTimeout(function () {
+            collapseTimer = null;
+            var now = Date.now();
+            var circularMode = isCircularFloatWindow();
+            if (!circularMode && now < hoverSettleUntilMs) {
+                scheduleCollapseCheck(Math.max(40, hoverSettleUntilMs - now + 40), !!edgeRecheck);
+                return;
+            }
+            if (shouldKeepFloatWindowExpanded(circularMode)) return;
+            if (circularMode) {
+                blurFloatWindowActiveElement();
+                __syncFloatWindowExpanded(false);
+                return;
+            }
+            if (!edgeRecheck && isPointerWithinFloatWindow(HOVER_BOUNDS_TOLERANCE_PX)) {
+                scheduleCollapseCheck(HOVER_EDGE_RECHECK_MS, true);
+                return;
+            }
+            blurFloatWindowActiveElement();
+            __syncFloatWindowExpanded(false);
+        }, delay);
+    }
+    function expandFloatWindow(e) {
+        updatePointerScreenPosition(e);
+        hoverSettleUntilMs = isCircularFloatWindow() ? 0 : Date.now() + RESIZE_SETTLE_MS + 160;
         if (collapseTimer) {
             clearTimeout(collapseTimer);
             collapseTimer = null;
@@ -22545,17 +22674,17 @@ window.__setTomatoFloatState = function (payload) {
         __syncFloatWindowExpanded(true);
     }
     function collapseFloatWindow(e) {
+        updatePointerScreenPosition(e);
         var next = e && e.relatedTarget;
         if (next && shell && shell.contains(next)) return;
         if (collapseTimer) clearTimeout(collapseTimer);
+        if (isCircularFloatWindow()) {
+            scheduleCollapseCheck(CIRCULAR_COLLAPSE_DELAY_MS, true);
+            return;
+        }
         var elapsed = Date.now() - __floatWindowLastExpandedAt;
         var delay = Math.max(COLLAPSE_DELAY_MS, RESIZE_SETTLE_MS - elapsed);
-        collapseTimer = setTimeout(function () {
-            collapseTimer = null;
-            if (shell && shell.matches && shell.matches(':hover')) return;
-            if (shell && shell.contains && shell.contains(document.activeElement)) return;
-            __syncFloatWindowExpanded(false);
-        }, delay);
+        scheduleCollapseCheck(delay, false);
     }
     if (toggleRun) {
         toggleRun.addEventListener('click', function (e) {
@@ -22601,6 +22730,7 @@ window.__setTomatoFloatState = function (payload) {
         });
     }
     if (shell) {
+        shell.addEventListener('mousemove', updatePointerScreenPosition);
         shell.addEventListener('mouseenter', expandFloatWindow);
         shell.addEventListener('mouseleave', collapseFloatWindow);
         shell.addEventListener('focusin', expandFloatWindow);
@@ -22609,8 +22739,7 @@ window.__setTomatoFloatState = function (payload) {
         shell.addEventListener('mousedown', __syncPinState);
     }
     if (content) {
-        content.addEventListener('mouseenter', expandFloatWindow);
-        content.addEventListener('mouseleave', collapseFloatWindow);
+        content.addEventListener('mousemove', updatePointerScreenPosition);
         content.addEventListener('mousedown', function (e) {
             if (e.button !== 0) return;
             if (e.target && e.target.closest && e.target.closest('button')) return;
@@ -22620,6 +22749,7 @@ window.__setTomatoFloatState = function (payload) {
             try { __ipcRenderer.send('docktomato-float-window-command', 'drag-start', e.screenX, e.screenY); } catch (err) {}
         });
         window.addEventListener('mousemove', function (e) {
+            updatePointerScreenPosition(e);
             if (!__draggingFloatWindow) return;
             e.preventDefault();
             if (!__ipcRenderer || typeof __ipcRenderer.send !== 'function') return;
@@ -22666,8 +22796,8 @@ window.__setTomatoFloatState = function (payload) {
         if (!support.supported) return null;
         try {
             const win = new support.BrowserWindow({
-                width: getDesktopFloatWindowCompactWidth(),
-                height: getDesktopFloatWindowCollapsedHeight(),
+                width: getDesktopFloatWindowExpandedWidth(),
+                height: getDesktopFloatWindowExpandedHeight(),
                 show: false,
                 frame: false,
                 alwaysOnTop: desktopFloatWindowState.alwaysOnTop !== false,
@@ -22677,8 +22807,8 @@ window.__setTomatoFloatState = function (payload) {
                 maximizable: false,
                 fullscreenable: false,
                 focusable: true,
-                transparent: isDesktopFloatWindowCircularTimerStyleEnabled(),
-                backgroundColor: isDesktopFloatWindowCircularTimerStyleEnabled() ? '#00000000' : getDesktopFloatWindowColors().browserBackground,
+                transparent: true,
+                backgroundColor: '#00000000',
                 hasShadow: !isDesktopFloatWindowCircularTimerStyleEnabled(),
                 webPreferences: {
                     nodeIntegration: true,
@@ -22765,7 +22895,7 @@ window.__setTomatoFloatState = function (payload) {
                     if (command === 'set-width') {
                         const requestedWidth = Number(args?.[1] ?? args?.[0]);
                         if (Number.isFinite(requestedWidth) && requestedWidth > 0) {
-                            const width = (desktopFloatWindowState.expanded && isDesktopFloatWindowCircularTimerStyleEnabled())
+                            const width = isDesktopFloatWindowCircularTimerStyleEnabled()
                                 ? getDesktopFloatWindowExpandedWidth()
                                 : requestedWidth;
                             resizeDesktopMinimizedFloatWindow(win, width);
@@ -22773,7 +22903,14 @@ window.__setTomatoFloatState = function (payload) {
                         return;
                     }
                     if (command === 'set-expanded') {
-                        setDesktopMinimizedFloatWindowExpanded(win, args?.[1] === true || String(args?.[1]) === 'true');
+                        const nextExpanded = args?.[1] === true || String(args?.[1]) === 'true';
+                        if (isDesktopFloatWindowCircularTimerStyleEnabled()) {
+                            desktopFloatWindowState.expanded = nextExpanded;
+                            desktopFloatWindowLastPayloadKey = '';
+                            Promise.resolve().then(() => refreshDesktopMinimizedFloatWindow()).catch(() => {});
+                            return;
+                        }
+                        setDesktopMinimizedFloatWindowExpanded(win, nextExpanded);
                         return;
                     }
                     if (command === 'drag-start') {
@@ -22852,11 +22989,24 @@ window.__setTomatoFloatState = function (payload) {
             try {
                 const compactWidth = getDesktopFloatWindowCompactWidth();
                 const expandedWidth = getDesktopFloatWindowExpandedWidth();
+                const height = getDesktopFloatWindowCurrentHeight();
+                if (isDesktopFloatWindowCircularTimerStyleEnabled()) {
+                    const storedCircleX = Math.round(savedBounds.x);
+                    const nextX = desktopFloatWindowState.circularExpandedLeft === false
+                        ? storedCircleX
+                        : Math.round(storedCircleX - (expandedWidth - compactWidth));
+                    setDesktopFloatWindowBounds(win, {
+                        x: nextX,
+                        y: getDesktopFloatWindowDisplayYFromStoredBounds(savedBounds, height),
+                        width: expandedWidth,
+                        height
+                    });
+                    return;
+                }
                 const savedWidth = Number(savedBounds.width) || compactWidth;
                 const normalizedWidth = savedWidth >= compactWidth + ((expandedWidth - compactWidth) / 2)
                     ? expandedWidth
                     : compactWidth;
-                const height = getDesktopFloatWindowCurrentHeight();
                 setDesktopFloatWindowBounds(win, {
                     x: Math.round(savedBounds.x),
                     y: getDesktopFloatWindowDisplayYFromStoredBounds(savedBounds, height),
@@ -22910,16 +23060,14 @@ window.__setTomatoFloatState = function (payload) {
         } catch (e) {
             desktopFloatWindowState.isMinimized = false;
         }
-        if (!hasUnfinishedTimerState()) {
-            desktopFloatWindowState.dismissed = false;
-        }
         if (desktopFloatWindowState.dismissed) {
             try {
                 if (desktopFloatWindow && !desktopFloatWindow.isDestroyed?.()) desktopFloatWindow.hide();
             } catch (e) {}
             return;
         }
-        const shouldShowForWindowState = isDesktopFloatWindowAlwaysVisibleEnabled() || desktopFloatWindowState.isMinimized;
+        const displayMode = getDesktopFloatWindowDisplayMode();
+        const shouldShowForWindowState = displayMode === 'always' || (displayMode === 'minimized' && desktopFloatWindowState.isMinimized);
         if (!shouldShowForWindowState || !shouldShowDesktopMinimizedFloatWindowForTimerState()) {
             closeDesktopMinimizedFloatWindow();
             return;
@@ -23038,12 +23186,10 @@ window.__setTomatoFloatState = function (payload) {
         };
         desktopFloatWindowHandlers.restore = () => {
             desktopFloatWindowState.isMinimized = false;
-            desktopFloatWindowState.dismissed = false;
             scheduleDesktopMinimizedFloatWindowSync('desktop-window-restore');
         };
         desktopFloatWindowHandlers.show = () => {
             desktopFloatWindowState.isMinimized = false;
-            desktopFloatWindowState.dismissed = false;
             scheduleDesktopMinimizedFloatWindowSync('desktop-window-show');
         };
         desktopFloatWindowHandlers.hide = () => {
@@ -28560,24 +28706,52 @@ window.__setTomatoFloatState = function (payload) {
             togglesSection.appendChild(hint);
         }
 
-        const desktopFloatEnabledSwitch = mkToggleRow('启用思源最小化后悬浮窗（桌面端）', userSettings?.main?.enableDesktopMinimizedFloatWindow !== false, async (e) => {
-            userSettings.main.enableDesktopMinimizedFloatWindow = e.target.checked;
-            await saveUserSettings();
-            try {
-                if (userSettings.main.enableDesktopMinimizedFloatWindow) {
-                    installDesktopMinimizedFloatWindowMonitor();
-                } else {
-                    uninstallDesktopMinimizedFloatWindowMonitor();
-                    closeDesktopMinimizedFloatWindow();
-                }
-                scheduleDesktopMinimizedFloatWindowSync('settings-desktop-float-toggle');
-            } catch (err) {}
-        });
         {
+            const row = document.createElement('div');
+            row.style.cssText = 'padding: 10px 0;';
+            const label = document.createElement('div');
+            label.textContent = '桌面悬浮窗显示模式';
+            label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
+            const select = document.createElement('select');
+            select.style.cssText = `
+                width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px;
+                border: 1px solid var(--b3-border-color); font-size: 13px;
+                background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+            `;
+            [
+                ['minimized', '思源最小化后显示'],
+                ['always', '常驻显示'],
+                ['off', '关闭']
+            ].forEach(([value, text]) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = text;
+                select.appendChild(option);
+            });
+            select.value = getDesktopFloatWindowDisplayMode();
+            select.onchange = async (e) => {
+                userSettings.main.desktopFloatWindowDisplayMode = applyDesktopFloatWindowDisplayMode(e.target.value);
+                if (userSettings.main.desktopFloatWindowDisplayMode !== 'off') {
+                    desktopFloatWindowState.dismissed = false;
+                }
+                e.target.value = userSettings.main.desktopFloatWindowDisplayMode;
+                await saveUserSettings();
+                try {
+                    if (isDesktopMinimizedFloatWindowEnabled()) installDesktopMinimizedFloatWindowMonitor();
+                    else {
+                        uninstallDesktopMinimizedFloatWindowMonitor();
+                        closeDesktopMinimizedFloatWindow();
+                    }
+                    scheduleDesktopMinimizedFloatWindowSync('settings-desktop-float-display-mode-change');
+                } catch (err) {}
+            };
             const hint = document.createElement('div');
-            hint.textContent = '仅桌面端生效，默认在思源最小化后显示独立悬浮窗';
-            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
-            togglesSection.appendChild(hint);
+            hint.textContent = '关闭悬浮窗后，只能从底栏菜单重新开启。';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:6px 0 0 0;line-height:1.35;';
+            row.appendChild(label);
+            row.appendChild(select);
+            row.appendChild(hint);
+            togglesSection.appendChild(row);
         }
 
         {
@@ -28620,25 +28794,6 @@ window.__setTomatoFloatState = function (payload) {
             row.appendChild(select);
             row.appendChild(hint);
             togglesSection.appendChild(row);
-        }
-
-        mkToggleRow('桌面悬浮窗始终显示', isDesktopFloatWindowAlwaysVisibleEnabled(), async (e) => {
-            userSettings.main.enableDesktopFloatWindowAlwaysVisible = e.target.checked;
-            if (e.target.checked && userSettings.main.enableDesktopMinimizedFloatWindow === false) {
-                userSettings.main.enableDesktopMinimizedFloatWindow = true;
-                if (desktopFloatEnabledSwitch) desktopFloatEnabledSwitch.checked = true;
-            }
-            await saveUserSettings();
-            try {
-                if (isDesktopMinimizedFloatWindowEnabled()) installDesktopMinimizedFloatWindowMonitor();
-                scheduleDesktopMinimizedFloatWindowSync('settings-desktop-float-always-visible-toggle');
-            } catch (err) {}
-        });
-        {
-            const hint = document.createElement('div');
-            hint.textContent = '开启后，计时进行中时即使思源未最小化也会显示桌面悬浮窗';
-            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
-            togglesSection.appendChild(hint);
         }
 
         mkToggleRow('暂停或休息时也显示桌面悬浮窗', isDesktopMinimizedFloatWindowPausedOrBreakEnabled(), async (e) => {
