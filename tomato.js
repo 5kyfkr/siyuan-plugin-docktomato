@@ -7178,11 +7178,12 @@
     }
 
     async function resetToLastTomato() {
+        let pendingRecordSave = null;
         if (isRunning || (timerMode === 'countdown' && remainingSeconds < currentDuration * 60)) {
             // 🔧 修复：正计时模式下需要传递 isStopwatch = true
-            await recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
+            pendingRecordSave = recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
         }
-        await stopTimer();
+        await stopTimer({ skipEndRecord: !!pendingRecordSave });
         pausedRemainingSeconds = null;
         isRunning = false;
         const resetMode = (lastTomatoConfig && lastTomatoConfig.mode === 'stopwatch') ? 'stopwatch' : 'countdown';
@@ -7211,7 +7212,10 @@
         // 注意：不再自动清除任务块关联，用户可以通过📋️图标的删除按钮手动清除
         if (controlButton) controlButton.innerHTML = '▶️';
         updateDisplay();
-        
+        if (pendingRecordSave) {
+            await waitForTimerPersistence(pendingRecordSave, 'reset-to-last-tomato');
+        }
+
         // 注意：同步到云端的操作由 stopTimer() 统一处理，这里不再重复调用
         // 避免在 UI 操作中产生同步写入导致的卡顿
     }
@@ -13907,9 +13911,10 @@
 
     async function pauseTimer() {
         if (!isRunning) return;
-        
+
         const now = Date.now();
-        
+        let pendingRecordSave = null;
+
         if (timerMode === 'countdown' || timerMode === 'break') {
             const totalMs = currentDuration * 60 * 1000;
             const elapsedMs = now - startTime;
@@ -13923,7 +13928,7 @@
             pausedRemainingSeconds = elapsedSeconds;
             // 🔧 修复：正计时暂停时保存记录
             if (elapsedSeconds > 0) {
-                await recordEndTime(false, true, { skipSyncUpdate: true });
+                pendingRecordSave = recordEndTime(false, true, { skipSyncUpdate: true });
             }
         }
 
@@ -13988,6 +13993,9 @@
             // 第三个参数 true 表示 forceSync，确保暂停状态能立即同步到其他设备
             await SyncManager.updateLocal(syncState, true, true);
         }
+        if (pendingRecordSave) {
+            await waitForTimerPersistence(pendingRecordSave, 'pause-timer');
+        }
     }
 
     async function stopTimer(options = {}) {
@@ -14009,8 +14017,9 @@
             clearInterval(reminderIntervalId);
             reminderIntervalId = null;
         }
+        let pendingRecordSave = null;
         if (!skipEndRecord && currentStartTimestamp) {
-            await recordEndTime(false, false, { skipSyncUpdate: true });
+            pendingRecordSave = recordEndTime(false, false, { skipSyncUpdate: true });
         } else if (skipEndRecord) {
             currentStartTimestamp = null;
             currentStartTimeMs = 0;
@@ -14057,6 +14066,9 @@
             }).catch(e => {
                 Logger.debug('🔄 stopTimer: 同步到云端失败（忽略）', e);
             });
+        }
+        if (pendingRecordSave) {
+            waitForTimerPersistence(pendingRecordSave, 'stop-timer');
         }
     }
 
@@ -14695,7 +14707,8 @@
         clearTimelineActiveLayers();
 
         // 🔧 修复：正计时模式下需要传递 isStopwatch = true
-        if (isRunning) await recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
+        let pendingRecordSave = null;
+        if (isRunning) pendingRecordSave = recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
         preBreakState = null;
         pausedRemainingSeconds = null;
         currentStartTimestamp = null;
@@ -14717,6 +14730,9 @@
             showMiniToast('启动计时失败');
             await rollbackFailedTimerStart(false);
         }
+        if (pendingRecordSave) {
+            await waitForTimerPersistence(pendingRecordSave, 'switch-to-countdown');
+        }
     }
 
     // 带任务块关联的番茄钟切换
@@ -14725,7 +14741,8 @@
         clearTimelineActiveLayers();
 
         // 🔧 修复：正计时模式下需要传递 isStopwatch = true
-        if (isRunning) await recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
+        let pendingRecordSave = null;
+        if (isRunning) pendingRecordSave = recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
         preBreakState = null;
         pausedRemainingSeconds = null;
 
@@ -14764,6 +14781,9 @@
 
         // 启动保持高亮的定时器
         startHighlightKeepAlive();
+        if (pendingRecordSave) {
+            await waitForTimerPersistence(pendingRecordSave, 'switch-to-countdown-with-task');
+        }
     }
 
     async function switchToStopwatchAndStart() {
@@ -14771,7 +14791,8 @@
         clearTimelineActiveLayers();
 
         // 🔧 修复：正计时模式下需要传递 isStopwatch = true
-        if (isRunning) await recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
+        let pendingRecordSave = null;
+        if (isRunning) pendingRecordSave = recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
         preBreakState = null;
         timerMode = 'stopwatch';
         // 🔧 修复：同步更新 syncState.mode，确保自定义属性更新正确判断模式
@@ -14803,6 +14824,9 @@
             showMiniToast('启动计时失败');
             await rollbackFailedTimerStart(false);
         }
+        if (pendingRecordSave) {
+            await waitForTimerPersistence(pendingRecordSave, 'switch-to-stopwatch');
+        }
     }
 
     // 带任务块关联的正计时切换
@@ -14810,7 +14834,8 @@
         // 🔧 修复：切换到正计时模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
 
-        if (isRunning) await recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
+        let pendingRecordSave = null;
+        if (isRunning) pendingRecordSave = recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
         preBreakState = null;
         timerMode = 'stopwatch';
         // 🔧 修复：同步更新 syncState.mode，确保自定义属性更新正确判断模式
@@ -14860,6 +14885,9 @@
 
         // 启动保持高亮的定时器
         startHighlightKeepAlive();
+        if (pendingRecordSave) {
+            await waitForTimerPersistence(pendingRecordSave, 'switch-to-stopwatch-with-task');
+        }
     }
 
     async function startBreakMode(duration) {
@@ -14916,7 +14944,8 @@
         const wasStopwatch = timerMode === 'stopwatch';
         // 🔧 保存按钮颜色，因为 recordEndTime 会清除它
         const savedButtonColor = routineButtonHighlightColor;
-        if (isRunning) await recordEndTime(false, wasStopwatch);
+        let pendingRecordSave = null;
+        if (isRunning) pendingRecordSave = recordEndTime(false, wasStopwatch);
         
         // 🔧 恢复按钮颜色
         routineButtonHighlightColor = savedButtonColor;
@@ -14939,6 +14968,7 @@
         syncState.status = 'IDLE';
         syncState.distractionCount = 0;
         syncState.distractionSavedCount = 0;
+        updateDisplay();
         if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             // 第三个参数 true 表示 forceSync，确保开始状态能立即同步到其他设备
             await SyncManager.updateLocal(syncState, true, true);
@@ -14946,6 +14976,9 @@
 
         updateDisplay();
         startTimer();
+        if (pendingRecordSave) {
+            await waitForTimerPersistence(pendingRecordSave, 'start-break-mode');
+        }
     }
 
     async function startStopwatchBreakMode() {
@@ -14999,7 +15032,8 @@
         const wasStopwatch = timerMode === 'stopwatch' || timerMode === 'stopwatch-break';
         // 🔧 保存按钮颜色，因为 recordEndTime 会清除它
         const savedButtonColor = routineButtonHighlightColor;
-        if (isRunning) await recordEndTime(false, wasStopwatch);
+        let pendingRecordSave = null;
+        if (isRunning) pendingRecordSave = recordEndTime(false, wasStopwatch);
         
         // 🔧 恢复按钮颜色
         routineButtonHighlightColor = savedButtonColor;
@@ -15027,6 +15061,7 @@
         syncState.currentPauseStart = null;
         syncState.distractionCount = 0;
         syncState.distractionSavedCount = 0;
+        updateDisplay();
         if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             // 第三个参数 true 表示 forceSync，确保开始状态能立即同步到其他设备
             await SyncManager.updateLocal(syncState, true, true);
@@ -15039,6 +15074,9 @@
             Logger.error('startTimer失败:', e);
             showMiniToast('启动计时失败');
             await rollbackFailedTimerStart(false);
+        }
+        if (pendingRecordSave) {
+            await waitForTimerPersistence(pendingRecordSave, 'start-stopwatch-break-mode');
         }
     }
 
@@ -15300,7 +15338,7 @@
 
             try { if (timerId !== null) clearInterval(timerId); } catch (e) {}
             timerId = null;
-            try { await cancelTrackedTimerNotification('complete-timer', false); } catch (e) {}
+            try { cancelTrackedTimerNotification('complete-timer', false).catch(() => {}); } catch (e) {}
 
             const pendingRecordSave = recordEndTime(false, false, { isCompleted: true, plannedDurationOverride: 'elapsed' });
 
@@ -26424,11 +26462,7 @@ window.__setTomatoFloatState = function (payload) {
             return;
         }
 
-        // 停止当前计时
-        if (isRunning) {
-            await recordEndTime();
-            stopTimer();
-        }
+        // 当前计时由下面的切换函数用快照保存并切换，避免先等待历史落盘卡住 UI。
 
         Logger.info('🔍 准备调用switchToCountdownAndStartWithTask');
         Logger.info('🔍 参数 duration:', duration, 'type:', typeof duration);
@@ -34879,6 +34913,26 @@ window.__setTomatoFloatState = function (payload) {
         if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
         return formatDateKey(reminder?.createdAt || new Date());
     };
+    const __getReminderScheduleEffectiveAtMs = (reminder) => {
+        const raw = String(reminder?.scheduleUpdatedAt || '').trim();
+        if (!raw) return 0;
+        const dt = toDateSafe(raw);
+        return dt instanceof Date && !isNaN(dt.getTime()) ? dt.getTime() : 0;
+    };
+    const __buildReminderOccurrenceDateTime = (dateKey, timeKey) => {
+        const p = __parseTime(timeKey);
+        const base = new Date(String(dateKey || '').trim() + 'T00:00:00');
+        if (!p || isNaN(base.getTime())) return null;
+        const dt = new Date(base);
+        dt.setHours(p.hh, p.mm, 0, 0);
+        return dt;
+    };
+    const __isReminderOccurrenceBeforeScheduleEffectiveAt = (reminder, dateKey, timeKey) => {
+        const effectiveAtMs = __getReminderScheduleEffectiveAtMs(reminder);
+        if (!effectiveAtMs) return false;
+        const dt = __buildReminderOccurrenceDateTime(dateKey, timeKey);
+        return !!(dt && dt.getTime() <= effectiveAtMs);
+    };
     const getNextReminderDateTime = (reminder, fromDate) => {
         if (!reminder?.enabled) return null;
         const times = Array.from(new Set((reminder.times || [])
@@ -35178,6 +35232,7 @@ window.__setTomatoFloatState = function (payload) {
                     const p = __parseTime(times[i]);
                     if (!p) continue;
                     if (__isReminderOccurrenceCompleted(reminder, dateKey, p.key)) continue;
+                    if (__isReminderOccurrenceBeforeScheduleEffectiveAt(reminder, dateKey, p.key)) continue;
                     const minutes = p.hh * 60 + p.mm;
                     if (requirePastTime && minutes > nowMinutes) continue;
                     const dt = new Date(base);
@@ -35466,6 +35521,7 @@ window.__setTomatoFloatState = function (payload) {
                 const k = reminder.blockId + '-' + timeKey;
                 if (timeKey === currentTime && !notifiedReminders.has(k) && !sessionNotified.has(k)) {
                     if (__isReminderOccurrenceCompleted(reminder, currentDate, timeKey)) return;
+                    if (__isReminderOccurrenceBeforeScheduleEffectiveAt(reminder, currentDate, timeKey)) return;
                     notifiedReminders.add(k);
                     sessionNotified.add(k);
                     __persistSessionNotified();
