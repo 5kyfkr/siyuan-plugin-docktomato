@@ -2211,6 +2211,7 @@
             debugMode: DEFAULT_DEBUG_MODE,
             enableMobileSupport: DEFAULT_ENABLE_MOBILE_SUPPORT,
             showMobileBreadcrumbButton: true,
+            enableMobileFloatBarAutoShow: true,
             enableDesktopMinimizedFloatWindow: true,
             enableDesktopFloatWindowAlwaysVisible: false,
             desktopFloatWindowDisplayMode: 'minimized',
@@ -2386,6 +2387,7 @@
         userSettings.main.debugMode = userSettings.main.debugMode === true;
         userSettings.main.enableMobileSupport = userSettings.main.enableMobileSupport !== false;
         if (typeof userSettings.main.showMobileBreadcrumbButton !== 'boolean') userSettings.main.showMobileBreadcrumbButton = true;
+        if (typeof userSettings.main.enableMobileFloatBarAutoShow !== 'boolean') userSettings.main.enableMobileFloatBarAutoShow = true;
         if (typeof userSettings.main.desktopFloatWindowDisplayMode !== 'string') userSettings.main.desktopFloatWindowDisplayMode = getDesktopFloatWindowDisplayMode();
         userSettings.main.desktopFloatWindowDisplayMode = applyDesktopFloatWindowDisplayMode(userSettings.main.desktopFloatWindowDisplayMode);
         if (typeof userSettings.main.enableDesktopMinimizedFloatWindow !== 'boolean') userSettings.main.enableDesktopMinimizedFloatWindow = true;
@@ -2502,6 +2504,9 @@
     };
     const isMobileBreadcrumbButtonEnabled = () => {
         try { return userSettings?.main?.showMobileBreadcrumbButton !== false; } catch (e) { return true; }
+    };
+    const isMobileFloatBarAutoShowEnabled = () => {
+        try { return userSettings?.main?.enableMobileFloatBarAutoShow !== false; } catch (e) { return true; }
     };
     const isDesktopMinimizedFloatWindowSettingEnabled = () => {
         try { return userSettings?.main?.enableDesktopMinimizedFloatWindow !== false; } catch (e) { return true; }
@@ -2802,6 +2807,8 @@
     let taskBlockHighlightInterval = null; // 用于保持高亮的定时器
     let taskAssociationCleared = false; // 用户是否清除了任务关联
     let localAssociationChangedAtMs = 0;
+    let lastCompletedAssociationFocusSnapshot = null;
+    let focusRestoreSource = '';
     
     // 新增：数据库块相关状态
     let currentDatabaseBlockId = null;
@@ -4805,6 +4812,29 @@
         segmentTaskBlockId = currentTaskBlockId || null;
         segmentTaskBlockName = currentTaskBlockName || null;
         segmentDatabaseBlockId = currentDatabaseBlockId || null;
+    }
+
+    function normalizeFocusRestoreSource(options = null) {
+        const source = typeof options === 'string'
+            ? options
+            : String(options?.source || options?.focusRestoreSource || '').trim();
+        return ['task-horizon', 'block-menu', 'database-menu'].includes(source) ? source : '';
+    }
+
+    function setFocusRestoreSource(options = null) {
+        focusRestoreSource = normalizeFocusRestoreSource(options);
+        return focusRestoreSource;
+    }
+
+    function getCurrentFocusRestoreOptions() {
+        return focusRestoreSource ? { source: focusRestoreSource } : {};
+    }
+
+    function hasRestorableFocusSource(options) {
+        const source = arguments.length > 0
+            ? normalizeFocusRestoreSource(options)
+            : normalizeFocusRestoreSource(focusRestoreSource);
+        return !!source;
     }
 
     function getInitialRemainingAtStart() {
@@ -7522,7 +7552,8 @@
             // 保存当前任务块信息
             const savedTaskBlockId = currentTaskBlockId;
             const savedTaskBlockName = currentTaskBlockName;
-            
+            const focusRestoreOptions = getCurrentFocusRestoreOptions();
+
             const previousMode = preBreakState ? preBreakState.mode : 'countdown';
             
             if (previousMode === 'countdown') {
@@ -7537,7 +7568,7 @@
                         closeDialog();
                         // 使用保存的任务块信息
                         if (savedTaskBlockId) {
-                            switchToCountdownAndStartWithTask(min, savedTaskBlockId, savedTaskBlockName);
+                            switchToCountdownAndStartWithTask(min, savedTaskBlockId, savedTaskBlockName, focusRestoreOptions);
                         } else {
                             switchToCountdownAndStart(min);
                         }
@@ -7556,7 +7587,7 @@
                     closeDialog();
                     // 使用保存的任务块信息
                     if (savedTaskBlockId) {
-                        await switchToStopwatchAndStartWithTask(savedTaskBlockId, savedTaskBlockName);
+                        await switchToStopwatchAndStartWithTask(savedTaskBlockId, savedTaskBlockName, focusRestoreOptions);
                     } else {
                         await switchToStopwatchAndStart();
                     }
@@ -7573,7 +7604,7 @@
                         await syncAcknowledgeEndDialogClose(endDialogId);
                         closeDialog();
                         if (savedTaskBlockId) {
-                            switchToCountdownAndStartWithTask(min, savedTaskBlockId, savedTaskBlockName);
+                            switchToCountdownAndStartWithTask(min, savedTaskBlockId, savedTaskBlockName, focusRestoreOptions);
                         } else {
                             switchToCountdownAndStart(min);
                         }
@@ -7608,9 +7639,11 @@
                         if (savedTaskBlockId) {
                             currentTaskBlockId = savedTaskBlockId;
                             currentTaskBlockName = savedTaskBlockName;
-                            highlightTaskBlock(savedTaskBlockId);
-                            // 启动保持高亮的定时器
-                            startHighlightKeepAlive();
+                            if (hasRestorableFocusSource(focusRestoreOptions)) {
+                                highlightTaskBlock(savedTaskBlockId);
+                                // 启动保持高亮的定时器
+                                startHighlightKeepAlive();
+                            }
                         }
                         
                         updateDisplay();
@@ -10349,6 +10382,7 @@
                     showToast('请先设置按钮名称', 2000);
                     return;
                 }
+                setFocusRestoreSource(null);
 
                 if (timerMode === 'countdown' && (isRunning || isTimerPaused)) {
                     await completeCurrentTomato();
@@ -10370,7 +10404,7 @@
                     if (config.timerType === 'pomodoro') {
                         const duration = config.tomatoDuration || 5;
                         await startBreakMode(duration);
-                        if (blockId) {
+                        if (blockId && hasRestorableFocusSource()) {
                             highlightTaskBlock(blockId);
                             setTimeout(() => { highlightTaskBlock(blockId); }, 100);
                             startHighlightKeepAlive();
@@ -10378,7 +10412,7 @@
                         showToast(`开始休息倒计时: ${taskName} (${duration}分钟)`, 2000);
                     } else {
                         await startStopwatchBreakMode();
-                        if (blockId) {
+                        if (blockId && hasRestorableFocusSource()) {
                             highlightTaskBlock(blockId);
                             setTimeout(() => { highlightTaskBlock(blockId); }, 100);
                             startHighlightKeepAlive();
@@ -13784,6 +13818,8 @@
             }
             
             Logger.info('🔍 startTimer: 调用 recordStartTime，当前 timerMode =', timerMode, ', currentTaskBlockId =', currentTaskBlockId);
+            restoreActiveTimerFocus('start-timer');
+
             recordStartTime();
             Logger.info('🔍 startTimer: recordStartTime 完成，currentStartTimestamp =', currentStartTimestamp, ', currentStartTimeMs =', currentStartTimeMs);
 
@@ -14544,6 +14580,8 @@
      * 当用户手动清除关联时调用，确保这笔计时与任务/数据库块无关
      */
     async function clearCurrentRecordAssociation() {
+        lastCompletedAssociationFocusSnapshot = null;
+        focusRestoreSource = '';
         if (!currentStartTimestamp && !stopwatchStartTimestamp) {
             Logger.info('🔍 没有正在进行的计时，无需清除关联');
             return;
@@ -14601,6 +14639,9 @@
         const resolvedTaskBlockName = resolvedTaskBlockId
             ? (await __resolveTaskAssociationName(resolvedTaskBlockId, taskBlockName) || fallbackTaskBlockName)
             : null;
+        if (resolvedTaskBlockId || databaseBlockId) {
+            lastCompletedAssociationFocusSnapshot = null;
+        }
         currentTaskBlockId = resolvedTaskBlockId;
         currentTaskBlockName = resolvedTaskBlockName || null;
         currentDatabaseBlockId = databaseBlockId || null;
@@ -14703,6 +14744,7 @@
     }
 
     async function switchToCountdownAndStart(duration) {
+        setFocusRestoreSource(null);
         // 🔧 修复：切换到番茄钟模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
 
@@ -14736,7 +14778,8 @@
     }
 
     // 带任务块关联的番茄钟切换
-    async function switchToCountdownAndStartWithTask(duration, taskBlockId, taskBlockName) {
+    async function switchToCountdownAndStartWithTask(duration, taskBlockId, taskBlockName, options = null) {
+        setFocusRestoreSource(options);
         // 🔧 修复：切换到番茄钟模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
 
@@ -14771,22 +14814,25 @@
             return;
         }
 
-        // 立即高亮
-        highlightTaskBlock(taskBlockId);
-
-        // 延迟再次高亮，确保元素已渲染
-        setTimeout(() => {
+        if (hasRestorableFocusSource()) {
+            // 立即高亮
             highlightTaskBlock(taskBlockId);
-        }, 100);
 
-        // 启动保持高亮的定时器
-        startHighlightKeepAlive();
+            // 延迟再次高亮，确保元素已渲染
+            setTimeout(() => {
+                highlightTaskBlock(taskBlockId);
+            }, 100);
+
+            // 启动保持高亮的定时器
+            startHighlightKeepAlive();
+        }
         if (pendingRecordSave) {
             await waitForTimerPersistence(pendingRecordSave, 'switch-to-countdown-with-task');
         }
     }
 
     async function switchToStopwatchAndStart() {
+        setFocusRestoreSource(null);
         // 🔧 修复：切换到正计时模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
 
@@ -14830,7 +14876,8 @@
     }
 
     // 带任务块关联的正计时切换
-    async function switchToStopwatchAndStartWithTask(taskBlockId, taskBlockName) {
+    async function switchToStopwatchAndStartWithTask(taskBlockId, taskBlockName, options = null) {
+        setFocusRestoreSource(options);
         // 🔧 修复：切换到正计时模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
 
@@ -14875,16 +14922,18 @@
             return;
         }
 
-        // 立即高亮
-        highlightTaskBlock(taskBlockId);
-
-        // 延迟再次高亮，确保元素已渲染
-        setTimeout(() => {
+        if (hasRestorableFocusSource()) {
+            // 立即高亮
             highlightTaskBlock(taskBlockId);
-        }, 100);
 
-        // 启动保持高亮的定时器
-        startHighlightKeepAlive();
+            // 延迟再次高亮，确保元素已渲染
+            setTimeout(() => {
+                highlightTaskBlock(taskBlockId);
+            }, 100);
+
+            // 启动保持高亮的定时器
+            startHighlightKeepAlive();
+        }
         if (pendingRecordSave) {
             await waitForTimerPersistence(pendingRecordSave, 'switch-to-stopwatch-with-task');
         }
@@ -15401,6 +15450,13 @@
 
         const modeBefore = String(timerMode || '').trim();
         const hadActiveTimer = hasActiveTimerSegment();
+        const focusSnapshot = {
+            taskBlockId: String(currentTaskBlockId || syncState?.taskBlockId || '').trim(),
+            taskBlockName: String(currentTaskBlockName || syncState?.taskBlockName || '').trim(),
+            databaseBlockId: String(currentDatabaseBlockId || syncState?.databaseBlockId || '').trim(),
+            mode: modeBefore,
+            source: focusRestoreSource,
+        };
         try {
             if (modeBefore === 'countdown' && (isRunning || isTimerPaused)) {
                 await completeCurrentTomato({ suppressToast: opts.suppressToast !== false });
@@ -15413,6 +15469,7 @@
             try { Logger.warn('任务完成时停止番茄钟失败:', e); } catch (e2) {}
         }
 
+        lastCompletedAssociationFocusSnapshot = (focusSnapshot.source && (focusSnapshot.taskBlockId || focusSnapshot.databaseBlockId)) ? focusSnapshot : null;
         try { await setTaskAssociation(null, null, null); } catch (e) {}
         try { clearTaskBlockHighlight(); } catch (e) {}
         try { stopHighlightKeepAlive(); } catch (e) {}
@@ -21128,7 +21185,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             exitProtyleFocusMode();
 
             // 🔧 修复：如果有计时任务，恢复高亮状态
-            if (shouldRestoreHighlight && blockId === currentTaskBlockId) {
+            if (shouldRestoreHighlight && blockId === currentTaskBlockId && hasRestorableFocusSource()) {
                 Logger.info('✅ 跳转成功，恢复任务块高亮');
                 highlightTaskBlock(currentTaskBlockId);
                 startHighlightKeepAlive();
@@ -21261,7 +21318,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             exitProtyleFocusMode();
 
             // 🔧 修复：如果有计时任务，恢复高亮状态
-            if (currentTaskBlockId && blockId === currentTaskBlockId && hasActiveTimerSegment()) {
+            if (currentTaskBlockId && blockId === currentTaskBlockId && hasActiveTimerSegment() && hasRestorableFocusSource()) {
                 Logger.info('✅ 文档加载成功，已跳转到块，恢复高亮状态');
                 highlightTaskBlock(currentTaskBlockId);
                 startHighlightKeepAlive();
@@ -21397,9 +21454,26 @@ function calculateWeeklyStats(dailyStatsArray) {
         return "";
     }
 
+    function isSiyuanConfigMobile() {
+        try {
+            if (globalThis?.siyuan?.config?.isMobile === true) return true;
+        } catch (e) {}
+        try {
+            if (window?.siyuan?.config?.isMobile === true) return true;
+        } catch (e) {}
+        return false;
+    }
+
     function hasOfficialMobileRuntimeSignal() {
         try {
-            if (globalThis.__tomatoPluginIsNativeMobile !== undefined) return !!globalThis.__tomatoPluginIsNativeMobile;
+            if (globalThis.__tomatoPluginIsNativeMobile === true) return true;
+        } catch (e) {}
+        try {
+            if (isSiyuanConfigMobile()) return true;
+        } catch (e) {}
+        try {
+            const backend = getSiyuanRuntimeBackend();
+            if (MOBILE_RUNTIME_CONTAINERS.has(backend)) return true;
         } catch (e) {}
         try {
             if (globalThis?.JSAndroid) return true;
@@ -21427,24 +21501,18 @@ function calculateWeeklyStats(dailyStatsArray) {
             const ua = String(navigator?.userAgent || "");
             if (/Android|iPhone|iPad|iPod|HarmonyOS|Mobile/i.test(ua)) return true;
         } catch (e) {}
-        try {
-            const maxTouchPoints = Number(navigator?.maxTouchPoints) || 0;
-            const width = Number(window?.innerWidth) || 0;
-            const coarse = !!window?.matchMedia?.("(pointer: coarse)")?.matches;
-            if ((coarse || maxTouchPoints > 0) && width > 0 && width <= 900) return true;
-        } catch (e) {}
         return false;
     }
 
-    // 检测当前页面是否应采用移动端布局：
-    // 1. 真正运行在思源原生移动宿主里
-    // 2. 当前访问页面本身就是移动浏览器/窄屏视口
+    // Mobile runtime/client detection should not use desktop window width or touch hardware alone.
     function isMobileDevice() {
+        try {
+            if (globalThis.__tomatoPluginIsMobile === true) return true;
+        } catch (e) {}
         if (hasOfficialMobileRuntimeSignal()) return true;
         return isMobileBrowserViewport();
     }
 
-    // 🔍 排除移动端 & 鸿蒙（与任务管理器插件统一为同一套客户端识别）
     function isMobileOrHarmony() {
         return isMobileDevice();
     }
@@ -23921,6 +23989,11 @@ window.__setTomatoFloatState = function (payload) {
 
     // 懒加载模式：开始计时时显示悬浮条
     function showFloatBarOnTimerStart() {
+        if (!isMobileFloatBarAutoShowEnabled()) {
+            Logger.info('🍅 移动端悬浮条自动显示已关闭');
+            return;
+        }
+
         // 🔧 v9.0 修复：如果用户主动关闭了悬浮窗，不自动显示
         if (floatBarHiddenByUser) {
             Logger.info('🍅 懒加载模式：用户已主动关闭悬浮窗，不自动显示');
@@ -25614,6 +25687,58 @@ window.__setTomatoFloatState = function (payload) {
         try { window.dispatchEvent(new CustomEvent('tomato:focus-ended', { detail: payload })); } catch (e) {}
     }
 
+    function restoreActiveTimerFocus(reason = '') {
+        if (isMobileDevice() || !isFocusModeEnabled()) return false;
+        if (timerMode !== 'countdown' && timerMode !== 'stopwatch') return false;
+
+        const snapshot = (!currentTaskBlockId && !currentDatabaseBlockId && lastCompletedAssociationFocusSnapshot)
+            ? lastCompletedAssociationFocusSnapshot
+            : null;
+        const taskBlockId = String(currentTaskBlockId || syncState?.taskBlockId || snapshot?.taskBlockId || '').trim();
+        const taskBlockName = String(currentTaskBlockName || syncState?.taskBlockName || snapshot?.taskBlockName || '').trim();
+        const databaseBlockId = String(currentDatabaseBlockId || syncState?.databaseBlockId || snapshot?.databaseBlockId || '').trim();
+        const focusBlockId = taskBlockId || databaseBlockId;
+        if (!focusBlockId) return false;
+        const source = normalizeFocusRestoreSource(snapshot?.source || focusRestoreSource || '');
+        if (!source) return false;
+        const payload = {
+            reason: String(reason || '').trim(),
+            taskBlockId,
+            taskBlockName,
+            databaseBlockId,
+            mode: String(timerMode || syncState?.mode || '').trim(),
+            source,
+        };
+        if (snapshot) {
+            focusRestoreSource = source;
+            currentTaskBlockId = taskBlockId || null;
+            currentTaskBlockName = taskBlockName || null;
+            currentDatabaseBlockId = databaseBlockId || null;
+            if (syncState && isTaskAssociationSyncEnabled()) {
+                syncState.taskBlockId = currentTaskBlockId;
+                syncState.taskBlockName = currentTaskBlockName;
+                syncState.databaseBlockId = currentDatabaseBlockId;
+            }
+            lastCompletedAssociationFocusSnapshot = null;
+            try { updateTaskBlockIcon(); } catch (e) {}
+            try { updateTaskBlockTooltip(); } catch (e) {}
+            try { updateDisplay(); } catch (e) {}
+        }
+
+        try { Logger.info('restoreActiveTimerFocus:', reason, focusBlockId); } catch (e) {}
+        try { highlightTaskBlock(focusBlockId); } catch (e) {}
+        if (databaseBlockId && databaseBlockId !== focusBlockId) {
+            try { highlightDatabaseRow(databaseBlockId, 1, 0); } catch (e) {}
+        }
+        try { setTimeout(() => highlightTaskBlock(focusBlockId, true), 100); } catch (e) {}
+        try { startHighlightKeepAlive(); } catch (e) {}
+        if (payload.source) {
+            try { globalThis.__taskHorizonOnTomatoFocusRestored?.(payload); } catch (e) {}
+            try { window.dispatchEvent(new CustomEvent('tomato:focus-restored', { detail: payload })); } catch (e) {}
+        }
+        return true;
+    }
+
     /**
      * 高亮数据库中的特定行
      * @param {string} blockId - 要高亮的块的ID
@@ -26312,7 +26437,7 @@ window.__setTomatoFloatState = function (payload) {
 
     // ✅ 修复版本：从任务块开始计时 - 增强单个父任务的支持
     // 🔧 扩展：支持文档标题块、任务列表项、标题块、段落块等多种块类型
-    async function startTimerFromTaskBlock(block, duration, mode = 'countdown') {
+    async function startTimerFromTaskBlock(block, duration, mode = 'countdown', options = null) {
         Logger.info('='.repeat(50));
         Logger.info('🔍 startTimerFromTaskBlock 被调用');
         Logger.info('🔍 传入的block类型:', block?.className);
@@ -26472,10 +26597,10 @@ window.__setTomatoFloatState = function (payload) {
 
         // 开始新的计时
         if (mode === 'stopwatch') {
-            await switchToStopwatchAndStartWithTask(finalBlockId, blockName);
+            await switchToStopwatchAndStartWithTask(finalBlockId, blockName, options);
         } else {
             Logger.info('🔍 开始调用 switchToCountdownAndStartWithTask...');
-            await switchToCountdownAndStartWithTask(duration, finalBlockId, blockName);
+            await switchToCountdownAndStartWithTask(duration, finalBlockId, blockName, options);
             Logger.info('🔍 switchToCountdownAndStartWithTask 调用完成');
             Logger.info('🔍 此时 global.currentTaskBlockId:', window.currentTaskBlockId);
         }
@@ -27146,7 +27271,7 @@ window.__setTomatoFloatState = function (payload) {
                     const taskBlockCallback = async (duration, mode) => {
                         window.siyuan.menus.menu.remove();
                         document.getElementById('tomato-task-submenu')?.remove();
-                        await startTimerFromTaskBlock(block, duration, mode);
+                        await startTimerFromTaskBlock(block, duration, mode, { source: 'block-menu' });
                     };
 
                     // 获取块信息并创建子菜单
@@ -27196,7 +27321,7 @@ window.__setTomatoFloatState = function (payload) {
                 const taskBlockCallback = async (duration, mode) => {
                     window.siyuan.menus.menu.remove();
                     document.getElementById('tomato-task-submenu')?.remove();
-                    await startTimerFromTaskBlock(block, duration, mode);
+                    await startTimerFromTaskBlock(block, duration, mode, { source: 'block-menu' });
                 };
 
                 // 获取块信息并创建子菜单
@@ -27617,7 +27742,7 @@ window.__setTomatoFloatState = function (payload) {
                 return;
             }
 
-            await startTimerFromDatabaseBlock(clickedBlockId, duration, mode, clickedTaskName);
+            await startTimerFromDatabaseBlock(clickedBlockId, duration, mode, clickedTaskName, { source: 'database-menu' });
         };
 
         // 记录日志
@@ -27669,7 +27794,7 @@ window.__setTomatoFloatState = function (payload) {
      * 直接使用传入的 databaseBlockId 作为任务块ID
      * 使用传入的 taskName 或从 API 获取任务名称
      */
-    async function startTimerFromDatabaseBlock(databaseBlockId, duration, mode = 'countdown', taskName = null) {
+    async function startTimerFromDatabaseBlock(databaseBlockId, duration, mode = 'countdown', taskName = null, options = null) {
         Logger.info('='.repeat(50));
         Logger.info('🔍 startTimerFromDatabaseBlock 被调用');
         Logger.info('🔍 databaseBlockId:', databaseBlockId);
@@ -27813,7 +27938,7 @@ window.__setTomatoFloatState = function (payload) {
 
         if (blockElement) {
             // 如果找到了块元素，使用原有的任务块计时逻辑
-            await startTimerFromTaskBlock(blockElement, duration, mode);
+            await startTimerFromTaskBlock(blockElement, duration, mode, options);
         } else {
             // 如果没有找到块元素，创建一个模拟的块对象
             const mockBlock = {
@@ -27823,7 +27948,7 @@ window.__setTomatoFloatState = function (payload) {
                 matches: null
             };
 
-            await startTimerFromTaskBlock(mockBlock, duration, mode);
+            await startTimerFromTaskBlock(mockBlock, duration, mode, options);
         }
 
         // ✅ 关键修复：计时开始后主动尝试高亮任务块和数据库行
@@ -27835,6 +27960,11 @@ window.__setTomatoFloatState = function (payload) {
             Logger.info('🔍 currentTaskBlockId:', currentTaskBlockId);
             Logger.info('🔍 currentDatabaseBlockId:', currentDatabaseBlockId);
             Logger.info('🔍 blockElement:', blockElement ? '存在' : '不存在');
+
+            if (!hasRestorableFocusSource(options)) {
+                Logger.info('🔍 当前计时来源不触发聚焦，高亮跳过');
+                return;
+            }
 
             // 1. 如果有现成的 blockElement，直接高亮任务块
             if (blockElement) {
@@ -28875,6 +29005,31 @@ window.__setTomatoFloatState = function (payload) {
         {
             const hint = document.createElement('div');
             hint.textContent = '关闭后，移动端文档顶栏不再显示用于切换番茄悬浮条的按钮';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
+            togglesSection.appendChild(hint);
+        }
+
+        mkToggleRow('计时中自动显示移动端悬浮窗', isMobileFloatBarAutoShowEnabled(), async (e) => {
+            userSettings.main.enableMobileFloatBarAutoShow = e.target.checked;
+            await saveUserSettings();
+            try {
+                if (!isMobileFloatBarAutoShowEnabled()) {
+                    cleanupFloatBarEvents();
+                    document.getElementById('siyuan-tomato-float-bar')?.remove();
+                    isUsingFloatBar = false;
+                    timeDisplay = null;
+                    controlButton = null;
+                } else if (isMobileDevice() && isMobileSupportEnabled()) {
+                    const hasUnfinishedTimer = isRunning || isTimerPaused ||
+                        (syncState && syncState.status === 'RUNNING') ||
+                        (syncState && syncState.status === 'PAUSED');
+                    if (hasUnfinishedTimer) showFloatBarOnTimerStart();
+                }
+            } catch (e2) {}
+        });
+        {
+            const hint = document.createElement('div');
+            hint.textContent = '关闭后，移动端计时开始、恢复或同步到未完成计时时都不自动弹出；仍可用顶栏番茄按钮手动打开';
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
             togglesSection.appendChild(hint);
         }
@@ -31284,8 +31439,26 @@ window.__setTomatoFloatState = function (payload) {
         }
         if (__tomatoDestroyed) return;
 
+        const syncTomatoBreadcrumbButton = (tomatoBtn) => {
+            if (!(tomatoBtn instanceof HTMLElement)) return;
+            tomatoBtn.type = 'button';
+            tomatoBtn.className = 'block__icon fn__flex-center ariaLabel';
+            tomatoBtn.title = '打开番茄钟';
+            tomatoBtn.setAttribute('aria-label', '打开番茄钟');
+            tomatoBtn.innerHTML = '<span aria-hidden="true" style="display:block;line-height:1;">🍅</span>';
+            tomatoBtn.style.cssText = `
+                margin: 0 4px;
+                flex-shrink: 0;
+                z-index: 10;
+                font-size: 16px;
+                line-height: 1;
+            `;
+        };
+
         // 检查是否已存在按钮
-        if (document.getElementById('tomato-breadcrumb-btn')) {
+        const existingTomatoBtn = document.getElementById('tomato-breadcrumb-btn');
+        if (existingTomatoBtn) {
+            syncTomatoBreadcrumbButton(existingTomatoBtn);
             if (mobileBreadcrumbNextTimer != null) {
                 clearTimeout(mobileBreadcrumbNextTimer);
                 mobileBreadcrumbNextTimer = null;
@@ -31326,26 +31499,7 @@ window.__setTomatoFloatState = function (payload) {
             // 创建番茄按钮
             const tomatoBtn = document.createElement('button');
             tomatoBtn.id = 'tomato-breadcrumb-btn';
-            tomatoBtn.innerHTML = '🍅';
-            tomatoBtn.title = '打开番茄钟';
-            tomatoBtn.style.cssText = `
-                width: 28px;
-                height: 28px;
-                padding: 0;
-                margin: 0 4px;
-                background: transparent;
-                color: var(--b3-theme-on-surface, inherit);
-                border: none;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 16px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                flex-shrink: 0;
-                transition: all 0.2s;
-                z-index: 10;
-            `;
+            syncTomatoBreadcrumbButton(tomatoBtn);
 
             tomatoBtn.onclick = (e) => {
                 e.preventDefault();
@@ -32403,7 +32557,7 @@ window.__setTomatoFloatState = function (payload) {
         }
         
         // 🔧 修复：移动端初始化完成后，如果有正在运行的计时，显示悬浮窗
-        if (isMobileDevice() && isMobileSupportEnabled() && MOBILE_FLOAT_BAR_LAZY_SHOW) {
+        if (isMobileDevice() && isMobileSupportEnabled() && MOBILE_FLOAT_BAR_LAZY_SHOW && isMobileFloatBarAutoShowEnabled()) {
             const hasUnfinishedTimer = isRunning || isTimerPaused || 
                 (syncState && syncState.status === 'RUNNING') || 
                 (syncState && syncState.status === 'PAUSED');
@@ -32492,6 +32646,11 @@ window.__setTomatoFloatState = function (payload) {
                         Logger.info('🍅 inject() 中的 initPromise.then() 执行，floatBarHiddenByUser:', floatBarHiddenByUser, 'isUsingFloatBar:', isUsingFloatBar, 'isRunning:', isRunning, 'isTimerPaused:', isTimerPaused);
                         Logger.info('🍅 syncState:', syncState?.status, syncState?.mode);
                         
+                        if (!isMobileFloatBarAutoShowEnabled()) {
+                            Logger.info('🍅 移动端悬浮条自动显示已关闭，初始化完成时不自动显示');
+                            return;
+                        }
+
                         // v8.6 修复：如果用户主动隐藏了悬浮窗，不再自动显示
                         if (floatBarHiddenByUser) {
                             Logger.info('🍅 用户已主动隐藏悬浮窗，初始化完成时不自动显示');
@@ -32524,10 +32683,11 @@ window.__setTomatoFloatState = function (payload) {
             }
             
             // 立即创建悬浮条
-            if (createDraggableFloatBar()) {
+            if (isMobileFloatBarAutoShowEnabled() && createDraggableFloatBar()) {
                 isUsingFloatBar = true;
-                initialize();
             }
+            initialize();
+            observeBreadcrumbForMobile();
             return;
         }
 
@@ -33321,6 +33481,7 @@ window.__setTomatoFloatState = function (payload) {
             taskCompletionTime: __normalizeReminderDateKey(blockMeta.taskCompletionTime || raw.taskCompletionTime || ''),
             taskRepeatRule: __parseReminderTaskRepeatRule(blockMeta.taskRepeatRule || raw.taskRepeatRule || raw.task_repeat_rule || '') || null,
             taskRepeatState: __normalizeReminderTaskRepeatState(blockMeta.taskRepeatState || raw.taskRepeatState || raw.task_repeat_state || ''),
+            syncTaskDone: raw.syncTaskDone === true || raw.sync_task_done === true,
             interval: __normalizeReminderInterval(raw.interval || raw.repeatType || raw.repeat_type || raw.type || ''),
             monthlyMode: __normalizeReminderMonthlyMode(raw.monthlyMode || raw.repeatMonthlyMode || raw.monthly_mode || ''),
             calendarMode: __normalizeReminderCalendarMode(raw.calendarMode || raw.repeatCalendarMode || raw.repeat_calendar_mode || '', raw.interval || raw.repeatType || raw.repeat_type || raw.type || ''),
@@ -34031,9 +34192,10 @@ window.__setTomatoFloatState = function (payload) {
         }
     }
     
-    function showReminderDialog(blockId, blockName, existingReminder, taskContextInput = null) {
+    function showReminderDialog(blockId, blockName, existingReminder, taskContextInput = null, options = {}) {
         document.getElementById('tomato-reminder-dialog')?.remove();
         document.getElementById('tomato-reminder-backdrop')?.remove();
+        const dialogOptions = (options && typeof options === 'object') ? options : {};
         
         const isMobile = isMobileDevice();
         const backdrop = document.createElement('div');
@@ -34096,18 +34258,18 @@ window.__setTomatoFloatState = function (payload) {
         };
         const hasTaskRepeat = !!taskContext.taskRepeatRule?.enabled;
         const existingHasIndependentLoop = existingReminder ? __hasReminderIndependentLoop(existingReminder) : false;
-        let repeatMode = hasTaskRepeat && (!existingReminder || !existingHasIndependentLoop)
+        const __semanticTitleSuggestion = (!existingReminder && reminderSettings?.semanticTitleTimeEnabled)
+            ? __semanticExtractReminderSuggestion(nameInput.value, new Date())
+            : null;
+        const initialInterval = __normalizeReminderInterval(existingReminder?.interval || __semanticTitleSuggestion?.interval || 'once');
+        let repeatMode = (hasTaskRepeat || (!!dialogOptions.defaultSyncTaskDone && initialInterval === 'once')) && (!existingReminder || !existingHasIndependentLoop)
             ? REMINDER_REPEAT_MODE_FOLLOW_TASK
             : (existingReminder
                 ? __getReminderRepeatMode(existingReminder)
                 : REMINDER_REPEAT_MODE_MANUAL);
-        if (repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK && !hasTaskRepeat) {
+        if (repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK && !hasTaskRepeat && initialInterval !== 'once') {
             repeatMode = REMINDER_REPEAT_MODE_MANUAL;
         }
-
-        const __semanticTitleSuggestion = (!existingReminder && reminderSettings?.semanticTitleTimeEnabled)
-            ? __semanticExtractReminderSuggestion(nameInput.value, new Date())
-            : null;
 
         const repeatModeSection = document.createElement('div');
         repeatModeSection.style.cssText = 'margin-bottom:16px;';
@@ -34119,7 +34281,7 @@ window.__setTomatoFloatState = function (payload) {
         repeatModeSelect.style.cssText = 'width:100%;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:10px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
         repeatModeSelect.innerHTML = `
             <option value="${REMINDER_REPEAT_MODE_MANUAL}" ${repeatMode === REMINDER_REPEAT_MODE_MANUAL ? 'selected' : ''}>独立提醒循环</option>
-            <option value="${REMINDER_REPEAT_MODE_FOLLOW_TASK}" ${(repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK && hasTaskRepeat) ? 'selected' : ''} ${hasTaskRepeat ? '' : 'disabled'}>跟随任务循环</option>
+            <option value="${REMINDER_REPEAT_MODE_FOLLOW_TASK}" ${repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK ? 'selected' : ''} ${(hasTaskRepeat || initialInterval === 'once') ? '' : 'disabled'}>${hasTaskRepeat ? '跟随任务循环' : '跟随任务'}</option>
         `;
         repeatModeSelect.onchange = () => {
             repeatMode = __normalizeReminderRepeatMode(repeatModeSelect.value, REMINDER_REPEAT_MODE_MANUAL);
@@ -34141,11 +34303,21 @@ window.__setTomatoFloatState = function (payload) {
         
         const intervalGrid = document.createElement('div');
         intervalGrid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:8px;';
-        let selectedInterval = __normalizeReminderInterval(existingReminder?.interval || __semanticTitleSuggestion?.interval || 'once');
+        let selectedInterval = initialInterval;
         let selectedMonthlyMode = __normalizeReminderMonthlyMode(existingReminder?.monthlyMode || taskContext.taskRepeatRule?.monthlyMode || 'date');
         let selectedCalendarMode = __normalizeReminderCalendarMode(existingReminder?.calendarMode || taskContext.taskRepeatRule?.calendarMode || '', selectedInterval);
         let intervalEvery = existingReminder ? __getReminderEvery(existingReminder) : (__semanticTitleSuggestion?.every || 1);
         let selectedTaskRepeatTrigger = __normalizeReminderTaskRepeatTrigger(existingReminder?.taskRepeatRule?.trigger || taskContext.taskRepeatRule?.trigger || 'due');
+        const syncRepeatModeOptions = () => {
+            const canFollow = hasTaskRepeat || selectedInterval === 'once';
+            const followOption = repeatModeSelect.querySelector(`option[value="${REMINDER_REPEAT_MODE_FOLLOW_TASK}"]`);
+            if (followOption) {
+                followOption.disabled = !canFollow;
+                followOption.textContent = hasTaskRepeat ? '跟随任务循环' : '跟随任务';
+            }
+            if (!canFollow && repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK) repeatMode = REMINDER_REPEAT_MODE_MANUAL;
+            repeatModeSelect.value = repeatMode;
+        };
         
         Object.values(REMINDER_INTERVAL_TYPES).forEach(type => {
             const btn = document.createElement('button');
@@ -34478,16 +34650,20 @@ window.__setTomatoFloatState = function (payload) {
         syncEndDateConstraints();
 
         const syncRepeatModeVisibility = () => {
-            const follow = repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK && hasTaskRepeat;
-            intervalSection.style.display = follow ? 'none' : '';
-            dateSection.style.display = follow ? 'none' : '';
-            endDateSection.style.display = follow ? 'none' : (selectedInterval !== 'once' ? 'block' : 'none');
+            syncRepeatModeOptions();
+            const follow = repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK;
+            const followTaskLoop = follow && hasTaskRepeat;
+            intervalSection.style.display = followTaskLoop ? 'none' : '';
+            dateSection.style.display = followTaskLoop ? 'none' : '';
+            endDateSection.style.display = followTaskLoop ? 'none' : (selectedInterval !== 'once' ? 'block' : 'none');
             try { syncTaskRepeatTriggerVisibility(); } catch (e) {}
-            repeatModeHint.textContent = follow
+            repeatModeHint.textContent = followTaskLoop
                 ? `当前会跟随任务循环；提醒日期将使用任务的${taskContext.taskCompletionTime ? '截止日期' : '开始日期'}。`
-                : (hasTaskRepeat
+                : (follow
+                    ? '当前为仅一次跟随任务；提醒完成后会同步任务完成状态。'
+                    : (hasTaskRepeat
                     ? '当前为独立提醒循环，不会改动任务循环；也可切换为跟随任务循环。'
-                    : '当前为独立提醒循环，不依赖任务循环。');
+                    : '当前为独立提醒循环，不依赖任务循环。'));
         };
         syncRepeatModeVisibility();
 
@@ -34557,6 +34733,8 @@ window.__setTomatoFloatState = function (payload) {
                 return;
             }
             const customName = String(nameInput.value || '').trim();
+            const syncTaskDoneToSave = existingReminder?.syncTaskDone === true
+                || ((!!dialogOptions.defaultSyncTaskDone || repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK) && selectedInterval === 'once');
             let repeatModeToSave = repeatMode;
             let taskRepeatRuleToSave = taskContext.taskRepeatRule;
             let taskRepeatStateToSave = taskContext.taskRepeatState;
@@ -34593,6 +34771,7 @@ window.__setTomatoFloatState = function (payload) {
                 taskCompletionTime: taskContext.taskCompletionTime,
                 taskRepeatRule: taskRepeatRuleToSave,
                 taskRepeatState: taskRepeatStateToSave,
+                syncTaskDone: !!syncTaskDoneToSave,
                 note: noteInput.value.trim(),
                 createdAt: existingReminder?.createdAt || new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
@@ -34870,8 +35049,9 @@ window.__setTomatoFloatState = function (payload) {
         if (times.length === 0 && !startDateKey && interval === 'once') return null;
         return { interval, every, startDateKey, times };
     };
-    async function __tryAutoSaveReminderFromTitle(blockId, blockName, baseDate) {
+    async function __tryAutoSaveReminderFromTitle(blockId, blockName, baseDate, options = {}) {
         if (!blockId) return false;
+        const autoOptions = (options && typeof options === 'object') ? options : {};
         try {
             if (!reminderSettings?.semanticTitleTimeEnabled) return false;
             if (!reminderSettings?.semanticTitleAutoSaveEnabled) return false;
@@ -34888,16 +35068,25 @@ window.__setTomatoFloatState = function (payload) {
             .filter(t => /^\d{2}:\d{2}$/.test(t))
             .sort();
         if (times.length === 0) return false;
+        let taskContext = null;
+        try { taskContext = await __getReminderTaskContext(blockId); } catch (e) { taskContext = null; }
+        const hasTaskRepeat = !!taskContext?.taskRepeatRule?.enabled;
         const nowIso = new Date().toISOString();
         const reminderData = {
             blockId: String(blockId),
             blockName: String(blockName || '').trim() || '未命名任务',
+            repeatMode: (hasTaskRepeat || (!!autoOptions.defaultSyncTaskDone && interval === 'once')) ? REMINDER_REPEAT_MODE_FOLLOW_TASK : REMINDER_REPEAT_MODE_MANUAL,
             interval,
             every,
             times,
             startDate,
             endDate: undefined,
+            taskStartDate: taskContext?.taskStartDate || '',
+            taskCompletionTime: taskContext?.taskCompletionTime || '',
+            taskRepeatRule: hasTaskRepeat ? taskContext.taskRepeatRule : null,
+            taskRepeatState: hasTaskRepeat ? taskContext.taskRepeatState : null,
             note: '',
+            syncTaskDone: !!autoOptions.defaultSyncTaskDone && interval === 'once',
             createdAt: nowIso,
             updatedAt: nowIso,
             enabled: true
@@ -35768,18 +35957,19 @@ window.__setTomatoFloatState = function (payload) {
     
     // 暴露到全局供调试使用
     globalThis.__tomatoReminder = {
-        showDialog: (blockId, blockName) => {
+        showDialog: (blockId, blockName, options = {}) => {
             Promise.resolve().then(async () => {
                 const id = String(blockId || '').trim();
                 if (!id) return;
                 const name = String(blockName || '').trim() || '任务';
+                const dialogOptions = (options && typeof options === 'object') ? options : {};
                 const taskContext = await __getReminderTaskContext(id);
                 const existing = await getBlockReminder(id);
                 if (!existing) {
-                    const autoSaved = await __tryAutoSaveReminderFromTitle(id, name, new Date());
+                    const autoSaved = await __tryAutoSaveReminderFromTitle(id, name, new Date(), dialogOptions);
                     if (autoSaved) return;
                 }
-                showReminderDialog(id, name, existing, taskContext);
+                showReminderDialog(id, name, existing, taskContext, dialogOptions);
             }).catch((e) => {
                 try { Logger.warn('提醒 showDialog 失败:', e); } catch (e2) {}
             });
@@ -35978,7 +36168,7 @@ window.__setTomatoFloatState = function (payload) {
             try { updateTaskBlockIcon(); } catch (e) {}
             try { updateTaskBlockTooltip(); } catch (e) {}
         },
-        startFromTaskBlock: async (blockId, taskName, durationMin, mode) => {
+        startFromTaskBlock: async (blockId, taskName, durationMin, mode, options = null) => {
             const id = String(blockId || '').trim();
             if (!id) return false;
             const name = String(taskName || '').trim() || '任务';
@@ -35995,7 +36185,7 @@ window.__setTomatoFloatState = function (payload) {
             }
             try {
                 const mockBlock = { dataset: { nodeId: id }, textContent: name };
-                await startTimerFromTaskBlock(mockBlock, duration, m);
+                await startTimerFromTaskBlock(mockBlock, duration, m, options);
                 return true;
             } catch (e) {
                 try { showMiniToast('启动计时失败'); } catch (e2) {}
@@ -36005,7 +36195,7 @@ window.__setTomatoFloatState = function (payload) {
         getDurations: () => {
             try { return getTomatoDurations(); } catch (e) { return [5, 15, 25, 30, 45, 60]; }
         },
-        startCountdown: async (blockId, taskName, durationMin) => {
+        startCountdown: async (blockId, taskName, durationMin, options = null) => {
             const id = String(blockId || '').trim();
             if (!id) return false;
             const name = String(taskName || '').trim() || '任务';
@@ -36021,27 +36211,27 @@ window.__setTomatoFloatState = function (payload) {
             }
             duration = Math.max(1, Math.min(180, Math.round(duration)));
             try {
-                await switchToCountdownAndStartWithTask(duration, id, name);
+                await switchToCountdownAndStartWithTask(duration, id, name, options);
                 return true;
             } catch (e) {
                 try { showMiniToast('启动番茄失败'); } catch (e2) {}
                 return false;
             }
         },
-        startStopwatch: async (blockId, taskName) => {
+        startStopwatch: async (blockId, taskName, options = null) => {
             const id = String(blockId || '').trim();
             if (!id) return false;
             const name = String(taskName || '').trim() || '任务';
             try {
-                await switchToStopwatchAndStartWithTask(id, name);
+                await switchToStopwatchAndStartWithTask(id, name, options);
                 return true;
             } catch (e) {
                 try { showMiniToast('启动正计时失败'); } catch (e2) {}
                 return false;
             }
         },
-        startPomodoro: async (blockId, taskName, durationMin) => {
-            return await globalThis.__tomatoTimer.startCountdown(blockId, taskName, durationMin);
+        startPomodoro: async (blockId, taskName, durationMin, options = null) => {
+            return await globalThis.__tomatoTimer.startCountdown(blockId, taskName, durationMin, options);
         },
         stopAssociatedTaskAfterDone: async (blockId, options = {}) => {
             return await stopAssociatedTaskAfterDone(blockId, options);
