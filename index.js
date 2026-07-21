@@ -475,6 +475,16 @@ module.exports = class TomatoTimerPlugin extends Plugin {
                 } catch (e) {}
             };
 
+            const refreshBadgeNow = async () => {
+                try {
+                    if (typeof globalThis.__tomatoUpdateReminderBadge === "function") {
+                        await globalThis.__tomatoUpdateReminderBadge();
+                    }
+                } catch (e) {}
+                await findAndCreateDockBadge();
+                await updateBadgeCount();
+            };
+
             this.addDock({
                 type: REMINDER_DOCK_TYPE,
                 config: {
@@ -530,11 +540,12 @@ module.exports = class TomatoTimerPlugin extends Plugin {
                 window.addEventListener("tomato-reminder-badge-update", this._badgeUpdateListener);
             }
             this._badgeUpdateInterval = setInterval(async () => {
-                if (typeof globalThis.__tomatoUpdateReminderBadge === "function") {
-                    await globalThis.__tomatoUpdateReminderBadge();
-                }
-                await updateBadgeCount();
-            }, 30000);
+                await refreshBadgeNow();
+            }, 60000);
+
+            // Dock 内容可能尚未打开，但角标容器已经存在。主动消费一次当前提醒状态，
+            // 避免 tomato.js 在监听器注册前发出的启动事件丢失后必须打开侧栏才显示角标。
+            Promise.resolve().then(refreshBadgeNow).catch(() => {});
 
             this._scheduleReminderDockRecover(reason);
             return true;

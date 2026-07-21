@@ -19,6 +19,7 @@ try {
         '.idea',
         '.vscode',
         '.DS_Store',
+        'scripts',
         'node_modules',
         'GUIDE_zh_CN.md',
         'REPRO_SYNC.md',
