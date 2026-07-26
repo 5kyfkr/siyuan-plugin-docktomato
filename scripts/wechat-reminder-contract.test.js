@@ -74,6 +74,12 @@ function run() {
     assert.match(source, /wechatEnabled:\s*false/);
     assert.match(source, /eventSource === 'task-horizon-agent-reminder'[\s\S]*?'agent-reminder'/, 'Agent reminder writes must request interactive WeChat reconciliation');
     assert.match(source, /settings\|manual\|enable\|disable\|agent-reminder/, 'Agent reconciliation must report WeChat registration results');
+    const deviceSyncStart = source.indexOf('async function __syncReminderDeviceScheduleOnce');
+    const deviceSyncEnd = source.indexOf('\n    async function __syncReminderDeviceSchedule(', deviceSyncStart);
+    const deviceSyncBlock = source.slice(deviceSyncStart, deviceSyncEnd);
+    assert.match(deviceSyncBlock, /skipWechatReconcile:\s*true/, 'device-only schedule metadata must not trigger WeChat reconciliation');
+    assert.match(deviceSyncBlock, /skipReminderUpdatedEvent:\s*true/, 'device-only schedule metadata must not dirty ICS publication');
+    assert.match(deviceSyncBlock, /skipTaskAttrUpdatedEvent:\s*true/, 'device-only schedule metadata must not re-enter the business reminder listener');
 }
 
 run();

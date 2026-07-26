@@ -8,9 +8,12 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'tomato.js'), 'utf8');
 const countStart = source.indexOf('const __normalizeReminderMaxOccurrences =');
 const countEnd = source.indexOf('const __normalizeReminderRepeatMode =', countStart);
-const scheduleStart = source.indexOf('const getNextReminderDateTime = (');
+const weekdayStart = source.indexOf('const __normalizeReminderWeekdays =');
+const weekdayEnd = source.indexOf('const __getReminderWeekdaysLabel =', weekdayStart);
+const scheduleStart = source.indexOf('const __getReminderMondayStart = (');
 const scheduleEnd = source.indexOf('const __collectReminderOccurrencesInRange = (', scheduleStart);
 assert.ok(countStart >= 0 && countEnd > countStart, 'count helper block must remain extractable');
+assert.ok(weekdayStart >= 0 && weekdayEnd > weekdayStart, 'weekday normalizer must remain extractable');
 assert.ok(scheduleStart >= 0 && scheduleEnd > scheduleStart, 'schedule helper block must remain extractable');
 
 const normalizeDateKey = (value) => {
@@ -68,14 +71,18 @@ const context = {
 context.globalThis = context;
 vm.createContext(context);
 vm.runInContext(source.slice(countStart, countEnd), context);
-vm.runInContext(`${source.slice(scheduleStart, scheduleEnd)}\nthis.__test = { __normalizeReminderMaxOccurrences, __getReminderCountEndDate, getNextReminderDateTime, __getNextFollowTaskReminderPreviewDateTime };`, context);
+vm.runInContext(source.slice(weekdayStart, weekdayEnd), context);
+vm.runInContext(`${source.slice(scheduleStart, scheduleEnd)}\nthis.__test = { __normalizeReminderMaxOccurrences, __normalizeReminderWeekdays, __getReminderCountEndDate, getNextReminderDateTime, __getNextFollowTaskReminderPreviewDateTime };`, context);
 
 const { __normalizeReminderMaxOccurrences: normalizeMax, __getReminderCountEndDate: getEndDate, __getNextFollowTaskReminderPreviewDateTime: getFollowPreview } = context.__test;
 assert.equal(normalizeMax(0), 0);
 assert.equal(normalizeMax(999), 200);
+assert.deepEqual(Array.from(context.__test.__normalizeReminderWeekdays([], '2026-07-20')), [], 'empty weekday selections must remain empty');
 assert.equal(getEndDate({ interval: 'daily', every: 1, startDate: '2026-07-18' }, 1), '2026-07-18');
 assert.equal(getEndDate({ interval: 'daily', every: 2, startDate: '2026-07-18' }, 5), '2026-07-26');
 assert.equal(getEndDate({ interval: 'weekly', every: 1, startDate: '2026-07-18' }, 3), '2026-08-01');
+assert.equal(getEndDate({ interval: 'weekly', every: 1, weekdays: [1, 3, 5], startDate: '2026-07-20' }, 5), '2026-07-29');
+assert.equal(getEndDate({ interval: 'weekly', every: 2, weekdays: [1, 3], startDate: '2026-07-20' }, 3), '2026-08-03');
 assert.equal(getEndDate({ interval: 'monthly', every: 1, monthlyMode: 'date', calendarMode: 'solar', startDate: '2026-01-31' }, 3), '2026-03-31');
 
 const exhaustedFollow = {
@@ -90,8 +97,32 @@ const exhaustedFollow = {
 };
 assert.equal(getFollowPreview(exhaustedFollow, new Date('2026-07-18T09:01:00')), null, 'follow preview must stop at the task count limit');
 
+const weeklyNext = context.__test.getNextReminderDateTime({
+    enabled: true,
+    repeatMode: 'manual',
+    interval: 'weekly',
+    every: 1,
+    weekdays: [1, 3, 5],
+    startDate: '2026-07-20',
+    times: ['09:00'],
+}, new Date('2026-07-20T10:00:00'));
+assert.equal(normalizeDateKey(weeklyNext), '2026-07-22', 'weekly recurrence must use the next selected weekday');
+
+const emptyWeeklyNext = context.__test.getNextReminderDateTime({
+    enabled: true,
+    repeatMode: 'manual',
+    interval: 'weekly',
+    every: 1,
+    weekdays: [],
+    startDate: '2026-07-20',
+    times: ['09:00'],
+}, new Date('2026-07-20T10:00:00'));
+assert.equal(normalizeDateKey(emptyWeeklyNext), '2026-07-27', 'empty weekday recurrence must follow the start date weekday');
+
 assert.match(source, /endCountInput\.max = '200'/, 'dialog count input must cap at 200');
 assert.match(source, /option value="count"/, 'dialog must expose count ending as a separate mode');
 assert.match(source, /__normalizeReminderMaxOccurrences\(reminder\?\.maxOccurrences\)/, 'schedule signature must include the count limit');
+assert.match(source, /\[\[1, '一'\], \[2, '二'\], \[3, '三'\], \[4, '四'\], \[5, '五'\], \[6, '六'\], \[0, '日'\]\]/, 'dialog must render Monday-first weekday controls');
+assert.doesNotMatch(source, /selectedWeekdays\.length <= 1/, 'dialog must allow clearing every weekday');
 
 console.log('reminder repeat count tests passed');

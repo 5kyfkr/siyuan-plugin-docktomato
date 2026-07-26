@@ -10,6 +10,10 @@ const renderEnd = source.indexOf('\n    async function renderReminderDockList', 
 assert.ok(renderStart >= 0 && renderEnd > renderStart, 'reminder dock renderer must remain extractable');
 const renderBlock = source.slice(renderStart, renderEnd);
 
+assert.match(source, /const __reminderDockCollapsedGroups = new Set\(\);/,
+    'unfinished reminder groups, including later, must start expanded');
+assert.doesNotMatch(source, /const __reminderDockCollapsedGroups = new Set\(\['later'\]\);/,
+    'the later group must not be collapsed by default');
 assert.match(renderBlock, /viewOptions = \[\{ key: 'unfinished'[\s\S]*\{ key: 'completed'/,
     'dock must keep only unfinished and completed views');
 assert.doesNotMatch(renderBlock, /key: 'expired'/,
