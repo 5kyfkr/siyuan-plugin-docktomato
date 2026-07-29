@@ -2332,6 +2332,8 @@
             collapsedHeightPx: 7,
             expandedHeightPx: 27,
             hotAreaHeightPx: 15,
+            expandTriggerStartPercent: 0,
+            expandTriggerWidthPercent: 100,
             collapsedOpacity: 0.7,
             expandedOpacity: 1,
             luminaLink: {
@@ -5891,6 +5893,264 @@
         };
     }
 
+    function createTimelineExpandTriggerRegionEditor(initialSettings) {
+        const initial = normalizeTimelineExpandTriggerSettings({
+            expandTriggerStartPercent: initialSettings?.expandTriggerStartPercent,
+            expandTriggerWidthPercent: initialSettings?.expandTriggerWidthPercent
+        });
+        let startPercent = initial.startPercent;
+        let widthPercent = initial.widthPercent;
+        let dragState = null;
+
+        const root = document.createElement('div');
+        root.style.cssText = `display: flex; flex-direction: column; gap: 8px; min-width: 0;`;
+
+        const track = document.createElement('div');
+        track.className = 'tomato-timeline-expand-trigger-track';
+        track.setAttribute('aria-label', '桌面端展开触发区域预览');
+        track.style.cssText = `
+            position: relative; width: 100%; height: 32px; box-sizing: border-box;
+            overflow: hidden; border: 1px solid var(--b3-theme-surface-light); border-radius: 6px;
+            background: color-mix(in srgb, var(--b3-theme-on-surface) 8%, transparent);
+            touch-action: none; user-select: none; -webkit-user-select: none;
+        `;
+
+        const selection = document.createElement('div');
+        selection.className = 'tomato-timeline-expand-trigger-selection';
+        selection.tabIndex = 0;
+        selection.setAttribute('role', 'slider');
+        selection.setAttribute('aria-label', '移动展开触发区域');
+        selection.title = '拖动调整展开触发区域的位置';
+        selection.style.cssText = `
+            position: absolute; top: 0; bottom: 0; cursor: grab;
+            background: color-mix(in srgb, var(--b3-theme-primary) 24%, var(--b3-theme-surface));
+            box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--b3-theme-primary) 72%, transparent);
+            touch-action: none;
+        `;
+
+        const createHandle = (side, labelText) => {
+            const handle = document.createElement('button');
+            handle.type = 'button';
+            handle.className = `tomato-timeline-expand-trigger-handle tomato-timeline-expand-trigger-handle-${side}`;
+            handle.setAttribute('aria-label', labelText);
+            handle.title = labelText;
+            handle.style.cssText = `
+                position: absolute; top: 0; bottom: 0; ${side}: 0; z-index: 2;
+                width: 12px; padding: 0; border: 0; border-radius: 0;
+                display: flex; align-items: center; justify-content: center;
+                color: var(--b3-theme-primary); background: transparent;
+                cursor: ew-resize; touch-action: none;
+            `;
+            const grip = document.createElement('span');
+            grip.style.cssText = `
+                width: 2px; height: 16px; border-radius: 1px;
+                background: currentColor; pointer-events: none;
+            `;
+            handle.appendChild(grip);
+            return handle;
+        };
+
+        const leftHandle = createHandle('left', '调整展开触发区域左边界');
+        const rightHandle = createHandle('right', '调整展开触发区域右边界');
+        selection.appendChild(leftHandle);
+        selection.appendChild(rightHandle);
+        track.appendChild(selection);
+        root.appendChild(track);
+
+        const valueRow = document.createElement('div');
+        valueRow.style.cssText = `display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0;`;
+
+        const createPercentField = (labelText) => {
+            const field = document.createElement('label');
+            field.style.cssText = `display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; opacity: 0.9;`;
+            const label = document.createElement('span');
+            label.textContent = labelText;
+            label.style.cssText = `flex: 0 0 auto;`;
+            const control = document.createElement('span');
+            control.style.cssText = `display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0;`;
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.step = '1';
+            input.style.cssText = `
+                width: 100%; min-width: 0; box-sizing: border-box; padding: 5px 6px;
+                border: 1px solid var(--b3-theme-surface-light); border-radius: 4px;
+                background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+                font-size: 12px; font-variant-numeric: tabular-nums;
+            `;
+            const suffix = document.createElement('span');
+            suffix.textContent = '%';
+            suffix.style.cssText = `opacity: 0.7;`;
+            control.appendChild(input);
+            control.appendChild(suffix);
+            field.appendChild(label);
+            field.appendChild(control);
+            return { field, input };
+        };
+
+        const startField = createPercentField('起点');
+        const widthField = createPercentField('宽度');
+        startField.input.setAttribute('aria-label', '展开触发区域起点百分比');
+        widthField.input.setAttribute('aria-label', '展开触发区域宽度百分比');
+        valueRow.appendChild(startField.field);
+        valueRow.appendChild(widthField.field);
+        root.appendChild(valueRow);
+
+        const render = () => {
+            const endPercent = startPercent + widthPercent;
+            selection.style.left = `${startPercent}%`;
+            selection.style.width = `${widthPercent}%`;
+            selection.setAttribute('aria-valuemin', '0');
+            selection.setAttribute('aria-valuemax', String(100 - widthPercent));
+            selection.setAttribute('aria-valuenow', String(startPercent));
+            selection.setAttribute('aria-valuetext', `起点 ${startPercent}%，宽度 ${widthPercent}%，终点 ${endPercent}%`);
+            startField.input.min = '0';
+            startField.input.max = String(100 - widthPercent);
+            startField.input.value = String(startPercent);
+            widthField.input.min = '5';
+            widthField.input.max = String(100 - startPercent);
+            widthField.input.value = String(widthPercent);
+        };
+
+        const setRegion = (nextStart, nextWidth) => {
+            const normalized = normalizeTimelineExpandTriggerSettings({
+                expandTriggerStartPercent: nextStart,
+                expandTriggerWidthPercent: nextWidth
+            });
+            startPercent = normalized.startPercent;
+            widthPercent = normalized.widthPercent;
+            render();
+        };
+
+        const moveRegion = (nextStart) => {
+            const roundedStart = Math.round(Number(nextStart));
+            if (!Number.isFinite(roundedStart)) return;
+            setRegion(Math.max(0, Math.min(100 - widthPercent, roundedStart)), widthPercent);
+        };
+
+        const resizeLeft = (nextStart) => {
+            const fixedEnd = startPercent + widthPercent;
+            const roundedStart = Math.round(Number(nextStart));
+            if (!Number.isFinite(roundedStart)) return;
+            const clampedStart = Math.max(0, Math.min(fixedEnd - 5, roundedStart));
+            setRegion(clampedStart, fixedEnd - clampedStart);
+        };
+
+        const resizeRight = (nextEnd) => {
+            const roundedEnd = Math.round(Number(nextEnd));
+            if (!Number.isFinite(roundedEnd)) return;
+            const clampedEnd = Math.max(startPercent + 5, Math.min(100, roundedEnd));
+            setRegion(startPercent, clampedEnd - startPercent);
+        };
+
+        const beginDrag = (mode, event) => {
+            if (event.pointerType === 'mouse' && event.button !== 0) return;
+            const rect = track.getBoundingClientRect();
+            if (!rect || rect.width <= 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            dragState = {
+                mode,
+                pointerId: event.pointerId,
+                target: event.currentTarget,
+                startX: event.clientX,
+                trackWidth: rect.width,
+                initialStart: startPercent,
+                initialWidth: widthPercent
+            };
+            try { event.currentTarget.setPointerCapture(event.pointerId); } catch (e) {}
+            if (mode === 'move') event.currentTarget.style.cursor = 'grabbing';
+        };
+
+        const continueDrag = (event) => {
+            if (!dragState || event.pointerId !== dragState.pointerId) return;
+            const deltaPercent = ((event.clientX - dragState.startX) / dragState.trackWidth) * 100;
+            if (dragState.mode === 'move') {
+                moveRegion(dragState.initialStart + deltaPercent);
+            } else if (dragState.mode === 'left') {
+                const fixedEnd = dragState.initialStart + dragState.initialWidth;
+                resizeLeft(Math.min(fixedEnd - 5, dragState.initialStart + deltaPercent));
+            } else {
+                resizeRight(dragState.initialStart + dragState.initialWidth + deltaPercent);
+            }
+            event.preventDefault();
+        };
+
+        const endDrag = (event) => {
+            if (!dragState || event.pointerId !== dragState.pointerId) return;
+            const target = dragState.target;
+            dragState = null;
+            try { target.releasePointerCapture(event.pointerId); } catch (e) {}
+            if (target === selection) target.style.cursor = 'grab';
+        };
+
+        const bindDragTarget = (target, mode) => {
+            target.addEventListener('pointerdown', (event) => beginDrag(mode, event));
+            target.addEventListener('pointermove', continueDrag);
+            target.addEventListener('pointerup', endDrag);
+            target.addEventListener('pointercancel', endDrag);
+        };
+        bindDragTarget(selection, 'move');
+        bindDragTarget(leftHandle, 'left');
+        bindDragTarget(rightHandle, 'right');
+
+        const focusables = [selection, leftHandle, rightHandle];
+        focusables.forEach((element) => {
+            element.addEventListener('focus', () => {
+                element.style.outline = '2px solid var(--b3-theme-primary)';
+                element.style.outlineOffset = '-2px';
+            });
+            element.addEventListener('blur', () => {
+                element.style.outline = 'none';
+            });
+        });
+
+        selection.addEventListener('keydown', (event) => {
+            const step = event.shiftKey ? 5 : 1;
+            if (event.key === 'ArrowLeft') moveRegion(startPercent - step);
+            else if (event.key === 'ArrowRight') moveRegion(startPercent + step);
+            else if (event.key === 'Home') moveRegion(0);
+            else if (event.key === 'End') moveRegion(100 - widthPercent);
+            else return;
+            event.preventDefault();
+        });
+        leftHandle.addEventListener('keydown', (event) => {
+            const step = event.shiftKey ? 5 : 1;
+            if (event.key === 'ArrowLeft') resizeLeft(startPercent - step);
+            else if (event.key === 'ArrowRight') resizeLeft(startPercent + step);
+            else return;
+            event.preventDefault();
+            event.stopPropagation();
+        });
+        rightHandle.addEventListener('keydown', (event) => {
+            const step = event.shiftKey ? 5 : 1;
+            if (event.key === 'ArrowLeft') resizeRight(startPercent + widthPercent - step);
+            else if (event.key === 'ArrowRight') resizeRight(startPercent + widthPercent + step);
+            else return;
+            event.preventDefault();
+            event.stopPropagation();
+        });
+
+        startField.input.addEventListener('change', () => {
+            if (startField.input.value === '') return;
+            moveRegion(Number(startField.input.value));
+        });
+        widthField.input.addEventListener('change', () => {
+            if (widthField.input.value === '') return;
+            resizeRight(startPercent + Number(widthField.input.value));
+        });
+        startField.input.addEventListener('blur', render);
+        widthField.input.addEventListener('blur', render);
+
+        render();
+        return {
+            element: root,
+            getValue: () => ({
+                startPercent,
+                widthPercent
+            })
+        };
+    }
+
     function showTimelineSettingsDialog() {
         removeById('tomato-timeline-settings-dialog', 'tomato-timeline-settings-backdrop');
         const isMobile = isMobileDevice();
@@ -5944,6 +6204,7 @@
             if (typeof userSettings.timeline.collapsedHeightPx !== 'number') userSettings.timeline.collapsedHeightPx = 7;
             if (typeof userSettings.timeline.expandedHeightPx !== 'number') userSettings.timeline.expandedHeightPx = 27;
             if (typeof userSettings.timeline.hotAreaHeightPx !== 'number') userSettings.timeline.hotAreaHeightPx = 15;
+            normalizeTimelineExpandTriggerSettings(userSettings.timeline);
             if (typeof userSettings.timeline.collapsedOpacity !== 'number') userSettings.timeline.collapsedOpacity = 0.7;
             if (typeof userSettings.timeline.expandedOpacity !== 'number') userSettings.timeline.expandedOpacity = 1;
             ensureTimelineLuminaLinkSettings();
@@ -6551,6 +6812,9 @@
         heightWrap.appendChild(expandedHeight);
         content.appendChild(row('高度', heightWrap));
 
+        const expandTriggerEditor = createTimelineExpandTriggerRegionEditor(userSettings.timeline);
+        content.appendChild(rowStack('桌面端展开触发区域', expandTriggerEditor.element));
+
         const highlightWrap = document.createElement('div');
         highlightWrap.style.cssText = `display: flex; flex-direction: column; gap: 8px;`;
 
@@ -6648,6 +6912,10 @@
             userSettings.timeline.expandedOpacity = Math.max(0.1, Math.min(1, parseFloat(expandedOpacity.value) || 1));
             userSettings.timeline.collapsedHeightPx = Math.max(3, Math.min(20, parseInt(collapsedHeight.value, 10) || 7));
             userSettings.timeline.expandedHeightPx = Math.max(10, Math.min(80, parseInt(expandedHeight.value, 10) || 27));
+            const expandTriggerRegion = expandTriggerEditor.getValue();
+            userSettings.timeline.expandTriggerStartPercent = expandTriggerRegion.startPercent;
+            userSettings.timeline.expandTriggerWidthPercent = expandTriggerRegion.widthPercent;
+            normalizeTimelineExpandTriggerSettings(userSettings.timeline);
             userSettings.timeline.highlightColors = {
                 tomato: tomatoHighlight.getValue(),
                 stopwatch: stopwatchHighlight.getValue(),
@@ -8042,6 +8310,37 @@
         return Number(match[1]) * 60 + Number(match[2]);
     }
 
+    function normalizeTimelineExpandTriggerSettings(timelineSettings) {
+        const settings = (timelineSettings && typeof timelineSettings === 'object') ? timelineSettings : {};
+        const widthValue = settings.expandTriggerWidthPercent;
+        const rawWidth = (widthValue === '' || widthValue == null) ? NaN : Number(widthValue);
+        const widthPercent = Math.max(5, Math.min(100,
+            Math.round(Number.isFinite(rawWidth) ? rawWidth : 100)));
+        const startValue = settings.expandTriggerStartPercent;
+        const rawStart = (startValue === '' || startValue == null) ? NaN : Number(startValue);
+        const startPercent = Math.max(0, Math.min(100 - widthPercent,
+            Math.round(Number.isFinite(rawStart) ? rawStart : 0)));
+
+        settings.expandTriggerStartPercent = startPercent;
+        settings.expandTriggerWidthPercent = widthPercent;
+        return {
+            startPercent,
+            widthPercent,
+            endPercent: startPercent + widthPercent
+        };
+    }
+
+    function isClientXWithinTimelineExpandTriggerRegion(clientX, rect, timelineSettings) {
+        const x = Number(clientX);
+        const left = Number(rect?.left);
+        const width = Number(rect?.width);
+        if (!Number.isFinite(x) || !Number.isFinite(left) || !Number.isFinite(width) || width <= 0) return false;
+
+        const region = normalizeTimelineExpandTriggerSettings(timelineSettings);
+        const percent = ((x - left) / width) * 100;
+        return percent >= region.startPercent && percent <= region.endPercent;
+    }
+
     function ensureTimelineSettings() {
         if (!userSettings.timeline) userSettings.timeline = {};
         if (typeof userSettings.timeline.enabled !== 'boolean') userSettings.timeline.enabled = false;
@@ -8094,6 +8393,7 @@
         if (typeof userSettings.timeline.collapsedHeightPx !== 'number') userSettings.timeline.collapsedHeightPx = 7;
         if (typeof userSettings.timeline.expandedHeightPx !== 'number') userSettings.timeline.expandedHeightPx = 27;
         if (typeof userSettings.timeline.hotAreaHeightPx !== 'number') userSettings.timeline.hotAreaHeightPx = 15;
+        normalizeTimelineExpandTriggerSettings(userSettings.timeline);
         if (typeof userSettings.timeline.collapsedOpacity !== 'number') userSettings.timeline.collapsedOpacity = 0.7;
         if (typeof userSettings.timeline.expandedOpacity !== 'number') userSettings.timeline.expandedOpacity = 1;
         ensureTimelineLuminaLinkSettings();
@@ -10855,10 +11155,16 @@
         };
         applyTimelineExpandedState = applyExpandedState;
 
-        timelineBar.addEventListener('mouseenter', () => {
+        const isTimelineExpandTriggerPoint = (clientX) => {
+            let rect = null;
+            try { rect = timelineBar?.getBoundingClientRect?.(); } catch (e) {}
+            return isClientXWithinTimelineExpandTriggerRegion(clientX, rect, userSettings.timeline);
+        };
+
+        timelineBar.addEventListener('mouseenter', (e) => {
             if (isMobileDevice()) return;
             if (timelineExpandedByClick) return;
-            if (!isTimelineExpanded) applyExpandedState(true, true);
+            if (!isTimelineExpanded && isTimelineExpandTriggerPoint(e.clientX)) applyExpandedState(true, true);
         });
         // 时间轴鼠标移出延迟折叠
         let timelineCollapseTimer = null;
@@ -10987,6 +11293,7 @@
             if (target && target.closest && target.closest('#tomato-routine-toolbar')) return;
             if (target && target.closest && target.closest('.timeline-segment')) return;
             if (!isTimelineExpanded) {
+                if (!isTimelineExpandTriggerPoint(e.clientX)) return;
                 timelineExpandedByClick = true;
                 applyExpandedState(true, true);
                 return;
@@ -11049,6 +11356,9 @@
         };
         timelineBar.addEventListener('mousemove', (e) => {
             if (isMobileDevice()) return;
+            if (!isTimelineExpanded && !timelineExpandedByClick && isTimelineExpandTriggerPoint(e.clientX)) {
+                applyExpandedState(true, true);
+            }
             timelineHoverPending = { x: e.clientX, y: e.clientY, target: e.target || null };
             if (timelineHoverRafId) return;
             timelineHoverRafId = requestAnimationFrame(flushTimelineHover);
@@ -32758,6 +33068,7 @@ window.__setTomatoFloatState = function (payload) {
         
         // 初始化提醒功能
         await loadReminderSettings();
+        try { await __reconcileReminderScheduleRecordLedger(); } catch (e) {}
         try { installReminderTaskAttrSync(); } catch (e) {}
         try { installReminderSyncEndScheduleReconcile(); } catch (e) {}
         try { startWechatReminderReconcileLoop(); } catch (e) {}
@@ -33983,6 +34294,8 @@ window.__setTomatoFloatState = function (payload) {
     const REMINDER_DEVICE_SCHEDULE_WINDOW_DAYS = 7;
     const REMINDER_DEVICE_SCHEDULE_MAX_OCCURRENCES = 64;
     const REMINDER_DEVICE_SCHEDULE_REGISTRY_KEY = 'tomato-reminder-device-schedule-registry-v1';
+    const REMINDER_DEVICE_SCHEDULE_RECORD_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+    const REMINDER_DEVICE_SCHEDULE_RECORD_FILE = `${PLUGIN_STORAGE_DIR}/reminder-device-schedule-records.json`;
 
     const __getReminderNotificationTitle = () => '⏰ 任务提醒';
     const __getReminderNotificationBody = (reminder) => {
@@ -34014,6 +34327,11 @@ window.__setTomatoFloatState = function (payload) {
                 planKey: String(schedule?.planKey || '').trim(),
                 windowDays: Number(schedule?.windowDays) || REMINDER_DEVICE_SCHEDULE_WINDOW_DAYS,
                 updatedAt: String(schedule?.updatedAt || '').trim(),
+                status: String(schedule?.status || '').trim(),
+                canceledAt: String(schedule?.canceledAt || '').trim(),
+                cancelReason: String(schedule?.cancelReason || '').trim(),
+                clientKind: String(schedule?.clientKind || '').trim(),
+                sourceSignature: String(schedule?.sourceSignature || '').trim(),
                 entries,
             };
         }
@@ -34121,6 +34439,7 @@ window.__setTomatoFloatState = function (payload) {
             : [];
         return {
             planKey: String(schedule?.planKey || '').trim(),
+            sourceSignature: String(schedule?.sourceSignature || '').trim(),
             windowDays: Number(schedule?.windowDays) || REMINDER_DEVICE_SCHEDULE_WINDOW_DAYS,
             updatedAt: String(schedule?.updatedAt || '').trim(),
             entries,
@@ -34153,6 +34472,7 @@ window.__setTomatoFloatState = function (payload) {
         } else {
             registry[id] = {
                 planKey: String(schedule?.planKey || '').trim(),
+                sourceSignature: String(schedule?.sourceSignature || '').trim(),
                 updatedAt: String(schedule?.updatedAt || new Date().toISOString()).trim(),
                 entries: validEntries.map(it => ({
                     occurrenceKey: String(it?.occurrenceKey || '').trim(),
@@ -34576,6 +34896,12 @@ window.__setTomatoFloatState = function (payload) {
         const targetSig = (targets || []).map(it => `${it.occurrenceKey}@${it.dateKey}@${it.timeKey}`).join('|');
         return [blockId, scheduleSig, contentSig, targetSig].join('::');
     };
+    const __getReminderDevicePlanMutationSignature = (reminder) => JSON.stringify([
+        __getReminderScheduleSignature(reminder),
+        reminder?.enabled !== false,
+        String(reminder?.blockName || reminder?.blockContent || '').trim(),
+        String(reminder?.note || '').trim(),
+    ]);
     const __getValidReminderDeviceScheduleEntries = (schedule) => Array.isArray(schedule?.entries)
         ? schedule.entries.filter((entry) => {
             const id = normalizeNotificationId(entry?.id);
@@ -34743,6 +35069,7 @@ window.__setTomatoFloatState = function (payload) {
             try {
                 const scheduleMap = __getReminderDeviceScheduleMap(reminder);
                 for (const [deviceId, schedule] of Object.entries(scheduleMap)) {
+                    if (String(deviceId || '').trim() !== String(SYNC_DEVICE_ID || '').trim()) continue;
                     if (!schedule?.entries?.length) continue;
                     const result = filterEntries(schedule.entries);
                     if (!result.changed) continue;
@@ -34858,6 +35185,7 @@ window.__setTomatoFloatState = function (payload) {
 
         const nextSchedule = {
             planKey,
+            sourceSignature: __getReminderDevicePlanMutationSignature(reminder),
             windowDays: REMINDER_DEVICE_SCHEDULE_WINDOW_DAYS,
             updatedAt: new Date().toISOString(),
             entries: scheduledEntries,
@@ -34903,6 +35231,14 @@ window.__setTomatoFloatState = function (payload) {
         const reminder = reminderData ? { ...reminderData, blockId: id } : await getBlockReminder(id);
         if (!reminder) return false;
         const existing = __getReminderDeviceSchedule(reminder);
+        if (existing) {
+            try {
+                await __retainReminderDeviceScheduleRecords(id, { [SYNC_DEVICE_ID]: existing }, 'manual-clear-current-device', {
+                    sourcePlanKey: String(existing?.planKey || '').trim(),
+                    includeLocalRegistry: false,
+                });
+            } catch (e) {}
+        }
         const validExistingEntries = Array.isArray(existing?.entries)
             ? existing.entries.filter(it => {
                 const nid = normalizeNotificationId(it?.id);
@@ -34929,7 +35265,13 @@ window.__setTomatoFloatState = function (payload) {
         if (!id) return false;
         const reminder = reminderData ? { ...reminderData, blockId: id } : await getBlockReminder(id);
         if (!reminder) return false;
-        const map = __buildReminderScheduleStateMap(reminder);
+        const map = __sanitizeReminderNotificationSchedules(reminder.notificationSchedules);
+        try {
+            await __retainReminderDeviceScheduleRecords(id, map, 'manual-clear-all-devices', {
+                sourcePlanKey: __getReminderDevicePlanMutationSignature(reminder),
+                includeLocalRegistry: false,
+            });
+        } catch (e) {}
         for (const schedule of Object.values(map || {})) {
             const entries = Array.isArray(schedule?.entries) ? schedule.entries : [];
             if (entries.length > 0) {
@@ -34952,6 +35294,7 @@ window.__setTomatoFloatState = function (payload) {
     async function __syncAllReminderDeviceSchedules(forceRefresh = false, options = {}) {
         if (__allReminderDeviceSchedulesFlight) return await __allReminderDeviceSchedulesFlight;
         __allReminderDeviceSchedulesFlight = (async () => {
+            try { await __reconcileReminderScheduleRecordLedger(); } catch (e) {}
             if (!shouldPreferDeviceNotificationBackend()) return;
             if (!reminderSettings?.enabled || !reminderSettings?.systemNotificationEnabled) return;
             const reminders = await queryAllReminderBlocks(forceRefresh);
@@ -34967,6 +35310,7 @@ window.__setTomatoFloatState = function (payload) {
         }
     }
     async function __syncReminderDeviceSchedulesFromList(reminders) {
+        try { await __reconcileReminderScheduleRecordLedger(); } catch (e) {}
         if (!shouldPreferDeviceNotificationBackend()) return;
         for (const reminder of (reminders || [])) {
             try { await __syncReminderDeviceSchedule(reminder.blockId, reminder); } catch (e) {}
@@ -35041,6 +35385,7 @@ window.__setTomatoFloatState = function (payload) {
         try {
             const existing = await getBlockReminder(blockId);
             if (!existing) return false;
+            const scheduleRecordSnapshot = existing.notificationSchedules || {};
             const next = { ...existing };
             const arr = Array.isArray(next.completedOccurrences) ? next.completedOccurrences.slice() : [];
             const set = __getReminderCompletedSet(next);
@@ -35052,6 +35397,13 @@ window.__setTomatoFloatState = function (payload) {
             try { await __cancelReminderOccurrenceNotifications(blockId, dateKey, timeKey, next); } catch (e) {}
             const ok = await saveBlockReminder(blockId, next);
             if (ok) {
+                try {
+                    await __retainReminderDeviceScheduleRecords(blockId, scheduleRecordSnapshot, 'occurrence-completed', {
+                        occurrenceKeys: [k],
+                        sourcePlanKey: __getReminderDevicePlanMutationSignature(existing),
+                        includeLocalRegistry: false,
+                    });
+                } catch (e) {}
                 try { await __syncReminderDeviceSchedule(blockId, next, { silent: true }); } catch (e) {}
                 try { refreshReminderDockPanel(); } catch (e) {}
                 try { updateReminderBadge(); } catch (e) {}
@@ -35070,6 +35422,7 @@ window.__setTomatoFloatState = function (payload) {
             const existing = await getBlockReminder(blockId);
             if (!existing) return false;
             if (__getReminderExcludedSet(existing).has(occurrenceKey)) return true;
+            const scheduleRecordSnapshot = existing.notificationSchedules || {};
             const next = {
                 ...existing,
                 excludedOccurrences: [
@@ -35091,6 +35444,13 @@ window.__setTomatoFloatState = function (payload) {
                 },
             });
             if (ok) {
+                try {
+                    await __retainReminderDeviceScheduleRecords(blockId, scheduleRecordSnapshot, 'occurrence-removed', {
+                        occurrenceKeys: [occurrenceKey],
+                        sourcePlanKey: __getReminderDevicePlanMutationSignature(existing),
+                        includeLocalRegistry: false,
+                    });
+                } catch (e) {}
                 try { refreshReminderDockPanel(); } catch (e) {}
                 try { updateReminderBadge(); } catch (e) {}
             }
@@ -36848,6 +37208,186 @@ window.__setTomatoFloatState = function (payload) {
         }
         return result;
     };
+    const __normalizeReminderScheduleRecordLedger = (value, nowMs = Date.now()) => {
+        const source = (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
+        const records = [];
+        for (const raw of (Array.isArray(source.records) ? source.records : [])) {
+            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+            const entityId = String(raw.entityId || raw.blockId || '').trim();
+            if (!entityId) continue;
+            const retainedAtMs = Number(raw.retainedAtMs) || Date.parse(String(raw.retainedAt || '')) || Number(nowMs) || Date.now();
+            const expiresAtMs = Number(raw.expiresAtMs) || Date.parse(String(raw.expiresAt || ''))
+                || (retainedAtMs + REMINDER_DEVICE_SCHEDULE_RECORD_RETENTION_MS);
+            if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Number(nowMs)) continue;
+            records.push({
+                key: String(raw.key || '').trim(),
+                entityId,
+                reason: String(raw.reason || '').trim(),
+                sourcePlanKey: String(raw.sourcePlanKey || '').trim(),
+                retainedAt: new Date(retainedAtMs).toISOString(),
+                retainedAtMs,
+                expiresAt: new Date(expiresAtMs).toISOString(),
+                expiresAtMs,
+                occurrenceKeys: Array.from(new Set(
+                    (Array.isArray(raw.occurrenceKeys) ? raw.occurrenceKeys : [])
+                        .map((key) => String(key || '').trim())
+                        .filter(Boolean)
+                )),
+                notificationSchedules: __sanitizeReminderNotificationSchedules(raw.notificationSchedules),
+            });
+        }
+        return { version: 1, records };
+    };
+    const __getReminderScheduleRecordEntrySignature = (scheduleMap) => JSON.stringify(
+        Object.entries(__sanitizeReminderNotificationSchedules(scheduleMap))
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([deviceId, schedule]) => [
+                deviceId,
+                (Array.isArray(schedule?.entries) ? schedule.entries : [])
+                    .map((entry) => [
+                        String(entry?.occurrenceKey || '').trim(),
+                        normalizeNotificationId(entry?.id),
+                    ]),
+            ])
+    );
+    async function __loadReminderScheduleRecordLedger() {
+        try {
+            try { __tomatoFileTextCache.delete(REMINDER_DEVICE_SCHEDULE_RECORD_FILE); } catch (e) {}
+            const file = await __tomatoGetFileText(REMINDER_DEVICE_SCHEDULE_RECORD_FILE);
+            if (!file?.exists || !String(file.text || '').trim()) {
+                return { ledger: __normalizeReminderScheduleRecordLedger({}), sourceCount: 0 };
+            }
+            const parsed = JSON.parse(file.text);
+            const sourceCount = Array.isArray(parsed?.records) ? parsed.records.length : 0;
+            return { ledger: __normalizeReminderScheduleRecordLedger(parsed), sourceCount };
+        } catch (e) {
+            return { ledger: __normalizeReminderScheduleRecordLedger({}), sourceCount: 0 };
+        }
+    }
+    async function __saveReminderScheduleRecordLedger(ledger) {
+        try {
+            await __tomatoEnsureDir(PLUGIN_STORAGE_DIR);
+            return await __tomatoPutFileText(
+                REMINDER_DEVICE_SCHEDULE_RECORD_FILE,
+                JSON.stringify(__normalizeReminderScheduleRecordLedger(ledger), null, 2)
+            );
+        } catch (e) {
+            return false;
+        }
+    }
+    async function __retainReminderDeviceScheduleRecordsNow(blockId, reminderOrScheduleMap, reason, options = {}) {
+        const entityId = String(blockId || reminderOrScheduleMap?.blockId || '').trim();
+        if (!entityId) return false;
+        const rawMap = reminderOrScheduleMap?.notificationSchedules || reminderOrScheduleMap || {};
+        const scheduleMap = __sanitizeReminderNotificationSchedules(rawMap);
+        if (options?.includeLocalRegistry !== false) {
+            const localSchedule = __getReminderCurrentDeviceRegistrySchedule(entityId);
+            if (__hasValidReminderDeviceScheduleEntries(localSchedule)
+                && !__hasValidReminderDeviceScheduleEntries(scheduleMap[SYNC_DEVICE_ID])) {
+                scheduleMap[SYNC_DEVICE_ID] = __sanitizeReminderNotificationSchedules({ [SYNC_DEVICE_ID]: localSchedule })[SYNC_DEVICE_ID];
+            }
+        }
+        const occurrenceKeys = Array.from(new Set(
+            (Array.isArray(options?.occurrenceKeys) ? options.occurrenceKeys : [])
+                .map((key) => String(key || '').trim())
+                .filter(Boolean)
+        ));
+        if (occurrenceKeys.length > 0) {
+            const occurrenceSet = new Set(occurrenceKeys);
+            for (const [deviceId, schedule] of Object.entries(scheduleMap)) {
+                const entries = (Array.isArray(schedule?.entries) ? schedule.entries : []).filter((entry) => {
+                    const key = String(entry?.occurrenceKey || '').trim()
+                        || __reminderOccurrenceKey(entry?.dateKey, entry?.timeKey);
+                    return key && occurrenceSet.has(key);
+                });
+                if (entries.length > 0) scheduleMap[deviceId] = { ...schedule, entries };
+                else delete scheduleMap[deviceId];
+            }
+        }
+        const sourcePlanKey = String(options?.sourcePlanKey || '').trim();
+        const entrySignature = __getReminderScheduleRecordEntrySignature(scheduleMap);
+        const key = JSON.stringify([entityId, String(reason || '').trim(), sourcePlanKey, occurrenceKeys, entrySignature]);
+        const loaded = await __loadReminderScheduleRecordLedger();
+        if (loaded.ledger.records.some((record) => String(record?.key || '') === key)) {
+            if (loaded.sourceCount !== loaded.ledger.records.length) {
+                await __saveReminderScheduleRecordLedger(loaded.ledger);
+            }
+            return false;
+        }
+        const nowMs = Date.now();
+        loaded.ledger.records.push({
+            key,
+            entityId,
+            reason: String(reason || '').trim(),
+            sourcePlanKey,
+            retainedAt: new Date(nowMs).toISOString(),
+            retainedAtMs: nowMs,
+            expiresAt: new Date(nowMs + REMINDER_DEVICE_SCHEDULE_RECORD_RETENTION_MS).toISOString(),
+            expiresAtMs: nowMs + REMINDER_DEVICE_SCHEDULE_RECORD_RETENTION_MS,
+            occurrenceKeys,
+            notificationSchedules: scheduleMap,
+        });
+        return await __saveReminderScheduleRecordLedger(loaded.ledger);
+    }
+    async function __reconcileReminderScheduleRecordLedgerNow() {
+        const loaded = await __loadReminderScheduleRecordLedger();
+        let changed = loaded.sourceCount !== loaded.ledger.records.length;
+        if (isMobileDevice() && shouldPreferDeviceNotificationBackend()) {
+            const localRegistry = __getReminderDeviceScheduleRegistry();
+            for (const record of loaded.ledger.records) {
+                const current = record.notificationSchedules?.[SYNC_DEVICE_ID];
+                if (String(current?.canceledAt || '').trim()) continue;
+                const fallback = localRegistry[String(record.entityId || '').trim()];
+                const fallbackSourceSignature = String(fallback?.sourceSignature || '').trim();
+                const fallbackUpdatedAtMs = Date.parse(String(fallback?.updatedAt || '')) || 0;
+                const fallbackMatches = !!fallback && (
+                    (fallbackSourceSignature && fallbackSourceSignature === String(record.sourcePlanKey || '').trim())
+                    || (!fallbackSourceSignature && fallbackUpdatedAtMs <= Number(record.retainedAtMs || 0))
+                );
+                const source = __hasValidReminderDeviceScheduleEntries(current)
+                    ? current
+                    : (fallbackMatches ? fallback : null);
+                if (!__hasValidReminderDeviceScheduleEntries(source)) continue;
+                const occurrenceSet = new Set(record.occurrenceKeys || []);
+                const entries = __getValidReminderDeviceScheduleEntries(source).filter((entry) => {
+                    if (occurrenceSet.size === 0) return true;
+                    const key = String(entry?.occurrenceKey || '').trim()
+                        || __reminderOccurrenceKey(entry?.dateKey, entry?.timeKey);
+                    return !!key && occurrenceSet.has(key);
+                });
+                if (entries.length === 0) continue;
+                await __cancelReminderDeviceScheduleEntries(entries);
+                const canceledAt = new Date().toISOString();
+                record.notificationSchedules[SYNC_DEVICE_ID] = {
+                    ...(source || {}),
+                    clientKind: 'mobile',
+                    status: 'canceled',
+                    canceledAt,
+                    cancelReason: String(record.reason || 'remote-change').trim() || 'remote-change',
+                    entries,
+                };
+                changed = true;
+            }
+        }
+        if (changed) await __saveReminderScheduleRecordLedger(loaded.ledger);
+        return changed;
+    }
+    let __reminderScheduleRecordLedgerMutation = Promise.resolve();
+    const __queueReminderScheduleRecordLedgerMutation = (operation) => {
+        const run = __reminderScheduleRecordLedgerMutation.catch(() => {}).then(operation);
+        __reminderScheduleRecordLedgerMutation = run.catch(() => {});
+        return run;
+    };
+    async function __retainReminderDeviceScheduleRecords(blockId, reminderOrScheduleMap, reason, options = {}) {
+        return await __queueReminderScheduleRecordLedgerMutation(
+            () => __retainReminderDeviceScheduleRecordsNow(blockId, reminderOrScheduleMap, reason, options)
+        );
+    }
+    async function __reconcileReminderScheduleRecordLedger() {
+        return await __queueReminderScheduleRecordLedgerMutation(
+            () => __reconcileReminderScheduleRecordLedgerNow()
+        );
+    }
 
     const __listReminderOccurrencesForSubscription = async (options = {}) => {
         const startAt = Number(options?.startAt);
@@ -37819,6 +38359,7 @@ window.__setTomatoFloatState = function (payload) {
             const currentAttrs = resolvedReminder.attrs || {};
             const taskContext = await __getReminderTaskContext(reminderBlockId, currentAttrs);
             let currentReminder = null;
+            let scheduleRecordToRetain = null;
             try {
                 const currentRaw = currentAttrs['custom-tomato-reminder'];
                 if (currentRaw) currentReminder = __sanitizeReminderData(JSON.parse(currentRaw), { blockId: reminderBlockId, ...taskContext });
@@ -37850,6 +38391,13 @@ window.__setTomatoFloatState = function (payload) {
                         entries: Array.isArray(registrySchedule.entries) ? registrySchedule.entries.slice() : [],
                     });
                 }
+                if (currentReminder
+                    && __getReminderDevicePlanMutationSignature(currentReminder) !== __getReminderDevicePlanMutationSignature(reminderToSave)) {
+                    scheduleRecordToRetain = {
+                        reminder: currentReminder,
+                        sourcePlanKey: __getReminderDevicePlanMutationSignature(currentReminder),
+                    };
+                }
             }
             if (!options?.skipReminderScheduleSync && reminderToSave) {
                 try { await __reconcileReminderDeviceSchedule(reminderToSave, { silent: true }); } catch (e) {}
@@ -37862,6 +38410,16 @@ window.__setTomatoFloatState = function (payload) {
             };
             const setRes = await postJSON('/api/attr/setBlockAttrs', { id: reminderBlockId, attrs });
             if (setRes.ok && setRes.data?.code === 0) {
+                if (scheduleRecordToRetain) {
+                    try {
+                        await __retainReminderDeviceScheduleRecords(
+                            reminderBlockId,
+                            scheduleRecordToRetain.reminder,
+                            'reminder-edited',
+                            { sourcePlanKey: scheduleRecordToRetain.sourcePlanKey }
+                        );
+                    } catch (e) {}
+                }
                 if (!options?.skipTaskAttrUpdatedEvent) {
                     dispatchTomatoTaskAttrUpdated(attrContext, 'bookmark', '⏰');
                     dispatchTomatoTaskAttrUpdated(
@@ -37934,6 +38492,13 @@ window.__setTomatoFloatState = function (payload) {
                 }
             });
             if (setRes.ok && setRes.data?.code === 0) {
+                if (existingReminder) {
+                    try {
+                        await __retainReminderDeviceScheduleRecords(reminderId, existingReminder, 'reminder-deleted', {
+                            sourcePlanKey: __getReminderDevicePlanMutationSignature(existingReminder),
+                        });
+                    } catch (e) {}
+                }
                 dispatchTomatoTaskAttrUpdated(attrContext, 'bookmark', '');
                 dispatchTomatoTaskAttrUpdated(attrContext, 'custom-tomato-reminder', '');
                 try { __setReminderDeviceRegistryEntry(reminderId, null); } catch (e) {}
