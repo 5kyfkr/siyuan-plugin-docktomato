@@ -12,7 +12,7 @@ assert.match(recordBlock, /durationMin:\s*durationMinToSave,[\s\S]*durationSec:\
 assert.match(recordBlock, /taskBlockId:\s*shouldSaveTaskAssociation \? assocTaskBlockId : null/, 'history records must retain task association');
 assert.match(recordBlock, /databaseBlockId:\s*shouldSaveTaskAssociation \? assocDatabaseBlockId : null/, 'history records must retain database task association');
 assert.match(recordBlock, /sessionId:\s*recordSessionId/, 'history records must retain the pomodoro session ID');
-assert.match(recordBlock, /didSaveHistoryRecords = await saveHistoryRecords\(records\)[\s\S]*countDelta:\s*shouldUpdateTomatoCount \? 1 : 0/, 'actual tomato count updates must occur only after history persistence');
+assert.match(recordBlock, /didSaveHistoryRecords = await mutateHistoryRecords\(records =>[\s\S]*countDelta:\s*shouldUpdateTomatoCount \? 1 : 0/, 'actual tomato count updates must occur only after serialized history persistence');
 assert.doesNotMatch(recordBlock, /estimateAttrName|tomatoEstimateCount|custom-tomato-estimate-count/, 'estimated tomato count must not gate or alter history persistence');
 
 console.log('focus history contract tests passed');

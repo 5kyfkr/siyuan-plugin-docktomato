@@ -143,6 +143,7 @@
     const LEGACY_AUDIO_STORAGE_PATH = '/data/storage/tomato-audio/';
 
     const NEW_HISTORY_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-history.json`;
+    const HISTORY_STORAGE_DIR = `${PLUGIN_STORAGE_DIR}/history`;
     const NEW_SETTINGS_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-settings.json`;
     const NEW_FOCUS_TIME_SETTINGS_PATH = `${PLUGIN_STORAGE_DIR}/tomato-focus-settings.json`;
     const NEW_SYNC_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-sync.json`;
@@ -151,7 +152,6 @@
     const DEFAULT_LUMINA_CONFIG_PATH = '/data/storage/petal/siyuan-lumina/shuoshuo-config';
     const TOMATO_LUMINA_RECORD_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M232.49,55.51l-32-32a12,12,0,0,0-17,0l-96,96A12,12,0,0,0,84,128v32a12,12,0,0,0,12,12h32a12,12,0,0,0,8.49-3.51l96-96A12,12,0,0,0,232.49,55.51ZM192,49l15,15L196,75,181,60Zm-69,99H108V133l56-56,15,15Zm105-7.43V208a20,20,0,0,1-20,20H48a20,20,0,0,1-20-20V48A20,20,0,0,1,48,28h67.43a12,12,0,0,1,0,24H52V204H204V140.57a12,12,0,0,1,24,0Z"/></svg>';
 
-    let HISTORY_FILE_PATH = NEW_HISTORY_FILE_PATH;
     let SETTINGS_FILE_PATH = NEW_SETTINGS_FILE_PATH;
     let FOCUS_TIME_SETTINGS_PATH = NEW_FOCUS_TIME_SETTINGS_PATH;
     let SYNC_FILE_PATH = NEW_SYNC_FILE_PATH;
@@ -196,6 +196,15 @@
         const candidates = [normalized, `${normalized}/`];
         for (const candidate of candidates) {
             try {
+                const formData = new FormData();
+                formData.append('path', candidate);
+                formData.append('isDir', 'true');
+                formData.append('file', new Blob([''], { type: 'application/octet-stream' }));
+                const response = await fetch('/api/file/putFile', { method: 'POST', body: formData });
+                const result = await response.json().catch(() => null);
+                if (response.ok && result?.code === 0) return true;
+            } catch (e) {}
+            try {
                 const r = await postJSON('/api/file/mkdir', { path: candidate });
                 if (r?.ok && (r?.data == null || r?.data?.code === 0)) return true;
                 if (r?.data?.code === 0) return true;
@@ -224,15 +233,15 @@
         if (__tomatoEnsuredDirs.has(normalized)) return true;
         const parts = normalized.split('/').filter(Boolean);
         if (parts.length < 2) return false;
-        let ok = true;
         for (let i = 2; i <= parts.length; i++) {
             const seg = `/${parts.slice(0, i).join('/')}`;
+            if (__tomatoEnsuredDirs.has(seg)) continue;
             const created = await __tomatoMkdir(seg);
-            ok = ok && (created || true);
+            if (!created) return false;
             __tomatoEnsuredDirs.add(seg);
         }
         __tomatoEnsuredDirs.add(normalized);
-        return ok;
+        return true;
     }
 
     async function __tomatoReadDir(path) {
@@ -315,12 +324,6 @@
             return likelyTomatoSettings;
         };
 
-        const hasMeaningfulHistory = (text) => {
-            const arr = tryParseJson(text);
-            if (!Array.isArray(arr)) return false;
-            return arr.length > 0;
-        };
-
         const hasMeaningfulFocusSettings = (text) => {
             const obj = tryParseJson(text);
             if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
@@ -344,7 +347,6 @@
         };
 
         SETTINGS_FILE_PATH = await pick(LEGACY_SETTINGS_FILE_PATH, NEW_SETTINGS_FILE_PATH, hasMeaningfulSettings);
-        HISTORY_FILE_PATH = await pick(LEGACY_HISTORY_FILE_PATH, NEW_HISTORY_FILE_PATH, hasMeaningfulHistory);
         FOCUS_TIME_SETTINGS_PATH = await pick(LEGACY_FOCUS_TIME_SETTINGS_PATH, NEW_FOCUS_TIME_SETTINGS_PATH, hasMeaningfulFocusSettings);
         SYNC_FILE_PATH = await pick(LEGACY_SYNC_FILE_PATH, NEW_SYNC_FILE_PATH, hasMeaningfulSync);
 
@@ -406,6 +408,7 @@
 
     async function ensureTomatoStorageMigration() {
         await __tomatoSelectStoragePaths();
+        await migrateLegacyHistoryToYearShards();
     }
 
     async function cleanupTomatoFilesOnUninstall() {
@@ -446,6 +449,22 @@
         notificationSchedules: {},  // { [deviceId]: { id, timerKey, status, scheduledAtMs, dueAtMs, canceledAtMs, mode, delayInSeconds } }
         endDialog: null,  // {id,type,startAtMs,durationSec,endedAtMs,closed,closedAtMs,closedByDevice}
     };
+
+    function compareSyncStateVersions(stateA, stateB) {
+        if (!stateA || !stateB) return 0;
+        const sequenceDifference = Number(stateA.sequenceId || 0) - Number(stateB.sequenceId || 0);
+        if (sequenceDifference !== 0) return sequenceDifference;
+        return Number(stateA.lastModifiedTime || 0) - Number(stateB.lastModifiedTime || 0);
+    }
+
+    function shouldAcceptRemoteSyncState(remoteState, localState) {
+        if (!remoteState) return false;
+        if (!localState) return true;
+        const comparison = compareSyncStateVersions(remoteState, localState);
+        const isNewerFromOtherDevice = Number(remoteState.lastModifiedTime || 0) > Number(localState.lastModifiedTime || 0)
+            && remoteState.lastModifiedDevice !== SYNC_DEVICE_ID;
+        return comparison > 0 || (comparison < 0 && isNewerFromOtherDevice);
+    }
     
     // ========== 同步管理器 ==========
     // 负责多端同步的状态管理和冲突解决
@@ -467,24 +486,14 @@
             const cloudState = await this.loadFromCloud();
             let stateRestored = false;
             
-            if (cloudState) {
-                const isValidCloudState = cloudState.startTime && cloudState.status !== 'IDLE';
-                
-                if (isValidCloudState) {
-                    if (this.localState.status === 'IDLE' || !this.localState.startTime) {
-                        this.localState = cloudState;
-                        stateRestored = true;
-                        Logger.info('🔄 SyncManager: 从云端恢复状态', {
-                            status: cloudState.status,
-                            mode: cloudState.mode,
-                            sequenceId: cloudState.sequenceId
-                        });
-                    } else if (this.compareStates(cloudState, this.localState) > 0) {
-                        this.localState = cloudState;
-                        stateRestored = true;
-                        Logger.info('🔄 SyncManager: 从云端恢复状态（序列号更高）');
-                    }
-                }
+            if (shouldAcceptRemoteSyncState(cloudState, this.localState)) {
+                this.localState = cloudState;
+                stateRestored = cloudState.status !== 'IDLE';
+                Logger.info('🔄 SyncManager: 从云端恢复更新状态', {
+                    status: cloudState.status,
+                    mode: cloudState.mode,
+                    sequenceId: cloudState.sequenceId
+                });
             }
             
             if (this.onStateChange) {
@@ -633,21 +642,19 @@
         },
         
         compareStates(stateA, stateB) {
-            if (!stateA || !stateB) return 0;
-            
-            // 🔧 v9.0 修复：优先比较 sequenceId，但如果相等则比较 lastModifiedTime
-            const seqDiff = (stateA.sequenceId || 0) - (stateB.sequenceId || 0);
-            if (seqDiff !== 0) return seqDiff;
-            
-            // sequenceId 相等时，比较 lastModifiedTime
-            return (stateA.lastModifiedTime || 0) - (stateB.lastModifiedTime || 0);
+            return compareSyncStateVersions(stateA, stateB);
         },
 
         async updateLocal(newState, forcePush = true, forceSync = false) {
-            const hasActualChange = this.checkStateChanged(this.localState, newState);
+            const wasUninitialized = !this.localState || typeof this.localState !== 'object';
+            if (wasUninitialized) {
+                this.localState = { ...syncState };
+            }
+            const hasActualChange = wasUninitialized || this.checkStateChanged(this.localState, newState);
 
-            const oldSequenceId = this.localState.sequenceId;
+            const oldSequenceId = Number(this.localState.sequenceId || 0);
             this.localState = { ...this.localState, ...newState };
+            this.localState.sequenceId = Number(this.localState.sequenceId || 0);
 
             this.localState.lastModifiedDevice = SYNC_DEVICE_ID;
             this.localState.lastModifiedTime = Date.now();
@@ -658,7 +665,7 @@
 
             Logger.debug('🔄 SyncManager: 本地状态更新，sequenceId:', this.localState.sequenceId);
 
-            if (forcePush) {
+            if (forcePush && isSyncEnabled()) {
                 await this.saveToCloud(null, forceSync);
             }
 
@@ -711,109 +718,16 @@
         
         async applyRemote(remoteState) {
             if (!remoteState) return this.localState;
-
-            // 🔧 新增：处理远端处于 IDLE 状态的情况
-            // 如果远端是 IDLE 且本地正在运行，说明远端重置了，需要同步停止
-            if (remoteState.status === 'IDLE' && this.localState.status === 'RUNNING') {
-                Logger.info('🔄 SyncManager: 远端已重置（IDLE），同步停止本地计时器');
-                
-                if (this.pollTimer) {
-                    clearInterval(this.pollTimer);
-                    this.pollTimer = null;
-                }
-                
-                this.localState = {
-                    ...this.localState,
-                    status: 'IDLE',
-                    startTime: null,
-                    stopwatchStartTimeMs: null,
-                    pausedElapsedSeconds: null,
-                    pausedIntervals: [],
-                    currentPauseStart: null,
-                    sequenceId: remoteState.sequenceId,
-                    lastModifiedDevice: remoteState.lastModifiedDevice,
-                    lastModifiedTime: remoteState.lastModifiedTime
-                };
-                
-                if (this.onStateChange) {
-                    this.onStateChange(this.localState);
-                }
-                
-                return this.localState;
-            }
-
-            if (remoteState.status === 'RUNNING' && remoteState.startTime > 0) {
-                // 🔧 新增：检查是否应该忽略异常过期的正计时
-                // 场景：设备休眠期间，其他设备产生了新记录，说明本地的正计时是"卡住"的
-                const shouldHandleExpired = await this.checkShouldHandleExpiredStopwatch(remoteState);
-                if (!shouldHandleExpired) {
-                    Logger.info('🔄 SyncManager: 检测到异常过期（设备休眠期间其他设备有活动），忽略此计时');
-                    remoteState.status = 'IDLE';
-                    remoteState.startTime = null;
-                    remoteState.stopwatchStartTimeMs = null;
-                    remoteState.pausedElapsedSeconds = 0;
-                    remoteState.pausedIntervals = [];
-                    remoteState.currentPauseStart = null;
-                } else {
-                    // 🔧 修复：正计时模式使用 elapsed 判断，最长 16 小时
-                    const isStopwatchMode = remoteState.mode === 'stopwatch' || remoteState.mode === 'stopwatch-break';
-                    if (isStopwatchMode) {
-                        const elapsed = StateCalculator.calculateElapsed(remoteState);
-                        if (elapsed >= CONFIG.MAX_STOPWATCH_SECONDS) {
-                            remoteState.status = 'COMPLETED';
-                            Logger.info('🔄 SyncManager: 检测到远端正计时已过期，标记为完成');
-                        }
-                    }
-                }
-            }
-
-            const comparison = this.compareStates(remoteState, this.localState);
-            
-            // 🔧 v9.0 修复：如果远端 lastModifiedTime 更新，即使 sequenceId 更低也应该接受
-            const remoteIsNewer = (remoteState.lastModifiedTime || 0) > (this.localState.lastModifiedTime || 0);
-            const shouldAcceptRemote = comparison > 0 || (comparison < 0 && remoteIsNewer && remoteState.lastModifiedDevice !== SYNC_DEVICE_ID);
-            
-            if (shouldAcceptRemote) {
-                if (this.localState.status === 'RUNNING' && remoteState.status === 'RUNNING') {
-                    // 🔧 修复：如果两边都在运行，且是同一设备发起的，只更新状态不触发回调
-                    if (remoteState.lastModifiedDevice === SYNC_DEVICE_ID) {
-                        this.localState = remoteState;
-                        return this.localState;
-                    }
-                    // 🔧 v9.0 修复：两边都在运行但不是同一设备时，应该触发回调更新UI
-                    this.localState = remoteState;
-                    if (this.onStateChange) {
-                        this.onStateChange(this.localState);
-                    }
-                    return this.localState;
-                }
-                
+            const comparison = compareSyncStateVersions(remoteState, this.localState);
+            const remoteIsNewer = Number(remoteState.lastModifiedTime || 0) > Number(this.localState?.lastModifiedTime || 0);
+            if (shouldAcceptRemoteSyncState(remoteState, this.localState)) {
                 this.localState = remoteState;
-                
                 if (this.onStateChange) {
                     this.onStateChange(this.localState);
                 }
-                
-                return this.localState;
             } else if (comparison < 0 && !remoteIsNewer) {
-                // 只有当本地确实更新时才上传
                 await this.saveToCloud();
-            } else {
-                // 🔧 修复：sequenceId 相同时，如果是本地设备发起的更新，跳过
-                if (remoteState.lastModifiedDevice === SYNC_DEVICE_ID) {
-                    this.localState = remoteState;
-                    return this.localState;
-                }
-                
-                if (remoteState.lastModifiedTime > this.localState.lastModifiedTime) {
-                    this.localState = remoteState;
-                    
-                    if (this.onStateChange) {
-                        this.onStateChange(this.localState);
-                    }
-                }
             }
-            
             return this.localState;
         },
         
@@ -888,84 +802,6 @@
         
         isPaused() {
             return this.localState?.status === 'PAUSED';
-        },
-
-        /**
-         * 🔧 新增：检查是否应该处理过期的正计时
-         * 场景：设备休眠期间，其他设备产生了新记录，说明本地的正计时是"卡住"的
-         * 返回 true = 正常处理（生成记录），false = 忽略（不生成记录）
-         */
-        async checkShouldHandleExpiredStopwatch(remoteState) {
-            // 只针对正计时模式
-            const isStopwatchMode = remoteState.mode === 'stopwatch' || remoteState.mode === 'stopwatch-break';
-            if (!isStopwatchMode) {
-                return true;
-            }
-
-            const elapsed = StateCalculator.calculateElapsed(remoteState);
-            const MAX_STOPWATCH_SECONDS = CONFIG.MAX_STOPWATCH_SECONDS;
-
-            // 如果没有超过最大值，正常处理
-            if (elapsed < MAX_STOPWATCH_SECONDS) {
-                return true;
-            }
-
-            // 超过最大值，检查是否应该忽略
-            try {
-                const allRecords = await loadHistoryRecords();
-                if (!Array.isArray(allRecords) || allRecords.length === 0) {
-                    return true;
-                }
-
-                const startTime = Number(remoteState.startTime || 0);
-                const remoteDeviceId = remoteState.lastModifiedDevice;
-                const startMs = startTime;
-
-                // 查找在正计时开始时间之后产生的记录
-                const newRecordsAfterStart = allRecords.filter(r => {
-                    const recordEndMs = new Date(r.end).getTime();
-                    const recordDeviceId = r.syncDeviceId || r.deviceId;
-
-                    // 条件：记录结束时间在正计时开始时间之后
-                    return recordEndMs > startMs;
-                });
-
-                if (newRecordsAfterStart.length === 0) {
-                    return true;
-                }
-
-                // 检查是否有其他设备的记录
-                const otherDeviceRecords = newRecordsAfterStart.filter(r => {
-                    const recordDeviceId = r.syncDeviceId || r.deviceId;
-                    // 如果记录没有设备标识，或者设备ID不同，视为其他设备
-                    return !recordDeviceId || recordDeviceId !== remoteDeviceId;
-                });
-
-                if (otherDeviceRecords.length > 0) {
-                    Logger.info('🔄 SyncManager: 发现其他设备在正计时期间的新记录，忽略过期计时:', {
-                        otherDeviceRecordsCount: otherDeviceRecords.length,
-                        stopwatchStartTime: new Date(startTime).toLocaleString(),
-                        recordsFromDevices: [...new Set(newRecordsAfterStart.map(r => r.syncDeviceId || r.deviceId || 'unknown'))]
-                    });
-                    return false;
-                }
-
-                // 都是同一设备的记录，检查时间间隔是否合理
-                const lastRecord = newRecordsAfterStart[newRecordsAfterStart.length - 1];
-                const lastRecordEndMs = new Date(lastRecord.end).getTime();
-                const gapHours = (startMs - lastRecordEndMs) / (1000 * 60 * 60);
-
-                // 如果上一个记录结束和这个正计时开始间隔超过8小时，视为异常
-                if (gapHours > 8) {
-                    Logger.info('🔄 SyncManager: 正计时与上一个记录间隔超过8小时，忽略:', gapHours);
-                    return false;
-                }
-
-                return true;
-            } catch (e) {
-                Logger.warn('🔄 SyncManager: 检查过期计时时出错，使用默认处理:', e.message);
-                return true;
-            }
         },
 
         destroy() {
@@ -1087,15 +923,16 @@
         }
     };
 
-    function getExpiredCountdownSnapshot(state, nowMs = Date.now()) {
+    function getExpiredTimerSnapshot(state, nowMs = Date.now()) {
         if (!state || typeof state !== 'object') return null;
         const mode = String(state.mode || '').trim();
-        if (mode !== 'countdown' && mode !== 'break') return null;
+        const isStopwatchMode = mode === 'stopwatch' || mode === 'stopwatch-break';
+        if (!isStopwatchMode && mode !== 'countdown' && mode !== 'break') return null;
         const status = String(state.status || '').trim();
         if (status !== 'RUNNING' && status !== 'COMPLETED') return null;
 
-        const startTimeMs = Number(state.startTime);
-        const durationSec = Number(state.duration);
+        const startTimeMs = Number(isStopwatchMode ? (state.stopwatchStartTimeMs || state.startTime) : state.startTime);
+        const durationSec = isStopwatchMode ? CONFIG.MAX_STOPWATCH_SECONDS : Number(state.duration);
         const currentTimeMs = Number(nowMs);
         if (!Number.isFinite(startTimeMs) || startTimeMs <= 0) return null;
         if (!Number.isFinite(durationSec) || durationSec <= 0) return null;
@@ -1104,7 +941,7 @@
         const pausedMs = StateCalculator.calculateTotalPausedTime(state.pausedIntervals || []);
         const dueAtMs = startTimeMs + durationSec * 1000 + pausedMs;
         if (currentTimeMs < dueAtMs) return null;
-        return { mode, startTimeMs, durationSec, dueAtMs };
+        return { mode, startTimeMs, durationSec, dueAtMs, isStopwatchMode };
     }
 
     let lastKnownHistoryMaxEndMinute = null;
@@ -1194,15 +1031,7 @@
 
     function invalidateHistoryReadCache() {
         try {
-            if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map && HISTORY_FILE_PATH) {
-                const key = String(HISTORY_FILE_PATH);
-                if (__tomatoFileTextCache.has(key)) {
-                    __tomatoFileTextCache.delete(key);
-                }
-            }
-        } catch (e) {}
-        try {
-            __tomatoHistoryParseCache = { source: '', raw: '', records: null, recordsAll: null };
+            invalidateHistoryStoreCache();
         } catch (e) {}
     }
 
@@ -1213,7 +1042,7 @@
             }
         } catch (e) {}
         try {
-            __tomatoHistoryParseCache = { source: '', raw: '', records: null, recordsAll: null };
+            invalidateHistoryStoreCache();
         } catch (e) {}
     }
 
@@ -1390,7 +1219,7 @@
                 }
             } catch (e) {}
             try {
-                await finalizeExpiredCountdownIfNeeded(`resume-${normalizedSource}`, syncState);
+                await finalizeExpiredTimerIfNeeded(`resume-${normalizedSource}`, syncState);
             } catch (e) {
                 Logger.warn('🍅 恢复窗口时补完成失败:', e);
             }
@@ -1510,7 +1339,7 @@
             startTime = syncState.startTime;
         }
 
-        if (timerMode === 'stopwatch') {
+        if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
             const syncedStart = syncState.stopwatchStartTimeMs || syncState.startTime || 0;
             if (syncedStart) {
                 stopwatchStartTimeMs = syncedStart;
@@ -1579,6 +1408,34 @@
         if (syncState.status === 'RUNNING') {
             window.__tomatoPausedColor = null;
         }
+    }
+
+    function applyAcceptedSyncStateToTimer(state) {
+        if (!state || typeof state !== 'object') return;
+        syncState = state;
+        updateFromSyncState();
+        isRunning = state.status === 'RUNNING';
+        isTimerPaused = state.status === 'PAUSED';
+
+        const isStopwatchMode = timerMode === 'stopwatch' || timerMode === 'stopwatch-break';
+        const syncedStartTimeMs = Number(isStopwatchMode
+            ? (state.stopwatchStartTimeMs || state.startTime)
+            : state.startTime) || 0;
+        if (syncedStartTimeMs > 0) {
+            startTime = syncedStartTimeMs;
+            if (isStopwatchMode) {
+                stopwatchStartTimeMs = syncedStartTimeMs;
+                stopwatchStartTimestamp = new Date(syncedStartTimeMs).toISOString();
+                stopwatchSegmentStartTimeMs = syncedStartTimeMs;
+                stopwatchSegmentStartTimestamp = stopwatchStartTimestamp;
+                pausedRemainingSeconds = isTimerPaused ? elapsedSeconds : null;
+            } else {
+                currentStartTimeMs = syncedStartTimeMs;
+                currentStartTimestamp = new Date(syncedStartTimeMs).toISOString();
+                pausedRemainingSeconds = isTimerPaused ? remainingSeconds : null;
+            }
+        }
+        currentPauseStart = isTimerPaused ? Number(state.currentPauseStart || 0) || null : null;
     }
     
     // ========== 正计时模式专用状态 ==========
@@ -3418,10 +3275,14 @@
         const normalized = normalizeLuminaRecordEntry(entry);
         if (!normalized.content) return;
         try {
-            const records = await loadHistoryRecords({ all: true });
-            const coverIdx = findHistoryRecordCoveringTimestamp(records, normalized.createdAt);
-            if (coverIdx >= 0 && appendLuminaRecordToHistoryRecord(records[coverIdx], normalized)) {
-                await saveHistoryRecords(records);
+            let attached = false;
+            await mutateHistoryRecords(records => {
+                const coverIdx = findHistoryRecordCoveringTimestamp(records, normalized.createdAt);
+                if (coverIdx < 0) return false;
+                attached = appendLuminaRecordToHistoryRecord(records[coverIdx], normalized);
+                return attached;
+            });
+            if (attached) {
                 markTimelineHistoryDirty();
                 await refreshHistoryDialogIfOpen();
                 return;
@@ -3435,8 +3296,10 @@
                 });
                 return;
             }
-            records.push(createLuminaOnlyHistoryRecord(normalized));
-            await saveHistoryRecords(records);
+            await mutateHistoryRecords(records => {
+                records.push(createLuminaOnlyHistoryRecord(normalized));
+                return true;
+            });
             markTimelineHistoryDirty();
             await refreshHistoryDialogIfOpen();
         } catch (e) {
@@ -3535,29 +3398,21 @@
         }
         
         try {
-            const records = await loadHistoryRecords();
-            const recordIndex = records.findIndex(r => r.timestamp === ts);
-            
-            if (recordIndex < 0) {
+            let updatedRecord = null;
+            const changed = await mutateHistoryRecords(records => {
+                const recordIndex = records.findIndex(r => r.timestamp === ts);
+                if (recordIndex < 0) return false;
+                const record = records[recordIndex];
+                if (record.mode !== 'countdown' && record.mode !== 'stopwatch') return false;
+                record.distractionCount = parseInt(record.distractionCount || '0', 10) + 1;
+                updatedRecord = record;
+                return true;
+            });
+            if (!changed || !updatedRecord) {
                 showMiniToast('未找到对应记录');
                 return false;
             }
-            
-            const record = records[recordIndex];
-            // 只允许为番茄钟和正计时记录分心
-            if (record.mode !== 'countdown' && record.mode !== 'stopwatch') {
-                showMiniToast('该记录类型不支持添加分心');
-                return false;
-            }
-            
-            // 增加分心数量
-            const currentDistraction = parseInt(record.distractionCount || '0', 10);
-            record.distractionCount = currentDistraction + 1;
-            
-            // 保存
-            await saveHistoryRecords(records);
-            
-            showMiniToast(`已为记录添加分心（${record.distractionCount} 次）`);
+            showMiniToast(`已为记录添加分心（${updatedRecord.distractionCount} 次）`);
             
             // 刷新时间轴显示
             try {
@@ -3709,174 +3564,295 @@
     }
 
     // ========== 历史记录管理 ==========
-    let __tomatoHistoryParseCache = {
-        source: '',
-        raw: '',
-        records: null,
-        recordsAll: null
-    };
+    let __tomatoHistoryParseCache = { source: '', recordsAll: null };
     let __tomatoHistoryLoadPromise = null;
-    let __tomatoHistoryLoadPromiseAll = null;
+    let __tomatoHistoryMutationQueue = Promise.resolve();
     const HISTORY_LOCAL_STORAGE_KEY = 'siyuan-tomato-history';
     const HISTORY_LOCAL_FALLBACK_META_KEY = 'siyuan-tomato-history-fallback-meta';
-
-    function getHistoryRecordsFreshness(records) {
-        const list = Array.isArray(records) ? records : [];
-        let maxMs = 0;
-        for (const r of list) {
-            const ms = toDateSafe(r?.end || r?.start)?.getTime?.() || Number(r?.timestamp || 0) || 0;
-            if (Number.isFinite(ms) && ms > maxMs) maxMs = ms;
-        }
-        return { count: list.length, maxMs };
+    function normalizeHistoryRecords(records) {
+        return (Array.isArray(records) ? records : []).map(record => {
+            if (record?.date) {
+                record.date = normalizeLegacyDate(record.date);
+            } else if (record?.start) {
+                const date = toDateSafe(record.end || record.start);
+                if (Number.isFinite(date.getTime())) record.date = formatDateKey(date);
+            }
+            if (record?.end) {
+                const end = toDateSafe(record.end);
+                if (Number.isFinite(end.getTime())) record.timePeriod = getTimePeriod(end.getHours());
+            }
+            return record;
+        });
     }
 
-    function shouldPreferLocalHistoryRecords(localRecords, fileRecords, hasFallbackMeta) {
-        if (!Array.isArray(localRecords) || localRecords.length === 0) return false;
-        if (hasFallbackMeta) return true;
-        const localFresh = getHistoryRecordsFreshness(localRecords);
-        const fileFresh = getHistoryRecordsFreshness(fileRecords);
-        return localFresh.count >= fileFresh.count && localFresh.maxMs > fileFresh.maxMs;
+    function getHistoryRecordStorageYear(record) {
+        const storedDate = String(record?.date || '').trim();
+        const storedYear = storedDate.match(/^(\d{4})-/)?.[1] || '';
+        if (storedYear) return storedYear;
+        for (const value of [record?.end, record?.timestamp, record?.start]) {
+            const date = toDateSafe(value);
+            const year = date.getFullYear();
+            if (Number.isFinite(date.getTime()) && year >= 1000 && year <= 9999) return String(year);
+        }
+        return 'unknown';
+    }
+
+    function groupHistoryRecordsByYear(records) {
+        const grouped = new Map();
+        for (const record of Array.isArray(records) ? records : []) {
+            const year = getHistoryRecordStorageYear(record);
+            if (!grouped.has(year)) grouped.set(year, []);
+            grouped.get(year).push(record);
+        }
+        return grouped;
+    }
+
+    async function readHistoryJsonFileStrict(path) {
+        const response = await fetch('/api/file/getFile', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path }),
+        });
+        if (!response.ok) throw new Error(`读取历史文件失败: ${path}`);
+        const text = await response.text();
+        if (!String(text || '').trim()) throw new Error(`历史文件为空: ${path}`);
+        const parsed = JSON.parse(String(text));
+        if (!Array.isArray(parsed)) throw new Error(`历史文件格式错误: ${path}`);
+        return normalizeHistoryRecords(parsed);
+    }
+
+    async function readOptionalHistoryJsonFileStrict(path) {
+        const response = await fetch('/api/file/getFile', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path }),
+        });
+        if (response.status === 404) return [];
+        if (!response.ok) throw new Error(`读取旧历史文件失败: ${path}`);
+        const text = await response.text();
+        const parsed = safeJsonParse(String(text || ''));
+        if (parsed && !Array.isArray(parsed) && typeof parsed.code === 'number') {
+            const message = String(parsed.msg || '').toLowerCase();
+            if (parsed.code !== 0 && (message.includes('not exist') || message.includes('not found') || message.includes('no such file') || message.includes('不存在'))) return [];
+        }
+        if (!Array.isArray(parsed)) throw new Error(`旧历史文件格式错误: ${path}`);
+        return normalizeHistoryRecords(parsed);
+    }
+
+    async function listHistoryShardNames() {
+        const result = await postJSON('/api/file/readDir', { path: HISTORY_STORAGE_DIR });
+        if (!result?.ok || result?.data?.code !== 0) throw new Error('读取历史目录失败');
+        const payload = result.data?.data;
+        const entries = Array.isArray(payload)
+            ? payload
+            : (Array.isArray(payload?.files) ? payload.files
+                : (Array.isArray(payload?.items) ? payload.items
+                    : (Array.isArray(payload?.children) ? payload.children : [])));
+        return entries.map(entry => String(entry?.name || entry?.path || '').split('/').pop())
+            .filter(name => /^(?:\d{4}|unknown)\.json$/.test(name))
+            .sort();
+    }
+
+    function invalidateHistoryStoreCache() {
+        __tomatoHistoryParseCache = { source: '', recordsAll: null };
+        __tomatoHistoryLoadPromise = null;
+        try {
+            for (const key of __tomatoFileTextCache.keys()) {
+                if (String(key).startsWith(`${HISTORY_STORAGE_DIR}/`)) __tomatoFileTextCache.delete(key);
+            }
+        } catch (e) {}
+    }
+
+    async function readAllHistoryShardRecords(options = {}) {
+        if (options?.force === true) invalidateHistoryStoreCache();
+        if (__tomatoHistoryParseCache?.source === 'shards' && Array.isArray(__tomatoHistoryParseCache.recordsAll)) {
+            return __tomatoHistoryParseCache.recordsAll;
+        }
+        if (!await __tomatoEnsureDir(HISTORY_STORAGE_DIR)) throw new Error('创建历史目录失败');
+        const names = await listHistoryShardNames();
+        const chunks = await Promise.all(names.map(name => readHistoryJsonFileStrict(`${HISTORY_STORAGE_DIR}/${name}`)));
+        const records = chunks.flat();
+        __tomatoHistoryParseCache = { source: 'shards', recordsAll: records };
+        return records;
     }
 
     async function loadHistoryRecords(options = {}) {
-        const all = options?.all === true;
-        if (all) {
-            if (__tomatoHistoryLoadPromiseAll) return __tomatoHistoryLoadPromiseAll;
-        } else {
-            if (__tomatoHistoryLoadPromise) return __tomatoHistoryLoadPromise;
-        }
+        if (options?.force !== true && __tomatoHistoryLoadPromise) return __tomatoHistoryLoadPromise;
         const promise = (async () => {
-            const normalizeRecords = (records) => {
-                const list = Array.isArray(records) ? records : [];
-                const mapped = list.map(record => {
-                    if (record && record.end) {
-                        record.date = formatDateKey(record.end);
-                        record.timePeriod = getTimePeriod(toDateSafe(record.end).getHours());
-                    }
-                    if (record?.date) {
-                        record.date = normalizeLegacyDate(record.date);
-                    } else if (record?.start) {
-                        record.date = formatDateKey(record.end || record.start);
-                    }
-                    return record;
-                });
-                if (all) return mapped;
-                const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
-                return mapped.filter(r => {
-                    try { return toDateSafe(r.end || r.start).getTime() >= oneYearAgo; } catch (e) { return false; }
-                });
-            };
-
             try {
-                const r = await __tomatoGetFileText(HISTORY_FILE_PATH);
-                const text = r?.exists ? (r.text ?? '') : '';
-                const raw = String(text || '');
-                if (raw.trim()) {
-                    if (__tomatoHistoryParseCache?.source === 'file' && __tomatoHistoryParseCache?.raw === raw) {
-                        const cached = all ? __tomatoHistoryParseCache?.recordsAll : __tomatoHistoryParseCache?.records;
-                        if (Array.isArray(cached)) return cached;
-                    }
+                const hasFallbackMeta = !!localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+                if (hasFallbackMeta) {
+                    const raw = String(localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY) || '[]');
                     const parsed = JSON.parse(raw);
-                    const normalized = normalizeRecords(parsed);
-                    try {
-                        const localRaw = String(localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY) || '');
-                        const hasFallbackMeta = !!localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
-                        if (localRaw.trim()) {
-                            const localParsed = JSON.parse(localRaw);
-                            const localNormalized = normalizeRecords(localParsed);
-                            if (shouldPreferLocalHistoryRecords(localNormalized, normalized, hasFallbackMeta)) {
-                                __tomatoHistoryParseCache = all
-                                    ? { source: 'localStorage', raw: localRaw, records: __tomatoHistoryParseCache?.records || null, recordsAll: localNormalized }
-                                    : { source: 'localStorage', raw: localRaw, records: localNormalized, recordsAll: __tomatoHistoryParseCache?.recordsAll || null };
-                                return localNormalized;
-                            }
-                        }
-                    } catch (e) {}
-                    __tomatoHistoryParseCache = all
-                        ? { source: 'file', raw, records: __tomatoHistoryParseCache?.records || null, recordsAll: normalized }
-                        : { source: 'file', raw, records: normalized, recordsAll: __tomatoHistoryParseCache?.recordsAll || null };
-                    return normalized;
+                    if (!Array.isArray(parsed)) throw new Error('本地历史回退数据格式错误');
+                    return normalizeHistoryRecords(parsed);
                 }
             } catch (e) {
-                Logger.warn('读取历史记录失败:', e.message);
+                Logger.warn('读取本地历史回退数据失败:', e.message);
             }
-
-            try {
-                const raw = String(localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY) || '');
-                if (!raw.trim()) return [];
-                if (__tomatoHistoryParseCache?.source === 'localStorage' && __tomatoHistoryParseCache?.raw === raw) {
-                    const cached = all ? __tomatoHistoryParseCache?.recordsAll : __tomatoHistoryParseCache?.records;
-                    if (Array.isArray(cached)) return cached;
-                }
-                const parsed = JSON.parse(raw);
-                const normalized = normalizeRecords(parsed);
-                __tomatoHistoryParseCache = all
-                    ? { source: 'localStorage', raw, records: __tomatoHistoryParseCache?.records || null, recordsAll: normalized }
-                    : { source: 'localStorage', raw, records: normalized, recordsAll: __tomatoHistoryParseCache?.recordsAll || null };
-                return normalized;
-            } catch (e) {
-                return [];
-            }
+            return readAllHistoryShardRecords(options);
         })();
-        if (all) __tomatoHistoryLoadPromiseAll = promise;
-        else __tomatoHistoryLoadPromise = promise;
+        __tomatoHistoryLoadPromise = promise;
 
         try {
             return await promise;
         } finally {
-            if (all) __tomatoHistoryLoadPromiseAll = null;
-            else __tomatoHistoryLoadPromise = null;
+            if (__tomatoHistoryLoadPromise === promise) __tomatoHistoryLoadPromise = null;
         }
     }
 
-    async function saveHistoryRecords(records) {
-        if (!records || !Array.isArray(records)) {
-            Logger.error('保存失败：记录数据无效');
-            return false;
+    async function writeHistoryShardSet(records) {
+        if (!await __tomatoEnsureDir(HISTORY_STORAGE_DIR)) throw new Error('创建历史目录失败');
+        const grouped = groupHistoryRecordsByYear(records);
+        const existingNames = await listHistoryShardNames();
+        const targetNames = new Set();
+        for (const [year, yearRecords] of grouped) {
+            const name = `${year}.json`;
+            targetNames.add(name);
+            const path = `${HISTORY_STORAGE_DIR}/${name}`;
+            const data = JSON.stringify(yearRecords, null, 2);
+            const current = await __tomatoGetFileText(path);
+            if (current?.exists && String(current.text || '') === data) continue;
+            const ok = await __tomatoPutFileText(path, data);
+            if (!ok) throw new Error(`保存历史文件失败: ${name}`);
         }
-        
-        const dataToSave = JSON.stringify(records, null, 2);
-        
-        try {
-            try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
-            const formData = new FormData();
-            formData.append("path", HISTORY_FILE_PATH);
-            formData.append("isDir", false);
-            formData.append("file", new Blob([dataToSave], { type: 'application/json' }));
-            
-            const response = await fetch("/api/file/putFile", { method: "POST", body: formData });
-            const result = await response.json();
-            
-            if (result && result.code === 0) {
-                // 🔧 修复：保存成功后清除缓存，确保下次读取的是最新数据
-                if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map && HISTORY_FILE_PATH) {
-                    const historyFileKey = String(HISTORY_FILE_PATH);
-                    if (__tomatoFileTextCache.has(historyFileKey)) {
-                        __tomatoFileTextCache.delete(historyFileKey);
-                        Logger.debug('🍅 保存历史记录后已清除缓存');
-                    }
-                }
-                __tomatoHistoryParseCache = { source: '', raw: '', records: null, recordsAll: null };
-                try {
-                    localStorage.removeItem(HISTORY_LOCAL_STORAGE_KEY);
-                    localStorage.removeItem(HISTORY_LOCAL_FALLBACK_META_KEY);
-                } catch (e) {}
-                try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'file' } })); } catch (e) {}
-                return true;
-            } else {
-                throw new Error('思源API保存失败');
+        for (const name of existingNames) {
+            if (!targetNames.has(name)) {
+                const removed = await __tomatoRemoveFile(`${HISTORY_STORAGE_DIR}/${name}`, false);
+                if (!removed) throw new Error(`删除历史文件失败: ${name}`);
             }
+        }
+        invalidateHistoryStoreCache();
+        return true;
+    }
+
+    function queueHistoryOperation(operation) {
+        const queued = __tomatoHistoryMutationQueue.then(operation, operation);
+        __tomatoHistoryMutationQueue = queued.catch(() => {});
+        return queued;
+    }
+
+    async function persistHistoryRecords(records) {
+        const dataToSave = JSON.stringify(records, null, 2);
+        const isRecoveringFallback = !!localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+        try {
+            await writeHistoryShardSet(records);
+            if (isRecoveringFallback) {
+                if (!await verifyHistoryMigration(records)) throw new Error('历史后备恢复校验失败');
+                if (!await clearLegacyHistorySources()) throw new Error('历史后备恢复后清空旧数据失败');
+            }
+            localStorage.removeItem(HISTORY_LOCAL_STORAGE_KEY);
+            localStorage.removeItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+            try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'file' } })); } catch (e) {}
+            return true;
         } catch (fileError) {
             try {
                 localStorage.setItem(HISTORY_LOCAL_STORAGE_KEY, dataToSave);
                 localStorage.setItem(HISTORY_LOCAL_FALLBACK_META_KEY, JSON.stringify({ updatedAt: Date.now() }));
-                __tomatoHistoryParseCache = { source: '', raw: '', records: null, recordsAll: null };
+                invalidateHistoryStoreCache();
                 try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'localStorage' } })); } catch (e) {}
                 return true;
             } catch (localError) {
                 Logger.error('保存到localStorage也失败:', localError);
                 return false;
             }
+        }
+    }
+
+    async function replaceAllHistoryRecords(records) {
+        if (!Array.isArray(records)) {
+            Logger.error('保存失败：记录数据无效');
+            return false;
+        }
+        return queueHistoryOperation(() => persistHistoryRecords(records));
+    }
+
+    async function mutateHistoryRecords(mutator) {
+        return queueHistoryOperation(async () => {
+            const records = await loadHistoryRecords({ force: true });
+            const result = await mutator(records);
+            if (result === false) return false;
+            const saved = await persistHistoryRecords(records);
+            return saved ? result : false;
+        });
+    }
+
+    function mergeUniqueHistoryRecords(...sources) {
+        const records = [];
+        const seen = new Set();
+        for (const source of sources) {
+            for (const record of normalizeHistoryRecords(Array.isArray(source) ? source : [])) {
+                const key = JSON.stringify(Object.keys(record || {}).sort().reduce((result, field) => {
+                    result[field] = record[field];
+                    return result;
+                }, {}));
+                if (seen.has(key)) continue;
+                seen.add(key);
+                records.push(record);
+            }
+        }
+        return records;
+    }
+
+    async function verifyHistoryMigration(expectedRecords) {
+        const actualRecords = await readAllHistoryShardRecords({ force: true });
+        const expected = expectedRecords.map(record => JSON.stringify(record)).sort();
+        const actual = actualRecords.map(record => JSON.stringify(record)).sort();
+        return expected.length === actual.length && expected.every((value, index) => value === actual[index]);
+    }
+
+    async function clearLegacyHistorySources() {
+        const legacyCleared = await __tomatoPutFileText(LEGACY_HISTORY_FILE_PATH, '[]');
+        const currentCleared = await __tomatoPutFileText(NEW_HISTORY_FILE_PATH, '[]');
+        if (!legacyCleared || !currentCleared) return false;
+        const [legacyRecords, currentRecords] = await Promise.all([
+            readHistoryJsonFileStrict(LEGACY_HISTORY_FILE_PATH),
+            readHistoryJsonFileStrict(NEW_HISTORY_FILE_PATH),
+        ]);
+        if (legacyRecords.length > 0 || currentRecords.length > 0) return false;
+        localStorage.removeItem(HISTORY_LOCAL_STORAGE_KEY);
+        localStorage.removeItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+        return !localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY) && !localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+    }
+
+    async function migrateLegacyHistoryToYearShards() {
+        let migrationRecords = null;
+        try {
+            const [legacyRecords, currentRecords, shardRecords] = await Promise.all([
+                readOptionalHistoryJsonFileStrict(LEGACY_HISTORY_FILE_PATH),
+                readOptionalHistoryJsonFileStrict(NEW_HISTORY_FILE_PATH),
+                readAllHistoryShardRecords({ force: true }),
+            ]);
+            const hasLocalFallback = !!localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+            const localRaw = String(localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY) || '');
+            if (hasLocalFallback && !localRaw.trim()) throw new Error('本地历史回退标记缺少数据');
+            let localRecords = [];
+            if (localRaw.trim()) {
+                localRecords = JSON.parse(localRaw);
+                if (!Array.isArray(localRecords)) throw new Error('旧本地历史格式错误');
+            }
+            if (legacyRecords.length === 0 && currentRecords.length === 0 && !localRaw.trim() && !hasLocalFallback) return true;
+            const mergedRecords = hasLocalFallback
+                ? normalizeHistoryRecords(localRecords)
+                : mergeUniqueHistoryRecords(shardRecords, legacyRecords, currentRecords, localRecords);
+            migrationRecords = mergedRecords;
+            await writeHistoryShardSet(mergedRecords);
+            if (!await verifyHistoryMigration(mergedRecords)) throw new Error('年度历史迁移校验失败');
+            if (!await clearLegacyHistorySources()) throw new Error('旧历史文件清空失败');
+            invalidateHistoryStoreCache();
+            return true;
+        } catch (e) {
+            if (Array.isArray(migrationRecords)) {
+                try {
+                    localStorage.setItem(HISTORY_LOCAL_STORAGE_KEY, JSON.stringify(migrationRecords, null, 2));
+                    localStorage.setItem(HISTORY_LOCAL_FALLBACK_META_KEY, JSON.stringify({ updatedAt: Date.now() }));
+                    invalidateHistoryStoreCache();
+                } catch (fallbackError) {
+                    Logger.error('保存历史迁移后备数据失败:', fallbackError);
+                }
+            }
+            Logger.error('年度历史迁移失败，旧数据源未主动清理:', e);
+            return false;
         }
     }
 
@@ -3906,7 +3882,7 @@
     }
 
     async function __tomatoHistoryLoadAll() {
-        const records = await loadHistoryRecords({ all: true });
+        const records = await loadHistoryRecords();
         return Array.isArray(records) ? records : [];
     }
 
@@ -3931,14 +3907,14 @@
             const sMs = nextStart.getTime();
             const eMs = nextEnd.getTime();
             if (!Number.isFinite(sMs) || !Number.isFinite(eMs) || eMs <= sMs) return false;
-            const records = await __tomatoHistoryLoadAll();
-            const idx = __tomatoFindHistoryRecordIndex(records, recordKey);
-            if (idx < 0) return false;
-            const rec = records[idx];
-            rec.start = nextStart.toISOString();
-            rec.end = nextEnd.toISOString();
-            __tomatoNormalizeHistoryRecordFields(rec);
-            const ok = await saveHistoryRecords(records);
+            const ok = await mutateHistoryRecords(records => {
+                const idx = __tomatoFindHistoryRecordIndex(records, recordKey);
+                if (idx < 0) return false;
+                records[idx].start = nextStart.toISOString();
+                records[idx].end = nextEnd.toISOString();
+                __tomatoNormalizeHistoryRecordFields(records[idx]);
+                return true;
+            });
             if (!ok) return false;
             try { markTimelineHistoryDirty(); } catch (e) {}
             try { updateTimelineBar(true); } catch (e) {}
@@ -3951,11 +3927,12 @@
 
     async function __tomatoHistoryDelete(recordKey) {
         try {
-            const records = await __tomatoHistoryLoadAll();
-            const idx = __tomatoFindHistoryRecordIndex(records, recordKey);
-            if (idx < 0) return false;
-            records.splice(idx, 1);
-            const ok = await saveHistoryRecords(records);
+            const ok = await mutateHistoryRecords(records => {
+                const idx = __tomatoFindHistoryRecordIndex(records, recordKey);
+                if (idx < 0) return false;
+                records.splice(idx, 1);
+                return true;
+            });
             if (!ok) return false;
             try { markTimelineHistoryDirty(); } catch (e) {}
             try { updateTimelineBar(true); } catch (e) {}
@@ -3970,27 +3947,24 @@
         try {
             const split = toDateSafe(splitISO);
             if (!split) return false;
-            const records = await __tomatoHistoryLoadAll();
-            const idx = __tomatoFindHistoryRecordIndex(records, recordKey);
-            if (idx < 0) return false;
-            const rec = records[idx];
-            const s0 = toDateSafe(rec?.start);
-            const e0 = toDateSafe(rec?.end);
-            if (!s0 || !e0) return false;
-            const sMs = s0.getTime();
-            const eMs = e0.getTime();
-            const xMs = split.getTime();
-            if (!Number.isFinite(sMs) || !Number.isFinite(eMs) || !Number.isFinite(xMs) || eMs <= sMs) return false;
-            if (!(xMs > sMs && xMs < eMs)) return false;
-            const d0 = formatDateKey(s0);
-            const d1 = formatDateKey(e0);
-            if (!d0 || !d1 || d0 !== d1) return false;
-            const r1 = { ...rec, start: s0.toISOString(), end: new Date(xMs).toISOString() };
-            const r2 = { ...rec, start: new Date(xMs).toISOString(), end: e0.toISOString() };
-            __tomatoNormalizeHistoryRecordFields(r1);
-            __tomatoNormalizeHistoryRecordFields(r2);
-            records.splice(idx, 1, r1, r2);
-            const ok = await saveHistoryRecords(records);
+            const ok = await mutateHistoryRecords(records => {
+                const idx = __tomatoFindHistoryRecordIndex(records, recordKey);
+                if (idx < 0) return false;
+                const rec = records[idx];
+                const s0 = toDateSafe(rec?.start);
+                const e0 = toDateSafe(rec?.end);
+                const sMs = s0.getTime();
+                const eMs = e0.getTime();
+                const xMs = split.getTime();
+                if (!Number.isFinite(sMs) || !Number.isFinite(eMs) || !Number.isFinite(xMs) || eMs <= sMs) return false;
+                if (!(xMs > sMs && xMs < eMs) || formatDateKey(s0) !== formatDateKey(e0)) return false;
+                const r1 = { ...rec, start: s0.toISOString(), end: new Date(xMs).toISOString() };
+                const r2 = { ...rec, start: new Date(xMs).toISOString(), end: e0.toISOString() };
+                __tomatoNormalizeHistoryRecordFields(r1);
+                __tomatoNormalizeHistoryRecordFields(r2);
+                records.splice(idx, 1, r1, r2);
+                return true;
+            });
             if (!ok) return false;
             try { markTimelineHistoryDirty(); } catch (e) {}
             try { updateTimelineBar(true); } catch (e) {}
@@ -4157,22 +4131,19 @@
         }
         
         try {
-            const records = await loadHistoryRecords();
-            const index = records.findIndex(r => 
-                r.start === record.start && 
-                r.end === record.end &&
-                r.durationMin === record.durationMin &&
-                r.mode === record.mode
-            );
-            
-            if (index !== -1) {
+            const success = await mutateHistoryRecords(records => {
+                const index = records.findIndex(r =>
+                    r.start === record.start && r.end === record.end &&
+                    r.durationMin === record.durationMin && r.mode === record.mode
+                );
+                if (index < 0) return false;
                 records.splice(index, 1);
-                const success = await saveHistoryRecords(records);
-                if (success) {
-                    try { markTimelineHistoryDirty(); } catch (e) {}
-                    try { updateTimelineBar(true); } catch (e) {}
-                    return true;
-                }
+                return true;
+            });
+            if (success) {
+                try { markTimelineHistoryDirty(); } catch (e) {}
+                try { updateTimelineBar(true); } catch (e) {}
+                return true;
             }
         } catch (e) {
             Logger.error('删除记录时出错:', e);
@@ -5048,9 +5019,16 @@
         // 如果有修复，异步保存到文件（不阻塞当前操作）
         if (hasInvalidDate) {
             Logger.info('🔧 检测到不规范日期格式，已临时修复');
-            // 后台保存，不影响用户体验
             setTimeout(() => {
-                saveHistoryRecords(normalizedRecords).then(success => {
+                mutateHistoryRecords(currentRecords => {
+                    let changed = false;
+                    currentRecords.forEach(record => {
+                        if (!record?.date?.includes('/')) return;
+                        record.date = normalizeLegacyDate(record.date);
+                        changed = true;
+                    });
+                    return changed;
+                }).then(success => {
                     if (success) {
                         Logger.info('✅ 日期格式已永久保存到文件');
                     }
@@ -7763,7 +7741,10 @@
         `;
         const acknowledgeAndCloseEndDialog = async () => {
             if (type === 'break-end') {
-                if (preBreakState) {
+                const isStopwatchBreakEnd = timerMode === 'stopwatch-break' || preBreakState?.mode === 'stopwatch';
+                if (isStopwatchBreakEnd) {
+                    preBreakState = null;
+                } else if (preBreakState) {
                     if (isRunning) {
                         await recordEndTime();
                     }
@@ -7783,23 +7764,6 @@
                             currentSessionId = pendingBreakSessionId;
                             Logger.info('🔍 okBtn.onclick: 从 pendingBreakSessionId 恢复 currentSessionId =', currentSessionId);
                         }
-                    } else if (preBreakState.mode === 'stopwatch') {
-                        timerMode = 'stopwatch';
-                        // 🔧 修复：保存休息前的时间作为显示偏移，实际计时从0开始
-                        stopwatchDisplayOffset = preBreakState.elapsedSeconds || 0;
-                        elapsedSeconds = 0;
-                        // 🔧 修复：清除开始时间，让 startTimer 设置新的开始时间
-                        stopwatchStartTimestamp = null;
-                        stopwatchStartTimeMs = 0;
-                        stopwatchSegmentStartTimestamp = null;
-                        stopwatchSegmentStartTimeMs = 0;
-                        stopwatchSegmentBaseElapsedSeconds = 0;
-                        isRunning = false;
-                        pausedRemainingSeconds = null;
-                        lastTickTime = 0;
-                        // 🔧 修复：恢复后显示待开始按钮
-                        if (controlButton) controlButton.innerHTML = '▶️';
-                        updateDisplay();
                     }
                     
                     // 🔧 v9.0 修复：休息完成后恢复状态时同步到云端，防止轮询覆盖
@@ -8049,7 +8013,7 @@
                         }
                         
                         updateDisplay();
-                        startTimer();
+                        await startTimer();
                     }
                 };
                 buttonContainer.appendChild(continueBtn);
@@ -8095,60 +8059,10 @@
 
         const handleEsc = (e) => {
             if (e.key === 'Escape') {
-                if (type === 'break-end') {
-                    if (preBreakState) {
-                        if (isRunning) recordEndTime();
-                        
-                        if (preBreakState.mode === 'countdown') {
-                            timerMode = 'countdown';
-                            currentDuration = preBreakState.currentDuration;
-                            remainingSeconds = preBreakState.remainingSeconds;
-                            isRunning = false;
-                            pausedRemainingSeconds = null;
-                            lastTickTime = 0;
-                            if (controlButton) controlButton.innerHTML = '▶️';
-                            updateDisplay();
-                        } else if (preBreakState.mode === 'stopwatch') {
-                            timerMode = 'stopwatch';
-                            // 🔧 修复：保存休息前的时间作为显示偏移，实际计时从0开始
-                            stopwatchDisplayOffset = preBreakState.elapsedSeconds || 0;
-                            elapsedSeconds = 0;
-                            // 🔧 修复：清除开始时间，让 startTimer 设置新的开始时间
-                            stopwatchStartTimestamp = null;
-                            stopwatchStartTimeMs = 0;
-                            stopwatchSegmentStartTimestamp = null;
-                            stopwatchSegmentStartTimeMs = 0;
-                            stopwatchSegmentBaseElapsedSeconds = 0;
-                            isRunning = false;
-                            pausedRemainingSeconds = null;
-                            lastTickTime = 0;
-                            // 🔧 修复：恢复后显示待开始按钮
-                            if (controlButton) controlButton.innerHTML = '▶️';
-                            updateDisplay();
-                        }
-                        
-                        // 🔧 v9.0 修复：休息完成后按ESC恢复状态时同步到云端，防止轮询覆盖
-                        if (isSyncEnabled() && SyncManager.updateLocal) {
-                            syncState.mode = timerMode;
-                            syncState.status = 'IDLE';
-                            syncState.startTime = null;
-                            syncState.pausedIntervals = [];
-                            syncState.currentPauseStart = null;
-                            syncState.pausedElapsedSeconds = null;
-                            syncState.distractionCount = 0;
-                            syncState.distractionSavedCount = 0;
-                            preBreakState = null;
-                            SyncManager.updateLocal(syncState, true).then(() => {
-                                Logger.info('🔄 休息完成(ESC)后状态已同步到云端');
-                            });
-                        }
-                    } else {
-                        resetToBreakDurationAfterEnd();
-                    }
-                } else if (type === 'tomato-end') {
-                    resetToLastTomato();
+                if (type === 'tomato-end' || type === 'break-end') {
+                    acknowledgeAndCloseEndDialog().catch(() => closeDialog());
+                    return;
                 }
-                syncAcknowledgeEndDialogClose(endDialogId);
                 closeDialog();
             }
         };
@@ -13979,21 +13893,25 @@
         }
     }
 
-    async function finalizeExpiredCountdownIfNeeded(source, state) {
-        const snapshot = getExpiredCountdownSnapshot(state);
-        if (!snapshot || !isRunning || isTimerPaused) return false;
+    async function finalizeExpiredTimerIfNeeded(source, state) {
+        const snapshot = getExpiredTimerSnapshot(state);
+        const isCompletedState = String(state?.status || '').trim() === 'COMPLETED';
+        if (!snapshot || (!isRunning && !isCompletedState) || isTimerPaused) return false;
         if (snapshot.mode !== timerMode) return false;
 
-        const localStartTimeMs = Number(startTime) || Number(syncState?.startTime) || 0;
+        const localStartTimeMs = snapshot.isStopwatchMode
+            ? (Number(stopwatchStartTimeMs) || Number(startTime) || Number(syncState?.stopwatchStartTimeMs) || 0)
+            : (Number(startTime) || Number(syncState?.startTime) || 0);
         if (!localStartTimeMs || localStartTimeMs !== snapshot.startTimeMs) return false;
 
         const normalizedSource = String(source || '').trim() || 'unknown';
-        Logger.info('🍅 检测到倒计时已到期，执行统一完成流程', {
+        Logger.info('🍅 检测到计时已到期，执行统一完成流程', {
             source: normalizedSource,
             mode: snapshot.mode,
             startTimeMs: snapshot.startTimeMs,
             dueAtMs: snapshot.dueAtMs,
         });
+        if (snapshot.isStopwatchMode) elapsedSeconds = snapshot.durationSec;
         return await handleTimerEndFromSyncOrLocal({
             endTimeMs: snapshot.dueAtMs,
             source: normalizedSource,
@@ -14010,7 +13928,7 @@
             const elapsedMs = now - startTime;
 
             if (elapsedMs >= totalMs) {
-                await finalizeExpiredCountdownIfNeeded('tick', {
+                await finalizeExpiredTimerIfNeeded('tick', {
                     mode: timerMode,
                     status: 'RUNNING',
                     startTime,
@@ -14034,9 +13952,11 @@
         const source = String(options?.source || '').trim() || 'timer-end';
         return withTimerFinalizationLock('timer-end', async () => {
             const endMode = timerMode;
-            const endType = endMode === 'break' ? 'break-end' : 'tomato-end';
-            const pendingRecordSave = recordEndTime(false, false, {
-                isCompleted: endMode === 'countdown',
+            const isStopwatchMode = endMode === 'stopwatch' || endMode === 'stopwatch-break';
+            const isBreakMode = endMode === 'break' || endMode === 'stopwatch-break';
+            const endType = isBreakMode ? 'break-end' : 'tomato-end';
+            const pendingRecordSave = recordEndTime(false, isStopwatchMode, {
+                isCompleted: endMode === 'countdown' || isStopwatchMode,
                 endTimeMs,
             });
             Logger.info('🍅 计时完成流程已触发', { source, mode: endMode, endTimeMs: endTimeMs || Date.now() });
@@ -14046,11 +13966,16 @@
             }
             isRunning = false;
             isTimerPaused = false;
-            remainingSeconds = 0;
+            if (isStopwatchMode) elapsedSeconds = CONFIG.MAX_STOPWATCH_SECONDS;
+            else remainingSeconds = 0;
             if (controlButton) controlButton.innerHTML = '▶️';
             updateDisplay();
 
-            const endDialog = ensureSyncEndDialogOpen(endType, syncState?.startTime || startTime, Math.max(1, Math.round(currentDuration * 60)));
+            const endDialog = ensureSyncEndDialogOpen(
+                endType,
+                syncState?.startTime || startTime,
+                isStopwatchMode ? CONFIG.MAX_STOPWATCH_SECONDS : Math.max(1, Math.round(currentDuration * 60))
+            );
             if (endDialog && endTimeMs) endDialog.endedAtMs = endTimeMs;
 
             // 🔧 v9.5：番茄钟完成后，恢复 sessionId 供休息记录使用
@@ -14076,7 +14001,7 @@
             }
 
             try {
-                if (endMode === 'break') {
+                if (isBreakMode) {
                     await playEndSound('break-end');
                 } else {
                     await playEndSound('work-end');
@@ -14085,7 +14010,9 @@
                 Logger.warn('🍅 播放提示音失败:', audioError);
             }
 
-            if (endMode === 'break') {
+            if (isStopwatchMode) {
+                showToastDialog('⏱️ 正计时结束', '已达到 16 小时上限', endType, currentTaskBlockId, currentTaskBlockName);
+            } else if (isBreakMode) {
                 showToastDialog('⏰ 休息结束', '继续你的计时吧！', 'break-end', currentTaskBlockId, currentTaskBlockName);
             } else {
                 showToastDialog('🍅 时间到！', '该休息一下了～', 'tomato-end', currentTaskBlockId, currentTaskBlockName);
@@ -14170,7 +14097,7 @@
                     ? syncState.pausedIntervals
                     : [],
             };
-            if (await finalizeExpiredCountdownIfNeeded('timer-tick', localExpiryState)) return;
+            if (await finalizeExpiredTimerIfNeeded('timer-tick', localExpiryState)) return;
 
             let newRemainingSeconds;
             
@@ -14185,7 +14112,7 @@
             }
 
             if (newRemainingSeconds <= 0) {
-                await finalizeExpiredCountdownIfNeeded('timer-tick-fallback', localExpiryState);
+                await finalizeExpiredTimerIfNeeded('timer-tick-fallback', localExpiryState);
             } else {
                 // 🔧 性能优化：只在秒数变化时更新 DOM
                 if (newRemainingSeconds !== remainingSeconds) {
@@ -14196,6 +14123,14 @@
                 }
             }
         } else if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
+             const localExpiryState = {
+                 mode: timerMode,
+                 status: 'RUNNING',
+                 startTime: stopwatchStartTimeMs || startTime,
+                 stopwatchStartTimeMs: stopwatchStartTimeMs || startTime,
+                 pausedIntervals: [],
+             };
+             if (await finalizeExpiredTimerIfNeeded('timer-tick', localExpiryState)) return;
              let newElapsedSeconds;
              
              if (syncState && syncState.stopwatchStartTimeMs && syncState.status === 'RUNNING') {
@@ -14427,13 +14362,8 @@
         } catch (e) {
             Logger.error('startTimer失败:', e);
             showMiniToast('启动计时失败');
-            try { if (timerId !== null) clearInterval(timerId); } catch (err) {}
-            try { timerId = null; } catch (err) {}
-            try { isRunning = false; } catch (err) {}
-            try { isTimerPaused = false; } catch (err) {}
-            try { pausedRemainingSeconds = null; } catch (err) {}
-            try { startTime = 0; } catch (err) {}
-            try { if (controlButton) controlButton.innerHTML = '▶️'; } catch (err) {}
+            await rollbackFailedTimerStart(false);
+            throw e;
         }
     }
 
@@ -14464,6 +14394,8 @@
         timerId = null;
         isRunning = false;
         isTimerPaused = true;  // 设置暂停状态，进度条保持可见
+        currentPauseStart = now;
+        syncState.currentPauseStart = now;
         // 🔧 修复：暂停时不重置 startTime，保留用于 recordEndTime 的时间戳计算
         // startTime 只在完全停止（stopTimer）时才重置为 0
         lastTickTime = 0;
@@ -14500,22 +14432,20 @@
             try { updateTimelineBar(true); } catch (e) {}
         }
 
+        syncState.mode = timerMode;
+        syncState.status = 'PAUSED';
+        syncState.currentPauseStart = now;
         if (timerMode === 'countdown' || timerMode === 'break') {
-            syncState.mode = timerMode;
-            syncState.status = 'PAUSED';
             syncState.startTime = startTime;
             syncState.duration = currentDuration * 60;
             try { await cancelTrackedTimerNotification('pause-timer', false); } catch (e) {}
+        } else {
+            syncState.pausedElapsedSeconds = elapsedSeconds;
+            syncState.stopwatchDisplayOffset = Math.max(0, Math.floor(Number(stopwatchDisplayOffset) || 0));
         }
         
         // 🔧 修复：同步暂停状态到云端
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
-            syncState.status = 'PAUSED';
-            syncState.currentPauseStart = now;
-            if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
-                syncState.pausedElapsedSeconds = elapsedSeconds;
-                syncState.stopwatchDisplayOffset = Math.max(0, Math.floor(Number(stopwatchDisplayOffset) || 0));
-            }
             syncState.distractionCount = currentDistractionCount || 0;
             Logger.info('🔄 pauseTimer: 同步暂停状态到云端');
             // 第三个参数 true 表示 forceSync，确保暂停状态能立即同步到其他设备
@@ -14529,6 +14459,8 @@
     async function stopTimer(options = {}) {
         const opts = (options && typeof options === 'object') ? options : {};
         const skipEndRecord = opts.skipEndRecord === true;
+        const isStopwatchMode = timerMode === 'stopwatch' || timerMode === 'stopwatch-break';
+        const hasActiveStart = isStopwatchMode ? !!stopwatchStartTimestamp : !!currentStartTimestamp;
         if (timerId !== null) clearInterval(timerId);
         timerId = null;
         isRunning = false;
@@ -14546,8 +14478,8 @@
             reminderIntervalId = null;
         }
         let pendingRecordSave = null;
-        if (!skipEndRecord && currentStartTimestamp) {
-            pendingRecordSave = recordEndTime(false, false, { skipSyncUpdate: true });
+        if (!skipEndRecord && hasActiveStart) {
+            pendingRecordSave = recordEndTime(false, isStopwatchMode, { skipSyncUpdate: true });
         } else if (skipEndRecord) {
             currentStartTimestamp = null;
             currentStartTimeMs = 0;
@@ -14560,6 +14492,7 @@
             segmentTaskBlockName = null;
             segmentDatabaseBlockId = null;
         }
+        currentPauseStart = null;
         // 停止提示音
         stopAllAudio();
         hideProgressBar();  // 完全停止时隐藏进度条
@@ -14576,17 +14509,16 @@
         }
         syncState.status = 'IDLE';
         syncState.startTime = null;
+        syncState.stopwatchStartTimeMs = null;
+        syncState.stopwatchDisplayOffset = 0;
+        syncState.pausedIntervals = [];
         syncState.currentPauseStart = null;
         syncState.pausedElapsedSeconds = null;
+        syncState.distractionCount = 0;
+        syncState.distractionSavedCount = 0;
         
         // 🔧 修复：同步停止状态到云端（fire-and-forget 模式，避免阻塞 UI）
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
-            syncState.stopwatchStartTimeMs = null;
-            syncState.stopwatchDisplayOffset = 0;
-            syncState.pausedIntervals = [];
-            syncState.distractionCount = 0;
-            syncState.distractionSavedCount = 0;
-
             // 🔧 优化：使用 fire-and-forget 模式，不 await 避免阻塞 UI
             // 第三个参数 true 表示 forceSync，确保停止状态能立即同步到其他设备
             SyncManager.updateLocal(syncState, true, true).then(() => {
@@ -14772,6 +14704,7 @@
         const initialRemainingSecondsAtEnd = getInitialRemainingAtStart();
         const syncStateAtEnd = syncState && typeof syncState === 'object' ? { ...syncState } : null;
         const currentSessionIdAtEnd = currentSessionId;
+        const currentPauseStartAtEnd = currentPauseStart;
         const canMutateLiveTimerStateFromSnapshot = () => {
             if (String(timerMode || '').trim() !== modeAtEnd) return false;
             if (modeAtEnd === 'stopwatch' || modeAtEnd === 'stopwatch-break') {
@@ -14818,8 +14751,8 @@
         // 如果存在暂停记录（syncState.currentPauseStart），说明是在暂停后恢复计时（或者暂停状态下停止），
         // 此时应该使用暂停开始的时间作为本段计时的结束时间，从而排除掉暂停持续的时间。
         // 仅对倒计时/休息模式有效（正计时模式使用 elapsedSeconds，已处理暂停）。
-        if (!explicitEndTimeMs && (modeAtEnd === 'countdown' || modeAtEnd === 'break') && syncStateAtEnd && syncStateAtEnd.currentPauseStart) {
-            endTimeMs = syncStateAtEnd.currentPauseStart;
+        if (!explicitEndTimeMs && (modeAtEnd === 'countdown' || modeAtEnd === 'break') && currentPauseStartAtEnd) {
+            endTimeMs = currentPauseStartAtEnd;
             Logger.info('🔍 recordEndTime: 检测到暂停记录，使用暂停时间作为结束时间:', endTimeMs);
         }
 
@@ -14881,7 +14814,6 @@
         }
 
         try {
-            const records = await loadHistoryRecords();
             const durationMinToSave = finalElapsedMin;
             const durationSecToSave = finalElapsedSec;
             const syncedDistractionTotal = typeof syncStateAtEnd?.distractionCount === 'number' ? syncStateAtEnd.distractionCount : (currentDistractionCountAtEnd || 0);
@@ -14935,13 +14867,14 @@
             let didCreateHistoryRecord = false;
             let didSaveHistoryRecords = false;
             let didSkipHistoryForShortRecord = false;
+            let savedRecords = null;
 
             // 🔧 如果开启隐藏短记录：以秒为准，避免因分钟四舍五入导致“1分钟短记录”
             if (userSettings.hideShortRecords && Number(durationSecToSave || 0) < 60 && !hasLuminaHistoryRecords(recordData)) {
                 Logger.info('🔍 recordEndTime: 时长小于1分钟且开启隐藏短记录，跳过保存');
                 didSkipHistoryForShortRecord = true;
             } else {
-                const pushRecordIfNeeded = () => {
+                const pushRecordIfNeeded = (records) => {
                     const duplicateIndex = findHistoryDuplicateIndex(records, recordData);
                     if (duplicateIndex >= 0) {
                         if (hasLuminaHistoryRecords(recordData) && appendLuminaRecordToHistoryRecord(records[duplicateIndex], recordData.luminaRecords[0])) {
@@ -14960,26 +14893,21 @@
                     didCreateHistoryRecord = true;
                     return true;
                 };
-                if (modeAtEnd === 'break' || modeAtEnd === 'stopwatch-break') {
-                    recordData.mode = modeAtEnd === 'break' ? 'break' : 'stopwatch-break';
-                    // 🔧 v9.5：休息记录使用保存的 sessionId
-                    recordData.sessionId = recordSessionId || pendingBreakSessionId;
-                    recordData.plannedDuration = currentDurationAtEnd;
-                    didAppendRecord = pushRecordIfNeeded();
-                } 
-                else if (modeAtEnd === 'countdown') {
-                    // 🔧 v9.5 修改：移除合并逻辑，每次暂停/恢复都作为独立记录保存
-                    // 通过 sessionId 在统计时去重，确保计划时间只计算一次
-                    didAppendRecord = pushRecordIfNeeded();
-                    if (currentStartTimestamp === currentStartTimestampAtEnd) isFreshTomatoStart = false;
-                }
-                else if (modeAtEnd === 'stopwatch') {
-                    didAppendRecord = pushRecordIfNeeded();
-                }
-
-                if (didAppendRecord) {
-                    didSaveHistoryRecords = await saveHistoryRecords(records);
-                }
+                didSaveHistoryRecords = await mutateHistoryRecords(records => {
+                    savedRecords = records;
+                    if (modeAtEnd === 'break' || modeAtEnd === 'stopwatch-break') {
+                        recordData.mode = modeAtEnd === 'break' ? 'break' : 'stopwatch-break';
+                        recordData.sessionId = recordSessionId || pendingBreakSessionId;
+                        recordData.plannedDuration = currentDurationAtEnd;
+                        didAppendRecord = pushRecordIfNeeded(records);
+                    } else if (modeAtEnd === 'countdown') {
+                        didAppendRecord = pushRecordIfNeeded(records);
+                        if (currentStartTimestamp === currentStartTimestampAtEnd) isFreshTomatoStart = false;
+                    } else if (modeAtEnd === 'stopwatch') {
+                        didAppendRecord = pushRecordIfNeeded(records);
+                    }
+                    return didAppendRecord;
+                });
                 if (canMutateLiveTimerStateFromSnapshot()) lastSavedDistractionCount = syncedDistractionTotal || 0;
                 // 🔧 清除按钮高亮设置（记录已保存）
                 // 注意：只清除颜色，保留 activeRoutineButtonIndex 供新按钮使用
@@ -14994,7 +14922,7 @@
                 if (didAppendRecord && didSaveHistoryRecords) {
                     Logger.info('✅ 记录已保存');
                     markTimelineHistoryDirty();
-                    primeTimelineHistoryCaches(records);
+                    primeTimelineHistoryCaches(savedRecords || []);
                     try { if (userSettings?.timeline?.enabled) updateTimelineBar(true); } catch (e) {}
                 } else if (didAppendRecord) {
                     Logger.warn('历史记录保存失败，跳过时间轴缓存更新');
@@ -15198,18 +15126,17 @@
     async function rollbackFailedTimerStart(clearAssociation = true) {
         try { stopHighlightKeepAlive(); } catch (e) {}
         try { clearTaskBlockHighlight(); } catch (e) {}
-
         if (clearAssociation) {
             try { taskAssociationCleared = true; } catch (e) {}
             await setTaskAssociation(null, null, null);
             try { window.currentTaskBlockId = null; } catch (e) {}
             try { window.currentTaskBlockName = null; } catch (e) {}
         }
-
         try { if (timerId !== null) clearInterval(timerId); } catch (e) {}
         try { timerId = null; } catch (e) {}
         try { isRunning = false; } catch (e) {}
         try { isTimerPaused = false; } catch (e) {}
+        try { currentPauseStart = null; } catch (e) {}
         try { pausedRemainingSeconds = null; } catch (e) {}
         try { startTime = 0; } catch (e) {}
         try { lastTickTime = 0; } catch (e) {}
@@ -15217,26 +15144,41 @@
         try { currentStartTimeMs = 0; } catch (e) {}
         try { stopwatchStartTimestamp = null; } catch (e) {}
         try { stopwatchStartTimeMs = 0; } catch (e) {}
+        try { stopwatchSegmentStartTimestamp = null; } catch (e) {}
+        try { stopwatchSegmentStartTimeMs = 0; } catch (e) {}
+        try { stopwatchSegmentBaseElapsedSeconds = 0; } catch (e) {}
 
         try { hideProgressBar(); } catch (e) {}
         try { updateDisplay(); } catch (e) {}
 
+        syncState.status = 'IDLE';
+        syncState.startTime = null;
+        syncState.stopwatchStartTimeMs = null;
+        syncState.stopwatchDisplayOffset = 0;
+        syncState.pausedIntervals = [];
+        syncState.currentPauseStart = null;
+        syncState.pausedElapsedSeconds = null;
+        syncState.distractionCount = 0;
+        syncState.distractionSavedCount = 0;
+        if (clearAssociation) {
+            syncState.taskBlockId = null;
+            syncState.taskBlockName = null;
+            syncState.databaseBlockId = null;
+        }
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             try {
-                syncState.status = 'IDLE';
-                syncState.startTime = null;
-                syncState.stopwatchStartTimeMs = null;
-                syncState.pausedIntervals = [];
-                syncState.currentPauseStart = null;
-                syncState.pausedElapsedSeconds = null;
-                syncState.taskBlockId = null;
-                syncState.taskBlockName = null;
-                syncState.databaseBlockId = null;
-                syncState.distractionCount = 0;
-                syncState.distractionSavedCount = 0;
                 await SyncManager.updateLocal(syncState, true);
             } catch (e) {}
         }
+    }
+
+    function finalizeCurrentSegmentBeforeTransition() {
+        const isStopwatchMode = timerMode === 'stopwatch' || timerMode === 'stopwatch-break';
+        const hasStart = isStopwatchMode
+            ? !!stopwatchStartTimestamp && stopwatchStartTimeMs > 0
+            : !!currentStartTimestamp && currentStartTimeMs > 0;
+        if ((!isRunning && !isTimerPaused) || !hasStart) return null;
+        return recordEndTime(false, isStopwatchMode);
     }
 
     async function switchToCountdownAndStart(duration) {
@@ -15245,8 +15187,7 @@
         clearTimelineActiveLayers();
 
         // 🔧 修复：正计时模式下需要传递 isStopwatch = true
-        let pendingRecordSave = null;
-        if (isRunning) pendingRecordSave = recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
+        const pendingRecordSave = finalizeCurrentSegmentBeforeTransition();
         preBreakState = null;
         pausedRemainingSeconds = null;
         currentStartTimestamp = null;
@@ -15280,8 +15221,7 @@
         clearTimelineActiveLayers();
 
         // 🔧 修复：正计时模式下需要传递 isStopwatch = true
-        let pendingRecordSave = null;
-        if (isRunning) pendingRecordSave = recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
+        const pendingRecordSave = finalizeCurrentSegmentBeforeTransition();
         preBreakState = null;
         pausedRemainingSeconds = null;
 
@@ -15333,8 +15273,7 @@
         clearTimelineActiveLayers();
 
         // 🔧 修复：正计时模式下需要传递 isStopwatch = true
-        let pendingRecordSave = null;
-        if (isRunning) pendingRecordSave = recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
+        const pendingRecordSave = finalizeCurrentSegmentBeforeTransition();
         preBreakState = null;
         timerMode = 'stopwatch';
         // 🔧 修复：同步更新 syncState.mode，确保自定义属性更新正确判断模式
@@ -15377,8 +15316,7 @@
         // 🔧 修复：切换到正计时模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
 
-        let pendingRecordSave = null;
-        if (isRunning) pendingRecordSave = recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
+        const pendingRecordSave = finalizeCurrentSegmentBeforeTransition();
         preBreakState = null;
         timerMode = 'stopwatch';
         // 🔧 修复：同步更新 syncState.mode，确保自定义属性更新正确判断模式
@@ -15486,11 +15424,9 @@
 
         // 🔧 修复：正计时进入休息时保存当前记录，休息后继续计时会产生新记录
         // 🔧 修复：正计时模式下需要传递 isStopwatch = true
-        const wasStopwatch = timerMode === 'stopwatch';
         // 🔧 保存按钮颜色，因为 recordEndTime 会清除它
         const savedButtonColor = routineButtonHighlightColor;
-        let pendingRecordSave = null;
-        if (isRunning) pendingRecordSave = recordEndTime(false, wasStopwatch);
+        const pendingRecordSave = finalizeCurrentSegmentBeforeTransition();
         
         // 🔧 恢复按钮颜色
         routineButtonHighlightColor = savedButtonColor;
@@ -15520,7 +15456,7 @@
         }
 
         updateDisplay();
-        startTimer();
+        await startTimer();
         if (pendingRecordSave) {
             await waitForTimerPersistence(pendingRecordSave, 'start-break-mode');
         }
@@ -15574,15 +15510,13 @@
 
         // 🔧 修复：正计时进入休息时保存当前记录，休息后继续计时会产生新记录
         // 🔧 修复：正计时模式下需要传递 isStopwatch = true
-        const wasStopwatch = timerMode === 'stopwatch' || timerMode === 'stopwatch-break';
         // 🔧 保存按钮颜色，因为 recordEndTime 会清除它
         const savedButtonColor = routineButtonHighlightColor;
-        let pendingRecordSave = null;
-        if (isRunning) pendingRecordSave = recordEndTime(false, wasStopwatch);
-        
+        const pendingRecordSave = finalizeCurrentSegmentBeforeTransition();
+
         // 🔧 恢复按钮颜色
         routineButtonHighlightColor = savedButtonColor;
-        
+
         timerMode = 'stopwatch-break';
         elapsedSeconds = 0;
         isRunning = false;
@@ -15594,18 +15528,20 @@
         startTime = 0;
         stopwatchStartTimestamp = null;
         stopwatchStartTimeMs = 0;
-        
+
         // 🔧 修复：同步休息模式到云端，避免被同步轮询覆盖
-        syncState.mode = 'stopwatch-break';
-        syncState.duration = CONFIG.MAX_STOPWATCH_SECONDS;
-        syncState.status = 'IDLE';
-        syncState.startTime = null;
-        syncState.stopwatchStartTimeMs = null;
-        syncState.pausedElapsedSeconds = null;
-        syncState.pausedIntervals = [];
-        syncState.currentPauseStart = null;
-        syncState.distractionCount = 0;
-        syncState.distractionSavedCount = 0;
+        Object.assign(syncState, {
+            mode: 'stopwatch-break',
+            duration: CONFIG.MAX_STOPWATCH_SECONDS,
+            status: 'IDLE',
+            startTime: null,
+            stopwatchStartTimeMs: null,
+            pausedElapsedSeconds: null,
+            pausedIntervals: [],
+            currentPauseStart: null,
+            distractionCount: 0,
+            distractionSavedCount: 0,
+        });
         updateDisplay();
         if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             // 第三个参数 true 表示 forceSync，确保开始状态能立即同步到其他设备
@@ -15625,6 +15561,14 @@
         }
     }
 
+    async function startStopwatchForCurrentPhase() {
+        if (timerMode === 'break' || timerMode === 'stopwatch-break') {
+            await startStopwatchBreakMode();
+            return;
+        }
+        await switchToStopwatchAndStart();
+    }
+
     async function resetCurrentMode() {
         return withTimerFinalizationLock('reset-current-mode', async () => {
             const wasPaused = !!isTimerPaused;
@@ -15634,6 +15578,8 @@
             // 注意：不再自动清除任务块关联，用户可以通过📋️图标的删除按钮手动清除
 
             if (timerMode === 'break' || timerMode === 'stopwatch-break') {
+                const isStopwatchBreak = timerMode === 'stopwatch-break';
+                const hasBreakStart = isStopwatchBreak ? !!stopwatchStartTimestamp : !!currentStartTimestamp;
                 if (isRunning) {
                     if (timerId !== null) clearInterval(timerId);
                     timerId = null;
@@ -15641,93 +15587,58 @@
                     isTimerPaused = false;
                     startTime = 0;
                     lastTickTime = 0;
-                    pendingRecordSave = recordEndTime(true);
-                } else if (currentStartTimestamp) {
-                    pendingRecordSave = recordEndTime(true);
+                    pendingRecordSave = recordEndTime(true, isStopwatchBreak);
+                } else if (hasBreakStart) {
+                    pendingRecordSave = recordEndTime(true, isStopwatchBreak);
                 }
 
-                if (preBreakState) {
-                    if (preBreakState.mode === 'countdown') {
-                        timerMode = 'countdown';
-                        // 🔧 修复：同步更新 syncState.mode
-                        syncState.mode = 'countdown';
-                        currentDuration = preBreakState.currentDuration;
-                        remainingSeconds = preBreakState.remainingSeconds;
-                        pausedRemainingSeconds = preBreakState.remainingSeconds;
-                        isRunning = false;
-                        currentStartTimestamp = null;
-                        currentStartTimeMs = 0;
-                        isFreshTomatoStart = false;
-                        lastTickTime = 0;
-                        // 🔧 修复：继续休息后保持高亮
-                        if (controlButton) controlButton.innerHTML = '▶️';
-                        updateDisplay();
-                    } else if (preBreakState.mode === 'stopwatch') {
-                        timerMode = 'stopwatch';
-                        // 🔧 修复：同步更新 syncState.mode
-                        syncState.mode = 'stopwatch';
-                        // 🔧 修复：保存休息前的时间作为显示偏移，实际计时从0开始
-                        stopwatchDisplayOffset = preBreakState.elapsedSeconds || 0;
-                        elapsedSeconds = 0;
-                        // 🔧 修复：清除开始时间，让 startTimer 设置新的开始时间
-                        stopwatchStartTimestamp = null;
-                        stopwatchStartTimeMs = 0;
-                        isRunning = false;
-                        pausedRemainingSeconds = null;
-                        isFreshTomatoStart = false;
-                        lastTickTime = 0;
-                        // 🔧 修复：恢复后显示待开始按钮
-                        if (controlButton) controlButton.innerHTML = '▶️';
-                        updateDisplay();
-                    }
+                if (!isStopwatchBreak && preBreakState?.mode === 'countdown') {
+                    timerMode = 'countdown';
+                    syncState.mode = 'countdown';
+                    currentDuration = preBreakState.currentDuration;
+                    remainingSeconds = preBreakState.remainingSeconds;
+                    pausedRemainingSeconds = preBreakState.remainingSeconds;
+                    currentStartTimestamp = null;
+                    currentStartTimeMs = 0;
+                } else if (isStopwatchBreak) {
+                    timerMode = 'stopwatch-break';
+                    syncState.mode = 'stopwatch-break';
+                    elapsedSeconds = 0;
+                    stopwatchDisplayOffset = 0;
+                    startTime = 0;
+                    stopwatchStartTimestamp = null;
+                    stopwatchStartTimeMs = 0;
                 } else {
-                    if (timerMode === 'break') {
-                        timerMode = 'break';
-                        syncState.mode = 'break';
-                        syncState.duration = Math.max(1, Math.round(currentDuration * 60));
-                        remainingSeconds = currentDuration * 60;
-                        isRunning = false;
-                        isTimerPaused = false;
-                        pausedRemainingSeconds = null;
-                        currentStartTimestamp = null;
-                        currentStartTimeMs = 0;
-                        lastTickTime = 0;
-                        isFreshTomatoStart = false;
-                        if (controlButton) controlButton.innerHTML = '▶️';
-                        updateDisplay();
-                    } else {
-                        timerMode = 'stopwatch-break';
-                        syncState.mode = 'stopwatch-break';
-                        elapsedSeconds = 0;
-                        isRunning = false;
-                        isTimerPaused = false;
-                        pausedRemainingSeconds = null;
-                        lastTickTime = 0;
-                        startTime = 0;
-                        stopwatchStartTimestamp = null;
-                        stopwatchStartTimeMs = 0;
-                        isFreshTomatoStart = false;
-                        if (controlButton) controlButton.innerHTML = '▶️';
-                        updateDisplay();
-                    }
+                    timerMode = 'break';
+                    syncState.mode = 'break';
+                    syncState.duration = Math.max(1, Math.round(currentDuration * 60));
+                    remainingSeconds = currentDuration * 60;
+                    currentStartTimestamp = null;
+                    currentStartTimeMs = 0;
                 }
-                
+                isRunning = false;
+                isTimerPaused = false;
+                if (timerMode !== 'countdown') pausedRemainingSeconds = null;
+                lastTickTime = 0;
+                isFreshTomatoStart = false;
+                preBreakState = null;
+                if (controlButton) controlButton.innerHTML = '▶️';
+                updateDisplay();
+
                 // 🔧 v9.0 修复：休息模式重置后必须同步状态到云端，否则轮询会覆盖本地状态
                 if (timerMode === 'countdown' || timerMode === 'break' || timerMode === 'stopwatch-break') {
                     try { await cancelTrackedTimerNotification('reset-timer', false); } catch (e) {}
                 }
+                syncState.status = 'IDLE';
+                syncState.startTime = null;
+                syncState.stopwatchStartTimeMs = null;
+                syncState.stopwatchDisplayOffset = 0;
+                syncState.pausedIntervals = [];
+                syncState.currentPauseStart = null;
+                syncState.pausedElapsedSeconds = null;
+                syncState.distractionCount = 0;
+                syncState.distractionSavedCount = 0;
                 if (isSyncEnabled() && SyncManager.updateLocal) {
-                    syncState.status = 'IDLE';
-                    syncState.startTime = null;
-                    syncState.stopwatchStartTimeMs = null;
-                    syncState.stopwatchDisplayOffset = 0;
-                    syncState.pausedIntervals = [];
-                    syncState.currentPauseStart = null;
-                    syncState.pausedElapsedSeconds = null;
-                    syncState.distractionCount = 0;
-                    syncState.distractionSavedCount = 0;
-                    // 清除 preBreakState，避免云端恢复时再次进入休息前状态
-                    preBreakState = null;
                     await SyncManager.updateLocal(syncState, true);
                     Logger.info('🔄 休息模式重置状态已同步到云端');
                 }
@@ -15889,6 +15800,7 @@
 
             isRunning = false;
             isTimerPaused = false;
+            currentPauseStart = null;
             pausedRemainingSeconds = null;
             startTime = 0;
             lastTickTime = 0;
@@ -16323,11 +16235,7 @@
         stopwatchItem.onmouseleave = () => stopwatchItem.style.backgroundColor = '';
         stopwatchItem.onclick = async (e) => { 
             e.stopPropagation(); 
-            if (timerMode === 'stopwatch') {
-                await startStopwatchBreakMode();
-            } else {
-                await switchToStopwatchAndStart(); 
-            }
+            await startStopwatchForCurrentPhase();
             menu.remove(); 
             isContextMenuOpen = false;  // 菜单关闭
         };
@@ -17018,7 +16926,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         `;
         clearBtn.onclick = async () => {
             if (confirm('确定要清除所有历史记录吗？此操作不可恢复。')) {
-                const success = await saveHistoryRecords([]);
+                const success = await replaceAllHistoryRecords([]);
                 if (success) {
                     showToastDialog('清除成功', '所有历史记录已清除', 'info');
                     dialog.remove();
@@ -17042,7 +16950,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         titleBar.appendChild(audioSettingsBtn);
 
         const title = document.createElement('div');
-        title.textContent = `🍅 番茄钟历史记录（最近1年）`;
+        title.textContent = `🍅 番茄钟历史记录`;
         // 移动端适配：更小的字体
         if (isMobile) {
             title.style.cssText = `
@@ -19641,26 +19549,32 @@ function calculateWeeklyStats(dailyStatsArray) {
                             showToastDialog('提示', '开始/结束时间不合法', 'info');
                             return;
                         }
-                        const records = await loadHistoryRecords();
-                        const idx = findRecordIndex(records, record);
-                        if (idx < 0) {
+                        let updatedRecords = null;
+                        let recordFound = false;
+                        const success = await mutateHistoryRecords(records => {
+                            const idx = findRecordIndex(records, record);
+                            if (idx < 0) return false;
+                            recordFound = true;
+                            const ms = endMs - startMs;
+                            records[idx].start = ns.toISOString();
+                            records[idx].end = ne.toISOString();
+                            records[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
+                            records[idx].durationMin = Math.max(0, Math.round(ms / 60000));
+                            records[idx].timestamp = Math.round(endMs);
+                            records[idx].date = formatDateKey(ne);
+                            records[idx].dateTime = ne.toLocaleString('zh-CN');
+                            records[idx].timePeriod = getTimePeriod(ne.getHours());
+                            updatedRecords = records;
+                            return true;
+                        });
+                        if (!recordFound) {
                             showToastDialog('提示', '未找到对应记录（可能已被刷新）', 'info');
                             close();
                             return;
                         }
-                        const ms = endMs - startMs;
-                        records[idx].start = ns.toISOString();
-                        records[idx].end = ne.toISOString();
-                        records[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
-                        records[idx].durationMin = Math.max(0, Math.round(ms / 60000));
-                        records[idx].timestamp = Math.round(endMs);
-                        records[idx].date = formatDateKey(ne);
-                        records[idx].dateTime = ne.toLocaleString('zh-CN');
-                        records[idx].timePeriod = getTimePeriod(ne.getHours());
-                        const success = await saveHistoryRecords(records);
                         if (success) {
                             markTimelineHistoryDirty();
-                            rebuildHistoryState(records);
+                            rebuildHistoryState(updatedRecords || []);
                             try { updatePageButtons(); } catch (e) {}
                             close();
                             showPage(historyState?.currentPage || selectedDate);
@@ -19739,65 +19653,61 @@ function calculateWeeklyStats(dailyStatsArray) {
                             showToastDialog('提示', '拆分点不在记录范围内', 'info');
                             return;
                         }
-                        const records = await loadHistoryRecords();
-                        const idx = findRecordIndex(records, record);
-                        if (idx < 0) {
-                            showToastDialog('提示', '未找到对应记录（可能已被刷新）', 'info');
+                        let updatedRecords = null;
+                        let validationMessage = '';
+                        const success = await mutateHistoryRecords(records => {
+                            const idx = findRecordIndex(records, record);
+                            if (idx < 0) {
+                                validationMessage = '未找到对应记录（可能已被刷新）';
+                                return false;
+                            }
+                            const original = records[idx];
+                            const origStartMs = toDateSafe(original?.start)?.getTime?.() || 0;
+                            const origEndMs = toDateSafe(original?.end)?.getTime?.() || 0;
+                            if (!Number.isFinite(origStartMs) || !Number.isFinite(origEndMs) || origEndMs <= origStartMs) {
+                                validationMessage = '记录时间无效';
+                                return false;
+                            }
+                            if (formatDateKey(new Date(origStartMs)) !== formatDateKey(new Date(origEndMs))) {
+                                validationMessage = '跨天记录暂不支持拆分';
+                                return false;
+                            }
+                            const recA = { ...original };
+                            const recB = { ...original };
+                            const aEndD = new Date(splitMs);
+                            const bEndD = new Date(origEndMs);
+                            recA.start = new Date(origStartMs).toISOString();
+                            recA.end = aEndD.toISOString();
+                            recA.durationSec = Math.max(0, Math.floor((splitMs - origStartMs) / 1000));
+                            recA.durationMin = Math.max(0, Math.round((splitMs - origStartMs) / 60000));
+                            recA.timestamp = Math.round(splitMs);
+                            recA.date = formatDateKey(aEndD);
+                            recA.dateTime = aEndD.toLocaleString('zh-CN');
+                            recA.timePeriod = getTimePeriod(aEndD.getHours());
+                            recB.start = new Date(splitMs).toISOString();
+                            recB.end = bEndD.toISOString();
+                            recB.durationSec = Math.max(0, Math.floor((origEndMs - splitMs) / 1000));
+                            recB.durationMin = Math.max(0, Math.round((origEndMs - splitMs) / 60000));
+                            recB.timestamp = Math.round(origEndMs);
+                            recB.date = formatDateKey(bEndD);
+                            recB.dateTime = bEndD.toLocaleString('zh-CN');
+                            recB.timePeriod = getTimePeriod(bEndD.getHours());
+                            if (recA.mode === 'countdown') {
+                                if (recA.plannedDuration != null) recB.plannedDuration = 0;
+                                if (recA.distractionCount != null) recA.distractionCount = 0;
+                            }
+                            records.splice(idx, 1, recA, recB);
+                            updatedRecords = records;
+                            return true;
+                        });
+                        if (validationMessage) {
+                            showToastDialog('提示', validationMessage, 'info');
                             close();
                             return;
                         }
-                        const original = records[idx];
-                        const origStartMs = toDateSafe(original?.start)?.getTime?.() || 0;
-                        const origEndMs = toDateSafe(original?.end)?.getTime?.() || 0;
-                        if (!Number.isFinite(origStartMs) || !Number.isFinite(origEndMs) || origEndMs <= origStartMs) {
-                            showToastDialog('提示', '记录时间无效', 'info');
-                            close();
-                            return;
-                        }
-                        if (formatDateKey(new Date(origStartMs)) !== formatDateKey(new Date(origEndMs))) {
-                            showToastDialog('提示', '跨天记录暂不支持拆分', 'info');
-                            close();
-                            return;
-                        }
-
-                        const aStart = origStartMs;
-                        const aEnd = splitMs;
-                        const bStart = splitMs;
-                        const bEnd = origEndMs;
-
-                        const recA = { ...original };
-                        const recB = { ...original };
-
-                        const aEndD = new Date(aEnd);
-                        const bEndD = new Date(bEnd);
-                        recA.start = new Date(aStart).toISOString();
-                        recA.end = aEndD.toISOString();
-                        recA.durationSec = Math.max(0, Math.floor((aEnd - aStart) / 1000));
-                        recA.durationMin = Math.max(0, Math.round((aEnd - aStart) / 60000));
-                        recA.timestamp = Math.round(aEnd);
-                        recA.date = formatDateKey(aEndD);
-                        recA.dateTime = aEndD.toLocaleString('zh-CN');
-                        recA.timePeriod = getTimePeriod(aEndD.getHours());
-
-                        recB.start = new Date(bStart).toISOString();
-                        recB.end = bEndD.toISOString();
-                        recB.durationSec = Math.max(0, Math.floor((bEnd - bStart) / 1000));
-                        recB.durationMin = Math.max(0, Math.round((bEnd - bStart) / 60000));
-                        recB.timestamp = Math.round(bEnd);
-                        recB.date = formatDateKey(bEndD);
-                        recB.dateTime = bEndD.toLocaleString('zh-CN');
-                        recB.timePeriod = getTimePeriod(bEndD.getHours());
-
-                        if (recA.mode === 'countdown') {
-                            if (recA.plannedDuration != null) recB.plannedDuration = 0;
-                            if (recA.distractionCount != null) recA.distractionCount = 0;
-                        }
-
-                        records.splice(idx, 1, recA, recB);
-                        const success = await saveHistoryRecords(records);
                         if (success) {
                             markTimelineHistoryDirty();
-                            rebuildHistoryState(records);
+                            rebuildHistoryState(updatedRecords || []);
                             try { updatePageButtons(); } catch (e) {}
                             close();
                             showPage(historyState?.currentPage || selectedDate);
@@ -20006,12 +19916,15 @@ function calculateWeeklyStats(dailyStatsArray) {
             };
             applyRoutineButtonMetaToRecord(newRecord, routineMeta);
 
-            const records = await loadHistoryRecords();
-            records.push(newRecord);
-            const success = await saveHistoryRecords(records);
+            let updatedRecords = null;
+            const success = await mutateHistoryRecords(records => {
+                records.push(newRecord);
+                updatedRecords = records;
+                return true;
+            });
             if (success) {
                 markTimelineHistoryDirty();
-                rebuildHistoryState(records);
+                rebuildHistoryState(updatedRecords || []);
                 slices = getDaySlices(selectedDate);
                 try { renderEditorTimelineWithDrag(); } catch (e) {}
                 try { updatePageButtons(); } catch (e) {}
@@ -20048,22 +19961,25 @@ function calculateWeeklyStats(dailyStatsArray) {
             const ns = new Date(startMs);
             const ne = new Date(endMs);
 
-            const records = await loadHistoryRecords();
-            const idx = findRecordIndex(records, record);
-            if (idx < 0) return false;
-            const ms = endMs - startMs;
-            records[idx].start = ns.toISOString();
-            records[idx].end = ne.toISOString();
-            records[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
-            records[idx].durationMin = Math.max(0, Math.round(ms / 60000));
-            records[idx].timestamp = Math.round(endMs);
-            records[idx].date = formatDateKey(ne);
-            records[idx].dateTime = ne.toLocaleString('zh-CN');
-            records[idx].timePeriod = getTimePeriod(ne.getHours());
-            const success = await saveHistoryRecords(records);
+            let updatedRecords = null;
+            const success = await mutateHistoryRecords(records => {
+                const idx = findRecordIndex(records, record);
+                if (idx < 0) return false;
+                const ms = endMs - startMs;
+                records[idx].start = ns.toISOString();
+                records[idx].end = ne.toISOString();
+                records[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
+                records[idx].durationMin = Math.max(0, Math.round(ms / 60000));
+                records[idx].timestamp = Math.round(endMs);
+                records[idx].date = formatDateKey(ne);
+                records[idx].dateTime = ne.toLocaleString('zh-CN');
+                records[idx].timePeriod = getTimePeriod(ne.getHours());
+                updatedRecords = records;
+                return true;
+            });
             if (success) {
                 markTimelineHistoryDirty();
-                rebuildHistoryState(records);
+                rebuildHistoryState(updatedRecords || []);
                 slices = getDaySlices(selectedDate);
                 try { renderEditorTimelineWithDrag(); } catch (e) {}
                 try { updatePageButtons(); } catch (e) {}
@@ -20318,28 +20234,31 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         const applyRecordAssociation = async (record, assocValue) => {
             try {
-                const records = await loadHistoryRecords();
-                const idx = findRecordIndex(records, record);
-                if (idx < 0) return false;
-                if (assocValue === '__clear__') {
-                    records[idx].taskBlockId = null;
-                    records[idx].taskBlockName = null;
-                    records[idx].databaseBlockId = null;
-                    applyRoutineButtonMetaToRecord(records[idx], null);
-                } else {
-                    const selIdx = Number(assocValue);
-                    const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
-                    if (!btn) return false;
-                    const meta = getRoutineButtonRecordMeta(btn, selIdx);
-                    records[idx].taskBlockId = meta?.blockId || null;
-                    records[idx].taskBlockName = meta?.name || null;
-                    records[idx].databaseBlockId = null;
-                    applyRoutineButtonMetaToRecord(records[idx], meta);
-                }
-                const success = await saveHistoryRecords(records);
+                let updatedRecords = null;
+                const success = await mutateHistoryRecords(records => {
+                    const idx = findRecordIndex(records, record);
+                    if (idx < 0) return false;
+                    if (assocValue === '__clear__') {
+                        records[idx].taskBlockId = null;
+                        records[idx].taskBlockName = null;
+                        records[idx].databaseBlockId = null;
+                        applyRoutineButtonMetaToRecord(records[idx], null);
+                    } else {
+                        const selIdx = Number(assocValue);
+                        const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
+                        if (!btn) return false;
+                        const meta = getRoutineButtonRecordMeta(btn, selIdx);
+                        records[idx].taskBlockId = meta?.blockId || null;
+                        records[idx].taskBlockName = meta?.name || null;
+                        records[idx].databaseBlockId = null;
+                        applyRoutineButtonMetaToRecord(records[idx], meta);
+                    }
+                    updatedRecords = records;
+                    return true;
+                });
                 if (success) {
                     markTimelineHistoryDirty();
-                    rebuildHistoryState(records);
+                    rebuildHistoryState(updatedRecords || []);
                     try { updatePageButtons(); } catch (e) {}
                 }
                 return success;
@@ -20506,25 +20425,30 @@ function calculateWeeklyStats(dailyStatsArray) {
                             return;
                         }
 
-                        const records = await loadHistoryRecords();
-                        const idx = findRecordIndex(records, record);
-                        if (idx < 0) {
-                            showToast('未找到对应记录（可能已被刷新）', 2000);
-                            return;
-                        }
                         const ms = newEndMs - newStartMs;
                         const newStart = new Date(newStartMs);
                         const newEnd = new Date(newEndMs);
-                        records[idx].start = newStart.toISOString();
-                        records[idx].end = newEnd.toISOString();
-                        records[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
-                        records[idx].durationMin = Math.max(0, Math.round(ms / 60000));
-                        records[idx].timestamp = Math.round(newEndMs);
-                        records[idx].date = formatDateKey(newEnd);
-                        records[idx].dateTime = newEnd.toLocaleString('zh-CN');
-                        records[idx].timePeriod = getTimePeriod(newEnd.getHours());
-
-                        const ok = await saveHistoryRecords(records);
+                        let updatedRecords = null;
+                        let recordFound = false;
+                        const ok = await mutateHistoryRecords(records => {
+                            const idx = findRecordIndex(records, record);
+                            if (idx < 0) return false;
+                            recordFound = true;
+                            records[idx].start = newStart.toISOString();
+                            records[idx].end = newEnd.toISOString();
+                            records[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
+                            records[idx].durationMin = Math.max(0, Math.round(ms / 60000));
+                            records[idx].timestamp = Math.round(newEndMs);
+                            records[idx].date = formatDateKey(newEnd);
+                            records[idx].dateTime = newEnd.toLocaleString('zh-CN');
+                            records[idx].timePeriod = getTimePeriod(newEnd.getHours());
+                            updatedRecords = records;
+                            return true;
+                        });
+                        if (!recordFound) {
+                            showToast('未找到对应记录（可能已被刷新）', 2000);
+                            return;
+                        }
                         if (!ok) {
                             showToast('保存失败', 2000);
                             return;
@@ -20560,7 +20484,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         startInput.value = toDateTimeLocalValue(record.start);
                         endInput.value = toDateTimeLocalValue(record.end);
                         updateMenuHeader();
-                        rebuildHistoryState(records);
+                        rebuildHistoryState(updatedRecords || []);
                         slices = getDaySlices(selectedDate);
                         try { renderEditorTimelineWithDrag(); } catch (e) {}
                         try { updatePageButtons(); } catch (e) {}
@@ -20598,42 +20522,41 @@ function calculateWeeklyStats(dailyStatsArray) {
                     try {
                         assocSelect.disabled = true;
                         const value = assocSelect.value;
-                        const records = await loadHistoryRecords();
-                        const idx = findRecordIndex(records, record);
-                        if (idx < 0) {
+                        let recordFound = false;
+                        const ok = await mutateHistoryRecords(records => {
+                            const idx = findRecordIndex(records, record);
+                            if (idx < 0) return false;
+                            recordFound = true;
+                            if (value === '__clear__') {
+                                records[idx].taskBlockId = null;
+                                records[idx].taskBlockName = null;
+                                records[idx].databaseBlockId = null;
+                                applyRoutineButtonMetaToRecord(records[idx], null);
+                            } else {
+                                const selIdx = Number(value);
+                                const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
+                                if (!btn) return false;
+                                const meta = getRoutineButtonRecordMeta(btn, selIdx);
+                                const timerType = String(btn?.timerType || 'stopwatch');
+                                const useBreak = btn?.useBreakMode === true;
+                                const nextMode = useBreak
+                                    ? (timerType === 'pomodoro' ? 'break' : 'stopwatch-break')
+                                    : (timerType === 'pomodoro' ? 'countdown' : 'stopwatch');
+                                records[idx].taskBlockId = meta?.blockId || null;
+                                records[idx].taskBlockName = meta?.name || null;
+                                records[idx].databaseBlockId = null;
+                                applyRoutineButtonMetaToRecord(records[idx], meta);
+                                records[idx].mode = nextMode;
+                                records[idx].plannedDuration = (nextMode === 'countdown' || nextMode === 'break')
+                                    ? Math.max(1, Math.round(Number(records[idx].plannedDuration || records[idx].durationMin || 1)))
+                                    : null;
+                            }
+                            return true;
+                        });
+                        if (!recordFound) {
                             showToast('未找到对应记录（可能已被刷新）', 2000);
                             return;
                         }
-                        if (value === '__clear__') {
-                            records[idx].taskBlockId = null;
-                            records[idx].taskBlockName = null;
-                            records[idx].databaseBlockId = null;
-                            applyRoutineButtonMetaToRecord(records[idx], null);
-                        } else {
-                            const selIdx = Number(value);
-                            const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
-                            if (!btn) return;
-                            const meta = getRoutineButtonRecordMeta(btn, selIdx);
-                            const timerType = String(btn?.timerType || 'stopwatch');
-                            const useBreak = btn?.useBreakMode === true;
-                            const nextMode = useBreak
-                                ? (timerType === 'pomodoro' ? 'break' : 'stopwatch-break')
-                                : (timerType === 'pomodoro' ? 'countdown' : 'stopwatch');
-                            records[idx].taskBlockId = meta?.blockId || null;
-                            records[idx].taskBlockName = meta?.name || null;
-                            records[idx].databaseBlockId = null;
-                            applyRoutineButtonMetaToRecord(records[idx], meta);
-                            records[idx].mode = nextMode;
-                            if (nextMode === 'countdown' || nextMode === 'break') {
-                                const base = Number.isFinite(Number(records[idx].plannedDuration)) && Number(records[idx].plannedDuration) > 0
-                                    ? Number(records[idx].plannedDuration)
-                                    : Number(records[idx].durationMin || 0);
-                                records[idx].plannedDuration = Math.max(1, Math.round(base || 1));
-                            } else {
-                                records[idx].plannedDuration = null;
-                            }
-                        }
-                        const ok = await saveHistoryRecords(records);
                         if (!ok) {
                             showToast('更新失败', 2000);
                             return;
@@ -21240,14 +21163,15 @@ function calculateWeeklyStats(dailyStatsArray) {
             }
             
             try {
-                // 加载所有记录
-                const allRecords = await loadHistoryRecords();
-                
-                // 过滤掉当天的记录
-                const filteredRecords = allRecords.filter(r => r.date !== date);
-                
-                // 保存
-                const success = await saveHistoryRecords(filteredRecords);
+                const success = await mutateHistoryRecords(records => {
+                    let writeIndex = 0;
+                    for (const record of records) {
+                        if (record.date !== date) records[writeIndex++] = record;
+                    }
+                    if (writeIndex === records.length) return false;
+                    records.length = writeIndex;
+                    return true;
+                });
                 
                 if (success) {
                     // 🔧 v9.0 修复：使用自定义提示替代 alert
@@ -22518,11 +22442,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         pushSeparator();
 
         template.push({
-            label: timerMode === 'stopwatch' ? '☕ 正计时休息' : '⏱️ 正计时模式',
-            click: () => runAction(async () => {
-                if (timerMode === 'stopwatch') await startStopwatchBreakMode();
-                else await switchToStopwatchAndStart();
-            })
+            label: (timerMode === 'break' || timerMode === 'stopwatch-break') ? '☕ 正计时休息' : '⏱️ 正计时模式',
+            click: () => runAction(async () => { await startStopwatchForCurrentPhase(); })
         }, {
             label: isRunning ? '暂停' : '继续',
             enabled: hasUnfinishedTimerState(),
@@ -24046,12 +23967,12 @@ window.__setTomatoFloatState = function (payload) {
         ctrlBtn.innerHTML = isRunning ? '⏸' : '▶';
         ctrlBtn.setAttribute('data-tomato-role', 'toggle');
         ctrlBtn.title = isRunning ? '暂停' : '开始';
-        ctrlBtn.onclick = (e) => {
+        ctrlBtn.onclick = async (e) => {
             e.stopPropagation();
             if (isRunning) {
-                pauseTimer();
+                await pauseTimer();
             } else {
-                startTimer();
+                try { await startTimer(); } catch (error) { Logger.error(error); }
             }
         };
         floatBar.appendChild(ctrlBtn);
@@ -32135,7 +32056,12 @@ window.__setTomatoFloatState = function (payload) {
             Logger.info('🍅 默认番茄时间已设置为:', loadedDefaultTime, '分钟');
             
             await loadFocusTimeSettings();
-            const records = await loadHistoryRecords();
+            let records = [];
+            try {
+                records = await loadHistoryRecords();
+            } catch (e) {
+                Logger.warn('🍅 历史记录暂时不可用，计时器继续初始化:', e);
+            }
             Logger.info('🍅 历史记录条数:', records.length);
             window.showPage = showPage;
             
@@ -32148,7 +32074,7 @@ window.__setTomatoFloatState = function (payload) {
 
                     const MIN_STATE_UPDATE_INTERVAL = 500;
                     const shouldHandleEndDialogClose = !!(activeEndDialog?.id && newState?.endDialog?.closed === true && newState.endDialog.id === activeEndDialog.id);
-                    const expiredCountdownSnapshot = getExpiredCountdownSnapshot(newState, now);
+                    const expiredTimerSnapshot = getExpiredTimerSnapshot(newState, now);
                     if (shouldHandleEndDialogClose) {
                         try { applyEndDialogCloseFromSync(newState); } catch (e) {}
                     }
@@ -32181,7 +32107,7 @@ window.__setTomatoFloatState = function (payload) {
                     if (handleStateChange._lastTime
                         && now - handleStateChange._lastTime < MIN_STATE_UPDATE_INTERVAL
                         && !shouldHandleEndDialogClose
-                        && !expiredCountdownSnapshot) {
+                        && !expiredTimerSnapshot) {
                         Logger.debug('🔄 handleStateChange: 状态更新过于频繁，跳过');
                         return;
                     }
@@ -32212,9 +32138,9 @@ window.__setTomatoFloatState = function (payload) {
                         return;
                     }
 
-                    if (expiredCountdownSnapshot) {
+                    if (expiredTimerSnapshot) {
                         try {
-                            const finalized = await finalizeExpiredCountdownIfNeeded('sync-state-change', newState);
+                            const finalized = await finalizeExpiredTimerIfNeeded('sync-state-change', newState);
                             if (finalized) {
                                 try { maybeRefreshHistoryFromRemote(); } catch (e) {}
                                 return;
@@ -32226,63 +32152,12 @@ window.__setTomatoFloatState = function (payload) {
 
                 if (isLocalStateInitial && newState.startTime && newState.status !== 'IDLE') {
                     Logger.info('🔄 SyncManager: 恢复云端状态');
-                    syncState = newState;
-                    updateFromSyncState();
+                    applyAcceptedSyncStateToTimer(newState);
 
-                    if (syncState.status === 'RUNNING') {
-                        isRunning = true;
-                        isTimerPaused = false;
-                    } else if (syncState.status === 'PAUSED') {
-                        isRunning = false;
-                        isTimerPaused = true;
-                        if (timerMode !== 'stopwatch' && timerMode !== 'stopwatch-break') {
-                            pausedRemainingSeconds = remainingSeconds;
-                        }
-                    }
-
-                    if (syncState.startTime) startTime = syncState.startTime;
-                    if (syncState.mode) timerMode = syncState.mode;
-                    if (syncState.duration && (timerMode === 'countdown' || timerMode === 'break')) currentDuration = Math.round(syncState.duration / 60);
-
-                    // 🔧 v9.0 修复：恢复本地时间戳变量，以便重置时能保存记录
-                    if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
-                        const savedStopwatchStartTime = syncState.stopwatchStartTimeMs || syncState.startTime;
-                        if (savedStopwatchStartTime) {
-                            stopwatchStartTimeMs = savedStopwatchStartTime;
-                            stopwatchStartTimestamp = new Date(savedStopwatchStartTime).toISOString();
-
-                            if (syncState.pausedElapsedSeconds !== null && syncState.pausedElapsedSeconds !== undefined) {
-                                elapsedSeconds = syncState.pausedElapsedSeconds;
-                                pausedRemainingSeconds = elapsedSeconds;
-                            } else {
-                                if (syncState.pausedIntervals && syncState.pausedIntervals.length > 0) {
-                                    let totalPausedTime = 0;
-                                    for (const interval of syncState.pausedIntervals) {
-                                        totalPausedTime += (interval.end - interval.start);
-                                    }
-                                    const now = Date.now();
-                                    const elapsedSinceStart = now - stopwatchStartTimeMs;
-                                    const actualElapsedMs = elapsedSinceStart - totalPausedTime;
-                                    elapsedSeconds = Math.min(Math.floor(actualElapsedMs / 1000), CONFIG.MAX_STOPWATCH_SECONDS);
-                                } else {
-                                    const now = Date.now();
-                                    const elapsedMs = now - stopwatchStartTimeMs;
-                                    elapsedSeconds = Math.min(Math.floor(elapsedMs / 1000), CONFIG.MAX_STOPWATCH_SECONDS);
-                                }
-                                pausedRemainingSeconds = elapsedSeconds;
-                            }
-                        }
-                    } else {
-                        // 🔧 v9.0 修复：倒计时模式也恢复时间戳
-                        if (syncState.startTime) {
-                            currentStartTimestamp = new Date(syncState.startTime).toISOString();
-                            currentStartTimeMs = syncState.startTime;
-                        }
-                        if (syncState.status === 'PAUSED') {
-                            pausedRemainingSeconds = remainingSeconds;
-                        } else {
-                            pausedRemainingSeconds = null;
-                        }
+                    const finalized = await finalizeExpiredTimerIfNeeded('sync-state-initial', newState);
+                    if (finalized) {
+                        try { maybeRefreshHistoryFromRemote(); } catch (e) {}
+                        return;
                     }
 
                     if (timeDisplay) updateDisplay(true);
@@ -32580,251 +32455,22 @@ window.__setTomatoFloatState = function (payload) {
             } catch (e) {
                 Logger.warn('🔄 SyncManager: 首次轮询失败', e.message);
             }
-            
+
             await new Promise(resolve => setTimeout(resolve, 500));
-            
+
             const currentSyncState = SyncManager.getState();
-            
-            if (currentSyncState && (currentSyncState.status === 'RUNNING' || currentSyncState.status === 'PAUSED')) {
-                if (currentSyncState.status === 'RUNNING') {
-                    Logger.info('🔄 SyncManager: 检测到云端计时器运行中');
-                    
-                    // 🔧 修复：正计时模式使用 elapsed 判断，最长 16 小时；倒计时使用 remaining 判断
-                    const isStopwatchMode = currentSyncState.mode === 'stopwatch' || currentSyncState.mode === 'stopwatch-break';
-                    const cloudRemaining = StateCalculator.calculateRemaining(currentSyncState);
-                    const cloudElapsed = StateCalculator.calculateElapsed(currentSyncState);
-                    const MAX_STOPWATCH_SECONDS = CONFIG.MAX_STOPWATCH_SECONDS;
-                    
-                    Logger.info('🔄 云端剩余时间:', cloudRemaining, '秒, 已过时间:', cloudElapsed, '秒, 模式:', currentSyncState.mode);
-                    
-                    // 🔧 修复：正计时模式只有超过 8 小时才算完成
-                    const isExpired = isStopwatchMode ? (cloudElapsed >= MAX_STOPWATCH_SECONDS) : (cloudRemaining <= 0);
 
-                    if (isExpired && !isStopwatchMode) {
-                        syncState = currentSyncState;
-                        if (!isRunning && currentSyncState.startTime) {
-                            updateFromSyncState();
-                            isRunning = true;
-                            isTimerPaused = false;
-                            startTime = currentSyncState.startTime;
-                            if (!currentStartTimestamp) {
-                                currentStartTimeMs = currentSyncState.startTime;
-                                currentStartTimestamp = new Date(currentSyncState.startTime).toISOString();
-                            }
-                        }
-                        await finalizeExpiredCountdownIfNeeded('sync-init-expired', currentSyncState);
-                    } else if (isExpired) {
-                        // 🔧 新增：检查是否应该忽略异常过期的正计时
-                        const shouldGenerateRecord = await SyncManager.checkShouldHandleExpiredStopwatch(currentSyncState);
-
-                        if (!shouldGenerateRecord) {
-                            Logger.info('🔄 SyncManager: 检测到异常过期（设备休眠期间其他设备有活动），忽略此计时');
-                            currentSyncState.status = 'IDLE';
-                            currentSyncState.startTime = null;
-                            currentSyncState.stopwatchStartTimeMs = null;
-                            currentSyncState.pausedElapsedSeconds = 0;
-                            currentSyncState.pausedIntervals = [];
-                            currentSyncState.currentPauseStart = null;
-
-                            await SyncManager.updateLocal(currentSyncState, true);
-
-                            syncState = currentSyncState;
-                            isRunning = false;
-                            isTimerPaused = false;
-                            elapsedSeconds = 0;
-                            remainingSeconds = currentSyncState.duration || 1800;
-
-                            if (timeDisplay) updateDisplay(true);
-                            if (controlButton) {
-                                controlButton.innerHTML = '▶️';
-                            }
-                            endTimerFocus('sync-expired-idle', currentSyncState);
-                        } else if (currentSyncState.status === 'RUNNING') {
-                            Logger.info('🔄 云端计时正常运行后到期，标记为完成');
-                            currentSyncState.status = 'COMPLETED';
-                            // 🔧 修复：正计时模式使用实际 elapsed 时间作为 duration
-                            currentSyncState.duration = isStopwatchMode ? Math.min(cloudElapsed, MAX_STOPWATCH_SECONDS) : (currentSyncState.duration || 1800);
-
-                            const recordData = {
-                                start: new Date(currentSyncState.startTime).toISOString(),
-                                end: new Date(currentSyncState.startTime + currentSyncState.duration * 1000).toISOString(),
-                                durationMin: Math.round(currentSyncState.duration / 60),
-                                durationSec: currentSyncState.duration,
-                                mode: currentSyncState.mode || 'countdown',
-                                timestamp: Date.now(),
-                                date: formatDateKey(new Date()),
-                                dateTime: new Date().toLocaleString('zh-CN'),
-                                timePeriod: getTimePeriod(new Date(currentSyncState.startTime).getHours()),
-                                taskBlockId: currentSyncState.taskBlockId || null,
-                                taskBlockName: currentSyncState.taskBlockName || null,
-                                databaseBlockId: currentSyncState.databaseBlockId || null
-                            };
-                            const expiredStartMs = Number(currentSyncState.startTime || 0);
-                            const expiredEndMs = expiredStartMs + Number(currentSyncState.duration || 0) * 1000;
-                            const attachedLuminaRecords = consumePendingLuminaRecordsForRecord(recordData, expiredStartMs, expiredEndMs);
-                            if (attachedLuminaRecords.length > 0) {
-                                recordData.luminaRecords = attachedLuminaRecords;
-                            }
-
-                            try {
-                                const records = await loadHistoryRecords();
-                                // 🔧 修复：去重检查 - 防止代码重启时重复保存同一个番茄钟周期
-                                // 只根据开始时间和模式判断，因为同一周期内的重载durationSec会不同
-                                const duplicateIndex = records.findIndex(r =>
-                                    r.start === recordData.start &&
-                                    r.mode === recordData.mode
-                                );
-                                const isDuplicate = duplicateIndex >= 0;
-                                if (isDuplicate) {
-                                    if (hasLuminaHistoryRecords(recordData)) {
-                                        recordData.luminaRecords.forEach(entry => appendLuminaRecordToHistoryRecord(records[duplicateIndex], entry));
-                                        await saveHistoryRecords(records);
-                                    }
-                                    Logger.info('🔄 历史记录已存在，跳过重复保存（start:', recordData.start, ', mode:', recordData.mode, '）');
-                                } else {
-                                    records.push(recordData);
-                                    await saveHistoryRecords(records);
-                                    Logger.info('✅ 历史记录已保存（正常运行到期）');
-                                }
-                            } catch (e) {
-                                Logger.error('❌ 保存历史记录失败:', e);
-                            }
-
-                            await SyncManager.updateLocal(currentSyncState, true);
-
-                            syncState = currentSyncState;
-                            isRunning = false;
-                            remainingSeconds = 0;
-
-                            if (timeDisplay) updateDisplay(true);
-                            if (controlButton) {
-                                controlButton.innerHTML = '▶️';
-                            }
-                            endTimerFocus('sync-expired-completed', currentSyncState);
-
-                            setTimeout(() => {
-                                showToastDialog('🍅 时间到！', '该休息一下了～', 'tomato-end', currentSyncState.taskBlockId, currentSyncState.taskBlockName);
-                            }, 500);
-                        } else {
-                            Logger.info('🔄 云端计时暂停状态过期，重置为空闲状态（不生成历史记录）');
-                            currentSyncState.status = 'IDLE';
-                            currentSyncState.startTime = null;
-                            currentSyncState.pausedIntervals = [];
-                            currentSyncState.currentPauseStart = null;
-                            currentSyncState.pausedElapsedSeconds = null;
-                            
-                            await SyncManager.updateLocal(currentSyncState, true);
-                            
-                            syncState = currentSyncState;
-                            isRunning = false;
-                            isTimerPaused = false;
-                            remainingSeconds = currentSyncState.duration || 1800;
-                            elapsedSeconds = 0;
-                            
-                            if (timeDisplay) updateDisplay(true);
-                            if (controlButton) {
-                                controlButton.innerHTML = '▶️';
-                            }
-                            endTimerFocus('sync-expired-paused-idle', currentSyncState);
-                        }
-                    } else {
-                        Logger.info('🔄 SyncManager: 恢复云端运行状态');
-                        syncState = currentSyncState;
-                        updateFromSyncState();
-                        
-                        isRunning = true;
-                        isTimerPaused = false;
-                        
-                        if (syncState.startTime) {
-                            startTime = syncState.startTime;
-                        }
-                        
-                        if (syncState.mode) {
-                            timerMode = syncState.mode;
-                        }
-                        if (syncState.duration) {
-                            if (timerMode === 'countdown' || timerMode === 'break') currentDuration = Math.round(syncState.duration / 60);
-                        }
-                        
-                        if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
-                            const savedStopwatchStartTime = syncState.stopwatchStartTimeMs || syncState.startTime;
-                            if (savedStopwatchStartTime) {
-                                stopwatchStartTimeMs = savedStopwatchStartTime;
-                                
-                                if (syncState.pausedElapsedSeconds !== null && syncState.pausedElapsedSeconds !== undefined) {
-                                    elapsedSeconds = syncState.pausedElapsedSeconds;
-                                } else {
-                                    const now = Date.now();
-                                    const elapsedMs = now - stopwatchStartTimeMs;
-                                    elapsedSeconds = Math.min(Math.floor(elapsedMs / 1000), CONFIG.MAX_STOPWATCH_SECONDS);
-                                }
-                                pausedRemainingSeconds = null;
-                            }
-                        } else {
-                            pausedRemainingSeconds = null;
-                        }
-                        
-                        if (timeDisplay) updateDisplay(true);
-                        if (controlButton) {
-                            controlButton.innerHTML = '⏸️';
-                        }
-                        
-                        if (!timerId && isRunning && startTime > 0) {
-                            Logger.info('🔄 SyncManager: 启动本地定时器（自动恢复计时）');
-                            startLocalTimerLoop();
-                        }
-                    }
+            if (currentSyncState && ['RUNNING', 'PAUSED', 'COMPLETED'].includes(currentSyncState.status)) {
+                applyAcceptedSyncStateToTimer(currentSyncState);
+                const finalized = await finalizeExpiredTimerIfNeeded('sync-init-expired', currentSyncState);
+                if (!finalized && isRunning && !timerId && startTime > 0) {
+                    startLocalTimerLoop();
+                } else if (!isRunning && timerId) {
+                    clearInterval(timerId);
+                    timerId = null;
                 }
-                
-                if (currentSyncState.status === 'PAUSED') {
-                    Logger.info('🔄 SyncManager: 检测到云端计时器处于暂停状态');
-                    
-                    syncState = currentSyncState;
-                    updateFromSyncState();
-                    
-                    isRunning = false;
-                    isTimerPaused = true;
-                    
-                    pausedRemainingSeconds = remainingSeconds;
-                    
-                    if (syncState.mode) {
-                        timerMode = syncState.mode;
-                    }
-                    if (syncState.duration) {
-                        if (timerMode === 'countdown' || timerMode === 'break') currentDuration = Math.round(syncState.duration / 60);
-                    }
-
-                    if (syncState.currentPauseStart) {
-                        currentPauseStart = syncState.currentPauseStart;
-                    }
-
-                    if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
-                        const savedStopwatchStartTime = syncState.stopwatchStartTimeMs || syncState.startTime;
-                        if (savedStopwatchStartTime) {
-                            stopwatchStartTimeMs = savedStopwatchStartTime;
-                            startTime = savedStopwatchStartTime;
-                            
-                            if (syncState.pausedElapsedSeconds !== null && syncState.pausedElapsedSeconds !== undefined) {
-                                elapsedSeconds = syncState.pausedElapsedSeconds;
-                                pausedRemainingSeconds = elapsedSeconds;
-                            } else {
-                                const elapsedMs = Date.now() - stopwatchStartTimeMs;
-                                elapsedSeconds = Math.min(Math.floor(elapsedMs / 1000), CONFIG.MAX_STOPWATCH_SECONDS);
-                                pausedRemainingSeconds = elapsedSeconds;
-                            }
-                        }
-                    }
-                    
-                    if (timerId) {
-                        clearInterval(timerId);
-                        timerId = null;
-                    }
-                    
-                    if (timeDisplay) updateDisplay(true);
-                    if (controlButton) {
-                        controlButton.innerHTML = '▶️';
-                    }
-                }
+                if (timeDisplay) updateDisplay(true);
+                if (controlButton) controlButton.innerHTML = isRunning ? '⏸️' : '▶️';
             } else {
                 Logger.info('🔄 SyncManager: 云端无有效状态或状态为空闲');
             }
