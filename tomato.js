@@ -2720,6 +2720,12 @@
         return getTimelineLuminaLinkSettings().enabled === true;
     }
 
+    function getLuminaPluginInstance() {
+        const plugins = __getPluginApp()?.plugins;
+        if (!Array.isArray(plugins)) return null;
+        return plugins.find(plugin => plugin?.name === 'siyuan-lumina') || null;
+    }
+
     function hasLuminaHistoryRecords(record) {
         return Array.isArray(record?.luminaRecords) && record.luminaRecords.length > 0;
     }
@@ -2731,6 +2737,7 @@
             content: String(entry?.content || '').trim(),
             status: String(entry?.status || '').trim(),
             blockId: String(entry?.blockId || '').trim(),
+            noteId: String(entry?.noteId || '').trim(),
             createdAt,
             date
         };
@@ -2741,7 +2748,11 @@
         const normalized = normalizeLuminaRecordEntry(entry);
         if (!normalized.content) return false;
         const list = Array.isArray(record.luminaRecords) ? record.luminaRecords.slice() : [];
-        const duplicate = list.some(item => String(item?.blockId || '') === normalized.blockId && normalized.blockId);
+        const recordId = normalized.noteId || normalized.blockId;
+        const duplicate = list.some(item => {
+            const itemId = String(item?.noteId || item?.blockId || '').trim();
+            return !!recordId && itemId === recordId;
+        });
         if (!duplicate) list.push(normalized);
         record.luminaRecords = list;
         return true;
@@ -2838,6 +2849,15 @@
         return '';
     }
 
+    function formatLuminaBreezeTag(tagValue = '') {
+        const normalized = String(tagValue || '')
+            .replace(/\u200B|\u200C|\u200D|\uFEFF/g, '')
+            .trim()
+            .replace(/\s+/g, '-')
+            .replace(/[^\w/\u4e00-\u9fa5-]/g, '');
+        return normalized ? `#${normalized}` : '';
+    }
+
     async function buildLuminaTimerStatusTail() {
         const cfg = getTimelineLuminaLinkSettings();
         if (cfg.appendTimerStatus === false) return '';
@@ -2856,7 +2876,9 @@
         }
         taskName = __sanitizeTaskAssociationName(taskName);
         const routineIcon = getActiveRoutineIconForLuminaStatus(taskBlockId);
-        const taskLabel = routineIcon && taskName ? `${routineIcon} ${taskName}` : taskName;
+        const routineTagLine = formatLuminaBreezeTag(getActiveRoutineNameForLuminaTag(taskBlockId));
+        const displayTaskName = routineTagLine || taskName;
+        const taskLabel = routineIcon && displayTaskName ? `${routineIcon} ${displayTaskName}` : displayTaskName;
         return taskLabel ? `${statusLabel} · ${taskLabel}` : statusLabel;
     }
 
@@ -3200,40 +3222,27 @@
         const status = String(options.status || '').trim();
         const fullContent = String(content || '').trim();
         if (!fullContent) throw new Error('记录内容为空');
-        const config = await readTimelineLuminaConfig();
-        if (config.syncMode === 'dailynote' && !config.notebookId) throw new Error('请先在轻语中配置日记笔记本');
-        if (config.syncMode === 'doc' && !config.syncDocId) throw new Error('请先在轻语中配置指定文档');
-        const markdown = buildTimelineLuminaDiaryMarkdown(fullContent, timestamp);
-        let blockId = null;
-        let targetText = '';
-        if (config.syncMode === 'doc') {
-            blockId = await appendTimelineLuminaToDocWithDateGroup(config.syncDocId, markdown, timestamp);
-            targetText = `指定文档 ${config.syncDocId}`;
-        } else {
-            const daily = await getOrCreateTimelineLuminaDailyNoteDoc(config, new Date(timestamp));
-            blockId = await appendTimelineLuminaMarkdownToDoc(daily.docId, markdown);
-            targetText = daily.hPath || daily.docId;
-        }
-        if (!blockId) throw new Error('写入成功但未获取到记录块 ID');
-        const attrs = {
-            'custom-lumina-content': fullContent,
-            'custom-lumina-date': formatLuminaDateTimeAttr(timestamp)
-        };
+        const luminaPlugin = getLuminaPluginInstance();
+        if (!luminaPlugin) throw new Error('轻语插件未加载');
+        if (typeof luminaPlugin.addBreezeNote !== 'function') throw new Error('当前轻语版本不支持番茄钟记录');
         const routineTag = getActiveRoutineNameForLuminaTag(syncState?.taskBlockId || currentTaskBlockId || '');
         const fallbackTag = routineTag ? '' : getTimerModeLuminaFallbackTag(syncState?.mode || timerMode || '');
         const luminaTag = routineTag || fallbackTag;
-        if (luminaTag) attrs['custom-lumina-tag'] = luminaTag;
-        if (status) attrs['custom-tomato-status'] = status;
-        const attrRes = await postJSON('/api/attr/setBlockAttrs', { id: blockId, attrs });
-        if (attrRes?.data?.code !== 0) throw new Error(attrRes?.data?.msg || '轻语记录属性写入失败');
+        const tagLine = formatLuminaBreezeTag(luminaTag);
+        const existingTags = fullContent.match(/#[\w/\u4e00-\u9fa5-]+/g) || [];
+        const recordContent = tagLine && !existingTags.includes(tagLine) ? `${fullContent}\n${tagLine}` : fullContent;
+        const note = await luminaPlugin.addBreezeNote({ content: recordContent, timestamp });
+        const noteId = String(note?.id || '').trim();
+        if (!noteId) throw new Error('轻语记录保存成功但未返回记录 ID');
         return {
-            blockId,
-            targetText,
+            blockId: '',
+            noteId,
+            targetText: '轻语 / 清风记录',
             content: fullContent,
             status,
             tag: luminaTag,
             createdAt: timestamp,
-            date: attrs['custom-lumina-date']
+            date: formatLuminaDateTimeAttr(timestamp)
         };
     }
 
@@ -3308,19 +3317,12 @@
     }
 
     async function describeTimelineLuminaTarget() {
-        try {
-            const config = await readTimelineLuminaConfig();
-            if (config.syncMode === 'doc') {
-                if (!config.syncDocId) return { ok: false, text: '轻语未配置指定文档，请先配置轻语日记' };
-                return { ok: true, text: `指定文档：${config.syncDocId}` };
-            }
-            if (!config.notebookId) return { ok: false, text: '轻语未配置日记笔记本，请先配置轻语日记' };
-            const template = await getLuminaDailyNoteTemplate(config);
-            const hPath = renderLuminaDailyNotePath(template, new Date());
-            return { ok: true, text: `每日日记：${config.notebookId}${hPath ? ` / ${hPath}` : ''}` };
-        } catch (e) {
-            return { ok: false, text: `${e?.message || '无法检测轻语配置'}，请先配置轻语日记` };
+        const luminaPlugin = getLuminaPluginInstance();
+        if (!luminaPlugin) return { ok: false, text: '轻语插件未加载' };
+        if (typeof luminaPlugin.addBreezeNote !== 'function') {
+            return { ok: false, text: '当前轻语版本不支持番茄钟记录' };
         }
+        return { ok: true, text: '轻语 / 清风记录' };
     }
 
     function showMiniToast(text) {
@@ -6299,18 +6301,6 @@
         luminaEnabledInput.style.cssText = `cursor: pointer; transform: scale(1.15);`;
         luminaContent.appendChild(row('启用轻语联动', luminaEnabledInput));
 
-        const luminaConfigPathInput = document.createElement('input');
-        luminaConfigPathInput.type = 'text';
-        luminaConfigPathInput.value = luminaCfg.configPath || DEFAULT_LUMINA_CONFIG_PATH;
-        luminaConfigPathInput.placeholder = DEFAULT_LUMINA_CONFIG_PATH;
-        luminaConfigPathInput.style.cssText = `
-            width: 100%; box-sizing: border-box; padding: 7px 8px;
-            border: 1px solid var(--b3-theme-surface-light); border-radius: 4px;
-            background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
-            font-size: 12px; font-family: monospace;
-        `;
-        luminaContent.appendChild(rowStack('轻语配置路径', luminaConfigPathInput));
-
         const luminaAttachHistoryInput = document.createElement('input');
         luminaAttachHistoryInput.type = 'checkbox';
         luminaAttachHistoryInput.checked = luminaCfg.attachToHistory !== false;
@@ -6363,8 +6353,6 @@
         const refreshLuminaTargetStatus = async () => {
             luminaTargetStatus.textContent = '正在检测轻语写入目标...';
             luminaTargetStatus.style.color = 'var(--b3-theme-on-surface)';
-            const cfg = getTimelineLuminaLinkSettings();
-            cfg.configPath = String(luminaConfigPathInput.value || DEFAULT_LUMINA_CONFIG_PATH).trim() || DEFAULT_LUMINA_CONFIG_PATH;
             const result = await describeTimelineLuminaTarget();
             luminaTargetStatus.textContent = result.text;
             luminaTargetStatus.style.color = result.ok ? 'var(--b3-theme-on-surface)' : 'var(--b3-theme-error)';
@@ -6372,10 +6360,8 @@
         const saveLuminaSettingsFromDialog = async () => {
             const cfg = getTimelineLuminaLinkSettings();
             cfg.enabled = luminaEnabledInput.checked === true;
-            cfg.configPath = String(luminaConfigPathInput.value || DEFAULT_LUMINA_CONFIG_PATH).trim() || DEFAULT_LUMINA_CONFIG_PATH;
             cfg.attachToHistory = luminaAttachHistoryInput.checked !== false;
             cfg.appendTimerStatus = luminaAppendStatusInput.checked !== false;
-            luminaConfigPathInput.value = cfg.configPath;
             syncLuminaInputsDisabled();
             await saveUserSettings();
             try {
@@ -6388,7 +6374,6 @@
         luminaEnabledInput.onchange = saveLuminaSettingsFromDialog;
         luminaAttachHistoryInput.onchange = saveLuminaSettingsFromDialog;
         luminaAppendStatusInput.onchange = saveLuminaSettingsFromDialog;
-        luminaConfigPathInput.onchange = saveLuminaSettingsFromDialog;
         luminaRefreshBtn.onclick = refreshLuminaTargetStatus;
         luminaSaveBtn.onclick = async () => {
             await saveLuminaSettingsFromDialog();
@@ -35310,6 +35295,17 @@ window.__setTomatoFloatState = function (payload) {
         document.getElementById('tomato-reminder-dialog')?.remove();
         document.getElementById('tomato-reminder-backdrop')?.remove();
         const dialogOptions = (options && typeof options === 'object') ? options : {};
+        const isDraftMode = dialogOptions.draft === true;
+        let resolveDraftResult = null;
+        let draftResultSettled = false;
+        const draftResult = isDraftMode
+            ? new Promise((resolve) => { resolveDraftResult = resolve; })
+            : null;
+        const settleDraftResult = (result) => {
+            if (!isDraftMode || draftResultSettled) return;
+            draftResultSettled = true;
+            try { resolveDraftResult?.(result); } catch (e) {}
+        };
         
         const isMobile = isMobileDevice();
         const backdrop = document.createElement('div');
@@ -35324,9 +35320,10 @@ window.__setTomatoFloatState = function (payload) {
             dialog.style.cssText = 'background:var(--b3-theme-background);border:1px solid var(--b3-theme-surface-light);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.3);z-index:2147483648;padding:24px;width:90vw;max-width:480px;max-height:85vh;display:flex;flex-direction:column;color:var(--b3-theme-on-background);box-sizing:border-box;';
         }
 
-        const closeDialog = () => {
+        const closeDialog = (result = null) => {
             try { backdrop.remove(); } catch (e) {}
             try { dialog.remove(); } catch (e) {}
+            if (isDraftMode) settleDraftResult(result || { action: 'cancel' });
         };
 
         const titleRow = document.createElement('div');
@@ -35970,6 +35967,10 @@ window.__setTomatoFloatState = function (payload) {
             deleteBtn.textContent = '删除提醒';
             deleteBtn.style.cssText = 'flex:1;padding:12px;border:1px solid rgba(244,67,54,0.22);border-radius:8px;background:rgba(244,67,54,0.08);color:#f44336;cursor:pointer;font-size:14px;font-weight:500;';
             deleteBtn.onclick = async () => {
+                if (isDraftMode) {
+                    closeDialog({ action: 'clear' });
+                    return;
+                }
                 const occurrence = __resolveReminderDeleteOccurrenceContext(existingReminder, {
                     dateKey: dialogOptions.occurrenceDateKey,
                     timeKey: dialogOptions.occurrenceTimeKey,
@@ -36082,7 +36083,7 @@ window.__setTomatoFloatState = function (payload) {
                 }
             }
             const baseReminderDraft = {
-                blockId,
+                blockId: isDraftMode ? '' : blockId,
                 blockName: customName || blockName,
                 interval: selectedInterval,
                 every: selectedInterval === 'once' ? 1 : intervalEvery,
@@ -36098,6 +36099,22 @@ window.__setTomatoFloatState = function (payload) {
                 updatedAt: new Date().toISOString(),
                 enabled: true
             };
+            if (isDraftMode) {
+                closeDialog({
+                    action: 'save',
+                    draft: {
+                        ...baseReminderDraft,
+                        repeatMode,
+                        taskId: '',
+                        completionTime: startDate,
+                        repeatRule: taskRepeatRuleDraft.enabled ? taskRepeatRuleDraft : null,
+                        taskStartDate: taskContext.taskStartDate,
+                        taskCompletionTime: taskContext.taskCompletionTime,
+                        taskRepeatState: taskContext.taskRepeatState,
+                    },
+                });
+                return;
+            }
             let saveResult = null;
             try {
                 saveResult = await __saveReminderDraft(blockId, {
@@ -36130,6 +36147,7 @@ window.__setTomatoFloatState = function (payload) {
         backdrop.appendChild(dialog);
         document.body.appendChild(backdrop);
         backdrop.onclick = (e) => { if (e.target === backdrop) closeDialog(); };
+        return draftResult;
     }
     
     let lastCheckedDate = null;
@@ -37639,17 +37657,31 @@ window.__setTomatoFloatState = function (payload) {
         capabilities: Object.freeze({
             get: true,
             upsert: true,
+            draftDialog: true,
+            upsertDraft: true,
             remove: true,
             setOccurrenceDone: true,
             taskContextChanged: true,
             listOccurrences: true,
         }),
         showDialog: (blockId, blockName, options = {}) => {
+            const dialogOptions = (options && typeof options === 'object') ? options : {};
+            if (dialogOptions.draft === true) {
+                return Promise.resolve().then(async () => {
+                    const name = String(blockName || '').trim() || '任务';
+                    const existing = dialogOptions.draftReminder && typeof dialogOptions.draftReminder === 'object'
+                        ? { ...dialogOptions.draftReminder }
+                        : null;
+                    return await showReminderDialog('', name, existing, dialogOptions.taskContext || null, dialogOptions);
+                }).catch((e) => {
+                    try { Logger.warn('提醒草稿 showDialog 失败:', e); } catch (e2) {}
+                    throw e;
+                });
+            }
             Promise.resolve().then(async () => {
                 const id = String(blockId || '').trim();
                 if (!id) return;
                 const name = String(blockName || '').trim() || '任务';
-                const dialogOptions = (options && typeof options === 'object') ? options : {};
                 const taskContext = await __getReminderTaskContext(id);
                 const existing = await getBlockReminder(id);
                 if (!existing) {
@@ -37755,6 +37787,65 @@ window.__setTomatoFloatState = function (payload) {
                 ok: true,
                 taskId: String(resolved?.attrContext?.taskId || requestedId).trim() || requestedId,
                 attrHostId,
+                reminder,
+            };
+        },
+        upsertDraft: async (taskRef, draft, options = {}) => {
+            const requestedId = String(taskRef || '').trim();
+            if (!requestedId || !draft || typeof draft !== 'object' || Array.isArray(draft)) {
+                return { ok: false, code: 'INVALID_ARGUMENT', message: '提醒草稿无效' };
+            }
+            const preferDirect = options?.preferDirect === true;
+            const resolved = await resolveReminderBlockAttrContext(requestedId, { preferDirect });
+            const attrHostId = String(resolved?.reminderBlockId || requestedId).trim() || requestedId;
+            const existing = await getBlockReminder(requestedId, { preferDirect });
+            if (existing && options?.overwrite !== true) {
+                return { ok: false, code: 'REMINDER_EXISTS', message: '已有提醒，已跳过', taskId: resolved?.attrContext?.taskId, attrHostId };
+            }
+            const source = String(options?.source || 'tomato-reminder-draft').trim() || 'tomato-reminder-draft';
+            let saveResult = null;
+            try {
+                saveResult = await __saveReminderDraft(requestedId, {
+                    ...draft,
+                    blockId: attrHostId,
+                    taskId: requestedId,
+                    source,
+                }, {
+                    existingReminder: existing,
+                    saveOptions: {
+                        preferDirect,
+                        taskAttrEventExtra: {
+                            action: existing ? 'update' : 'create',
+                            source,
+                        },
+                    },
+                });
+            } catch (e) {
+                return { ok: false, code: 'SAVE_FAILED', message: String(e?.message || '保存提醒失败'), attrHostId };
+            }
+            if (saveResult?.ok !== true) {
+                return {
+                    ok: false,
+                    code: 'SAVE_FAILED',
+                    message: saveResult?.taskChanged ? '任务字段已更新，但提醒保存失败' : '保存提醒失败',
+                    attrHostId,
+                };
+            }
+            const reminder = await getBlockReminder(requestedId, { preferDirect });
+            if (!reminder || !String(reminder.blockId || '').trim() || !Array.isArray(reminder.times) || reminder.times.length === 0 || !String(reminder.startDate || '').trim()) {
+                return { ok: false, code: 'SAVE_FAILED', message: '提醒保存后校验失败', attrHostId };
+            }
+            if (__getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK) {
+                const canonicalCompletion = __normalizeReminderDateKey(saveResult?.canonicalTask?.completionTime || '');
+                const savedCompletion = __normalizeReminderDateKey(reminder.taskCompletionTime || '');
+                if (canonicalCompletion && savedCompletion && canonicalCompletion !== savedCompletion) {
+                    return { ok: false, code: 'SAVE_FAILED', message: '提醒与任务截止日不一致', attrHostId };
+                }
+            }
+            return {
+                ok: true,
+                taskId: String(resolved?.attrContext?.taskId || requestedId).trim() || requestedId,
+                attrHostId: String(reminder.blockId || attrHostId).trim() || attrHostId,
                 reminder,
             };
         },

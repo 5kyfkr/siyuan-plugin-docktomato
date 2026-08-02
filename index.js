@@ -205,6 +205,18 @@ const inferDockPlacementFromUiLayout = (type) => {
     return inferDockPlacementFromLocalStorage(type);
 };
 
+const resetReminderDockReloadVisibility = (plugin = null) => {
+    const pluginName = String(plugin?.name || PLUGIN_ID).trim() || PLUGIN_ID;
+    const fullType = `${pluginName}${REMINDER_DOCK_TYPE}`;
+    try {
+        const pluginDocks = globalThis.siyuan?.storage?.["local-plugin-docks"];
+        const savedDock = pluginDocks?.[pluginName]?.[fullType];
+        if (!savedDock || savedDock.show === false) return;
+        savedDock.show = false;
+        platformUtils?.setStorageVal?.("local-plugin-docks", pluginDocks);
+    } catch (e) {}
+};
+
 const fetchText = async (url, data) => {
     const res = await fetch(url, {
         method: "POST",
@@ -657,6 +669,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
     }
 
     onLayoutReady() {
+        resetReminderDockReloadVisibility(this);
         try {
             if (!this._reminderDockAdded) {
                 this._registerReminderDock("layout-ready");

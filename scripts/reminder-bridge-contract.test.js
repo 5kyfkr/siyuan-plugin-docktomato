@@ -13,12 +13,17 @@ assert.ok(bridgeStart >= 0 && bridgeEnd > bridgeStart, 'Tomato reminder bridge m
 const bridge = source.slice(bridgeStart, bridgeEnd);
 
 assert.match(bridge, /version:\s*2/, 'reminder bridge must publish subscription-capable v2');
-for (const method of ['get', 'upsert', 'remove', 'setOccurrenceDone', 'taskContextChanged', 'listOccurrences']) {
+for (const method of ['get', 'upsert', 'upsertDraft', 'remove', 'setOccurrenceDone', 'taskContextChanged', 'listOccurrences']) {
     assert.match(bridge, new RegExp(`\\b${method}:`), `reminder bridge must expose ${method}`);
 }
 assert.match(bridge, /capabilities:[\s\S]*?listOccurrences:\s*true/, 'v2 bridge must advertise occurrence projection');
+assert.match(bridge, /capabilities:[\s\S]*?draftDialog:\s*true/, 'reminder bridge must advertise pre-create draft dialogs');
+assert.match(bridge, /capabilities:[\s\S]*?upsertDraft:\s*true/, 'reminder bridge must advertise draft persistence');
 assert.match(bridge, /listOccurrences:\s*__listReminderOccurrencesForSubscription/, 'subscription projection must use the read-only occurrence adapter');
 assert.match(bridge, /upsert:[\s\S]*?saveBlockReminder\(/, 'upsert must delegate persistence to the Tomato writer');
+assert.match(bridge, /dialogOptions\.draft\s*===\s*true[\s\S]*?showReminderDialog\('',/, 'draft dialog must not require a block ID');
+assert.match(bridge, /upsertDraft:[\s\S]*?__saveReminderDraft\(/, 'draft persistence must reuse the existing Tomato draft writer');
+assert.match(source, /if \(isDraftMode\)[\s\S]*?closeDialog\(\{\s*action:\s*'save'/, 'draft dialog save must return data instead of persisting directly');
 assert.match(bridge, /remove:[\s\S]*?deleteBlockReminder\(/, 'remove must delegate cleanup to the Tomato writer');
 assert.match(bridge, /action:\s*'mirror-cleanup'/, 'canonical writes must clean a stale task-block reminder mirror');
 
