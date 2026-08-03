@@ -13943,6 +13943,7 @@
             const pendingRecordSave = recordEndTime(false, isStopwatchMode, {
                 isCompleted: endMode === 'countdown' || isStopwatchMode,
                 endTimeMs,
+                skipSyncUpdate: true,
             });
             Logger.info('🍅 计时完成流程已触发', { source, mode: endMode, endTimeMs: endTimeMs || Date.now() });
             if (timerId !== null) {
@@ -13953,8 +13954,12 @@
             isTimerPaused = false;
             if (isStopwatchMode) elapsedSeconds = CONFIG.MAX_STOPWATCH_SECONDS;
             else remainingSeconds = 0;
-            if (controlButton) controlButton.innerHTML = '▶️';
-            updateDisplay();
+            try {
+                if (controlButton) controlButton.innerHTML = '▶️';
+                updateDisplay();
+            } catch (displayError) {
+                Logger.warn('🍅 计时完成显示更新失败，继续结束流程:', displayError);
+            }
 
             const endDialog = ensureSyncEndDialogOpen(
                 endType,
@@ -13972,17 +13977,21 @@
             await stopTimer({ skipEndRecord: true });
 
             // 🔧 播放霓虹完成动画
-            const isNeonMode = userSettings.appearance?.enableNeonEffect && userSettings.appearance?.theme !== 'default';
-            if (isNeonMode && progressBar) {
-                const progress = progressBar;
-                const currentWidth = progress.style.width;
-                progress.style.setProperty('--current-width', currentWidth);
-                progress.classList.add('completing');
+            try {
+                const isNeonMode = userSettings.appearance?.enableNeonEffect && userSettings.appearance?.theme !== 'default';
+                if (isNeonMode && progressBar) {
+                    const progress = progressBar;
+                    const currentWidth = progress.style.width;
+                    progress.style.setProperty('--current-width', currentWidth);
+                    progress.classList.add('completing');
 
-                // 动画结束后移除类
-                setTimeout(() => {
-                    progress.classList.remove('completing');
-                }, 2000);
+                    // 动画结束后移除类
+                    setTimeout(() => {
+                        progress.classList.remove('completing');
+                    }, 2000);
+                }
+            } catch (animationError) {
+                Logger.warn('🍅 计时完成动画失败:', animationError);
             }
 
             try {
@@ -13995,27 +14004,38 @@
                 Logger.warn('🍅 播放提示音失败:', audioError);
             }
 
-            if (isStopwatchMode) {
-                showToastDialog('⏱️ 正计时结束', '已达到 16 小时上限', endType, currentTaskBlockId, currentTaskBlockName);
-            } else if (isBreakMode) {
-                showToastDialog('⏰ 休息结束', '继续你的计时吧！', 'break-end', currentTaskBlockId, currentTaskBlockName);
-            } else {
-                showToastDialog('🍅 时间到！', '该休息一下了～', 'tomato-end', currentTaskBlockId, currentTaskBlockName);
+            try {
+                if (isStopwatchMode) {
+                    showToastDialog('⏱️ 正计时结束', '已达到 16 小时上限', endType, currentTaskBlockId, currentTaskBlockName);
+                } else if (isBreakMode) {
+                    showToastDialog('⏰ 休息结束', '继续你的计时吧！', 'break-end', currentTaskBlockId, currentTaskBlockName);
+                } else {
+                    showToastDialog('🍅 时间到！', '该休息一下了～', 'tomato-end', currentTaskBlockId, currentTaskBlockName);
+                }
+            } catch (dialogError) {
+                Logger.warn('🍅 计时完成弹窗显示失败:', dialogError);
+                try { showMiniToast('计时已完成'); } catch (e) {}
             }
             await waitForTimerPersistence(pendingRecordSave, 'timer-end');
+        });
+    }
+
+    function runTimerTickSafely() {
+        handleTimerTick().catch((error) => {
+            Logger.error('🍅 本地计时更新失败，下次心跳将重试:', error);
         });
     }
 
     // 🔧 新增：统一的本地计时器循环
     function startLocalTimerLoop() {
         if (timerId !== null) clearInterval(timerId);
-        
+
         // 立即执行一次 tick
-        handleTimerTick();
-        
+        runTimerTickSafely();
+
         timerId = setInterval(() => {
             if (!isRunning) return;
-            handleTimerTick();
+            runTimerTickSafely();
         }, CONFIG.TIMER_INTERVAL);
 
         Logger.debug('🔄 本地计时器循环已启动');
@@ -14360,9 +14380,22 @@
 
         if (timerMode === 'countdown' || timerMode === 'break') {
             const totalMs = currentDuration * 60 * 1000;
-            const elapsedMs = now - startTime;
-            const remainingMs = Math.max(0, totalMs - elapsedMs);
-            remainingSeconds = Math.floor(remainingMs / 1000);
+            const pausedIntervals = (syncState?.startTime === startTime && Array.isArray(syncState?.pausedIntervals))
+                ? syncState.pausedIntervals
+                : [];
+            const totalPausedMs = StateCalculator.calculateTotalPausedTime(pausedIntervals);
+            const remainingMs = (startTime + totalMs + totalPausedMs) - now;
+            if (remainingMs <= 0) {
+                await finalizeExpiredTimerIfNeeded('pause-expired', {
+                    mode: timerMode,
+                    status: 'RUNNING',
+                    startTime,
+                    duration: currentDuration * 60,
+                    pausedIntervals,
+                });
+                return;
+            }
+            remainingSeconds = Math.ceil(remainingMs / 1000);
             pausedRemainingSeconds = remainingSeconds;
         } else if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
             // 🔧 修复：正计时使用 stopwatchStartTimeMs 计算
@@ -14446,20 +14479,20 @@
         const skipEndRecord = opts.skipEndRecord === true;
         const isStopwatchMode = timerMode === 'stopwatch' || timerMode === 'stopwatch-break';
         const hasActiveStart = isStopwatchMode ? !!stopwatchStartTimestamp : !!currentStartTimestamp;
-        if (timerId !== null) clearInterval(timerId);
+        try { if (timerId !== null) clearInterval(timerId); } catch (e) {}
         timerId = null;
         isRunning = false;
         isTimerPaused = false;  // 清除暂停状态
-        stopBackgroundAudio();
+        try { stopBackgroundAudio(); } catch (e) {}
         startTime = 0;
         lastTickTime = 0;
         // 🔧 修复：停止时清除暂停颜色
-        window.__tomatoPausedColor = null;
+        try { window.__tomatoPausedColor = null; } catch (e) {}
         // 停止保持高亮的定时器
-        stopHighlightKeepAlive();
+        try { stopHighlightKeepAlive(); } catch (e) {}
         // 🔧 修复：停止时清除定时提醒
         if (reminderIntervalId) {
-            clearInterval(reminderIntervalId);
+            try { clearInterval(reminderIntervalId); } catch (e) {}
             reminderIntervalId = null;
         }
         let pendingRecordSave = null;
@@ -14479,14 +14512,16 @@
         }
         currentPauseStart = null;
         // 停止提示音
-        stopAllAudio();
-        hideProgressBar();  // 完全停止时隐藏进度条
+        try { stopAllAudio(); } catch (e) {}
+        try { hideProgressBar(); } catch (e) {}  // 完全停止时隐藏进度条
 
         // 移动端悬浮条移除运行动画
-        const floatBar = document.getElementById('siyuan-tomato-float-bar');
-        if (floatBar) floatBar.classList.remove('running');
-        clearRoutineButtonRunningHighlight(true);
-        endTimerFocus('stop-timer');
+        try {
+            const floatBar = document.getElementById('siyuan-tomato-float-bar');
+            if (floatBar) floatBar.classList.remove('running');
+        } catch (e) {}
+        try { clearRoutineButtonRunningHighlight(true); } catch (e) {}
+        try { endTimerFocus('stop-timer'); } catch (e) {}
 
         if (timerMode === 'countdown' || timerMode === 'break') {
             syncState.mode = timerMode;
@@ -26089,9 +26124,31 @@ window.__setTomatoFloatState = function (payload) {
         try { window.dispatchEvent(new CustomEvent('tomato:focus-ended', { detail: payload })); } catch (e) {}
     }
 
+    function getActiveTimerFocusSnapshot() {
+        const mode = String(timerMode || syncState?.mode || '').trim();
+        const syncStatus = String(syncState?.status || '').trim();
+        if (mode !== 'countdown' && mode !== 'stopwatch') return null;
+        if (!isRunning && !isTimerPaused && !['RUNNING', 'PAUSED'].includes(syncStatus)) return null;
+        const taskBlockId = String(currentTaskBlockId || syncState?.taskBlockId || '').trim();
+        const taskBlockName = String(currentTaskBlockName || syncState?.taskBlockName || '').trim();
+        const databaseBlockId = String(currentDatabaseBlockId || syncState?.databaseBlockId || '').trim();
+        if (!taskBlockId && !databaseBlockId) return null;
+        return {
+            taskBlockId,
+            taskBlockName,
+            databaseBlockId,
+            mode,
+            source: normalizeFocusRestoreSource(focusRestoreSource),
+            isRunning: !!isRunning,
+            isPaused: !!isTimerPaused || syncStatus === 'PAUSED',
+        };
+    }
+
     function restoreActiveTimerFocus(reason = '') {
         if (isMobileDevice() || !isFocusModeEnabled()) return false;
         if (timerMode !== 'countdown' && timerMode !== 'stopwatch') return false;
+        const syncStatus = String(syncState?.status || '').trim();
+        if (!isRunning && !isTimerPaused && !['RUNNING', 'PAUSED'].includes(syncStatus)) return false;
 
         const snapshot = (!currentTaskBlockId && !currentDatabaseBlockId && lastCompletedAssociationFocusSnapshot)
             ? lastCompletedAssociationFocusSnapshot
@@ -38002,6 +38059,12 @@ window.__setTomatoFloatState = function (payload) {
             try { updateDisplay(); } catch (e) {}
             try { updateTaskBlockIcon(); } catch (e) {}
             try { updateTaskBlockTooltip(); } catch (e) {}
+        },
+        getActiveFocusSnapshot: () => {
+            try { return getActiveTimerFocusSnapshot(); } catch (e) { return null; }
+        },
+        restoreActiveFocus: (reason = 'external-request') => {
+            try { return restoreActiveTimerFocus(String(reason || '').trim() || 'external-request'); } catch (e) { return false; }
         },
         startFromTaskBlock: async (blockId, taskName, durationMin, mode, options = null) => {
             const id = String(blockId || '').trim();
