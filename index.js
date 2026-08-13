@@ -312,7 +312,9 @@ module.exports = class TomatoTimerPlugin extends Plugin {
     // 用于保存需要清理的资源引用
     _badgeUpdateInterval = null;
     _badgeUpdateListener = null;
-    _dockBadgeRetryTimers = [];
+    _dockBadgeRetryTimer = null;
+    _dockBadgeRetryAt = 0;
+    _isUnloaded = false;
     _reminderDockAdded = false;
     _reminderDockRecoverTimers = [];
 
@@ -351,10 +353,11 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             }
         } catch (e) {}
         try {
-            for (const timer of this._dockBadgeRetryTimers) {
-                clearTimeout(timer);
+            if (this._dockBadgeRetryTimer) {
+                clearTimeout(this._dockBadgeRetryTimer);
+                this._dockBadgeRetryTimer = null;
             }
-            this._dockBadgeRetryTimers.length = 0;
+            this._dockBadgeRetryAt = 0;
         } catch (e) {}
     }
 
@@ -394,7 +397,22 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             const plugin = this;
             let badgeElement = globalThis.__tomatoReminderBadgeElement || null;
 
+            const scheduleDockBadgeRetry = (delay = 5000) => {
+                if (plugin._isUnloaded) return;
+                const retryDelay = Math.max(0, Number(delay) || 0);
+                const retryAt = Date.now() + retryDelay;
+                if (plugin._dockBadgeRetryTimer && plugin._dockBadgeRetryAt <= retryAt) return;
+                if (plugin._dockBadgeRetryTimer) clearTimeout(plugin._dockBadgeRetryTimer);
+                plugin._dockBadgeRetryAt = retryAt;
+                plugin._dockBadgeRetryTimer = setTimeout(() => {
+                    plugin._dockBadgeRetryTimer = null;
+                    plugin._dockBadgeRetryAt = 0;
+                    findAndCreateDockBadge();
+                }, retryDelay);
+            };
+
             const findAndCreateDockBadge = async () => {
+                if (plugin._isUnloaded) return;
                 try {
                     const badgeData = globalThis.__tomatoReminderBadge;
                     const count = badgeData?.total || 0;
@@ -432,9 +450,14 @@ module.exports = class TomatoTimerPlugin extends Plugin {
                     }
 
                     if (!container) {
-                        const retryTimer = setTimeout(findAndCreateDockBadge, 5000);
-                        plugin._dockBadgeRetryTimers.push(retryTimer);
+                        scheduleDockBadgeRetry();
                         return;
+                    }
+
+                    if (plugin._dockBadgeRetryTimer) {
+                        clearTimeout(plugin._dockBadgeRetryTimer);
+                        plugin._dockBadgeRetryTimer = null;
+                        plugin._dockBadgeRetryAt = 0;
                     }
 
                     const existingBadge = container.querySelector(".tomato-reminder-badge");
@@ -470,8 +493,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
 
                     globalThis.__tomatoReminderBadgeElement = badgeElement;
                 } catch (e) {
-                    const retryTimer = setTimeout(findAndCreateDockBadge, 5000);
-                    plugin._dockBadgeRetryTimers.push(retryTimer);
+                    scheduleDockBadgeRetry();
                 }
             };
 
@@ -509,15 +531,11 @@ module.exports = class TomatoTimerPlugin extends Plugin {
                 data: { plugin: this },
                 init() {
                     plugin._mountReminderDockElement(this.element || null);
-                    setTimeout(() => {
-                        findAndCreateDockBadge();
-                    }, 1000);
+                    scheduleDockBadgeRetry(1000);
                 },
                 update() {
                     plugin._mountReminderDockElement(this.element || null);
-                    setTimeout(() => {
-                        findAndCreateDockBadge();
-                    }, 120);
+                    scheduleDockBadgeRetry(120);
                 },
                 resize() {
                     plugin._mountReminderDockElement(this.element || null);
@@ -566,6 +584,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
     }
 
     async onload() {
+        this._isUnloaded = false;
         const runtimeMobile = isRuntimeMobileClient();
         const runtimeNativeMobile = isNativeMobileRuntimeClient();
         globalThis.__tomatoPluginApp = this.app;
@@ -680,6 +699,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
     }
 
     onunload() {
+        this._isUnloaded = true;
         // 清理定时器和事件监听器
         try {
             if (this._badgeUpdateInterval) {

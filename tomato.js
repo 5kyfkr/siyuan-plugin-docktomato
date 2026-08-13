@@ -111,6 +111,7 @@
         openFocusSettings: () => showFocusTimeSettingsDialog(),
         openTimelineSettings: () => showTimelineSettingsDialog(),
         openHistory: (page) => showHistoryDialog(page),
+        getDefaultTomatoTimeMinutes: () => __getDefaultTomatoTimeMinutes(),
     };
 
     // ========== 配置项 ==========
@@ -181,8 +182,11 @@
     const CONFIG = {
         TIMER_INTERVAL: 500, // 计时器更新频率 (ms)
         SYNC_POLL_INTERVAL_BG: 60000, // 后台轮询频率 (ms)
-        MAX_STOPWATCH_SECONDS: 16 * 3600, // 正计时最大时长 (16小时)
+        MAX_STOPWATCH_SECONDS: 24 * 3600, // 正计时最大时长 (24小时)
     };
+    const TOMATO_ANIMATION_FPS = 30;
+    const TOMATO_BREATHING_FRAME_COUNTS = { slow: 120, normal: 90, fast: 60 };
+    const TOMATO_ANIMATIONS_PAUSED_CLASS = 'tomato-animations-paused';
 
     function __tomatoNormalizeDirPath(path) {
         const p = String(path || '').trim();
@@ -956,15 +960,23 @@
     let appResumePageShowHandler = null;
     let __tomatoInitBootstrapping = false;
 
+    function syncTomatoAnimationVisibility() {
+        try {
+            document.documentElement?.classList.toggle(TOMATO_ANIMATIONS_PAUSED_CLASS, !!document.hidden);
+        } catch (e) {}
+    }
+
     function installAppResumeListeners() {
         if (appResumeListenersInstalled) return;
         appResumeListenersInstalled = true;
+        syncTomatoAnimationVisibility();
         try {
             if (appResumeVisibilityHandler) {
                 document.removeEventListener('visibilitychange', appResumeVisibilityHandler, true);
             }
             appResumeVisibilityHandler = () => {
                 try {
+                    syncTomatoAnimationVisibility();
                     if (!document.hidden) {
                         handleAppResumeRefresh('visibility');
                     }
@@ -1020,6 +1032,7 @@
         appResumeVisibilityHandler = null;
         appResumeFocusHandler = null;
         appResumePageShowHandler = null;
+        try { document.documentElement?.classList.remove(TOMATO_ANIMATIONS_PAUSED_CLASS); } catch (e) {}
     }
 
     function getEffectiveTimerActivity() {
@@ -2681,6 +2694,7 @@
 
     // 🔧 性能优化：存储 MutationObserver 引用，用于页面卸载时清理
     const mutationObservers = [];
+    const pendingElementWaitCleanups = new Set();
     // 新增：任务块相关状态
     let currentTaskBlockId = null;
     let currentTaskBlockName = null;
@@ -3471,8 +3485,24 @@
     let progressBar = null;
     let progressIndicator = null;
     let lastProgressMode = null;  // 用于检测模式变化，强制重新创建进度条
+    let lastProgressVisualKey = null;
 
     // ========== 设置管理 ==========
+    function __getDefaultTomatoTimeMinutes() {
+        const minutes = Number(userSettings?.main?.defaultTomatoTime);
+        if (!Number.isFinite(minutes) || minutes <= 0) return DEFAULT_TOMATO_TIME;
+        return Math.max(1, Math.min(180, Math.round(minutes)));
+    }
+
+    function __publishTomatoDefaultDuration(source = 'settings') {
+        const detail = {
+            minutes: __getDefaultTomatoTimeMinutes(),
+            source: String(source || 'settings').trim() || 'settings',
+        };
+        try { window.dispatchEvent(new CustomEvent('tomato:default-duration-changed', { detail })); } catch (e) {}
+        return detail.minutes;
+    }
+
     function __publishTomatoFocusModeState() {
         try {
             globalThis.__dockTomatoFocusModeEnabled = userSettings?.main?.enableFocusMode !== false;
@@ -3505,6 +3535,7 @@
         } catch (e) {}
         try { applyFocusModeDimOpacity(); } catch (e) {}
         try { __publishTomatoFocusModeState(); } catch (e) {}
+        try { __publishTomatoDefaultDuration('load'); } catch (e) {}
         try { Logger.setDebugEnabled(isDebugMode()); } catch (e) {}
         return userSettings;
     }
@@ -4617,10 +4648,10 @@
     let lastExpiredReminderPopupKey = '';
 
     // 检测并显示过期提醒事项通知
-    async function checkAndShowExpiredReminders() {
+    async function checkAndShowExpiredReminders(reminderList = null) {
         try {
             // 获取所有提醒事项
-            const reminders = await queryAllReminderBlocks();
+            const reminders = Array.isArray(reminderList) ? reminderList : await queryAllReminderBlocks();
 
             if (!reminders || reminders.length === 0) {
                 return;
@@ -4661,14 +4692,9 @@
     /**
      * 统计今日未过期的提醒数量（还没到的提醒）
      */
-    async function countTodayReminders() {
+    function countTodayRemindersFromList(reminders, now = new Date()) {
         try {
-            const reminders = await queryAllReminderBlocks();
-            if (!reminders || reminders.length === 0) {
-                return 0;
-            }
-
-            const now = new Date();
+            if (!reminders || reminders.length === 0) return 0;
             const nowDateKey = formatDateKey(now);
             const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
@@ -4700,6 +4726,10 @@
         }
     }
 
+    async function countTodayReminders() {
+        return countTodayRemindersFromList(await queryAllReminderBlocks(), new Date());
+    }
+
     function __collectExpiredReminderEntries(reminders, nowDate = new Date()) {
         const now = toDateSafe(nowDate || new Date());
         if (!(now instanceof Date) || isNaN(now.getTime())) return [];
@@ -4727,26 +4757,23 @@
     /**
      * 统计已过期的提醒任务数量（每个提醒任务只统计一次）
      */
-    async function countExpiredReminders() {
-        try {
-            const reminders = await queryAllReminderBlocks();
-            if (!reminders || reminders.length === 0) {
-                return 0;
-            }
+    function countExpiredRemindersFromList(reminders, now = new Date()) {
+        return __collectExpiredReminderEntries(reminders, now).length;
+    }
 
-            return __collectExpiredReminderEntries(reminders, new Date()).length;
-        } catch (e) {
-            return 0;
-        }
+    async function countExpiredReminders() {
+        return countExpiredRemindersFromList(await queryAllReminderBlocks(), new Date());
     }
 
     /**
      * 更新Dock图标上的角标
      */
-    async function updateReminderBadge() {
+    async function updateReminderBadge(reminderList = null) {
         try {
-            const todayCount = await countTodayReminders();
-            const expiredCount = await countExpiredReminders();
+            const reminders = Array.isArray(reminderList) ? reminderList : await queryAllReminderBlocks();
+            const now = new Date();
+            const todayCount = countTodayRemindersFromList(reminders, now);
+            const expiredCount = countExpiredRemindersFromList(reminders, now);
             const totalCount = todayCount + expiredCount;
 
             // 存储到全局变量，供index.js使用
@@ -4772,18 +4799,24 @@
 
     // 记录上次检查过期提醒的日期，避免同一天内重复提醒
     let lastExpiredCheckDate = null;
+    let expiredReminderStartupTimer = null;
+    let expiredReminderCheckInterval = null;
 
     // 插件加载时检查过期事项
     // 在初始化完成后调用
-    setTimeout(async () => {
-        await checkAndShowExpiredReminders();
+    expiredReminderStartupTimer = setTimeout(async () => {
+        expiredReminderStartupTimer = null;
+        if (__tomatoDestroyed) return;
+        const reminders = await queryAllReminderBlocks(false, { flush: true });
+        await checkAndShowExpiredReminders(reminders);
+        if (__tomatoDestroyed) return;
         lastExpiredCheckDate = formatDateKey(new Date());
-        await updateReminderBadge();
+        await updateReminderBadge(reminders);
 
         // 启动定时检查：每天早上8点检查过期事项
         scheduleExpiredReminderCheck();
         // 立即显示过期提醒数量（如果有的话）
-        const expiredCount = await countExpiredReminders();
+        const expiredCount = countExpiredRemindersFromList(reminders, new Date());
         if (expiredCount > 0) {
             Logger.info('📅 检测到 ' + expiredCount + ' 个过期提醒');
         }
@@ -4793,7 +4826,9 @@
      * 定时检查过期提醒（每天8点）
      */
     function scheduleExpiredReminderCheck() {
+        if (__tomatoDestroyed) return;
         const checkExpired = async () => {
+            if (__tomatoDestroyed) return;
             const now = new Date();
             const todayKey = formatDateKey(now);
 
@@ -4812,7 +4847,9 @@
         checkExpired();
 
         // 设置定时器：每分钟检查一次是否需要执行8点检查
-        setInterval(() => {
+        if (expiredReminderCheckInterval) clearInterval(expiredReminderCheckInterval);
+        expiredReminderCheckInterval = setInterval(() => {
+            if (__tomatoDestroyed) return;
             const now = new Date();
             const currentHour = now.getHours();
             const currentMinute = now.getMinutes();
@@ -8061,6 +8098,7 @@
     function createProgressBar() {
         if (progressBar?.parentNode === document.body) return;
         if (progressBar) progressBar.remove();
+        lastProgressVisualKey = null;
 
         // 检查是否启用霓虹模式
         const isNeonMode = userSettings.appearance?.enableNeonEffect && userSettings.appearance?.theme !== 'default';
@@ -8117,10 +8155,10 @@
             // 霓虹模式：三角形指示器（尖角朝下，尖端对准进度条顶端）
             // border-top 产生尖角朝下的三角形，尖端在元素顶部
             progressIndicator.style.cssText = `
-                position: fixed; bottom: 4px; width: 0; height: 0;
+                position: fixed; bottom: 4px; left: 0; width: 0; height: 0;
                 color: ${themeConfig.glowColor};
                 z-index: 2147483648; pointer-events: none;
-                transition: left 0.3s ease-out; display: none;
+                transform: translate3d(0, 0, 0); transition: transform 0.3s ease-out; display: none;
                 border-left: 4px solid transparent;
                 border-right: 4px solid transparent;
                 border-top: 6px solid currentColor;
@@ -8130,10 +8168,10 @@
         } else {
             // 默认模式：简洁三角形指示器（v9.0样式）
             progressIndicator.style.cssText = `
-                position: fixed; bottom: 0; width: 0; height: 0;
+                position: fixed; bottom: 0; left: 0; width: 0; height: 0;
                 border-left: 3px solid transparent; border-right: 3px solid transparent; border-top: 4px solid;
-                z-index: 2147483648; pointer-events: none; transform: translateY(-4px);
-                transition: left 0.3s ease-out; display: none;
+                z-index: 2147483648; pointer-events: none; transform: translate3d(0, -4px, 0);
+                transition: transform 0.3s ease-out; display: none;
             `;
         }
 
@@ -8524,6 +8562,13 @@
     let lastRoutineButtonHighlightKey = null;
 
     const __routineIconObjectUrlCache = new Map();
+
+    function revokeRoutineIconObjectUrls() {
+        for (const url of __routineIconObjectUrlCache.values()) {
+            try { URL.revokeObjectURL(url); } catch (e) {}
+        }
+        __routineIconObjectUrlCache.clear();
+    }
 
     function createRoutineButtonId() {
         return 'routine_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
@@ -12148,6 +12193,9 @@
 
     function hideTimelineBar() {
         hideTimelineTooltip();
+        if (timelineVisual) {
+            timelineVisual.classList.remove('breathing', 'shimmering');
+        }
         if (timelineBar) timelineBar.style.display = 'none';
     }
 
@@ -12360,58 +12408,21 @@
                 }
             }
 
-            // 🔧 修复：休息模式下时间轴呼吸效果不显示的问题
-            // 添加 timerMode === 'break' 条件，使呼吸效果在休息模式下也能正常工作
             const shouldBreathe = (userSettings.timeline.enableBreathing !== false)
                 && (userSettings.appearance?.enableBreathing !== false)
                 && (timerMode === 'countdown' || timerMode === 'stopwatch' || timerMode === 'stopwatch-break' || timerMode === 'break')
                 && isRunning
                 && !isTimerPaused;
-            
-            if (shouldBreathe) {
-                timelineVisual.classList.add('breathing');
-                
-                // 🔧 新增：控制折叠态流光效果
-                const shouldShimmer = userSettings.timeline.enableShimmerFlow !== false;
-                if (shouldShimmer) {
-                    timelineVisual.classList.add('shimmering');
-                    // 设置流光周期 CSS 变量
-                    const shimmerDuration = Math.max(5, Math.min(20, Number(userSettings.timeline.shimmerDuration) || 8));
-                    timelineVisual.style.setProperty('--shimmer-duration', `${shimmerDuration}s`);
-                    // 设置流光宽度
-                    const shimmerWidth = Math.max(1, Math.min(50, Number(userSettings.timeline.shimmerWidth) || 5));
-                    timelineVisual.style.setProperty('--shimmer-width', `${shimmerWidth}%`);
-                    // 设置流光颜色
-                    timelineVisual.style.setProperty('--shimmer-color', userSettings.timeline.shimmerColor || '#ffffff');
-                } else {
-                    timelineVisual.classList.remove('shimmering');
-                }
-            } else {
-                timelineVisual.classList.remove('breathing');
-                timelineVisual.classList.remove('shimmering');
-            }
-            
-            if (shouldBreathe) {
-                timelineVisual.classList.add('breathing');
-                
-                // 🔧 新增：控制折叠态流光效果
-                const shouldShimmer = userSettings.timeline.enableShimmerFlow !== false;
-                if (shouldShimmer) {
-                    timelineVisual.classList.add('shimmering');
-                    // 设置流光周期 CSS 变量
-                    const shimmerDuration = Math.max(5, Math.min(20, Number(userSettings.timeline.shimmerDuration) || 8));
-                    timelineVisual.style.setProperty('--shimmer-duration', `${shimmerDuration}s`);
-                    // 设置流光宽度
-                    const shimmerWidth = Math.max(1, Math.min(50, Number(userSettings.timeline.shimmerWidth) || 5));
-                    timelineVisual.style.setProperty('--shimmer-width', `${shimmerWidth}%`);
-                    // 设置流光颜色
-                    timelineVisual.style.setProperty('--shimmer-color', userSettings.timeline.shimmerColor || '#ffffff');
-                } else {
-                    timelineVisual.classList.remove('shimmering');
-                }
-            } else {
-                timelineVisual.classList.remove('breathing');
-                timelineVisual.classList.remove('shimmering');
+            const shouldShimmer = shouldBreathe && userSettings.timeline.enableShimmerFlow !== false;
+            timelineVisual.classList.toggle('breathing', shouldBreathe);
+            timelineVisual.classList.toggle('shimmering', shouldShimmer);
+            if (shouldShimmer) {
+                const shimmerDuration = Math.max(5, Math.min(20, Number(userSettings.timeline.shimmerDuration) || 8));
+                const shimmerWidth = Math.max(1, Math.min(50, Number(userSettings.timeline.shimmerWidth) || 5));
+                timelineVisual.style.setProperty('--shimmer-duration', `${shimmerDuration}s`);
+                timelineVisual.style.setProperty('--shimmer-frames', String(Math.max(1, Math.round(shimmerDuration * TOMATO_ANIMATION_FPS))));
+                timelineVisual.style.setProperty('--shimmer-width', `${shimmerWidth}%`);
+                timelineVisual.style.setProperty('--shimmer-color', userSettings.timeline.shimmerColor || '#ffffff');
             }
         }
 
@@ -12659,12 +12670,37 @@
         return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
     }
 
+    function beginTimelineActiveRender(layerEl) {
+        const existing = new Map();
+        for (const child of Array.from(layerEl?.children || [])) {
+            const key = String(child?.dataset?.timelineActiveKey || '');
+            if (!key || existing.has(key)) {
+                child.remove();
+                continue;
+            }
+            existing.set(key, child);
+        }
+        const state = { existing, used: new Set() };
+        layerEl.__tomatoActiveRenderState = state;
+        return state;
+    }
+
+    function finishTimelineActiveRender(layerEl, state) {
+        if (!layerEl || !state) return;
+        for (const [key, child] of state.existing) {
+            if (!state.used.has(key)) child.remove();
+        }
+        try { delete layerEl.__tomatoActiveRenderState; } catch (e) {
+            layerEl.__tomatoActiveRenderState = null;
+        }
+    }
+
     function drawTimelineSegment(startMin, endMin, color, opacity, offsetMin, totalMin, label, meta = null, parentEl = null, interactive = true) {
         const parent = parentEl || timelineActiveLayer || timelineSegments;
         if (!parent) return;
         if (endMin <= startMin) return;
 
-        const appendSegment = (displayStartMin, displayEndMin, segMeta) => {
+        const appendSegment = (displayStartMin, displayEndMin, segMeta, partIndex = 0) => {
             const startPercentRaw = ((displayStartMin - offsetMin) / totalMin) * 100;
             const endPercentRaw = ((displayEndMin - offsetMin) / totalMin) * 100;
             const left = Math.max(0, Math.min(100, startPercentRaw));
@@ -12673,13 +12709,32 @@
             if (width <= 0) return;
             if (right <= 0 || left >= 100) return;
 
-            const seg = document.createElement('div');
-            seg.className = 'timeline-segment';
             let glassIntensity = Number(userSettings.timeline?.glassIntensity);
             if (!Number.isFinite(glassIntensity)) glassIntensity = 0.7;
             glassIntensity = Math.max(0, Math.min(1, glassIntensity));
             const enableGlass = userSettings.timeline?.enableHighlightGlassEffect !== false && glassIntensity > 0.01;
-            if (enableGlass) {
+            const enableRounded = isTimelineExpanded && userSettings.timeline?.enableHighlightRoundedCorners !== false;
+            const visualKey = `${color}|${opacity}|${glassIntensity}|${enableGlass ? 1 : 0}|${enableRounded ? 1 : 0}|${interactive ? 1 : 0}`;
+            const renderState = parent.__tomatoActiveRenderState || null;
+            const baseActiveKey = String(segMeta?.timelineActiveKey || '');
+            const timelineActiveKey = renderState && baseActiveKey ? `${baseActiveKey}:${partIndex}` : '';
+            let seg = timelineActiveKey ? renderState.existing.get(timelineActiveKey) || null : null;
+            if (seg && seg.dataset.timelineVisualKey !== visualKey) {
+                seg.remove();
+                renderState.existing.delete(timelineActiveKey);
+                seg = null;
+            }
+            const isNew = !seg;
+            if (!seg) {
+                seg = document.createElement('div');
+                seg.className = 'timeline-segment';
+            }
+            if (timelineActiveKey) {
+                seg.dataset.timelineActiveKey = timelineActiveKey;
+                renderState.used.add(timelineActiveKey);
+            }
+
+            if (isNew && enableGlass) {
                 const topA = 0.26 * glassIntensity;
                 const midA = 0.06 * glassIntensity;
                 const borderTopA = 0.22 * glassIntensity;
@@ -12699,7 +12754,7 @@
                     seg.style.borderBottom = '1px solid rgba(0,0,0,0.10)';
                     seg.style.boxShadow = `inset 0 1px 0 rgba(255,255,255,${innerTopA}), inset 0 -1px 0 rgba(0,0,0,0.18), 0 1px 3px rgba(0,0,0,0.22)`;
                 }
-            } else {
+            } else if (isNew) {
                 seg.style.cssText = `
                     position: absolute; top: 0; height: 100%; box-sizing: border-box;
                     left: ${left}%;
@@ -12707,37 +12762,44 @@
                     background: ${color}; opacity: ${opacity};
                 `;
             }
-            const enableRounded = isTimelineExpanded && userSettings.timeline?.enableHighlightRoundedCorners !== false;
-            seg.style.borderRadius = enableRounded ? '3px' : '0px';
-            seg.style.overflow = enableRounded ? 'hidden' : '';
-            seg.style.pointerEvents = interactive ? 'auto' : 'none';
-            seg.style.transition = 'filter 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease';
-            const baseBoxShadow = seg.style.boxShadow || '';
-            seg.dataset.timelineLabel = label || '';
-
-            if (segMeta?.taskBlockId) seg.dataset.taskBlockId = segMeta.taskBlockId;
-            if (segMeta?.taskBlockName) seg.dataset.taskBlockName = segMeta.taskBlockName;
-            if (segMeta?.databaseBlockId) seg.dataset.databaseBlockId = segMeta.databaseBlockId;
-            if (segMeta?.startIso) seg.dataset.startIso = segMeta.startIso;
-            if (segMeta?.endIso) seg.dataset.endIso = segMeta.endIso;
-            if (segMeta?.mode) seg.dataset.mode = segMeta.mode;
-            if (segMeta?.recordTimestamp) seg.dataset.recordTimestamp = segMeta.recordTimestamp;
-            if (segMeta?.distractionCount) seg.dataset.distractionCount = String(segMeta.distractionCount);
-            if (segMeta?.isCurrent) seg.dataset.isCurrent = 'true';
-
-            // 🔧 修复：完全关闭时间轴块的呼吸动画，避免视觉干扰
-            // 呼吸动画会导致正在进行块和历史块的动画速率不一致问题
-            // 如果需要启用呼吸效果，请取消下面代码的注释：
-
-            /* 启用呼吸动画代码（已注释）:
-            if (userSettings.timeline?.enableBreathing !== false && userSettings.appearance?.enableBreathing !== false && opacity >= 0.75 && !segMeta?.isCurrent) {
-                seg.classList.add('breathing');
+            const leftValue = `${left}%`;
+            const widthValue = `${width}%`;
+            if (seg.style.left !== leftValue) seg.style.left = leftValue;
+            if (seg.style.width !== widthValue) seg.style.width = widthValue;
+            if (isNew) {
+                seg.style.borderRadius = enableRounded ? '3px' : '0px';
+                seg.style.overflow = enableRounded ? 'hidden' : '';
+                seg.style.pointerEvents = interactive ? 'auto' : 'none';
+                seg.style.transition = 'filter 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease';
+                seg.dataset.timelineVisualKey = visualKey;
             }
-            */
+            const timelineLabel = label || '';
+            if (seg.dataset.timelineLabel !== timelineLabel) seg.dataset.timelineLabel = timelineLabel;
 
+            const setData = (name, value) => {
+                if (value === undefined || value === null || value === '' || value === false) {
+                    if (name in seg.dataset) delete seg.dataset[name];
+                    return;
+                }
+                const next = String(value);
+                if (seg.dataset[name] !== next) seg.dataset[name] = next;
+            };
+            setData('taskBlockId', segMeta?.taskBlockId);
+            setData('taskBlockName', segMeta?.taskBlockName);
+            setData('databaseBlockId', segMeta?.databaseBlockId);
+            setData('startIso', segMeta?.startIso);
+            setData('endIso', segMeta?.endIso);
+            setData('mode', segMeta?.mode);
+            setData('recordTimestamp', segMeta?.recordTimestamp);
+            setData('distractionCount', segMeta?.distractionCount);
+            setData('isCurrent', segMeta?.isCurrent ? 'true' : '');
             if (interactive) {
-                const hasTask = !!(segMeta?.taskBlockId);
-                if (hasTask) seg.style.cursor = 'pointer';
+                const cursor = segMeta?.taskBlockId ? 'pointer' : '';
+                if (seg.style.cursor !== cursor) seg.style.cursor = cursor;
+            }
+
+            if (isNew && interactive) {
+                const baseBoxShadow = seg.style.boxShadow || '';
 
                 seg.addEventListener('click', (e) => {
                     e.stopPropagation();
@@ -12762,18 +12824,19 @@
                 });
             }
 
-            parent.appendChild(seg);
+            if (isNew) parent.appendChild(seg);
         };
 
         const useDisplayMap = !!(timelineDisplayMap?.enabled && timelineDisplayMap.totalMinutes === totalMin);
         if (!useDisplayMap) {
-            appendSegment(startMin, endMin, meta);
+            appendSegment(startMin, endMin, meta, 0);
             return;
         }
 
         const parts = splitTimelineRangeByHidden(startMin, endMin);
         const baseIso = meta?.startIso || meta?.endIso || null;
-        for (const part of parts) {
+        for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+            const part = parts[partIndex];
             const ds = mapTimelineMinuteToDisplay(part.startMin);
             const de = mapTimelineMinuteToDisplay(part.endMin);
             if (ds == null || de == null || de <= ds) continue;
@@ -12785,15 +12848,16 @@
                 if (partStartIso) nextMeta.startIso = partStartIso;
                 if (partEndIso) nextMeta.endIso = partEndIso;
             }
-            appendSegment(ds, de, nextMeta);
+            appendSegment(ds, de, nextMeta, partIndex);
         }
     }
 
     function renderTimelineActiveSegments(offsetMin, totalMin, layerEl = timelineActiveLayer, dateKey = null) {
         // 🔧 修复：检查 layerEl 是否存在且仍连接到 DOM，防止对已移除的元素进行操作
         if (!layerEl || !layerEl.isConnected) return;
-        layerEl.innerHTML = '';
+        const activeRenderState = beginTimelineActiveRender(layerEl);
         layerEl.style.pointerEvents = 'none';
+        try {
         const syncActive = !!(syncState && syncState.status && syncState.status !== 'IDLE' && syncState.startTime);
         const effectiveRunning = !!(isRunning || (syncActive && syncState.status === 'RUNNING'));
         const effectivePaused = !!(isTimerPaused || (syncActive && syncState.status === 'PAUSED'));
@@ -12895,7 +12959,8 @@
                 taskBlockName: currentTaskBlockName,
                 databaseBlockId: currentDatabaseBlockId,
                 mode: 'countdown',
-                isActive: true
+                isActive: true,
+                timelineActiveKey: 'countdown-planned'
             });
             drawActiveRange(startTs, currentTs, tomatoColor, 0.85, '🍅 已专注', {
                 taskBlockId: currentTaskBlockId,
@@ -12903,7 +12968,8 @@
                 databaseBlockId: currentDatabaseBlockId,
                 mode: 'countdown',
                 isActive: true,
-                isCurrent: true
+                isCurrent: true,
+                timelineActiveKey: 'countdown-current'
             });
             return;
         }
@@ -12918,7 +12984,8 @@
                 databaseBlockId: currentDatabaseBlockId,
                 mode: 'stopwatch',
                 isActive: true,
-                isCurrent: true
+                isCurrent: true,
+                timelineActiveKey: 'stopwatch-current'
             });
             return;
         }
@@ -12951,7 +13018,8 @@
                 taskBlockName: syncState?.taskBlockName || currentTaskBlockName,
                 databaseBlockId: syncState?.databaseBlockId || currentDatabaseBlockId,
                 mode: timerMode,
-                isCurrent: false
+                isCurrent: false,
+                timelineActiveKey: 'break-current'
             });
             return;
         }
@@ -12974,9 +13042,22 @@
                 taskBlockName: syncState?.taskBlockName || currentTaskBlockName,
                 databaseBlockId: syncState?.databaseBlockId || currentDatabaseBlockId,
                 mode: 'stopwatch-break',
-                isCurrent: true
+                isCurrent: true,
+                timelineActiveKey: 'stopwatch-break-current'
             });
         }
+        } finally {
+            finishTimelineActiveRender(layerEl, activeRenderState);
+        }
+    }
+
+    function applyProgressBarVisual(key, background, boxShadow) {
+        if (!progressBar || lastProgressVisualKey === key) return false;
+        progressBar.style.background = background;
+        progressBar.style.backgroundColor = background.startsWith('linear-gradient') ? '' : background;
+        progressBar.style.boxShadow = boxShadow;
+        lastProgressVisualKey = key;
+        return true;
     }
 
     function updateProgressBar(animate = true) {
@@ -12987,14 +13068,11 @@
         }
         hideTimelineBar();
 
-        // 计时器运行时或暂停状态时显示进度条
         if (!isRunning && !isTimerPaused) {
             hideProgressBar();
             return;
         }
 
-        // 如果不是倒计时/休息模式，不显示进度条
-        // 正计时模式需要额外检查是否启用了进度条
         if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
             if (userSettings.appearance?.enableStopwatchBar === false) {
                 hideProgressBar();
@@ -13005,10 +13083,8 @@
             return;
         }
 
-        // 检测模式变化，强制重新创建进度条和指示器
         const currentMode = `${timerMode}_${userSettings.appearance?.theme || 'default'}_${!!userSettings.appearance?.enableNeonEffect}`;
         if (lastProgressMode !== currentMode) {
-            // 模式变化，强制移除旧元素
             if (progressBar) {
                 progressBar.remove();
                 progressBar = null;
@@ -13018,6 +13094,7 @@
                 progressIndicator = null;
             }
             lastProgressMode = currentMode;
+            lastProgressVisualKey = null;
         }
 
         createProgressBar();
@@ -13025,113 +13102,57 @@
 
         const total = currentDuration * 60;
         const percent = Math.max(0, (remainingSeconds / total) * 100);
-
-        // 检查是否启用霓虹模式和动画
         const isNeonMode = userSettings.appearance?.enableNeonEffect && userSettings.appearance?.theme !== 'default';
         const enableSmooth = userSettings.appearance?.enableSmoothAnimation !== false;
         const themeConfig = isNeonMode ? getThemeConfig() : null;
+        const intensity = userSettings.appearance?.neonIntensity || 0.8;
 
-        // 暂停/恢复时不使用动画，直接更新
         if (!animate || !enableSmooth) {
             progressBar.style.transition = 'none';
             if (progressIndicator) progressIndicator.style.transition = 'none';
         } else {
             progressBar.style.transition = 'width 0.3s ease-out';
-            if (progressIndicator) progressIndicator.style.transition = 'left 0.3s ease-out';
+            if (progressIndicator) progressIndicator.style.transition = 'transform 0.3s ease-out';
         }
 
-        // 检查是否是休息模式（休息模式使用灰色）
         const isBreakMode = timerMode === 'break' || timerMode === 'stopwatch-break';
-        // 检查是否是正计时模式
         const isStopwatchMode = timerMode === 'stopwatch';
         const isStopwatchBreakMode = timerMode === 'stopwatch-break';
 
-        // 正计时模式：常亮绿色进度条，进行时呼吸，暂停时停止呼吸
-        // 正计时模式下不显示指示器
         if (isStopwatchMode && userSettings.appearance?.enableStopwatchBar !== false) {
-            const stopwatchColor = '#00C853'; // 纯正绿色
-            const intensity = userSettings.appearance?.neonIntensity || 0.8;
+            const stopwatchColor = '#00C853';
             progressBar.style.width = '100%';
-            progressBar.style.background = stopwatchColor;  // 使用 background 而不是 backgroundColor，覆盖渐变
-            progressBar.style.backgroundColor = stopwatchColor;
-            progressBar.style.boxShadow = `0 0 ${15 * intensity}px ${stopwatchColor}, 0 0 ${30 * intensity}px ${stopwatchColor}, 0 0 ${50 * intensity}px ${stopwatchColor}`;
-
-            // 正计时模式下隐藏指示器
-            if (progressIndicator) {
-                progressIndicator.style.display = 'none';
-            }
-
-            // 呼吸动画控制：计时运行时才呼吸，暂停时停止
-            if (userSettings.appearance?.enableBreathing !== false) {
-                if (isRunning && !isTimerPaused) {
-                    progressBar.classList.add('breathing');
-                } else {
-                    progressBar.classList.remove('breathing');
-                }
-            }
-
+            applyProgressBarVisual(
+                `stopwatch-${intensity}`,
+                stopwatchColor,
+                `0 0 ${15 * intensity}px ${stopwatchColor}, 0 0 ${30 * intensity}px ${stopwatchColor}, 0 0 ${50 * intensity}px ${stopwatchColor}`
+            );
+            if (progressIndicator) progressIndicator.style.display = 'none';
         } else if (isStopwatchBreakMode && userSettings.appearance?.enableStopwatchBar !== false) {
             const breakColor = '#9E9E9E';
             progressBar.style.width = '100%';
-            progressBar.style.background = breakColor;
-            progressBar.style.backgroundColor = breakColor;
-            progressBar.style.boxShadow = 'none';
-
-            if (progressIndicator) {
-                progressIndicator.style.display = 'none';
-            }
-
-            if (userSettings.appearance?.enableBreathing !== false) {
-                if (isRunning && !isTimerPaused) {
-                    progressBar.classList.add('breathing');
-                } else {
-                    progressBar.classList.remove('breathing');
-                }
-            }
-
+            applyProgressBarVisual('stopwatch-break', breakColor, 'none');
+            if (progressIndicator) progressIndicator.style.display = 'none';
         } else if (isNeonMode && !isBreakMode) {
-            // 霓虹模式样式（休息模式使用灰色）
-            const intensity = userSettings.appearance?.neonIntensity || 0.8;
+            const gradient = `linear-gradient(90deg, ${themeConfig.gradientStart}, ${themeConfig.gradientEnd})`;
+            const visualKey = `neon-${themeConfig.gradientStart}-${themeConfig.gradientEnd}-${themeConfig.glowColor}-${intensity}`;
             progressBar.style.width = `${percent}%`;
-            progressBar.style.background = `linear-gradient(90deg, ${themeConfig.gradientStart}, ${themeConfig.gradientEnd})`;
-            // 增大发光范围
-            progressBar.style.boxShadow = `0 0 ${15 * intensity}px ${themeConfig.glowColor},
-                                          0 0 ${30 * intensity}px ${themeConfig.glowColor},
-                                          0 0 ${50 * intensity}px ${themeConfig.glowColor}`;
-
-            // 更新三角形指示器位置（尖端对准进度条右端）
+            applyProgressBarVisual(
+                visualKey,
+                gradient,
+                `0 0 ${15 * intensity}px ${themeConfig.glowColor}, 0 0 ${30 * intensity}px ${themeConfig.glowColor}, 0 0 ${50 * intensity}px ${themeConfig.glowColor}`
+            );
             if (progressIndicator) {
-                progressIndicator.style.color = themeConfig.glowColor;  // 设置 color，伪元素使用 currentColor
+                progressIndicator.style.color = themeConfig.glowColor;
                 progressIndicator.style.borderTopColor = themeConfig.glowColor;
-                // 偏移量调整：指示器缩小后相应调整
-                const arrowTipOffset = 2;
-                const leftPos = (window.innerWidth * percent) / 100 - arrowTipOffset;
-                progressIndicator.style.left = `${leftPos}px`;
+                const leftPos = (window.innerWidth * percent) / 100 - 2;
+                progressIndicator.style.transform = `translate3d(${leftPos}px, 0, 0)`;
                 progressIndicator.style.display = 'block';
-
-                // 呼吸动画控制：计时运行时才呼吸，暂停时停止
-                if (userSettings.appearance?.enableBreathing !== false) {
-                    if (isRunning && !isTimerPaused) {
-                        progressBar.classList.add('breathing');
-                        progressIndicator.classList.add('breathing');
-                    } else {
-                        progressBar.classList.remove('breathing');
-                        progressIndicator.classList.remove('breathing');
-                    }
-                }
-            } else {
-                // 没有指示器时也移除呼吸动画
-                progressBar.classList.remove('breathing');
             }
-
         } else if (getCurrentTheme() === 'default' && !isBreakMode) {
-            // 默认主题倒计时模式：使用思源笔记主题色
             const defaultColor = 'var(--b3-theme-primary, #1E88E5)';
             progressBar.style.width = `${percent}%`;
-            progressBar.style.background = defaultColor;  // 同时设置 background 和 backgroundColor
-            progressBar.style.backgroundColor = defaultColor;
-            progressBar.style.boxShadow = 'none';
-
+            applyProgressBarVisual('default', defaultColor, 'none');
             if (progressIndicator) {
                 progressIndicator.style.borderTopColor = defaultColor;
                 const viewportWidth = document.documentElement?.clientWidth || window.innerWidth;
@@ -13139,46 +13160,38 @@
                 const tipX = (viewportWidth * percent) / 100;
                 const leftPos = Math.max(arrowHalfWidth, Math.min(viewportWidth - arrowHalfWidth, tipX));
                 const adjustedLeftPos = Math.max(arrowHalfWidth, Math.min(viewportWidth - arrowHalfWidth, leftPos - 3));
-                progressIndicator.style.left = `${adjustedLeftPos}px`;
+                progressIndicator.style.transform = `translate3d(${adjustedLeftPos}px, -4px, 0)`;
                 progressIndicator.style.display = 'block';
-
-                // 移除呼吸动画
-                progressIndicator.classList.remove('breathing');
             }
-
-            // 移除呼吸动画
-            progressBar.classList.remove('breathing');
-
         } else {
-            // 休息模式：使用灰色
-            const color = '#9E9E9E';
+            const breakColor = '#9E9E9E';
             progressBar.style.width = `${percent}%`;
-            progressBar.style.background = color;  // 同时设置 background 和 backgroundColor，覆盖渐变
-            progressBar.style.backgroundColor = color;
-            progressBar.style.boxShadow = 'none';
-
+            applyProgressBarVisual('break', breakColor, 'none');
             if (progressIndicator) {
-                progressIndicator.style.color = color;  // 设置 color，伪元素使用 currentColor
-                progressIndicator.style.borderTopColor = color;
-                // 偏移量调整：指示器缩小后相应调整
-                const arrowTipOffset = 0.5;
-                const leftPos = (window.innerWidth * percent) / 100 - arrowTipOffset;
-                progressIndicator.style.left = `${leftPos}px`;
+                progressIndicator.style.color = breakColor;
+                progressIndicator.style.borderTopColor = breakColor;
+                const leftPos = (window.innerWidth * percent) / 100 - 0.5;
+                const y = progressIndicator.classList.contains('neon-mode') ? 0 : -4;
+                progressIndicator.style.transform = `translate3d(${leftPos}px, ${y}px, 0)`;
                 progressIndicator.style.display = 'block';
-
-                // 移除呼吸动画
-                progressIndicator.classList.remove('breathing');
             }
-
-            // 移除呼吸动画
-            progressBar.classList.remove('breathing');
         }
 
-        // 如果禁用了动画，需要在下次渲染时恢复动画
+        const breathingEnabled = userSettings.appearance?.enableBreathing !== false && isRunning && !isTimerPaused;
+        const progressShouldBreathe = breathingEnabled && (
+            isStopwatchMode
+            || isStopwatchBreakMode
+            || (isNeonMode && !isBreakMode && !!progressIndicator)
+        );
+        const indicatorShouldBreathe = progressShouldBreathe && isNeonMode && !isBreakMode && !!progressIndicator;
+        progressBar.classList.toggle('breathing', progressShouldBreathe);
+        if (progressIndicator) progressIndicator.classList.toggle('breathing', indicatorShouldBreathe);
+
         if (!animate || !enableSmooth) {
             requestAnimationFrame(() => {
+                if (!progressBar) return;
                 progressBar.style.transition = 'width 0.3s ease-out';
-                if (progressIndicator) progressIndicator.style.transition = 'left 0.3s ease-out';
+                if (progressIndicator) progressIndicator.style.transition = 'transform 0.3s ease-out';
             });
         }
     }
@@ -13186,12 +13199,16 @@
     function hideProgressBar() {
         if (progressBar) {
             progressBar.style.width = '0%';
+            progressBar.classList.remove('breathing');
             // 移除完成动画类
             if (progressBar.classList.contains('completing')) {
                 progressBar.classList.remove('completing');
             }
         }
-        if (progressIndicator) progressIndicator.style.display = 'none';
+        if (progressIndicator) {
+            progressIndicator.classList.remove('breathing');
+            progressIndicator.style.display = 'none';
+        }
     }
 
     function formatTime(seconds) {
@@ -13795,7 +13812,7 @@
         return bindTimerUiRefsFromWidget(widget);
     }
 
-    function updateDisplay() {
+    function updateDisplay(animateProgress = true) {
         ensureTimerUiRefs({ recreate: true });
         // 🔧 v9.0 修复：如果 timeDisplay 不存在且用户已关闭悬浮窗，不重新创建
         if (!isLiveTomatoNode(timeDisplay)) {
@@ -13857,7 +13874,7 @@
             if (container) container.classList.remove('tomato-circular-widget');
         } catch (e) {}
         try { scheduleDesktopMinimizedFloatWindowSync('update-display'); } catch (e) {}
-        updateProgressBar();
+        updateProgressBar(animateProgress);
 
         // 更新任务块图标状态
         updateTaskBlockIcon();
@@ -13961,12 +13978,14 @@
                 Logger.warn('🍅 计时完成显示更新失败，继续结束流程:', displayError);
             }
 
-            const endDialog = ensureSyncEndDialogOpen(
-                endType,
-                syncState?.startTime || startTime,
-                isStopwatchMode ? CONFIG.MAX_STOPWATCH_SECONDS : Math.max(1, Math.round(currentDuration * 60))
-            );
-            if (endDialog && endTimeMs) endDialog.endedAtMs = endTimeMs;
+            if (!isStopwatchMode) {
+                const endDialog = ensureSyncEndDialogOpen(
+                    endType,
+                    syncState?.startTime || startTime,
+                    Math.max(1, Math.round(currentDuration * 60))
+                );
+                if (endDialog && endTimeMs) endDialog.endedAtMs = endTimeMs;
+            }
 
             // 🔧 v9.5：番茄钟完成后，恢复 sessionId 供休息记录使用
             if (endMode === 'countdown' && pendingBreakSessionId) {
@@ -13976,45 +13995,45 @@
 
             await stopTimer({ skipEndRecord: true });
 
-            // 🔧 播放霓虹完成动画
-            try {
-                const isNeonMode = userSettings.appearance?.enableNeonEffect && userSettings.appearance?.theme !== 'default';
-                if (isNeonMode && progressBar) {
-                    const progress = progressBar;
-                    const currentWidth = progress.style.width;
-                    progress.style.setProperty('--current-width', currentWidth);
-                    progress.classList.add('completing');
+            if (!isStopwatchMode) {
+                // 🔧 播放霓虹完成动画
+                try {
+                    const isNeonMode = userSettings.appearance?.enableNeonEffect && userSettings.appearance?.theme !== 'default';
+                    if (isNeonMode && progressBar) {
+                        const progress = progressBar;
+                        const currentWidth = progress.style.width;
+                        progress.style.setProperty('--current-width', currentWidth);
+                        progress.classList.add('completing');
 
-                    // 动画结束后移除类
-                    setTimeout(() => {
-                        progress.classList.remove('completing');
-                    }, 2000);
+                        // 动画结束后移除类
+                        setTimeout(() => {
+                            progress.classList.remove('completing');
+                        }, 2000);
+                    }
+                } catch (animationError) {
+                    Logger.warn('🍅 计时完成动画失败:', animationError);
                 }
-            } catch (animationError) {
-                Logger.warn('🍅 计时完成动画失败:', animationError);
-            }
 
-            try {
-                if (isBreakMode) {
-                    await playEndSound('break-end');
-                } else {
-                    await playEndSound('work-end');
+                try {
+                    if (isBreakMode) {
+                        await playEndSound('break-end');
+                    } else {
+                        await playEndSound('work-end');
+                    }
+                } catch (audioError) {
+                    Logger.warn('🍅 播放提示音失败:', audioError);
                 }
-            } catch (audioError) {
-                Logger.warn('🍅 播放提示音失败:', audioError);
-            }
 
-            try {
-                if (isStopwatchMode) {
-                    showToastDialog('⏱️ 正计时结束', '已达到 16 小时上限', endType, currentTaskBlockId, currentTaskBlockName);
-                } else if (isBreakMode) {
-                    showToastDialog('⏰ 休息结束', '继续你的计时吧！', 'break-end', currentTaskBlockId, currentTaskBlockName);
-                } else {
-                    showToastDialog('🍅 时间到！', '该休息一下了～', 'tomato-end', currentTaskBlockId, currentTaskBlockName);
+                try {
+                    if (isBreakMode) {
+                        showToastDialog('⏰ 休息结束', '继续你的计时吧！', 'break-end', currentTaskBlockId, currentTaskBlockName);
+                    } else {
+                        showToastDialog('🍅 时间到！', '该休息一下了～', 'tomato-end', currentTaskBlockId, currentTaskBlockName);
+                    }
+                } catch (dialogError) {
+                    Logger.warn('🍅 计时完成弹窗显示失败:', dialogError);
+                    try { showMiniToast('计时已完成'); } catch (e) {}
                 }
-            } catch (dialogError) {
-                Logger.warn('🍅 计时完成弹窗显示失败:', dialogError);
-                try { showMiniToast('计时已完成'); } catch (e) {}
             }
             await waitForTimerPersistence(pendingRecordSave, 'timer-end');
         });
@@ -14122,9 +14141,11 @@
                 // 🔧 性能优化：只在秒数变化时更新 DOM
                 if (newRemainingSeconds !== remainingSeconds) {
                     remainingSeconds = newRemainingSeconds;
-                    updateDisplay();
-                    updateProgressBar(false);
-                    updateRoutineButtonRunningHighlight();
+                    updateDisplay(false);
+                    if (!isLiveTomatoNode(timeDisplay)) {
+                        updateProgressBar(false);
+                        updateRoutineButtonRunningHighlight();
+                    }
                 }
             }
         } else if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
@@ -14150,9 +14171,11 @@
              
              if (newElapsedSeconds !== elapsedSeconds) {
                 elapsedSeconds = newElapsedSeconds;
-                updateDisplay();
-                updateProgressBar(false);
-                updateRoutineButtonRunningHighlight();
+                updateDisplay(false);
+                if (!isLiveTomatoNode(timeDisplay)) {
+                    updateProgressBar(false);
+                    updateRoutineButtonRunningHighlight();
+                }
             }
         }
     }
@@ -24453,6 +24476,63 @@ window.__setTomatoFloatState = function (payload) {
         }
     }
 
+    function tomatoEaseInOut(progress) {
+        const x = Math.max(0, Math.min(1, Number(progress) || 0));
+        const sample = (t, p1, p2) => {
+            const c = 3 * p1;
+            const b = 3 * (p2 - p1) - c;
+            const a = 1 - c - b;
+            return ((a * t + b) * t + c) * t;
+        };
+        let low = 0;
+        let high = 1;
+        let t = x;
+        for (let i = 0; i < 14; i++) {
+            const sampledX = sample(t, 0.42, 0.58);
+            if (Math.abs(sampledX - x) < 0.00001) break;
+            if (sampledX < x) low = t;
+            else high = t;
+            t = (low + high) / 2;
+        }
+        return sample(t, 0, 1);
+    }
+
+    function buildSteppedBreathingKeyframes() {
+        const speed = ['slow', 'normal', 'fast'].includes(userSettings.appearance?.breathingSpeed)
+            ? userSettings.appearance.breathingSpeed
+            : 'normal';
+        const frameCount = TOMATO_BREATHING_FRAME_COUNTS[speed];
+        const rawMin = Math.max(0.05, Math.min(1, Number(userSettings.appearance?.breathingMinOpacity ?? 0.5)));
+        const rawMax = Math.max(0.05, Math.min(1, Number(userSettings.appearance?.breathingMaxOpacity ?? 1)));
+        const minOpacity = Math.min(rawMin, rawMax);
+        const maxOpacity = Math.max(rawMin, rawMax);
+        const range = maxOpacity - minOpacity;
+        const frames = [];
+        for (let i = 0; i <= frameCount; i++) {
+            const cycleProgress = i / frameCount;
+            const descending = cycleProgress > 0.5;
+            const segmentProgress = descending ? (cycleProgress - 0.5) * 2 : cycleProgress * 2;
+            const eased = tomatoEaseInOut(segmentProgress);
+            const opacity = descending
+                ? maxOpacity - range * eased
+                : minOpacity + range * eased;
+            const percent = i === frameCount ? '100' : (cycleProgress * 100).toFixed(4);
+            frames.push(`${percent}% { opacity: ${opacity.toFixed(4)}; }`);
+        }
+        return `@keyframes tomatoBreathe30fps {\n${frames.join('\n')}\n}`;
+    }
+
+    function updateSteppedBreathingStyle() {
+        const cssText = buildSteppedBreathingKeyframes();
+        let style = document.getElementById('tomato-neon-animation-style');
+        if (!style) {
+            style = document.createElement('style');
+            style.id = 'tomato-neon-animation-style';
+            document.head.appendChild(style);
+        }
+        if (style.textContent !== cssText) style.textContent = cssText;
+    }
+
     // ========== 霓虹样式管理器 ==========
     const NeonStyleManager = {
         // 获取呼吸速度对应的动画时长
@@ -24497,7 +24577,9 @@ window.__setTomatoFloatState = function (payload) {
         refresh() {
             const theme = getCurrentTheme();
             this.updateCSSVariables(theme);
-            
+            updateSteppedBreathingStyle();
+            lastProgressVisualKey = null;
+
             // 同时更新进度条元素的颜色
             this.updateProgressBarColors();
             this.updateIndicatorColors();
@@ -24578,6 +24660,7 @@ window.__setTomatoFloatState = function (payload) {
         
         // 更新CSS变量
         NeonStyleManager.updateCSSVariables(theme);
+        updateSteppedBreathingStyle();
         
         const style = document.createElement('style');
         style.id = 'tomato-neon-style';
@@ -24592,24 +24675,23 @@ window.__setTomatoFloatState = function (payload) {
             }
 
             .tomato-progress-bar.neon-mode.breathing {
-                animation: neonBreatheStrong var(--breathing-duration, 3s) ease-in-out infinite;
+                animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
             }
 
             /* 正计时模式呼吸动画 - 性能优化版 */
             .tomato-progress-bar.breathing {
-                animation: stopwatchBreathe var(--breathing-duration, 3s) ease-in-out infinite;
+                animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
                 will-change: opacity;
             }
 
             #tomato-timeline-bar .timeline-visual.breathing {
-                animation: stopwatchBreathe var(--breathing-duration, 3s) ease-in-out infinite;
+                animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
                 will-change: opacity;
             }
 
             #tomato-timeline-bar .timeline-visual.neon-mode.breathing {
-                animation: neonBreatheStrong var(--breathing-duration, 3s) ease-in-out infinite;
-                will-change: opacity, transform;
-                transform-origin: bottom;
+                animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
+                will-change: opacity;
             }
 
             #tomato-timeline-bar .timeline-viewport {
@@ -24630,37 +24712,8 @@ window.__setTomatoFloatState = function (payload) {
             }
 
             #tomato-timeline-bar .timeline-segment.breathing {
-                animation: neonBreatheStrong var(--breathing-duration, 3s) ease-in-out infinite;
-                will-change: opacity, transform;
-                transform-origin: bottom;
-            }
-
-            @keyframes stopwatchBreathe {
-                0%, 100% {
-                    opacity: var(--breathing-min-opacity, 0.5);
-                }
-                50% {
-                    opacity: var(--breathing-max-opacity, 1);
-                }
-            }
-
-            @keyframes neonBreathe {
-                0%, 100% {
-                    opacity: var(--breathing-min-opacity, 0.5);
-                }
-                50% {
-                    opacity: var(--breathing-max-opacity, 1);
-                }
-            }
-
-            /* 增强版呼吸动画 - 性能优化版 */
-            @keyframes neonBreatheStrong {
-                0%, 100% {
-                    opacity: var(--breathing-min-opacity, 0.5);
-                }
-                50% {
-                    opacity: var(--breathing-max-opacity, 1);
-                }
+                animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
+                will-change: opacity;
             }
 
             /* 完成动画 - 霓虹绽放 */
@@ -24709,29 +24762,12 @@ window.__setTomatoFloatState = function (payload) {
 
             /* 指示器呼吸动画 */
             .tomato-progress-indicator.neon-mode.breathing {
-                animation: indicatorBreathe var(--breathing-duration, 3s) ease-in-out infinite;
+                animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
+                will-change: opacity;
             }
 
             .tomato-progress-indicator.neon-mode.breathing .progress-text {
-                animation: textGlowBreathe var(--breathing-duration, 3s) ease-in-out infinite;
-            }
-
-            @keyframes indicatorBreathe {
-                0%, 100% {
-                    opacity: var(--breathing-min-opacity, 0.5);
-                }
-                50% {
-                    opacity: var(--breathing-max-opacity, 1);
-                }
-            }
-
-            @keyframes textGlowBreathe {
-                0%, 100% {
-                    opacity: var(--breathing-min-opacity, 0.5);
-                }
-                50% {
-                    opacity: var(--breathing-max-opacity, 1);
-                }
+                animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
             }
 
             /* ===== 霓虹指示器箭头 ===== */
@@ -24842,32 +24878,8 @@ window.__setTomatoFloatState = function (payload) {
             }
 
             .tomato-preview-indicator.breathing {
-                animation: previewIndicatorBreathe var(--breathing-duration, 3s) ease-in-out infinite;
-            }
-
-            @keyframes previewIndicatorBreathe {
-                0%, 100% {
-                    opacity: 0.4;  // 较暗
-                }
-                50% { 
-                    opacity: 1;    // 最亮
-                50% { 
-                    opacity: 1;    // 最亮
-                }
-            }
-
-            /* 聚焦模式样式：降低非高亮内容的透明度（但保留任务块/高亮块） */
-            .tomato-focus-mode > [data-node-id]:not(.tomato-task-highlight):not(.tomato-keep-opaque) {
-                opacity: var(--tomato-focus-dim-opacity, 0.5) !important;
-                transition: opacity 0.5s ease !important;
-            }
-            
-            /* 保持高亮块/任务块清晰 */
-            .tomato-focus-mode .tomato-task-highlight,
-            .tomato-focus-mode .tomato-db-row-highlight,
-            .tomato-focus-mode .tomato-keep-opaque {
-                opacity: 1 !important;
-                transition: opacity 0.5s ease !important;
+                animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
+                will-change: opacity;
             }
 
             /* 聚焦模式样式：降低非高亮内容的透明度（但保留任务块/高亮块） */
@@ -24903,118 +24915,61 @@ window.__setTomatoFloatState = function (payload) {
                 font-family: 'SF Mono', 'Consolas', monospace;
             }
 
-            .tomato-preview--breathing .tomato-preview-bar {
-                animation: previewBreatheStrong var(--breathing-duration, 3s) ease-in-out infinite;
+            .tomato-preview--breathing .tomato-preview-bar,
+            .tomato-preview-bar.tomato-preview--breathing {
+                animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
+                will-change: opacity;
             }
 
-            /* 折叠状态下的流动光效动画 - 从左往右滑动 */
             @keyframes shimmerFlow {
-                0% {
-                    background-position: 200% 0;
-                }
-                100% {
-                    background-position: -200% 0;
-                }
+                from { transform: translate3d(-100%, 0, 0); }
+                to { transform: translate3d(100%, 0, 0); }
             }
 
-            /* 
-             * 🔧 修复：让流光层作为独立元素覆盖在整个时间轴上方
-             * 之前的实现是作为背景图，会被子元素遮挡
-             * 现在改为使用 ::after 伪元素
-             */
             #tomato-timeline-bar[data-expanded="0"] .timeline-visual.breathing.shimmering::after,
             #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering::after {
                 content: '';
                 position: absolute;
                 top: 0;
-                left: 0;
-                right: 0;
                 bottom: 0;
+                left: 0;
+                width: 200%;
                 background-image: linear-gradient(
-                    90deg, 
-                    transparent 0%, 
-                    transparent calc(50% - var(--shimmer-width, 10%)), 
-                    var(--shimmer-color, rgba(255, 255, 255, 0.6)) 50%, 
-                    transparent calc(50% + var(--shimmer-width, 10%)), 
+                    90deg,
+                    transparent 0%,
+                    transparent calc(50% - var(--shimmer-width, 10%)),
+                    var(--shimmer-color, rgba(255, 255, 255, 0.6)) 50%,
+                    transparent calc(50% + var(--shimmer-width, 10%)),
                     transparent 100%
                 );
-                background-size: 200% 100%;
-                animation: shimmerFlow var(--shimmer-duration, 8s) linear infinite;
-                will-change: background-position;
-                z-index: 2; /* 确保在内容之上 */
-                pointer-events: none; /* 允许点击穿透 */
+                background-size: 100% 100%;
+                animation: shimmerFlow var(--shimmer-duration, 8s) steps(var(--shimmer-frames, 240), end) infinite;
+                will-change: transform;
+                z-index: 2;
+                pointer-events: none;
             }
 
-            /* 应用呼吸动画到容器本身（保持原样） */
-            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.breathing.shimmering {
-                animation: stopwatchBreathe var(--breathing-duration, 3s) ease-in-out infinite;
+            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.breathing.shimmering,
+            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering {
+                animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
             }
 
             #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering {
-                animation: neonBreatheStrong var(--breathing-duration, 3s) ease-in-out infinite;
                 box-shadow: 0 0 10px var(--neon-glow, #ff6b9d);
             }
 
-            /* 修复：确保当前时间线在流光层之上 */
+            html.tomato-animations-paused .tomato-progress-bar.breathing,
+            html.tomato-animations-paused .tomato-progress-indicator.breathing,
+            html.tomato-animations-paused .tomato-preview--breathing,
+            html.tomato-animations-paused .tomato-preview-indicator.breathing,
+            html.tomato-animations-paused #tomato-timeline-bar .timeline-visual.breathing,
+            html.tomato-animations-paused #tomato-timeline-bar .timeline-segment.breathing,
+            html.tomato-animations-paused #tomato-timeline-bar .timeline-visual.shimmering::after {
+                animation-play-state: paused !important;
+            }
+
             #tomato-timeline-now-line {
                 z-index: 3 !important;
-            }
-            /* 折叠状态下的流动光效动画 - 从左往右滑动 */
-            @keyframes shimmerFlow {
-                0% {
-                    background-position: 200% 0;
-                }
-                100% {
-                    background-position: -200% 0;
-                }
-            }
-
-            /* 
-             * 🔧 修复：让流光层作为独立元素覆盖在整个时间轴上方
-             * 之前的实现是作为背景图，会被子元素遮挡
-             * 现在改为使用 ::after 伪元素
-             */
-            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.breathing.shimmering::after,
-            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering::after {
-                content: '';
-                position: absolute;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background-image: linear-gradient(
-                    90deg, 
-                    transparent 0%, 
-                    transparent calc(50% - var(--shimmer-width, 10%)), 
-                    var(--shimmer-color, rgba(255, 255, 255, 0.6)) 50%, 
-                    transparent calc(50% + var(--shimmer-width, 10%)), 
-                    transparent 100%
-                );
-                background-size: 200% 100%;
-                animation: shimmerFlow var(--shimmer-duration, 8s) linear infinite;
-                will-change: background-position;
-                z-index: 2; /* 确保在内容之上 */
-                pointer-events: none; /* 允许点击穿透 */
-            }
-
-            /* 应用呼吸动画到容器本身（保持原样） */
-            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.breathing.shimmering {
-                animation: stopwatchBreathe var(--breathing-duration, 3s) ease-in-out infinite;
-            }
-
-            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering {
-                animation: neonBreatheStrong var(--breathing-duration, 3s) ease-in-out infinite;
-                box-shadow: 0 0 10px var(--neon-glow, #ff6b9d);
-            }
-
-            /* 修复：确保当前时间线在流光层之上 */
-            #tomato-timeline-now-line {
-                z-index: 3 !important;
-            }
-                50% { 
-                    opacity: 1;    // 最亮
-                    transform: scaleX(1.01);
-                }
             }
 
             /* 进度条背景发光 */
@@ -25467,8 +25422,6 @@ window.__setTomatoFloatState = function (payload) {
                 });
                 applyFocusMode(false);
                 applyDatabaseFocusMode(false);
-                applyFocusMode(false);
-                applyDatabaseFocusMode(false);
             }
         }
     }
@@ -25639,20 +25592,39 @@ window.__setTomatoFloatState = function (payload) {
         return new Promise(resolve => {
             let settled = false;
             let timeoutId = null;
+            let observer = null;
+            let cancelWait = null;
+            const root = node || document;
+            const findElement = () => typeof selector === 'function' ? selector() : root.querySelector(selector);
             const settle = (el) => {
                 if (settled) return;
                 settled = true;
                 if (timeoutId != null) clearTimeout(timeoutId);
+                try { observer?.disconnect?.(); } catch (e) {}
+                const observerIndex = mutationObservers.indexOf(observer);
+                if (observerIndex >= 0) mutationObservers.splice(observerIndex, 1);
+                if (cancelWait) pendingElementWaitCleanups.delete(cancelWait);
                 resolve(el || null);
             };
-            const check = () => {
-                if (settled) return;
-                const el = typeof selector === 'function' ? selector() : (node || document).querySelector(selector);
+            cancelWait = () => settle(null);
+            const existing = findElement();
+            if (existing) {
+                settle(existing);
+                return;
+            }
+            const observeTarget = root === document ? (document.documentElement || document.body) : root;
+            if (!observeTarget || typeof MutationObserver === 'undefined') {
+                settle(null);
+                return;
+            }
+            observer = new MutationObserver(() => {
+                const el = findElement();
                 if (el) settle(el);
-                else requestAnimationFrame(check);
-            };
+            });
+            observer.observe(observeTarget, { childList: true, subtree: true });
+            mutationObservers.push(observer);
+            pendingElementWaitCleanups.add(cancelWait);
             timeoutId = setTimeout(() => settle(null), timeoutMs);
-            check();
         });
     }
 
@@ -26102,9 +26074,6 @@ window.__setTomatoFloatState = function (payload) {
         document.querySelectorAll('.tomato-db-row-highlight').forEach(el => {
             el.classList.remove('tomato-db-row-highlight');
         });
-        // 清除聚焦模式
-        applyFocusMode(false);
-        applyDatabaseFocusMode(false);
         // 清除聚焦模式
         applyFocusMode(false);
         applyDatabaseFocusMode(false);
@@ -29358,6 +29327,7 @@ window.__setTomatoFloatState = function (payload) {
             userSettings.main.defaultTomatoTime = value;
             e.target.value = value;
             await saveUserSettings();
+            __publishTomatoDefaultDuration('settings');
             // 如果当前是倒计时模式且未在计时中，立即更新显示
             if (!isRunning && !isTimerPaused && (timerMode === 'countdown' || timerMode === 'break')) {
                 currentDuration = value;
@@ -32938,9 +32908,17 @@ window.__setTomatoFloatState = function (payload) {
         __tomatoDestroyed = true;
         try { uninstallAppResumeListeners(); } catch (e) {}
         try { uninstallReminderSyncEndScheduleReconcile(); } catch (e) {}
+        try { uninstallReminderTaskAttrSync(); } catch (e) {}
+        try { __disposeReminderDockRuntime(); } catch (e) {}
         try { stopWechatReminderReconcileLoop(); } catch (e) {}
         try { __closeReminderDockActionMenu(); } catch (e) {}
         try { __tomatoClearTrackedTimers(); } catch (e) {}
+        try { if (expiredReminderStartupTimer) clearTimeout(expiredReminderStartupTimer); } catch (e) {}
+        try { expiredReminderStartupTimer = null; } catch (e) {}
+        try { if (expiredReminderCheckInterval) clearInterval(expiredReminderCheckInterval); } catch (e) {}
+        try { expiredReminderCheckInterval = null; } catch (e) {}
+        try { if (expiredReminderNotificationTimer) clearTimeout(expiredReminderNotificationTimer); } catch (e) {}
+        try { expiredReminderNotificationTimer = null; } catch (e) {}
         try { if (injectTimeout) clearTimeout(injectTimeout); } catch (e) {}
         try { injectTimeout = null; } catch (e) {}
         try { if (injectInitTimeout) clearTimeout(injectInitTimeout); } catch (e) {}
@@ -32984,6 +32962,7 @@ window.__setTomatoFloatState = function (payload) {
         try { DOMCache.clear(); } catch (e) {}
         try { __tomatoFileTextCache.clear(); } catch (e) {}
         try { __tomatoEnsuredDirs.clear(); } catch (e) {}
+        try { revokeRoutineIconObjectUrls(); } catch (e) {}
 
         try { stopReminderCheck(); } catch (e) {}
         try { document.getElementById('tomato-reminder-backdrop')?.remove(); } catch (e) {}
@@ -32996,6 +32975,7 @@ window.__setTomatoFloatState = function (payload) {
 
         try { document.getElementById('tomato-common-style')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-neon-style')?.remove(); } catch (e) {}
+        try { document.getElementById('tomato-neon-animation-style')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-task-highlight-style')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-color-picker-backdrop')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-color-picker-dialog')?.remove(); } catch (e) {}
@@ -33027,6 +33007,10 @@ window.__setTomatoFloatState = function (payload) {
         try { document.getElementById('tomato-timeline-tooltip')?.remove(); } catch (e) {}
 
         try {
+            for (const cancelWait of Array.from(pendingElementWaitCleanups)) {
+                try { cancelWait(); } catch (e) {}
+            }
+            pendingElementWaitCleanups.clear();
             for (const observer of mutationObservers) {
                 try { observer.disconnect(); } catch (e) {}
             }
@@ -33043,6 +33027,12 @@ window.__setTomatoFloatState = function (payload) {
         try { delete window.tomatoAudio; } catch (e) {}
         try { delete window.tomatoBreadcrumbObserver; } catch (e) {}
         try { delete globalThis.__dockTomato; } catch (e) {}
+        try { delete globalThis.__dockTomatoReminderDock; } catch (e) {}
+        try { delete globalThis.__tomatoReminder; } catch (e) {}
+        try { delete globalThis.__tomatoTimer; } catch (e) {}
+        try { delete globalThis.__tomatoReminderBadge; } catch (e) {}
+        try { delete globalThis.__tomatoUpdateReminderBadge; } catch (e) {}
+        try { delete globalThis.__tomatoReminderBadgeElement; } catch (e) {}
 
         try { delete globalThis.__TomatoTimerCleanup; } catch (e) {}
         try { delete globalThis.__TomatoTimerUninstallCleanup; } catch (e) {}
@@ -34985,7 +34975,7 @@ window.__setTomatoFloatState = function (payload) {
             try { await __reconcileReminderScheduleRecordLedger(); } catch (e) {}
             if (!shouldPreferDeviceNotificationBackend()) return;
             if (!reminderSettings?.enabled || !reminderSettings?.systemNotificationEnabled) return;
-            const reminders = await queryAllReminderBlocks(forceRefresh);
+            const reminders = await queryAllReminderBlocks(forceRefresh, { flush: forceRefresh });
             for (const reminder of (reminders || [])) {
                 try { await __syncReminderDeviceSchedule(reminder.blockId, reminder, options); } catch (e) {}
             }
@@ -35016,15 +35006,15 @@ window.__setTomatoFloatState = function (payload) {
         if (!eventBus || typeof eventBus.on !== 'function') return;
         __reminderSyncEndScheduleReconcileHandler = () => {
             if (__tomatoDestroyed || __reminderSyncEndScheduleReconcileRunning) return;
-            if (!shouldPreferDeviceNotificationBackend() && !reminderSettings?.wechatEnabled) return;
+            if (!isRemindersGloballyEnabled()) return;
             __reminderSyncEndScheduleReconcileRunning = true;
             Promise.resolve().then(async () => {
-                const reminders = await queryAllReminderBlocks(false);
+                const reminders = await queryAllReminderBlocks(false, { flush: true });
                 if (shouldPreferDeviceNotificationBackend()) await __syncReminderDeviceSchedulesFromList(reminders);
-                scheduleWechatReminderReconcile('sync-end');
+                if (reminderSettings?.wechatEnabled) scheduleWechatReminderReconcile('sync-end');
                 try { __invalidateReminderDockCache(); } catch (e) {}
                 try { refreshReminderDockPanel(); } catch (e) {}
-                try { updateReminderBadge(); } catch (e) {}
+                try { await updateReminderBadge(reminders); } catch (e) {}
             }).catch(() => {}).finally(() => {
                 __reminderSyncEndScheduleReconcileRunning = false;
             });
@@ -37647,15 +37637,17 @@ window.__setTomatoFloatState = function (payload) {
     }
 
     let __reminderTaskAttrSyncBound = false;
+    let __reminderTaskAttrSyncHandler = null;
     const __reminderTaskAttrSyncTimers = new Map();
     function installReminderTaskAttrSync() {
         if (__reminderTaskAttrSyncBound) return;
-        __reminderTaskAttrSyncBound = true;
         try {
-            window.addEventListener('tm-task-attr-updated', (ev) => {
+            __reminderTaskAttrSyncHandler = (ev) => {
+                if (__tomatoDestroyed) return;
                 const taskId = String(ev?.detail?.taskId || '').trim();
                 const attrKey = String(ev?.detail?.attrKey || '').trim();
                 const eventSource = String(ev?.detail?.source || '').trim();
+                const databaseFlushed = ev?.detail?.databaseFlushed === true;
                 if (!taskId) return;
                 const isReminderAttr = attrKey === 'custom-tomato-reminder';
                 if (!isReminderAttr && ![
@@ -37671,6 +37663,7 @@ window.__setTomatoFloatState = function (payload) {
                 const timer = setTimeout(async () => {
                     __reminderTaskAttrSyncTimers.delete(taskId);
                     try {
+                        if (!databaseFlushed) await flushReminderTransaction();
                         await __refreshReminderAfterTaskContextChanged(taskId, {
                             reason: isReminderAttr && eventSource === 'task-horizon-agent-reminder'
                                 ? 'agent-reminder'
@@ -37679,8 +37672,26 @@ window.__setTomatoFloatState = function (payload) {
                     } catch (e) {}
                 }, 180);
                 __reminderTaskAttrSyncTimers.set(taskId, timer);
-            });
+            };
+            window.addEventListener('tm-task-attr-updated', __reminderTaskAttrSyncHandler);
+            __reminderTaskAttrSyncBound = true;
+        } catch (e) {
+            __reminderTaskAttrSyncHandler = null;
+        }
+    }
+
+    function uninstallReminderTaskAttrSync() {
+        try {
+            if (__reminderTaskAttrSyncHandler) {
+                window.removeEventListener('tm-task-attr-updated', __reminderTaskAttrSyncHandler);
+            }
         } catch (e) {}
+        __reminderTaskAttrSyncHandler = null;
+        __reminderTaskAttrSyncBound = false;
+        for (const timer of __reminderTaskAttrSyncTimers.values()) {
+            try { clearTimeout(timer); } catch (e) {}
+        }
+        __reminderTaskAttrSyncTimers.clear();
     }
 
     async function __refreshReminderAfterTaskContextChanged(blockId, options = {}) {
@@ -37692,7 +37703,7 @@ window.__setTomatoFloatState = function (payload) {
             try { await __syncReminderDeviceSchedule(reminder.blockId || id, reminder, { silent: true }); } catch (e) {}
         }
         try { scheduleWechatReminderReconcile(String(options?.reason || 'task-context-changed')); } catch (e) {}
-        try { refreshReminderDockPanel(true); } catch (e) {}
+        try { refreshReminderDockPanel(options?.forceRefresh === true); } catch (e) {}
         try { updateReminderBadge(); } catch (e) {}
         return {
             ok: true,
@@ -37703,9 +37714,10 @@ window.__setTomatoFloatState = function (payload) {
     }
     
     // 手动触发检查（用于测试）
-    function manualCheckReminders() {
+    async function manualCheckReminders() {
         Logger.info('手动触发提醒检查...');
-        checkReminders();
+        await flushReminderTransaction();
+        await checkReminders();
     }
     
     // 暴露到全局供调试使用
@@ -38147,6 +38159,15 @@ window.__setTomatoFloatState = function (payload) {
             try { return { ...ensureTaskBlockTomatoTimeConfig() }; } catch (e) { return null; }
         },
     };
+    async function flushReminderTransaction() {
+        try {
+            const response = await postJSON('/api/sqlite/flushTransaction', {});
+            return !!response?.ok;
+        } catch (e) {
+            return false;
+        }
+    }
+
     async function saveBlockReminder(blockId, reminderData, options = {}) {
         try {
             const requestedReminderBlockId = String(blockId || reminderData?.blockId || '').trim();
@@ -38220,18 +38241,18 @@ window.__setTomatoFloatState = function (payload) {
                         );
                     } catch (e) {}
                 }
+                await flushReminderTransaction();
                 if (!options?.skipTaskAttrUpdatedEvent) {
-                    dispatchTomatoTaskAttrUpdated(attrContext, 'bookmark', '⏰');
+                    dispatchTomatoTaskAttrUpdated(attrContext, 'bookmark', '⏰', { databaseFlushed: true });
                     dispatchTomatoTaskAttrUpdated(
                         attrContext,
                         'custom-tomato-reminder',
                         attrs['custom-tomato-reminder'],
-                        options?.taskAttrEventExtra || {}
+                        { ...(options?.taskAttrEventExtra || {}), databaseFlushed: true }
                     );
                 }
                 try { refreshReminderDockPanel(); } catch (e) {}
-                try { updateReminderBadge(); } catch (e) {}
-                try { postJSON('/api/sqlite/flushTransaction', {}).catch(() => {}); } catch (e) {}
+                try { await updateReminderBadge(); } catch (e) {}
                 try {
                     if (!options?.skipSiyuanSync) __scheduleReminderSiyuanSync();
                 } catch (e) {}
@@ -38299,8 +38320,6 @@ window.__setTomatoFloatState = function (payload) {
                         });
                     } catch (e) {}
                 }
-                dispatchTomatoTaskAttrUpdated(attrContext, 'bookmark', '');
-                dispatchTomatoTaskAttrUpdated(attrContext, 'custom-tomato-reminder', '');
                 try { __setReminderDeviceRegistryEntry(reminderId, null); } catch (e) {}
                 // 🔧 修复：删除提醒时立即清理孤立的系统通知预约，避免到点仍弹窗
                 try {
@@ -38314,12 +38333,14 @@ window.__setTomatoFloatState = function (payload) {
                         __saveReminderDeviceScheduleRegistry(registry);
                     }
                 } catch (e) {}
+                await flushReminderTransaction();
+                dispatchTomatoTaskAttrUpdated(attrContext, 'bookmark', '', { databaseFlushed: true });
+                dispatchTomatoTaskAttrUpdated(attrContext, 'custom-tomato-reminder', '', { databaseFlushed: true });
                 try {
                     __invalidateReminderDockCache();
                     renderReminderDockList('time', false);
                 } catch (e) {}
-                try { updateReminderBadge(); } catch (e) {}
-                try { postJSON('/api/sqlite/flushTransaction', {}).catch(() => {}); } catch (e) {}
+                try { await updateReminderBadge(); } catch (e) {}
                 try {
                     __scheduleReminderSiyuanSync();
                 } catch (e) {}
@@ -38343,9 +38364,6 @@ window.__setTomatoFloatState = function (payload) {
         const excludeCompletedTaskBlocks = queryOptions.excludeCompletedTaskBlocks === true;
         const queryLimit = Math.max(1, Math.min(20000, Number.parseInt(queryOptions.limit, 10) || 200));
         try {
-            // 强制刷新数据库事务，确保读取到最新数据
-            try { await postJSON('/api/sqlite/flushTransaction', {}); } catch (e) {}
-
             // 主动触发同步并等待，确保读取到云端最新数据
             if (forceRefresh && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
                 try {
@@ -38353,6 +38371,7 @@ window.__setTomatoFloatState = function (payload) {
                     await new Promise(resolve => setTimeout(resolve, 500));
                 } catch (e) {}
             }
+            if (forceRefresh || queryOptions.flush === true) await flushReminderTransaction();
 
             // 使用思源 SQL 查询 API 获取所有带有 custom-tomato-reminder 属性的块
             const sql = `
@@ -38445,6 +38464,7 @@ window.__setTomatoFloatState = function (payload) {
     let __reminderDockBodyObserver = null;
     let __reminderDockRepairTimer = null;
     let __reminderDockRecreateTimer = null;
+    let __reminderDockRefreshTimer = null;
     const __findReminderDockLayoutEntry = (node) => {
         if (!node) return false;
         if (Array.isArray(node)) {
@@ -38952,7 +38972,9 @@ window.__setTomatoFloatState = function (payload) {
         const ok = __ensureReminderDockMounted();
         if (!ok) return;
         const token = __reminderDockMountToken || 0;
-        setTimeout(() => {
+        try { if (__reminderDockRefreshTimer) clearTimeout(__reminderDockRefreshTimer); } catch (e) {}
+        __reminderDockRefreshTimer = setTimeout(() => {
+            __reminderDockRefreshTimer = null;
             if ((__reminderDockMountToken || 0) !== token) return;
             try { refreshReminderDockPanel(); } catch (e) {
                 try { Logger.warn('提醒Dock wake refresh失败:', reason, e); } catch (e2) {}
@@ -38991,6 +39013,38 @@ window.__setTomatoFloatState = function (payload) {
             } catch (e) {}
         };
         try { document.addEventListener('click', __reminderDockClickRecoverHandler, true); } catch (e) {}
+    };
+
+    const __disposeReminderDockRuntime = () => {
+        try { __reminderDockMountObserver?.disconnect?.(); } catch (e) {}
+        try { __reminderDockBodyObserver?.disconnect?.(); } catch (e) {}
+        __reminderDockMountObserver = null;
+        __reminderDockBodyObserver = null;
+        for (const timer of [__reminderDockWakeTimer, __reminderDockRepairTimer, __reminderDockRecreateTimer, __reminderDockRefreshTimer]) {
+            try { if (timer) clearTimeout(timer); } catch (e) {}
+        }
+        __reminderDockWakeTimer = null;
+        __reminderDockRepairTimer = null;
+        __reminderDockRecreateTimer = null;
+        __reminderDockRefreshTimer = null;
+        try {
+            if (__reminderDockVisibilityHandler) {
+                document.removeEventListener('visibilitychange', __reminderDockVisibilityHandler);
+            }
+        } catch (e) {}
+        try {
+            if (__reminderDockFocusHandler) window.removeEventListener('focus', __reminderDockFocusHandler);
+        } catch (e) {}
+        try {
+            if (__reminderDockClickRecoverHandler) {
+                document.removeEventListener('click', __reminderDockClickRecoverHandler, true);
+            }
+        } catch (e) {}
+        __reminderDockVisibilityHandler = null;
+        __reminderDockFocusHandler = null;
+        __reminderDockClickRecoverHandler = null;
+        __reminderDockWakeBound = false;
+        __clearReminderDockRegistrationState();
     };
     
     // Paths sourced from phosphor-icons-core-2.1.1/assets/bold and inlined for portable plugin packaging.
@@ -39720,7 +39774,7 @@ window.__setTomatoFloatState = function (payload) {
         __reminderDockDataCache.inFlight = (async () => {
             try {
                 // Dock 强制刷新只绕过本地缓存，不触发思源云同步。
-                const res = await queryAllReminderBlocks(false);
+                const res = await queryAllReminderBlocks(false, { flush: forceRefresh === true });
                 const list = Array.isArray(res) ? res : [];
                 __reminderDockDataCache.allReminders = list;
                 __reminderDockDataCache.staleReminders = list;

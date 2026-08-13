@@ -44,6 +44,8 @@ const refreshEnd = source.indexOf('\n    // 手动触发检查', refreshStart);
 const refreshBlock = source.slice(refreshStart, refreshEnd);
 assert.match(refreshBlock, /__syncReminderDeviceSchedule\(/, 'task date changes must reconcile device notifications');
 assert.match(refreshBlock, /scheduleWechatReminderReconcile\(/, 'task date changes must reconcile WeChat reminders');
+assert.match(refreshBlock, /refreshReminderDockPanel\(options\?\.forceRefresh === true\)/,
+    'local task context changes must refresh immediately without forcing cloud sync and a fixed delay');
 
 assert.doesNotMatch(source, /__syncReminderLoopToTaskRepeat/, 'Tomato must not keep a second direct task-repeat writer');
 assert.match(source, /bridge\.applyFollowDraft\(/, 'follow reminder edits must use Task Horizon bridge v2');

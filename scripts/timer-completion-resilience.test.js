@@ -28,14 +28,14 @@ const stopBlock = extract(
 );
 
 async function testCompletionSurvivesDisplayFailure() {
-    const state = { stopCalls: 0, toastCalls: 0, recordOptions: null };
+    const state = { endDialogCalls: 0, soundCalls: 0, stopCalls: 0, toastCalls: 0, recordOptions: null };
     const context = vm.createContext({
         Date,
         Math,
         Promise,
         Number,
         String,
-        CONFIG: { MAX_STOPWATCH_SECONDS: 16 * 3600 },
+        CONFIG: { MAX_STOPWATCH_SECONDS: 24 * 3600 },
         Logger: { info: () => {}, warn: () => {}, error: () => {} },
         timerMode: 'countdown',
         syncState: { startTime: 1_000, endDialog: null },
@@ -60,9 +60,12 @@ async function testCompletionSurvivesDisplayFailure() {
             return Promise.resolve(true);
         },
         updateDisplay: () => { throw new Error('display unavailable'); },
-        ensureSyncEndDialogOpen: (type, startAtMs, durationSec) => ({ type, startAtMs, durationSec }),
+        ensureSyncEndDialogOpen: (type, startAtMs, durationSec) => {
+            state.endDialogCalls++;
+            return { type, startAtMs, durationSec };
+        },
         stopTimer: async () => { state.stopCalls++; },
-        playEndSound: async () => {},
+        playEndSound: async () => { state.soundCalls++; },
         showToastDialog: () => { state.toastCalls++; },
         showMiniToast: () => {},
         waitForTimerPersistence: async (promise) => promise,
@@ -76,8 +79,79 @@ async function testCompletionSurvivesDisplayFailure() {
     await context.finish({ endTimeMs: 61_000, source: 'test' });
 
     assert.equal(state.stopCalls, 1, 'display failure must not prevent stopTimer');
+    assert.equal(state.endDialogCalls, 1, 'countdown completion must still create its synchronized end dialog');
+    assert.equal(state.soundCalls, 1, 'countdown completion must still play completion audio');
     assert.equal(state.toastCalls, 1, 'completion feedback must still be attempted');
     assert.equal(state.recordOptions.skipSyncUpdate, true, 'history persistence must not write an obsolete RUNNING state');
+}
+
+async function testStopwatchCompletionIsSilent(timerMode) {
+    const state = {
+        animationCalls: 0,
+        dialogCalls: 0,
+        endDialogCalls: 0,
+        recordCalls: 0,
+        soundCalls: 0,
+        stopCalls: 0,
+        toastCalls: 0,
+    };
+    const context = vm.createContext({
+        Date,
+        Math,
+        Promise,
+        Number,
+        String,
+        CONFIG: { MAX_STOPWATCH_SECONDS: 24 * 3600 },
+        Logger: { info: () => {}, warn: () => {}, error: () => {} },
+        timerMode,
+        syncState: { startTime: 1_000, endDialog: null },
+        startTime: 1_000,
+        currentDuration: 1,
+        currentTaskBlockId: null,
+        currentTaskBlockName: null,
+        pendingBreakSessionId: null,
+        currentSessionId: null,
+        timerId: 1,
+        isRunning: true,
+        isTimerPaused: false,
+        elapsedSeconds: 0,
+        remainingSeconds: 1,
+        controlButton: { innerHTML: '' },
+        progressBar: {
+            style: { width: '100%', setProperty: () => { state.animationCalls++; } },
+            classList: { add: () => { state.animationCalls++; }, remove: () => { state.animationCalls++; } },
+        },
+        userSettings: { appearance: { enableNeonEffect: true, theme: 'neon' } },
+        clearInterval: () => {},
+        setTimeout,
+        recordEndTime: () => {
+            state.recordCalls++;
+            return Promise.resolve(true);
+        },
+        updateDisplay: () => {},
+        ensureSyncEndDialogOpen: () => { state.endDialogCalls++; return {}; },
+        stopTimer: async () => { state.stopCalls++; },
+        playEndSound: async () => { state.soundCalls++; },
+        showToastDialog: () => { state.dialogCalls++; },
+        showMiniToast: () => { state.toastCalls++; },
+        waitForTimerPersistence: async (promise) => promise,
+        withTimerFinalizationLock: async (_name, action) => {
+            await action();
+            return true;
+        },
+    });
+    vm.runInContext(`${finishBlock}\nthis.finish = handleTimerEndFromSyncOrLocal;`, context);
+
+    await context.finish({ endTimeMs: 24 * 3600 * 1000 + 1_000, source: `test-${timerMode}` });
+
+    assert.equal(state.recordCalls, 1, `${timerMode} cap must save exactly one record`);
+    assert.equal(state.stopCalls, 1, `${timerMode} cap must still stop the timer`);
+    assert.equal(context.elapsedSeconds, 24 * 3600, `${timerMode} cap must preserve the full 24-hour duration`);
+    assert.equal(state.endDialogCalls, 0, `${timerMode} cap must not create an end dialog`);
+    assert.equal(state.animationCalls, 0, `${timerMode} cap must not run completion animation`);
+    assert.equal(state.soundCalls, 0, `${timerMode} cap must not play completion audio`);
+    assert.equal(state.dialogCalls, 0, `${timerMode} cap must not show a completion dialog or system notification`);
+    assert.equal(state.toastCalls, 0, `${timerMode} cap must not show fallback feedback`);
 }
 
 async function testStopSurvivesCleanupFailure() {
@@ -198,6 +272,8 @@ assert.match(source, /function runTimerTickSafely\(\)[\s\S]*handleTimerTick\(\)\
 
 (async () => {
     await testCompletionSurvivesDisplayFailure();
+    await testStopwatchCompletionIsSilent('stopwatch');
+    await testStopwatchCompletionIsSilent('stopwatch-break');
     await testStopSurvivesCleanupFailure();
     await testLastSecondPauseBoundary();
     console.log('timer completion resilience tests passed');
