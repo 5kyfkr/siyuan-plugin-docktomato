@@ -34,6 +34,7 @@ const updateEnd = source.indexOf('        checkStateChanged(', updateStart);
 assert.ok(updateStart >= 0 && updateEnd > updateStart, 'sync update method must remain extractable');
 const updateMethod = source.slice(updateStart, updateEnd);
 const syncContext = vm.createContext({
+    cloneSyncState: (state) => state && typeof state === 'object' ? JSON.parse(JSON.stringify(state)) : state,
     Logger: { debug: () => {} },
     Number,
     SYNC_DEVICE_ID: 'test-device',
@@ -60,6 +61,12 @@ ${updateMethod}
     assert.equal(updated.sequenceId, 1, 'pre-init updates must bootstrap and advance the sync version');
     assert.equal(updated.lastModifiedDevice, 'test-device');
     assert.equal(syncContext.manager.saveCount, 0, 'disabled sync must never push bootstrapped state to cloud');
+    const futureModifiedTime = Date.now() + 60000;
+    syncContext.manager.localState.lastModifiedTime = futureModifiedTime;
+    const advanced = await syncContext.manager.updateLocal({ status: 'PAUSED' }, false);
+    assert.equal(advanced.lastModifiedTime, futureModifiedTime + 1, 'local writes must advance beyond an accepted future device timestamp');
+    advanced.status = 'IDLE';
+    assert.equal(syncContext.manager.localState.status, 'PAUSED', 'returned sync states must not share the manager state object');
 
     assert.match(source, /let records = \[\];[\s\S]*records = await loadHistoryRecords\(\);[\s\S]*历史记录暂时不可用，计时器继续初始化/, 'history failures must not abort timer initialization');
     assert.doesNotMatch(source, /created \|\| true/, 'failed directory creation must never be cached as successful');

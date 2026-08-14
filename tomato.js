@@ -458,20 +458,28 @@
         endDialog: null,  // {id,type,startAtMs,durationSec,endedAtMs,closed,closedAtMs,closedByDevice}
     };
 
+    function cloneSyncState(state) {
+        if (!state || typeof state !== 'object') return state;
+        return JSON.parse(JSON.stringify(state));
+    }
+
+    // 本地写入会单调推进修改时间，因此所有设备都能按同一顺序选择唯一状态。
     function compareSyncStateVersions(stateA, stateB) {
         if (!stateA || !stateB) return 0;
+        const timeDifference = Number(stateA.lastModifiedTime || 0) - Number(stateB.lastModifiedTime || 0);
+        if (timeDifference !== 0) return timeDifference;
         const sequenceDifference = Number(stateA.sequenceId || 0) - Number(stateB.sequenceId || 0);
         if (sequenceDifference !== 0) return sequenceDifference;
-        return Number(stateA.lastModifiedTime || 0) - Number(stateB.lastModifiedTime || 0);
+        const deviceA = String(stateA.lastModifiedDevice || '');
+        const deviceB = String(stateB.lastModifiedDevice || '');
+        if (deviceA === deviceB) return 0;
+        return deviceA > deviceB ? 1 : -1;
     }
 
     function shouldAcceptRemoteSyncState(remoteState, localState) {
         if (!remoteState) return false;
         if (!localState) return true;
-        const comparison = compareSyncStateVersions(remoteState, localState);
-        const isNewerFromOtherDevice = Number(remoteState.lastModifiedTime || 0) > Number(localState.lastModifiedTime || 0)
-            && remoteState.lastModifiedDevice !== SYNC_DEVICE_ID;
-        return comparison > 0 || (comparison < 0 && isNewerFromOtherDevice);
+        return compareSyncStateVersions(remoteState, localState) > 0;
     }
     
     // ========== 同步管理器 ==========
@@ -488,14 +496,14 @@
         _focusHandler: null,
         
         async init(initialState, onChangeCallback) {
-            this.localState = JSON.parse(JSON.stringify(initialState));
+            this.localState = cloneSyncState(initialState);
             this.onStateChange = onChangeCallback;
             
             const cloudState = await this.loadFromCloud();
             let stateRestored = false;
             
             if (shouldAcceptRemoteSyncState(cloudState, this.localState)) {
-                this.localState = cloudState;
+                this.localState = cloneSyncState(cloudState);
                 stateRestored = cloudState.status !== 'IDLE';
                 Logger.info('🔄 SyncManager: 从云端恢复更新状态', {
                     status: cloudState.status,
@@ -505,12 +513,12 @@
             }
             
             if (this.onStateChange) {
-                this.onStateChange(this.localState);
+                this.onStateChange(cloneSyncState(this.localState));
             }
             
             this.startPolling();
             
-            return { state: this.localState, restored: stateRestored };
+            return { state: cloneSyncState(this.localState), restored: stateRestored };
         },
         
         async loadFromCloud() {
@@ -551,7 +559,7 @@
         },
         
         async saveToCloud(state = null, forceSync = false) {
-            const targetState = state || this.localState;
+            const targetState = cloneSyncState(state || this.localState);
             if (!targetState) {
                 Logger.warn('🔄 SyncManager: 保存失败，状态为空');
                 return false;
@@ -656,20 +664,23 @@
         async updateLocal(newState, forcePush = true, forceSync = false) {
             const wasUninitialized = !this.localState || typeof this.localState !== 'object';
             if (wasUninitialized) {
-                this.localState = { ...syncState };
+                this.localState = cloneSyncState(syncState);
             }
             const hasActualChange = wasUninitialized || this.checkStateChanged(this.localState, newState);
 
             const oldSequenceId = Number(this.localState.sequenceId || 0);
-            this.localState = { ...this.localState, ...newState };
-            this.localState.sequenceId = Number(this.localState.sequenceId || 0);
+            const highestKnownModifiedTime = Math.max(
+                Number(this.localState.lastModifiedTime || 0),
+                Number(newState?.lastModifiedTime || 0)
+            );
+            this.localState = { ...this.localState, ...cloneSyncState(newState) };
+            const mergedSequenceId = Number(this.localState.sequenceId || 0);
+            this.localState.sequenceId = hasActualChange
+                ? Math.max(oldSequenceId, mergedSequenceId) + 1
+                : Math.max(oldSequenceId, mergedSequenceId);
 
             this.localState.lastModifiedDevice = SYNC_DEVICE_ID;
-            this.localState.lastModifiedTime = Date.now();
-
-            if (hasActualChange && this.localState.sequenceId === oldSequenceId) {
-                this.localState.sequenceId++;
-            }
+            this.localState.lastModifiedTime = Math.max(Date.now(), highestKnownModifiedTime + 1);
 
             Logger.debug('🔄 SyncManager: 本地状态更新，sequenceId:', this.localState.sequenceId);
 
@@ -678,10 +689,10 @@
             }
 
             if (this.onStateChange) {
-                this.onStateChange(this.localState);
+                this.onStateChange(cloneSyncState(this.localState));
             }
 
-            return this.localState;
+            return cloneSyncState(this.localState);
         },
         
         checkStateChanged(currentState, newState) {
@@ -728,18 +739,17 @@
         },
         
         async applyRemote(remoteState) {
-            if (!remoteState) return this.localState;
+            if (!remoteState) return cloneSyncState(this.localState);
             const comparison = compareSyncStateVersions(remoteState, this.localState);
-            const remoteIsNewer = Number(remoteState.lastModifiedTime || 0) > Number(this.localState?.lastModifiedTime || 0);
             if (shouldAcceptRemoteSyncState(remoteState, this.localState)) {
-                this.localState = remoteState;
+                this.localState = cloneSyncState(remoteState);
                 if (this.onStateChange) {
-                    this.onStateChange(this.localState);
+                    this.onStateChange(cloneSyncState(this.localState));
                 }
-            } else if (comparison < 0 && !remoteIsNewer) {
+            } else if (comparison < 0) {
                 await this.saveToCloud();
             }
-            return this.localState;
+            return cloneSyncState(this.localState);
         },
         
         startPolling() {
@@ -800,7 +810,7 @@
         },
         
         getState() {
-            return this.localState;
+            return cloneSyncState(this.localState);
         },
         
         getSequenceId() {
@@ -32266,13 +32276,16 @@ window.__setTomatoFloatState = function (payload) {
                     const prevSig = buildSyncSignature(syncState);
                     const nextSig = buildSyncSignature(newState);
                     const runtimeStateChanged = buildTimerRuntimeSignature(syncState) !== buildTimerRuntimeSignature(newState);
-                    const runtimeNeedsRecovery = newState?.status === 'RUNNING'
-                        ? (!isRunning || !timerId)
-                        : newState?.status === 'PAUSED'
-                            ? (!isTimerPaused || !!timerId)
-                            : newState?.status === 'IDLE'
-                                ? (isRunning || isTimerPaused || !!timerId)
-                                : false;
+                    const isStateFromOtherDevice = !!(newState?.lastModifiedDevice && newState.lastModifiedDevice !== SYNC_DEVICE_ID);
+                    const runtimeNeedsRecovery = isStateFromOtherDevice
+                        ? newState?.status === 'RUNNING'
+                            ? (!isRunning || !timerId)
+                            : newState?.status === 'PAUSED'
+                                ? (!isTimerPaused || !!timerId)
+                                : newState?.status === 'IDLE'
+                                    ? (isRunning || isTimerPaused || !!timerId)
+                                    : false
+                        : false;
                     const shouldRefreshHistoryFromRemote = !!(nextSig && prevSig !== nextSig && newState?.lastModifiedDevice && newState.lastModifiedDevice !== SYNC_DEVICE_ID);
                     const maybeRefreshHistoryFromRemote = () => {
                         try {
@@ -32310,7 +32323,7 @@ window.__setTomatoFloatState = function (payload) {
                     const isLocalStateInitial = !syncState?.startTime && syncState?.status === 'IDLE' && !runtimeNeedsRecovery;
 
                     // 本设备已处理过自己的状态变化，这里只更新内存，避免通知状态同步引发重复调度。
-                    if (newState.lastModifiedDevice === SYNC_DEVICE_ID && !isLocalStateInitial && !runtimeNeedsRecovery) {
+                    if (newState.lastModifiedDevice === SYNC_DEVICE_ID && !isLocalStateInitial) {
                         Logger.debug('🔄 handleStateChange: 本地设备发起的更新，跳过重复应用');
                         syncState = newState;
                         return;

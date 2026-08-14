@@ -49,8 +49,8 @@ const stateChangeEnd = source.indexOf('            const initResult = await Sync
 assert.ok(stateChangeStart >= 0 && stateChangeEnd > stateChangeStart, 'sync state callback must remain extractable');
 const stateChangeBlock = source.slice(stateChangeStart, stateChangeEnd);
 assert.match(stateChangeBlock, /runtimeStateChanged[\s\S]*?!runtimeStateChanged/, 'runtime transitions must bypass cosmetic update throttling');
-assert.match(stateChangeBlock, /runtimeNeedsRecovery[\s\S]*?!runtimeNeedsRecovery/, 'a missing local timer loop must bypass update throttling');
-assert.match(stateChangeBlock, /newState\.lastModifiedDevice === SYNC_DEVICE_ID && !isLocalStateInitial && !runtimeNeedsRecovery/, 'same-device callbacks must still repair a missing local runtime');
+assert.match(stateChangeBlock, /isStateFromOtherDevice[\s\S]*?runtimeNeedsRecovery[\s\S]*?!runtimeNeedsRecovery/, 'a missing local timer loop must bypass throttling only for another device state');
+assert.match(stateChangeBlock, /newState\.lastModifiedDevice === SYNC_DEVICE_ID && !isLocalStateInitial\)/, 'same-device callbacks must not revive stale local runtime state');
 assert.match(stateChangeBlock, /syncActiveRoutineButtonFromState\(newState\)[\s\S]*?updateRoutineButtonRunningHighlight\(true\)[\s\S]*?if \(!timerId\) startLocalTimerLoop\(\)/, 'an unchanged running state must restore its routine highlight and timer loop');
 assert.match(stateChangeBlock, /syncState\.startTime !== newState\.startTime[\s\S]*?updateRoutineButtonRunningHighlight\(true\)[\s\S]*?startLocalTimerLoop\(\)/, 'a remotely restarted timer must refresh its routine highlight before restarting the local loop');
 assert.match(stateChangeBlock, /if \(newState\.status === 'PAUSED'\)/, 'accepted remote pauses must not be filtered by sequence ID again');
