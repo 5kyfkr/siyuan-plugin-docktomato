@@ -2425,6 +2425,9 @@
     const isMobileSupportEnabled = () => {
         try { return userSettings?.main?.enableMobileSupport !== false; } catch (e) { return DEFAULT_ENABLE_MOBILE_SUPPORT; }
     };
+    const shouldHideMobileBottomEffects = () => {
+        try { return isMobileDevice() && (!isMobileSupportEnabled() || mobileKeyboardVisible); } catch (e) { return false; }
+    };
     const isMobileBreadcrumbButtonEnabled = () => {
         try { return userSettings?.main?.showMobileBreadcrumbButton !== false; } catch (e) { return true; }
     };
@@ -3513,6 +3516,10 @@
     let progressIndicator = null;
     let lastProgressMode = null;  // 用于检测模式变化，强制重新创建进度条
     let lastProgressVisualKey = null;
+    let mobileKeyboardVisible = false;
+    let mobileKeyboardBaselineHeight = 0;
+    let mobileKeyboardCheckTimer = null;
+    let mobileKeyboardMonitorInstalled = false;
 
     // ========== 设置管理 ==========
     function __getDefaultTomatoTimeMinutes() {
@@ -8122,7 +8129,23 @@
         okBtn.focus();
     }
 
+    function removeProgressBarEffects() {
+        try { progressBar?.remove(); } catch (e) {}
+        try { progressIndicator?.remove(); } catch (e) {}
+        try {
+            document.querySelectorAll('.tomato-progress-bar, .tomato-progress-indicator').forEach((el) => el.remove());
+        } catch (e) {}
+        progressBar = null;
+        progressIndicator = null;
+        lastProgressMode = null;
+        lastProgressVisualKey = null;
+    }
+
     function createProgressBar() {
+        if (shouldHideMobileBottomEffects()) {
+            removeProgressBarEffects();
+            return;
+        }
         if (progressBar?.parentNode === document.body) return;
         if (progressBar) progressBar.remove();
         lastProgressVisualKey = null;
@@ -8161,6 +8184,10 @@
     }
 
     function createProgressIndicator() {
+        if (shouldHideMobileBottomEffects()) {
+            removeProgressBarEffects();
+            return;
+        }
         if (progressIndicator?.parentNode === document.body) return;
         if (progressIndicator) progressIndicator.remove();
 
@@ -10655,6 +10682,10 @@
     }
 
     function createTimelineBar() {
+        if (shouldHideMobileBottomEffects()) {
+            hideTimelineBar();
+            return;
+        }
         if (timelineBar && timelineBar.parentNode === document.body) return;
         if (timelineBar) timelineBar.remove();
 
@@ -12277,6 +12308,10 @@
 
     function updateTimelineBar(force = false) {
         ensureTimelineSettings();
+        if (shouldHideMobileBottomEffects()) {
+            hideTimelineBar();
+            return;
+        }
         if (!userSettings.timeline?.enabled) {
             hideTimelineBar();
             return;
@@ -13120,6 +13155,11 @@
     }
 
     function updateProgressBar(animate = true) {
+        if (shouldHideMobileBottomEffects()) {
+            hideTimelineBar();
+            removeProgressBarEffects();
+            return;
+        }
         if (userSettings.timeline?.enabled) {
             updateTimelineBar();
             hideProgressBar();
@@ -22044,6 +22084,69 @@ function calculateWeeklyStats(dailyStatsArray) {
         return isMobileDevice();
     }
 
+    function isMobileKeyboardEditableTarget(target) {
+        if (!target || target === document.body || target === document.documentElement) return false;
+        try {
+            if (target.matches?.('input:not([type="button"]):not([type="checkbox"]):not([type="radio"]), textarea, select, [contenteditable="true"], [contenteditable=""]')) return true;
+            return !!target.closest?.('[contenteditable="true"], [contenteditable=""]');
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function getMobileKeyboardViewportHeight() {
+        const visualHeight = Number(window.visualViewport?.height);
+        const layoutHeight = Math.max(0, Number(window.innerHeight) || Number(document.documentElement?.clientHeight) || 0);
+        if (Number.isFinite(visualHeight) && visualHeight > 0 && layoutHeight > 0) return Math.min(visualHeight, layoutHeight);
+        if (Number.isFinite(visualHeight) && visualHeight > 0) return visualHeight;
+        return layoutHeight;
+    }
+
+    function syncMobileKeyboardBottomEffects() {
+        if (!isMobileDevice()) return;
+        const viewportHeight = getMobileKeyboardViewportHeight();
+        if (viewportHeight <= 0) return;
+
+        const hasEditableFocus = isMobileKeyboardEditableTarget(document.activeElement);
+        if (!hasEditableFocus && !mobileKeyboardVisible) mobileKeyboardBaselineHeight = viewportHeight;
+        else mobileKeyboardBaselineHeight = Math.max(mobileKeyboardBaselineHeight || viewportHeight, viewportHeight);
+
+        const keyboardThreshold = Math.max(120, Math.round(mobileKeyboardBaselineHeight * 0.18));
+        const viewportReduced = mobileKeyboardBaselineHeight - viewportHeight >= keyboardThreshold;
+        const nextVisible = viewportReduced && (hasEditableFocus || mobileKeyboardVisible);
+        if (nextVisible === mobileKeyboardVisible) return;
+
+        mobileKeyboardVisible = nextVisible;
+        if (mobileKeyboardVisible) {
+            hideTimelineBar();
+            removeProgressBarEffects();
+        } else {
+            updateProgressBar(false);
+        }
+    }
+
+    function scheduleMobileKeyboardBottomEffectsSync(delay = 0) {
+        if (!isMobileDevice()) return;
+        if (mobileKeyboardCheckTimer != null) clearTimeout(mobileKeyboardCheckTimer);
+        mobileKeyboardCheckTimer = setTimeout(() => {
+            mobileKeyboardCheckTimer = null;
+            syncMobileKeyboardBottomEffects();
+        }, Math.max(0, Number(delay) || 0));
+    }
+
+    function installMobileKeyboardBottomEffectsMonitor() {
+        if (!isMobileDevice() || mobileKeyboardMonitorInstalled) return;
+        mobileKeyboardMonitorInstalled = true;
+        mobileKeyboardBaselineHeight = getMobileKeyboardViewportHeight();
+
+        EventManager.add(document, 'focusin', () => scheduleMobileKeyboardBottomEffectsSync(80), { capture: true }, 'mobile-keyboard-effects');
+        EventManager.add(document, 'focusout', () => scheduleMobileKeyboardBottomEffectsSync(120), { capture: true }, 'mobile-keyboard-effects');
+        EventManager.add(window, 'resize', () => scheduleMobileKeyboardBottomEffectsSync(), { passive: true }, 'mobile-keyboard-effects');
+        if (window.visualViewport) {
+            EventManager.add(window.visualViewport, 'resize', () => scheduleMobileKeyboardBottomEffectsSync(), { passive: true }, 'mobile-keyboard-effects');
+        }
+    }
+
     // 移动端状态变量
     let isUsingFloatBar = false;
     let floatBarHiddenByUser = false;  // 用户是否主动关闭悬浮窗
@@ -29477,6 +29580,10 @@ window.__setTomatoFloatState = function (payload) {
                     try { cleanupFloatBarEvents(); } catch (e) {}
                     try { document.getElementById('siyuan-tomato-float-bar')?.remove(); } catch (e) {}
                     try { removeMobileBreadcrumbButton(); } catch (e) {}
+                    if (isMobileDevice()) {
+                        try { removeProgressBarEffects(); } catch (e) {}
+                        try { hideTimelineBar(); } catch (e) {}
+                    }
                 } else {
                     try { debouncedInject(); } catch (e) {}
                 }
@@ -32117,6 +32224,7 @@ window.__setTomatoFloatState = function (payload) {
             let stateRestored = false;
             await ensureTomatoStorageMigration();
             await loadUserSettings();
+            installMobileKeyboardBottomEffectsMonitor();
             // 确保 audioSettings 对象存在（兼容旧配置）
             ensureAudioSettingsDefaults();
             // 确保 taskBlockTomatoTime 对象存在（兼容旧配置）
@@ -32983,6 +33091,11 @@ window.__setTomatoFloatState = function (payload) {
         try { if (mobileBreadcrumbNextTimer != null) clearTimeout(mobileBreadcrumbNextTimer); } catch (e) {}
         try { mobileBreadcrumbNextTimer = null; } catch (e) {}
         try { mobileBreadcrumbNextTries = 0; } catch (e) {}
+        try { if (mobileKeyboardCheckTimer != null) clearTimeout(mobileKeyboardCheckTimer); } catch (e) {}
+        try { mobileKeyboardCheckTimer = null; } catch (e) {}
+        try { mobileKeyboardVisible = false; } catch (e) {}
+        try { mobileKeyboardBaselineHeight = 0; } catch (e) {}
+        try { mobileKeyboardMonitorInstalled = false; } catch (e) {}
         try { if (timerId) clearInterval(timerId); } catch (e) {}
         try { timerId = null; } catch (e) {}
         try { if (reminderIntervalId) clearInterval(reminderIntervalId); } catch (e) {}
