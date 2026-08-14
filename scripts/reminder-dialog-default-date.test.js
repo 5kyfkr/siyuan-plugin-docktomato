@@ -43,4 +43,4 @@ const taskContextStart = source.indexOf('async function __getReminderTaskContext
 const taskContextEnd = source.indexOf('\n    async function resolveReminderTaskAttrContext', taskContextStart);
 assert.ok(taskContextStart >= 0 && taskContextEnd > taskContextStart, 'task-context reader must remain extractable');
 const taskContextBlock = source.slice(taskContextStart, taskContextEnd);
-assert.match(taskContextBlock, /resolveReminderTaskAttrContext\(id\)[\s\S]*?getTomatoTaskAttrRows\(attrContext\)/, 'task context must resolve and read the canonical attribute host first');
+assert.match(taskContextBlock, /resolveReminderTaskAttrContext\(id\)[\s\S]*?readCanonicalTomatoTaskAttrs\(attrContext\)/, 'task context must resolve and read only the canonical attribute host');
