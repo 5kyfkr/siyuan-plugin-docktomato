@@ -26,8 +26,8 @@ echo Copy plugin files to temp dir...
 
 REM Copy content with excludes
 robocopy "%PLUGIN_DIR%" "%TEMP_DIR%" /E /R:1 /W:1 ^
- /XD ".git" ".github" ".vscode" "node_modules" ".history" ".idea" ^
- /XF ".gitignore" ".DS_Store" ".hotreload" "GUIDE_zh_CN.md" "build.bat" "build.ps1" "build.sh" "CHANGELOG.md" "LICENSE" "%OUTPUT%"
+ /XD ".git" ".github" ".playwright-cli" ".vscode" "node_modules" "output" "scripts" ".history" ".idea" ^
+ /XF ".gitignore" ".impeccable.md" ".DS_Store" ".hotreload" "PRODUCT.md" "DESIGN.md" "GUIDE_zh_CN.md" "build.bat" "build.ps1" "build.sh" "CHANGELOG.md" "LICENSE" "%OUTPUT%"
 set RC=%errorlevel%
 if %RC% GEQ 8 (
     echo ERROR: robocopy failed with code %RC% >&2

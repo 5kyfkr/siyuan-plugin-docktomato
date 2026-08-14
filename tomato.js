@@ -448,6 +448,10 @@
         taskBlockId: null,  // 关联的任务块ID
         taskBlockName: null,  // 关联的任务块名称
         databaseBlockId: null,  // 关联的数据库块ID
+        routineButtonId: null,
+        routineButtonBlockId: null,
+        routineButtonName: null,
+        routineButtonColor: null,
         distractionCount: 0,
         distractionSavedCount: 0,
         notificationSchedules: {},  // { [deviceId]: { id, timerKey, status, scheduledAtMs, dueAtMs, canceledAtMs, mode, delayInSeconds } }
@@ -683,7 +687,10 @@
         checkStateChanged(currentState, newState) {
             if (!currentState || !newState) return true;
             
-            const keyFields = ['status', 'startTime', 'mode', 'duration'];
+            const keyFields = [
+                'status', 'startTime', 'mode', 'duration',
+                'routineButtonId', 'routineButtonBlockId', 'routineButtonName', 'routineButtonColor'
+            ];
             const syncAssociation = (() => {
                 try { return userSettings?.sync?.syncTaskAssociation === true; } catch (e) { return false; }
             })();
@@ -1156,6 +1163,10 @@
                 String(st.taskBlockId || ''),
                 String(st.taskBlockName || ''),
                 String(st.databaseBlockId || ''),
+                String(st.routineButtonId || ''),
+                String(st.routineButtonBlockId || ''),
+                String(st.routineButtonName || ''),
+                String(st.routineButtonColor || ''),
                 JSON.stringify(st.notificationSchedules || {})
             ].join('|');
         } catch (e) {
@@ -1400,7 +1411,7 @@
         if (typeof syncState.distractionSavedCount === 'number') {
             lastSavedDistractionCount = Math.max(0, Math.floor(syncState.distractionSavedCount));
         }
-        
+        syncActiveRoutineButtonFromState(syncState);
         // 更新暂停记录
         if (syncState.pausedIntervals) {
             stopwatchPausedIntervals = syncState.pausedIntervals;
@@ -1421,6 +1432,22 @@
         if (syncState.status === 'RUNNING') {
             window.__tomatoPausedColor = null;
         }
+    }
+
+    function buildTimerRuntimeSignature(st) {
+        if (!st) return '';
+        return [
+            st.status,
+            st.mode,
+            String(st.startTime || ''),
+            String(st.stopwatchStartTimeMs || ''),
+            String(st.duration || ''),
+            String(st.currentPauseStart || ''),
+            String(st.pausedElapsedSeconds ?? ''),
+            String(st.routineButtonId || ''),
+            String(st.routineButtonBlockId || ''),
+            String(st.routineButtonName || '')
+        ].join('|');
     }
 
     function applyAcceptedSyncStateToTimer(state) {
@@ -8659,6 +8686,38 @@
         return String(meta?.name || '').trim();
     }
 
+    function syncActiveRoutineButtonFromState(state) {
+        const isActive = state?.status === 'RUNNING' || state?.status === 'PAUSED';
+        const buttons = Array.isArray(userSettings?.routineButtons) ? userSettings.routineButtons : [];
+        if (!isActive || buttons.length === 0) {
+            activeRoutineButtonIndex = null;
+            activeRoutineButtonBlockId = null;
+            routineButtonHighlightColor = null;
+            return;
+        }
+
+        const wantedId = String(state?.routineButtonId || '').trim();
+        const wantedBlockId = String(state?.routineButtonBlockId || state?.taskBlockId || '').trim();
+        const wantedName = String(state?.routineButtonName || '').trim();
+        const index = buttons.findIndex((button, buttonIndex) => {
+            if (wantedId && getRoutineButtonIdentity(button, buttonIndex) === wantedId) return true;
+            if (wantedBlockId && String(button?.blockId || '').trim() === wantedBlockId) return true;
+            return !!(wantedName && String(button?.name || '').trim() === wantedName);
+        });
+
+        if (index < 0) {
+            activeRoutineButtonIndex = null;
+            activeRoutineButtonBlockId = null;
+            routineButtonHighlightColor = null;
+            return;
+        }
+
+        const button = buttons[index];
+        activeRoutineButtonIndex = String(index);
+        activeRoutineButtonBlockId = String(button?.blockId || wantedBlockId || '').trim() || null;
+        routineButtonHighlightColor = String(button?.color || state?.routineButtonColor || '').trim() || null;
+    }
+
     function updateRoutineButtonRunningHighlight(force = false) {
         const toolbar = document.getElementById('tomato-routine-toolbar');
         if (!toolbar) return;
@@ -14303,6 +14362,11 @@
             startLocalTimerLoop();
 
             if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
+                const activeRoutineMeta = getActiveRoutineButtonRecordMeta();
+                syncState.routineButtonId = activeRoutineMeta?.id || null;
+                syncState.routineButtonBlockId = activeRoutineMeta?.blockId || null;
+                syncState.routineButtonName = activeRoutineMeta?.name || null;
+                syncState.routineButtonColor = activeRoutineMeta?.color || null;
                 if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
                     if (!stopwatchStartTimeMs || stopwatchStartTimeMs === 0) {
                         stopwatchStartTimeMs = Date.now();
@@ -32093,6 +32157,14 @@ window.__setTomatoFloatState = function (payload) {
 
                     const prevSig = buildSyncSignature(syncState);
                     const nextSig = buildSyncSignature(newState);
+                    const runtimeStateChanged = buildTimerRuntimeSignature(syncState) !== buildTimerRuntimeSignature(newState);
+                    const runtimeNeedsRecovery = newState?.status === 'RUNNING'
+                        ? (!isRunning || !timerId)
+                        : newState?.status === 'PAUSED'
+                            ? (!isTimerPaused || !!timerId)
+                            : newState?.status === 'IDLE'
+                                ? (isRunning || isTimerPaused || !!timerId)
+                                : false;
                     const shouldRefreshHistoryFromRemote = !!(nextSig && prevSig !== nextSig && newState?.lastModifiedDevice && newState.lastModifiedDevice !== SYNC_DEVICE_ID);
                     const maybeRefreshHistoryFromRemote = () => {
                         try {
@@ -32119,16 +32191,18 @@ window.__setTomatoFloatState = function (payload) {
                     if (handleStateChange._lastTime
                         && now - handleStateChange._lastTime < MIN_STATE_UPDATE_INTERVAL
                         && !shouldHandleEndDialogClose
-                        && !expiredTimerSnapshot) {
+                        && !expiredTimerSnapshot
+                        && !runtimeStateChanged
+                        && !runtimeNeedsRecovery) {
                         Logger.debug('🔄 handleStateChange: 状态更新过于频繁，跳过');
                         return;
                     }
                     handleStateChange._lastTime = now;
 
-                    const isLocalStateInitial = !syncState?.startTime && syncState?.status === 'IDLE';
+                    const isLocalStateInitial = !syncState?.startTime && syncState?.status === 'IDLE' && !runtimeNeedsRecovery;
 
                     // 本设备已处理过自己的状态变化，这里只更新内存，避免通知状态同步引发重复调度。
-                    if (newState.lastModifiedDevice === SYNC_DEVICE_ID && !isLocalStateInitial) {
+                    if (newState.lastModifiedDevice === SYNC_DEVICE_ID && !isLocalStateInitial && !runtimeNeedsRecovery) {
                         Logger.debug('🔄 handleStateChange: 本地设备发起的更新，跳过重复应用');
                         syncState = newState;
                         return;
@@ -32181,6 +32255,7 @@ window.__setTomatoFloatState = function (payload) {
                         Logger.info('🔄 SyncManager: 启动本地定时器');
                         startLocalTimerLoop();
                     }
+                    updateRoutineButtonRunningHighlight(true);
 
                     try { maybeRefreshHistoryFromRemote(); } catch (e) {}
                     try { applyEndDialogCloseFromSync(newState); } catch (e) {}
@@ -32230,7 +32305,8 @@ window.__setTomatoFloatState = function (payload) {
                         isTimerPaused = false;
                         if (controlButton) controlButton.innerHTML = '⏸️';
                         if (timeDisplay) updateDisplay(true);
-                        
+                        updateRoutineButtonRunningHighlight(true);
+
                         if (!timerId) {
                             startLocalTimerLoop();
                         }
@@ -32245,10 +32321,13 @@ window.__setTomatoFloatState = function (payload) {
                     // 相同开始时间，忽略
                     Logger.debug('🔄 SyncManager: 本地和云端都在运行同一个计时器，忽略云端进度更新');
                     syncState = newState;
+                    syncActiveRoutineButtonFromState(newState);
+                    updateRoutineButtonRunningHighlight(true);
+                    if (!timerId) startLocalTimerLoop();
                     return;
                 }
 
-                if (newState.status === 'PAUSED' && newState.sequenceId !== syncState?.sequenceId) {
+                if (newState.status === 'PAUSED') {
                     Logger.info('🔄 SyncManager: 远端已暂停（新的状态），同步暂停状态');
 
                     if (timerId) {
@@ -32305,6 +32384,7 @@ window.__setTomatoFloatState = function (payload) {
 
                     if (controlButton) controlButton.innerHTML = '▶️';
                     if (timeDisplay) updateDisplay(true);
+                    updateRoutineButtonRunningHighlight(true);
 
                     try { await reconcileTrackedTimerNotification('sync-remote-paused', true); } catch (e) {}
 
@@ -32313,107 +32393,77 @@ window.__setTomatoFloatState = function (payload) {
                     return;
                 }
 
-                if (isTimerPaused && newState.status === 'PAUSED' &&
-                    syncState.status === 'PAUSED' &&
-                    newState.sequenceId === syncState.sequenceId) {
-                    Logger.debug('🔄 SyncManager: 本地已暂停且状态相同，跳过');
+                // 🔧 v9.0 修复：处理远端重置（IDLE状态）- 仅当本地正在运行时才处理
+                // 注意：不能影响初始化时的状态恢复流程
+                if (newState.status === 'IDLE') {
+                    Logger.info('🔄 SyncManager: 远端已重置，同步停止状态');
+
+                    // 停止本地计时器
+                    if (timerId) {
+                        clearInterval(timerId);
+                        timerId = null;
+                    }
+
                     syncState = newState;
+
+                    // 🔧 修复：重置本地所有计时状态
+                    isRunning = false;
+                    isTimerPaused = false;
+                    stopBackgroundAudio();
+                    startTime = 0;
+                    pausedRemainingSeconds = null;
+                    currentStartTimestamp = null;
+                    currentStartTimeMs = 0;
+
+                    // 🔧 修复：重置正计时相关的所有状态变量
+                    if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
+                        elapsedSeconds = 0;
+                        stopwatchDisplayOffset = 0;
+                        stopwatchStartTimeMs = 0;
+                        stopwatchStartTimestamp = null;
+                        stopwatchPausedIntervals = [];
+                        currentPauseStart = null;
+                    }
+
+                    // 恢复默认显示
+                    if (timerMode === 'countdown' || timerMode === 'break') {
+                        remainingSeconds = currentDuration * 60;
+                    }
+
+                    // 更新任务关联（如果云端清除了）
+                    if (!newState.taskBlockId) {
+                        currentTaskBlockId = null;
+                        currentTaskBlockName = null;
+                    }
+                    if (!newState.databaseBlockId) {
+                        currentDatabaseBlockId = null;
+                    }
+
+                    // 更新UI
+                    if (controlButton) controlButton.innerHTML = '▶️';
+                    if (timeDisplay) updateDisplay();
+                    syncActiveRoutineButtonFromState(newState);
+                    updateRoutineButtonRunningHighlight(true);
+                    updateTaskBlockIcon();
+                    hideProgressBar();
+                    endTimerFocus('sync-remote-idle', newState);
+
+                    try { await reconcileTrackedTimerNotification('sync-remote-idle', true); } catch (e) {}
+
+                    Logger.info('🔄 SyncManager: 已同步重置状态');
+                    try { maybeRefreshHistoryFromRemote(); } catch (e) {}
                     return;
                 }
 
-                // 🔧 v9.0 修复：处理远端重置（IDLE状态）- 仅当本地正在运行时才处理
-                // 注意：不能影响初始化时的状态恢复流程
-                if (newState.status === 'IDLE' && (isRunning || isTimerPaused)) {
-                    // 只有当远端 sequenceId 更高，或者本地状态不是 IDLE 时才处理
-                    if (newState.sequenceId >= (syncState?.sequenceId || 0) || syncState?.status !== 'IDLE') {
-                        Logger.info('🔄 SyncManager: 远端已重置，同步停止状态');
-                        
-                        // 停止本地计时器
-                        if (timerId) {
-                            clearInterval(timerId);
-                            timerId = null;
-                        }
-                        
-                        syncState = newState;
-                        
-                        // 🔧 修复：重置本地所有计时状态
-                        isRunning = false;
-                        isTimerPaused = false;
-                        stopBackgroundAudio();
-                        startTime = 0;
-                        pausedRemainingSeconds = null;
-                        currentStartTimestamp = null;
-                        currentStartTimeMs = 0;
-                        
-                        // 🔧 修复：重置正计时相关的所有状态变量
-                        if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
-                            elapsedSeconds = 0;
-                            stopwatchDisplayOffset = 0;
-                            stopwatchStartTimeMs = 0;
-                            stopwatchStartTimestamp = null;
-                            stopwatchPausedIntervals = [];
-                            currentPauseStart = null;
-                        }
-                        
-                        // 恢复默认显示
-                        if (timerMode === 'countdown' || timerMode === 'break') {
-                            remainingSeconds = currentDuration * 60;
-                        }
-                        
-                        // 更新任务关联（如果云端清除了）
-                        if (!newState.taskBlockId) {
-                            currentTaskBlockId = null;
-                            currentTaskBlockName = null;
-                        }
-                        if (!newState.databaseBlockId) {
-                            currentDatabaseBlockId = null;
-                        }
-                        
-                        // 更新UI
-                        if (controlButton) controlButton.innerHTML = '▶️';
-                        if (timeDisplay) updateDisplay();
-                        updateTaskBlockIcon();
-                        hideProgressBar();
-                        endTimerFocus('sync-remote-idle', newState);
-
-                        try { await reconcileTrackedTimerNotification('sync-remote-idle', true); } catch (e) {}
-
-                        Logger.info('🔄 SyncManager: 已同步重置状态');
-                        try { maybeRefreshHistoryFromRemote(); } catch (e) {}
-                        return;
-                    }
-                }
-
-                if (newState.status === 'RUNNING' && isTimerPaused) {
-                    // 🔧 关键修复：如果状态更新来自本地设备，说明是暂停操作还没同步到云端
-                    // 此时不应该覆盖本地的暂停状态
-                    if (newState.lastModifiedDevice === SYNC_DEVICE_ID) {
-                        Logger.debug('🔄 SyncManager: 远端运行状态来自本地设备，忽略（等待暂停同步）');
-                        syncState = newState;
-                        return;
-                    }
-                    
+                if (newState.status === 'RUNNING' && (!isRunning || isTimerPaused || !timerId)) {
                     Logger.info('🔄 SyncManager: 远端恢复运行，同步状态');
 
-                    syncState = newState;
-                    updateFromSyncState();
-
-                    isRunning = true;
-                    isTimerPaused = false;
-
-                    if (syncState.startTime) startTime = syncState.startTime;
-
-                    if (syncState.mode && syncState.mode !== timerMode) {
-                        Logger.info('🔄 SyncManager: 检测到模式变化，从', timerMode, '切换到', syncState.mode);
-                        timerMode = syncState.mode;
-                    }
-
-                    if (syncState.duration && (timerMode === 'countdown' || timerMode === 'break')) currentDuration = Math.round(syncState.duration / 60);
-
+                    applyAcceptedSyncStateToTimer(newState);
                     pausedRemainingSeconds = null;
 
                     if (controlButton) controlButton.innerHTML = '⏸️';
                     if (timeDisplay) updateDisplay(true);
+                    updateRoutineButtonRunningHighlight(true);
 
                     if (!timerId) {
                         // 🔧 性能优化：确保清理旧定时器
@@ -32430,6 +32480,7 @@ window.__setTomatoFloatState = function (payload) {
                 const previousMode = timerMode;
                 syncState = newState;
                 updateFromSyncState();
+                updateRoutineButtonRunningHighlight(true);
 
                 if (syncState.mode && syncState.mode !== previousMode) {
                     Logger.info('🔄 SyncManager: 检测到模式变化，从', previousMode, '切换到', syncState.mode);
