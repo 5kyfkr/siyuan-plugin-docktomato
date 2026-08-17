@@ -54,7 +54,10 @@ const queryEnd = source.indexOf('\n    const __getReminderDockMeta', queryStart)
 assert.ok(queryStart >= 0 && queryEnd > queryStart, 'global reminder query must remain extractable');
 const queryBlock = source.slice(queryStart, queryEnd);
 assert.match(queryBlock, /block\?\.type[\s\S]*?===\s*'l'[\s\S]*?resolveTomatoTaskTarget\(block\.id\)/, 'legacy list reminders must be classified before use');
-assert.match(queryBlock, /seenReminderIds/, 'canonical and legacy reminder rows must be deduplicated');
+assert.match(queryBlock, /directReminderIds/, 'canonical reminder rows must suppress their legacy list mirrors');
+assert.match(queryBlock, /seenReminderRows/, 'duplicate SQL rows from the same attribute host must be deduplicated');
+assert.doesNotMatch(queryBlock, /seenReminderIds\.has\(canonicalId\)/,
+    'distinct reminder rows must not be merged solely because they resolve to the same canonical host');
 
 const migrationStart = source.indexOf('async function ensureTomatoTaskAttrsMigrated');
 const migrationEnd = source.indexOf('\n    async function readCanonicalTomatoTaskAttrs', migrationStart);
@@ -114,6 +117,75 @@ const kernelBlock = source.slice(kernelStart, kernelEnd);
     const plainList = await context.resolveKernelTarget('plain-list');
     assert.equal(plainList.kind, 'block');
     assert.equal(plainList.requestedId, 'plain-list', 'a non-task list must keep its own block ID');
+
+    const queryContext = vm.createContext({
+        Date,
+        Set,
+        JSON,
+        Math,
+        Number,
+        String,
+        Array,
+        TASK_START_DATE_ATTR: 'custom-start-date',
+        TASK_COMPLETION_TIME_ATTR: 'custom-completion-time',
+        TASK_REPEAT_RULE_ATTR: 'custom-task-repeat-rule',
+        TASK_REPEAT_STATE_ATTR: 'custom-task-repeat-state',
+        Logger: { warn() {}, error() {} },
+        isSyncEnabled: () => false,
+        flushReminderTransaction: async () => true,
+        escapeSqlString: value => String(value || '').replace(/'/g, "''"),
+        __isCompletedReminderTaskBlockRow: () => false,
+        __sanitizeReminderData: (data, meta) => ({ ...data, blockId: meta.blockId }),
+        resolveTomatoTaskTarget: async id => id === 'legacy-list'
+            ? { kind: 'task', context: { taskId: 'task-a', attrHostId: 'task-a' } }
+            : { kind: 'block' },
+        resolveReminderBlockAttrContext: async () => ({ reminderBlockId: 'task-a' }),
+        readReminderFromResolvedContext: async () => ({
+            blockId: 'task-a',
+            blockName: '同日任务 A',
+            startDate: '2026-08-18',
+            times: ['09:00'],
+            enabled: true,
+        }),
+    });
+    const directRows = [
+        {
+            id: 'task-a', type: 'i', content: '同日任务 A', markdown: '* [ ] 同日任务 A', root_id: 'doc-1',
+            reminder_data: JSON.stringify({ blockName: '同日任务 A', startDate: '2026-08-18', times: ['09:00'], enabled: true }),
+        },
+        {
+            id: 'task-b', type: 'i', content: '同日任务 B', markdown: '* [ ] 同日任务 B', root_id: 'doc-1',
+            reminder_data: JSON.stringify({ blockName: '同日任务 B', startDate: '2026-08-18', times: ['09:00'], enabled: true }),
+        },
+        {
+            id: 'task-c', type: 'i', content: '本周任务 C', markdown: '* [ ] 本周任务 C', root_id: 'doc-1',
+            reminder_data: JSON.stringify({ blockName: '本周任务 C', startDate: '2026-08-20', times: ['09:00'], enabled: true }),
+        },
+    ];
+    queryContext.postJSON = async () => ({ ok: true, data: { code: 0, data: directRows } });
+    vm.runInContext(`${queryBlock}\nthis.queryReminders = queryAllReminderBlocks;`, queryContext);
+
+    const sameDateReminders = await queryContext.queryReminders();
+    assert.deepEqual(Array.from(sameDateReminders, reminder => reminder.blockId), ['task-a', 'task-b', 'task-c'],
+        'different task IDs must survive the query even when their dates and times match');
+
+    queryContext.postJSON = async () => ({
+        ok: true,
+        data: {
+            code: 0,
+            data: [
+                {
+                    id: 'legacy-list', type: 'l', content: '', markdown: '', root_id: 'doc-1',
+                    reminder_data: JSON.stringify({ blockName: '旧宿主镜像', startDate: '2026-08-18', times: ['09:00'], enabled: true }),
+                },
+                directRows[0],
+                directRows[1],
+            ],
+        },
+    });
+    const migratedReminders = await queryContext.queryReminders();
+    assert.deepEqual(Array.from(migratedReminders, reminder => reminder.blockId), ['task-a', 'task-b'],
+        'a legacy list mirror must not duplicate its canonical task reminder');
 })().catch((error) => {
     process.nextTick(() => { throw error; });
 });

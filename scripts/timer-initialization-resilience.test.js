@@ -68,7 +68,10 @@ ${updateMethod}
     advanced.status = 'IDLE';
     assert.equal(syncContext.manager.localState.status, 'PAUSED', 'returned sync states must not share the manager state object');
 
-    assert.match(source, /let records = \[\];[\s\S]*records = await loadHistoryRecords\(\);[\s\S]*历史记录暂时不可用，计时器继续初始化/, 'history failures must not abort timer initialization');
+    assert.match(source, /let historySummary = \{ recordCount: 0, maxEndMs: 0 \};[\s\S]*historySummary = await getHistoryStoreSummary\(\);[\s\S]*历史记录暂时不可用，计时器继续初始化/,
+        'history summary failures must not abort timer initialization');
+    assert.doesNotMatch(source, /initialize\(\)[\s\S]{0,2500}await loadHistoryRecords\(\)/,
+        'timer initialization must not materialize all history records');
     assert.doesNotMatch(source, /created \|\| true/, 'failed directory creation must never be cached as successful');
     console.log('timer initialization resilience tests passed');
 })().catch((error) => {

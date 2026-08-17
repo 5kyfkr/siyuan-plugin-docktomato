@@ -1,14 +1,22 @@
 const { Plugin, Setting, openTab, openMobileFileById, platformUtils } = require("siyuan");
+let tomatoStatsCore = null;
 
 const PLUGIN_ID = "siyuan-plugin-docktomato";
 const TOMATO_SCRIPT_PATH = `/data/plugins/${PLUGIN_ID}/tomato.js`;
+const TOMATO_STATS_SCRIPT_PATH = `/data/plugins/${PLUGIN_ID}/kernel.js`;
 const PLUGIN_STORAGE_DIR = "/data/storage/petal/siyuan-plugin-docktomato";
+const TOMATO_HISTORY_INDEX_PATH = `${PLUGIN_STORAGE_DIR}/history/history-index.json`;
 const LEGACY_STORAGE_DIR = "/data/storage";
 const LEGACY_AUDIO_DIR = "/data/storage/tomato-audio/";
 const PLUGIN_AUDIO_DIR = `${PLUGIN_STORAGE_DIR}/tomato-audio/`;
 const REMINDER_DOCK_TYPE = "::tomato-reminder";
 const MAIN_SETTINGS_PATH = `${PLUGIN_STORAGE_DIR}/tomato-main-settings.json`;
 const MOBILE_RUNTIME_CONTAINERS = new Set(["android", "ios", "harmony"]);
+const TOMATO_STATS_STARTUP_TIMEOUT_MS = 3000;
+const HISTORY_WRITE_LEASE_MS = 15000;
+const HISTORY_WRITE_WAIT_MS = 30000;
+const HISTORY_WRITE_RPC_TIMEOUT_MS = 5000;
+let tomatoStatsStartupGeneration = 0;
 
 const DEFAULT_MAIN_SETTINGS = {
     remindersEnabled: true,
@@ -217,14 +225,183 @@ const resetReminderDockReloadVisibility = (plugin = null) => {
     } catch (e) {}
 };
 
-const fetchText = async (url, data) => {
+const fetchText = async (url, data, options = {}) => {
     const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data || {}),
+        ...(options?.signal ? { signal: options.signal } : {}),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.text();
+};
+
+const installTomatoHistoryWriter = (plugin) => {
+    let currentRun = null;
+    let disposed = false;
+    const writerError = (message, code) => {
+        const error = new Error(message);
+        error.code = code;
+        return error;
+    };
+    const wait = (delayMs, signal) => new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(writerError("番茄历史写入已停止", "HISTORY_WRITER_DISPOSED"));
+            return;
+        }
+        let timer = null;
+        const onAbort = () => {
+            if (timer !== null) clearTimeout(timer);
+            reject(writerError("番茄历史写入已停止", "HISTORY_WRITER_DISPOSED"));
+        };
+        timer = setTimeout(() => {
+            signal?.removeEventListener?.("abort", onAbort);
+            resolve();
+        }, delayMs);
+        signal?.addEventListener?.("abort", onAbort, { once: true });
+    });
+    const callLease = async (action, payload = {}) => {
+        const fn = plugin?.kernel?.rpc?.call?.dockTomatoHistoryWriteLease;
+        if (typeof fn !== "function") {
+            const error = new Error("番茄历史写入内核不可用");
+            error.code = "HISTORY_WRITER_UNAVAILABLE";
+            throw error;
+        }
+        let timer = null;
+        let result;
+        try {
+            result = await Promise.race([
+                Promise.resolve().then(() => fn({ action, ...payload })),
+                new Promise((resolve, reject) => {
+                    timer = setTimeout(() => {
+                        const error = new Error("番茄历史写入协调超时");
+                        error.code = "HISTORY_WRITER_TIMEOUT";
+                        reject(error);
+                    }, HISTORY_WRITE_RPC_TIMEOUT_MS);
+                }),
+            ]);
+        } finally {
+            if (timer !== null) clearTimeout(timer);
+        }
+        if (!result || result.ok !== true) {
+            const error = new Error(String(result?.error?.message || "番茄历史写入协调失败"));
+            error.code = String(result?.error?.code || "HISTORY_WRITER_UNAVAILABLE");
+            throw error;
+        }
+        return result.data || {};
+    };
+    const acquire = async (signal) => {
+        const deadlineAt = Date.now() + HISTORY_WRITE_WAIT_MS;
+        while (!disposed && !signal?.aborted && Date.now() < deadlineAt) {
+            const result = await callLease("acquire", { leaseMs: HISTORY_WRITE_LEASE_MS });
+            if (result.acquired === true && result.token) {
+                if (disposed || signal?.aborted) {
+                    void callLease("release", { token: result.token }).catch(() => {});
+                    throw writerError("番茄历史写入已停止", "HISTORY_WRITER_DISPOSED");
+                }
+                return result;
+            }
+            await wait(Math.max(20, Math.min(500, Number(result.retryAfterMs) || 80)), signal);
+        }
+        throw writerError(
+            disposed || signal?.aborted ? "番茄历史写入已停止" : "等待番茄历史写入权限超时",
+            disposed || signal?.aborted ? "HISTORY_WRITER_DISPOSED" : "HISTORY_WRITER_BUSY",
+        );
+    };
+    const renew = async (state) => {
+        if (state?.error) throw state.error;
+        if (!state?.lease?.token || disposed || state.controller.signal.aborted || currentRun !== state) {
+            throw writerError("番茄历史写入权限已失效", "HISTORY_WRITE_LEASE_LOST");
+        }
+        const result = await callLease("renew", {
+            token: state.lease.token,
+            leaseMs: HISTORY_WRITE_LEASE_MS,
+        });
+        if (result.acquired !== true || result.token !== state.lease.token) {
+            throw writerError("番茄历史写入权限已失效", "HISTORY_WRITE_LEASE_LOST");
+        }
+        state.lease = result;
+        return true;
+    };
+    const bridge = {
+        async run(operation) {
+            if (typeof operation !== "function") throw new TypeError("history write operation must be a function");
+            if (disposed) throw writerError("番茄历史写入已停止", "HISTORY_WRITER_DISPOSED");
+            if (currentRun) throw writerError("番茄历史写入已在进行", "HISTORY_WRITER_BUSY");
+            const state = {
+                controller: new AbortController(),
+                lease: null,
+                heartbeat: null,
+                error: null,
+            };
+            currentRun = state;
+            let heartbeat = null;
+            try {
+                state.lease = await acquire(state.controller.signal);
+                heartbeat = setInterval(() => {
+                    void renew(state).catch((error) => {
+                        state.error = error;
+                        try { state.controller.abort(); } catch (e) {}
+                    });
+                }, Math.max(1000, Math.floor(HISTORY_WRITE_LEASE_MS / 3)));
+                state.heartbeat = heartbeat;
+                return await operation(state.controller.signal);
+            } finally {
+                if (heartbeat !== null) clearInterval(heartbeat);
+                const token = state.lease?.token;
+                if (currentRun === state) currentRun = null;
+                if (token) {
+                    try { await callLease("release", { token }); } catch (e) {}
+                }
+            }
+        },
+        assert() {
+            return renew(currentRun);
+        },
+        dispose() {
+            disposed = true;
+            const state = currentRun;
+            if (!state) return false;
+            try { state.controller.abort(); } catch (e) {}
+            if (state.heartbeat !== null) clearInterval(state.heartbeat);
+            const token = state.lease?.token;
+            if (token) void callLease("release", { token }).catch(() => {});
+            return !!token;
+        },
+    };
+    globalThis.__dockTomatoHistoryWriter = bridge;
+    return bridge;
+};
+
+const loadTomatoStatsCore = async (options = {}) => {
+    const existing = globalThis.__dockTomatoStatsCore;
+    if (existing && typeof existing.queryFocus === "function") {
+        tomatoStatsCore = existing;
+        return true;
+    }
+    try {
+        const code = await fetchText("/api/file/getFile", { path: TOMATO_STATS_SCRIPT_PATH }, options);
+        if (!code || !code.trim()) throw new Error("empty statistics core");
+        const script = document.createElement("script");
+        script.textContent = code + "\n//# sourceURL=docktomato-kernel-core.js";
+        document.head.appendChild(script);
+        script.remove();
+        const core = globalThis.__dockTomatoStatsCore;
+        if (typeof options?.isCurrent === "function" && !options.isCurrent()) {
+            try { delete globalThis.__dockTomatoStatsCore; } catch (e) {}
+            tomatoStatsCore = null;
+            return false;
+        }
+        if (!core || typeof core.queryFocus !== "function" || typeof core.queryRoutine !== "function") {
+            throw new Error("statistics core did not initialize");
+        }
+        tomatoStatsCore = core;
+        return true;
+    } catch (e) {
+        tomatoStatsCore = null;
+        console.error("[tomato] load statistics core failed", e);
+        return false;
+    }
 };
 
 const loadTomatoScript = async () => {
@@ -266,6 +443,400 @@ const loadMainSettings = async () => {
         return sanitizeMainSettings(parsed);
     } catch (e) {
         return { ...DEFAULT_MAIN_SETTINGS };
+    }
+};
+
+const installTomatoStatsFacade = async (plugin, options = {}) => {
+    const fallbackMetaKey = "siyuan-tomato-history-fallback-meta";
+    const fallbackHistoryKey = "siyuan-tomato-history";
+    const kernelSessionAuthError = "Auth failed [session]";
+    const kernelRecoveryStorageKey = "dock_tomato_kernel_auth_recovery_at";
+    const kernelRecoveryCooldownMs = 30000;
+    const kernelRecoveryPeerWaitMs = 1000;
+    const retryableKernelReads = new Set([
+        "dockTomatoGetStatsCapabilities",
+        "dockTomatoQueryFocus",
+        "dockTomatoQueryRoutine",
+        "dockTomatoListSessions",
+    ]);
+    let kernelHistoryHydrationPromise = null;
+    let kernelHistoryHydrationRevision = 0;
+    let markerHydratedRevision = 0;
+    let markerHydrationFailure = { revision: 0, at: 0 };
+    let kernelSessionRecoveryPromise = null;
+    let statsQuerySequence = 0;
+    const assertStatsQueryActive = (control = {}) => {
+        if (!control?.signal?.aborted) return;
+        const error = new Error("统计查询已取消");
+        error.code = "STATS_QUERY_ABORTED";
+        throw error;
+    };
+    const readKernelRecoveryTime = () => {
+        try {
+            const value = Number(globalThis.localStorage?.getItem?.(kernelRecoveryStorageKey));
+            return Number.isFinite(value) && value > 0 ? value : 0;
+        } catch (e) {
+            return 0;
+        }
+    };
+    const restartKernelSession = async () => {
+        const appID = String(plugin?.app?.appId || "").trim();
+        if (!appID) throw new Error("缺少当前窗口标识，无法安全重启番茄统计内核");
+        const now = Date.now();
+        const recentRecovery = readKernelRecoveryTime();
+        if (recentRecovery && now >= recentRecovery && now - recentRecovery < kernelRecoveryCooldownMs) {
+            await new Promise((resolve) => setTimeout(resolve, kernelRecoveryPeerWaitMs));
+            return false;
+        }
+        const recoveryStartedAt = Date.now();
+        try { globalThis.localStorage?.setItem?.(kernelRecoveryStorageKey, String(recoveryStartedAt)); } catch (e) {}
+        try {
+            const response = await fetch("/api/petal/setPetalEnabled", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ packageName: PLUGIN_ID, enabled: true, app: appID }),
+            });
+            let payload = null;
+            try { payload = await response.json(); } catch (e) {}
+            if (!response.ok || !payload || Number(payload.code) !== 0) {
+                throw new Error(String(payload?.msg || payload?.message || `番茄统计内核重启失败 (${response.status})`));
+            }
+            return true;
+        } catch (error) {
+            try {
+                if (readKernelRecoveryTime() === recoveryStartedAt) {
+                    globalThis.localStorage?.removeItem?.(kernelRecoveryStorageKey);
+                }
+            } catch (e) {}
+            throw error;
+        }
+    };
+    const recoverKernelSession = () => {
+        if (!kernelSessionRecoveryPromise) {
+            kernelSessionRecoveryPromise = restartKernelSession().finally(() => {
+                kernelSessionRecoveryPromise = null;
+            });
+        }
+        return kernelSessionRecoveryPromise;
+    };
+    const isKernelSessionAuthError = (error) => String(error?.message || error || "").trim() === kernelSessionAuthError;
+    const callKernel = async (method, payload) => {
+        const invoke = async () => {
+            const fn = plugin?.kernel?.rpc?.call?.[method];
+            if (typeof fn !== "function") return null;
+            const result = await fn(payload || {});
+            if (!result || result.ok !== true) {
+                const error = new Error(String(result?.error?.message || "番茄统计内核调用失败"));
+                error.code = String(result?.error?.code || "STATS_ERROR");
+                error.details = result?.error?.details || null;
+                throw error;
+            }
+            return result.data;
+        };
+        try {
+            return await invoke();
+        } catch (cause) {
+            let failure = cause;
+            if (isKernelSessionAuthError(failure)) {
+                try {
+                    await recoverKernelSession();
+                    if (retryableKernelReads.has(method)) {
+                        const recovered = await invoke();
+                        return recovered;
+                    }
+                    failure = new Error("番茄统计内核会话已恢复，请重试刚才的操作");
+                } catch (recoveryError) {
+                    failure = recoveryError;
+                }
+            }
+            if (/^(?:STATS_|INVALID_RANGE|HISTORY_)/.test(String(failure?.code || ""))) throw failure;
+            const error = new Error(String(failure?.message || "番茄统计内核不可用"));
+            error.code = "HISTORY_SOURCE_UNAVAILABLE";
+            error.details = { method };
+            throw error;
+        }
+    };
+    const readFallbackMarker = () => {
+        const metaRaw = localStorage.getItem(fallbackMetaKey);
+        if (!metaRaw) return null;
+        let meta;
+        try {
+            meta = JSON.parse(metaRaw);
+        } catch (cause) {
+            const error = new Error("番茄历史回退标记损坏");
+            error.code = "HISTORY_SOURCE_UNAVAILABLE";
+            error.details = { stage: "fallback-marker" };
+            throw error;
+        }
+        return {
+            revision: Math.max(0, Number(meta?.updatedAt) || 0),
+            recordCount: Math.max(0, Number(meta?.recordCount) || 0),
+        };
+    };
+    const readPersistedHistoryRevision = async (control = {}) => {
+        try {
+            const raw = await fetchText("/api/file/getFile", { path: TOMATO_HISTORY_INDEX_PATH }, control);
+            const index = JSON.parse(String(raw || "{}"));
+            return Math.max(0, Number(index?.revision) || 0, Date.parse(index?.updatedAt || "") || 0);
+        } catch (e) {
+            if (control?.signal?.aborted) throw e;
+            return 0;
+        }
+    };
+    const reconcileFallbackMarker = async (control = {}) => {
+        const fallback = readFallbackMarker();
+        if (!fallback) return null;
+        const persistedRevision = await readPersistedHistoryRevision(control);
+        if (persistedRevision >= fallback.revision) {
+            localStorage.removeItem(fallbackMetaKey);
+            localStorage.removeItem(fallbackHistoryKey);
+            return null;
+        }
+        return fallback;
+    };
+    const loadLocalRecords = async (options, control = {}) => {
+        assertStatsQueryActive(control);
+        const loader = globalThis.__dockTomato?.history?.loadRange;
+        if (typeof loader !== "function") throw new Error("番茄历史接口尚未就绪");
+        const records = await loader(options?.from, options?.to);
+        assertStatsQueryActive(control);
+        return Array.isArray(records) ? records : [];
+    };
+    const hydrateKernelHistory = (revisionOverride = 0) => {
+        const requestedRevision = Math.max(0, Number(revisionOverride) || 0);
+        if (requestedRevision && markerHydratedRevision >= requestedRevision) return Promise.resolve(true);
+        if (requestedRevision && markerHydrationFailure.revision === requestedRevision
+            && Date.now() - markerHydrationFailure.at < 5000) return Promise.resolve(false);
+        if (kernelHistoryHydrationPromise) {
+            if (!requestedRevision || requestedRevision === kernelHistoryHydrationRevision) {
+                return kernelHistoryHydrationPromise;
+            }
+            return kernelHistoryHydrationPromise.then(() => hydrateKernelHistory(requestedRevision));
+        }
+        kernelHistoryHydrationRevision = requestedRevision;
+        kernelHistoryHydrationPromise = Promise.resolve().then(async () => {
+            const loader = globalThis.__dockTomato?.history?.loadAll;
+            if (typeof loader !== "function") {
+                if (requestedRevision) markerHydrationFailure = { revision: requestedRevision, at: Date.now() };
+                return false;
+            }
+            const records = await loader();
+            if (!Array.isArray(records)) {
+                if (requestedRevision) markerHydrationFailure = { revision: requestedRevision, at: Date.now() };
+                return false;
+            }
+            const revision = requestedRevision
+                || await readPersistedHistoryRevision()
+                || Date.now();
+            const hydrated = await callKernel("dockTomatoSetHistoryFallback", {
+                active: true,
+                revision,
+                records,
+            });
+            if (!hydrated) {
+                if (requestedRevision) markerHydrationFailure = { revision: requestedRevision, at: Date.now() };
+                return false;
+            }
+            if (requestedRevision) {
+                markerHydratedRevision = requestedRevision;
+                markerHydrationFailure = { revision: 0, at: 0 };
+            }
+            return true;
+        }).catch(() => {
+            if (requestedRevision) markerHydrationFailure = { revision: requestedRevision, at: Date.now() };
+            return false;
+        }).finally(() => {
+            kernelHistoryHydrationPromise = null;
+            kernelHistoryHydrationRevision = 0;
+        });
+        return kernelHistoryHydrationPromise;
+    };
+    const isRecoverableHistorySourceError = (error) => {
+        const code = String(error?.code || "");
+        return code === "HISTORY_SOURCE_UNAVAILABLE" || code === "HISTORY_REVISION_CHANGED";
+    };
+    const runLocal = async (coreMethod, options, source, control = {}) => {
+        const records = await loadLocalRecords(options, control);
+        const result = tomatoStatsCore[coreMethod](records, options);
+        assertStatsQueryActive(control);
+        return { ...result, meta: { ...(result.meta || {}), source } };
+    };
+    const resolveFallbackQuerySource = async (control = {}) => {
+        assertStatsQueryActive(control);
+        const fallback = await reconcileFallbackMarker(control);
+        if (fallback) {
+            const hydrated = await hydrateKernelHistory(fallback.revision);
+            assertStatsQueryActive(control);
+            return hydrated
+                ? { useLocal: false }
+                : { useLocal: true, source: "fallback-local" };
+        }
+        markerHydrationFailure = { revision: 0, at: 0 };
+        if (markerHydratedRevision > 0) {
+            try {
+                const cleared = await callKernel("dockTomatoSetHistoryFallback", { active: false, revision: Date.now() });
+                assertStatsQueryActive(control);
+                if (!cleared) return { useLocal: true, source: "frontend-local" };
+                markerHydratedRevision = 0;
+            } catch (e) {
+                return { useLocal: true, source: "frontend-local" };
+            }
+        }
+        return { useLocal: false };
+    };
+    const run = async (method, coreMethod, options = {}, control = {}) => {
+        const signal = control?.signal || null;
+        const queryID = `stats-${Date.now()}-${++statsQuerySequence}`;
+        const queryOptions = { ...(options || {}), queryID };
+        const cancelKernelQuery = async () => {
+            const cancel = plugin?.kernel?.rpc?.call?.dockTomatoCancelStatsQuery;
+            if (typeof cancel !== "function") return false;
+            try { await cancel({ queryID }); return true; } catch (e) { return false; }
+        };
+        const abortHandler = () => { void cancelKernelQuery(); };
+        signal?.addEventListener?.("abort", abortHandler, { once: true });
+        try {
+            assertStatsQueryActive(control);
+            const fallbackSource = await resolveFallbackQuerySource(control);
+            assertStatsQueryActive(control);
+            if (fallbackSource.useLocal) {
+                return runLocal(coreMethod, queryOptions, fallbackSource.source, control);
+            }
+            try {
+                const value = await callKernel(method, queryOptions);
+                assertStatsQueryActive(control);
+                if (value) {
+                    const kernelSource = String(value?.meta?.source || "");
+                    const kernelRecordCount = Math.max(0, Number(value?.meta?.recordCount) || 0);
+                    if (kernelSource === "legacy" && kernelRecordCount === 0) {
+                        const records = await loadLocalRecords(queryOptions, control);
+                        if (records.length) {
+                            const local = tomatoStatsCore[coreMethod](records, queryOptions);
+                            const recovered = {
+                                ...local,
+                                meta: { ...(local?.meta || {}), source: "frontend-local-after-empty-kernel", recordCount: records.length },
+                            };
+                            void hydrateKernelHistory();
+                            return recovered;
+                        }
+                    }
+                    return value;
+                }
+            } catch (kernelError) {
+                if (!isRecoverableHistorySourceError(kernelError)) throw kernelError;
+                if (await hydrateKernelHistory()) {
+                    assertStatsQueryActive(control);
+                    try {
+                        const recovered = await callKernel(method, queryOptions);
+                        if (recovered) {
+                            assertStatsQueryActive(control);
+                            return recovered;
+                        }
+                    } catch (hydratedKernelError) {
+                        if (!isRecoverableHistorySourceError(hydratedKernelError)) throw hydratedKernelError;
+                    }
+                }
+                try {
+                    return await runLocal(coreMethod, queryOptions, "frontend-local", control);
+                } catch (e) {
+                    if (e?.code && !isRecoverableHistorySourceError(e)) throw e;
+                    throw kernelError;
+                }
+            }
+            return runLocal(coreMethod, queryOptions, "frontend-local", control);
+        } finally {
+            signal?.removeEventListener?.("abort", abortHandler);
+        }
+    };
+    const facade = {
+        contractVersion: tomatoStatsCore.CONTRACT_VERSION,
+        core: tomatoStatsCore,
+        getCapabilities: async () => {
+            try { return await callKernel("dockTomatoGetStatsCapabilities", {}); }
+            catch (e) { return tomatoStatsCore.getCapabilities(); }
+        },
+        queryFocus: (options, control) => run("dockTomatoQueryFocus", "queryFocus", options, control),
+        queryRoutine: (options, control) => run("dockTomatoQueryRoutine", "queryRoutine", options, control),
+        listSessions: (options, control) => run("dockTomatoListSessions", "listSessions", options, control),
+        syncFallback: async (records, active, revision = Date.now()) => {
+            try {
+                const result = await callKernel("dockTomatoSetHistoryFallback", {
+                    active: active === true,
+                    revision,
+                    records: active === true && Array.isArray(records) ? records : undefined,
+                });
+                if (result) {
+                    markerHydratedRevision = result.active === true
+                        ? Math.max(0, Number(result.revision) || Number(revision) || 0)
+                        : 0;
+                    markerHydrationFailure = { revision: 0, at: 0 };
+                }
+                return result;
+            } catch (e) {
+                return null;
+            }
+        },
+        hydrateFallback: async () => {
+            const resolved = await resolveFallbackQuerySource();
+            return resolved.useLocal !== true;
+        },
+    };
+    const fallback = await reconcileFallbackMarker(options);
+    if (typeof options?.isCurrent === "function" && !options.isCurrent()) return null;
+    globalThis.__dockTomatoStatsFacade = facade;
+    if (globalThis.__dockTomato && typeof globalThis.__dockTomato === "object") globalThis.__dockTomato.stats = facade;
+    if (!fallback) void facade.syncFallback([], false, Date.now()).catch(() => {});
+    return facade;
+};
+
+const dispatchTomatoStatsAvailability = (available) => {
+    try {
+        window.dispatchEvent(new CustomEvent("tomato:stats-availability-changed", {
+            detail: { available: available === true },
+        }));
+    } catch (e) {}
+};
+
+const initializeTomatoStats = async (plugin) => {
+    const generation = ++tomatoStatsStartupGeneration;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const isCurrent = () => generation === tomatoStatsStartupGeneration && plugin?._isUnloaded !== true;
+    let timer = null;
+    try {
+        const timeout = new Promise((resolve, reject) => {
+            timer = setTimeout(() => {
+                try { controller?.abort?.(); } catch (e) {}
+                const error = new Error("番茄统计初始化超时");
+                error.code = "STATS_STARTUP_TIMEOUT";
+                reject(error);
+            }, TOMATO_STATS_STARTUP_TIMEOUT_MS);
+        });
+        const facade = await Promise.race([
+            Promise.resolve().then(async () => {
+                const options = { signal: controller?.signal, isCurrent };
+                if (!await loadTomatoStatsCore(options)) return null;
+                return installTomatoStatsFacade(plugin, options);
+            }),
+            timeout,
+        ]);
+        if (!facade || !isCurrent()) return null;
+        if (globalThis.__dockTomato && typeof globalThis.__dockTomato === "object") {
+            globalThis.__dockTomato.stats = facade;
+        }
+        dispatchTomatoStatsAvailability(true);
+        void Promise.resolve(facade.hydrateFallback?.()).catch(() => {});
+        return facade;
+    } catch (e) {
+        if (generation === tomatoStatsStartupGeneration) tomatoStatsStartupGeneration += 1;
+        const facade = globalThis.__dockTomatoStatsFacade;
+        if (globalThis.__dockTomato?.stats === facade) globalThis.__dockTomato.stats = null;
+        try { delete globalThis.__dockTomatoStatsFacade; } catch (error) {}
+        try { delete globalThis.__dockTomatoStatsCore; } catch (error) {}
+        tomatoStatsCore = null;
+        dispatchTomatoStatsAvailability(false);
+        return null;
+    } finally {
+        if (timer !== null) clearTimeout(timer);
     }
 };
 
@@ -613,8 +1184,11 @@ module.exports = class TomatoTimerPlugin extends Plugin {
         globalThis.__dockTomatoRegisterReminderDock = (reason = "external", force = false) => {
             try { return this._registerReminderDock(reason, { force: !!force }); } catch (e) { return false; }
         };
+        this._historyWriter = installTomatoHistoryWriter(this);
         globalThis.__dockTomatoMainSettings = await loadMainSettings();
         await loadTomatoScript();
+        dispatchTomatoStatsAvailability(false);
+        void initializeTomatoStats(this);
 
         this.setting = new Setting({});
 
@@ -700,6 +1274,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
 
     onunload() {
         this._isUnloaded = true;
+        tomatoStatsStartupGeneration += 1;
         // 清理定时器和事件监听器
         try {
             if (this._badgeUpdateInterval) {
@@ -723,6 +1298,19 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             this._reminderDockRecoverTimers.length = 0;
         } catch (e) {}
         try { delete globalThis.__dockTomatoRegisterReminderDock; } catch (e) {}
+        try {
+            this._historyWriter?.dispose?.();
+            this._historyWriter = null;
+            delete globalThis.__dockTomatoHistoryWriter;
+        } catch (e) {}
+        try {
+            const facade = globalThis.__dockTomatoStatsFacade;
+            if (globalThis.__dockTomato?.stats === facade) globalThis.__dockTomato.stats = null;
+            delete globalThis.__dockTomatoStatsFacade;
+            dispatchTomatoStatsAvailability(false);
+        } catch (e) {}
+        try { delete globalThis.__dockTomatoStatsCore; } catch (e) {}
+        tomatoStatsCore = null;
         try {
             this._reminderDockAdded = false;
             this._clearReminderDockMeta();

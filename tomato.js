@@ -112,6 +112,7 @@
         openTimelineSettings: () => showTimelineSettingsDialog(),
         openHistory: (page) => showHistoryDialog(page),
         getDefaultTomatoTimeMinutes: () => __getDefaultTomatoTimeMinutes(),
+        stats: globalThis.__dockTomatoStatsFacade || null,
     };
 
     // ========== 配置项 ==========
@@ -145,6 +146,7 @@
 
     const NEW_HISTORY_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-history.json`;
     const HISTORY_STORAGE_DIR = `${PLUGIN_STORAGE_DIR}/history`;
+    const HISTORY_INDEX_FILE_PATH = `${HISTORY_STORAGE_DIR}/history-index.json`;
     const NEW_SETTINGS_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-settings.json`;
     const NEW_FOCUS_TIME_SETTINGS_PATH = `${PLUGIN_STORAGE_DIR}/tomato-focus-settings.json`;
     const NEW_SYNC_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-sync.json`;
@@ -194,7 +196,7 @@
         return p.endsWith('/') ? p.slice(0, -1) : p;
     }
 
-    async function __tomatoMkdir(path) {
+    async function __tomatoMkdir(path, options = {}) {
         const normalized = __tomatoNormalizeDirPath(path);
         if (!normalized) return false;
         const candidates = [normalized, `${normalized}/`];
@@ -204,12 +206,16 @@
                 formData.append('path', candidate);
                 formData.append('isDir', 'true');
                 formData.append('file', new Blob([''], { type: 'application/octet-stream' }));
-                const response = await fetch('/api/file/putFile', { method: 'POST', body: formData });
+                const response = await fetch('/api/file/putFile', {
+                    method: 'POST',
+                    body: formData,
+                    ...(options?.signal ? { signal: options.signal } : {}),
+                });
                 const result = await response.json().catch(() => null);
                 if (response.ok && result?.code === 0) return true;
             } catch (e) {}
             try {
-                const r = await postJSON('/api/file/mkdir', { path: candidate });
+                const r = await postJSON('/api/file/mkdir', { path: candidate }, options);
                 if (r?.ok && (r?.data == null || r?.data?.code === 0)) return true;
                 if (r?.data?.code === 0) return true;
                 const msg = String(r?.data?.msg || '').toLowerCase();
@@ -218,7 +224,11 @@
             try {
                 const formData = new FormData();
                 formData.append('path', candidate);
-                const response = await fetch('/api/file/mkdir', { method: 'POST', body: formData });
+                const response = await fetch('/api/file/mkdir', {
+                    method: 'POST',
+                    body: formData,
+                    ...(options?.signal ? { signal: options.signal } : {}),
+                });
                 const result = await response.json().catch(() => null);
                 if (response.ok && (result == null || result?.code === 0)) return true;
                 if (result?.code === 0) return true;
@@ -231,7 +241,7 @@
 
     const __tomatoEnsuredDirs = new Set();
 
-    async function __tomatoEnsureDir(path) {
+    async function __tomatoEnsureDir(path, options = {}) {
         const normalized = __tomatoNormalizeDirPath(path);
         if (!normalized.startsWith('/')) return false;
         if (__tomatoEnsuredDirs.has(normalized)) return true;
@@ -240,7 +250,7 @@
         for (let i = 2; i <= parts.length; i++) {
             const seg = `/${parts.slice(0, i).join('/')}`;
             if (__tomatoEnsuredDirs.has(seg)) continue;
-            const created = await __tomatoMkdir(seg);
+            const created = await __tomatoMkdir(seg, options);
             if (!created) return false;
             __tomatoEnsuredDirs.add(seg);
         }
@@ -362,12 +372,16 @@
         }
     }
 
-    async function __tomatoPutFileText(path, text, contentType = 'application/json') {
+    async function __tomatoPutFileText(path, text, contentType = 'application/json', options = {}) {
         const formData = new FormData();
         formData.append('path', path);
         formData.append('isDir', 'false');
         formData.append('file', new Blob([text ?? ''], { type: contentType }));
-        const response = await fetch('/api/file/putFile', { method: 'POST', body: formData });
+        const response = await fetch('/api/file/putFile', {
+            method: 'POST',
+            body: formData,
+            ...(options?.signal ? { signal: options.signal } : {}),
+        });
         const result = await response.json().catch(() => null);
         
         // 🔧 修复：保存成功后清除相关缓存，确保下次读取的是最新数据
@@ -381,13 +395,17 @@
         return result?.code === 0;
     }
 
-    async function __tomatoRemoveFile(path, isDir = null) {
+    async function __tomatoRemoveFile(path, isDir = null, options = {}) {
         try {
             const formData = new FormData();
             formData.append('path', path);
             if (isDir === true) formData.append('isDir', 'true');
             if (isDir === false) formData.append('isDir', 'false');
-            const response = await fetch('/api/file/removeFile', { method: 'POST', body: formData });
+            const response = await fetch('/api/file/removeFile', {
+                method: 'POST',
+                body: formData,
+                ...(options?.signal ? { signal: options.signal } : {}),
+            });
             const result = await response.json().catch(() => null);
             
             if (result?.code === 0) {
@@ -397,7 +415,7 @@
                 return true;
             }
             
-            const fallback = await postJSON('/api/file/removeFile', { path });
+            const fallback = await postJSON('/api/file/removeFile', { path }, options);
             if (fallback?.data?.code === 0) {
                 if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
                     __tomatoFileTextCache.delete(String(path || ''));
@@ -1311,12 +1329,7 @@
             }
 
             try {
-                const all = await loadHistoryRecords();
-                let maxEndMs = 0;
-                for (const r of Array.isArray(all) ? all : []) {
-                    const endMs = toDateSafe(r?.end)?.getTime?.() || 0;
-                    if (Number.isFinite(endMs) && endMs > maxEndMs) maxEndMs = endMs;
-                }
+                const { maxEndMs } = await getHistoryStoreSummary();
                 const maxEndMinute = Math.max(0, Math.floor((Number(maxEndMs) || 0) / 60000));
                 if (lastKnownHistoryMaxEndMinute == null) {
                     lastKnownHistoryMaxEndMinute = maxEndMinute;
@@ -3344,7 +3357,7 @@
                 if (coverIdx < 0) return false;
                 attached = appendLuminaRecordToHistoryRecord(records[coverIdx], normalized);
                 return attached;
-            });
+            }, { timestamp: normalized.createdAt, fallbackOnMiss: true });
             if (attached) {
                 markTimelineHistoryDirty();
                 await refreshHistoryDialogIfOpen();
@@ -3359,10 +3372,11 @@
                 });
                 return;
             }
+            const luminaOnlyRecord = createLuminaOnlyHistoryRecord(normalized);
             await mutateHistoryRecords(records => {
-                records.push(createLuminaOnlyHistoryRecord(normalized));
+                records.push(luminaOnlyRecord);
                 return true;
-            });
+            }, { record: luminaOnlyRecord });
             markTimelineHistoryDirty();
             await refreshHistoryDialogIfOpen();
         } catch (e) {
@@ -3463,7 +3477,7 @@
                 record.distractionCount = parseInt(record.distractionCount || '0', 10) + 1;
                 updatedRecord = record;
                 return true;
-            });
+            }, { timestamp: ts });
             if (!changed || !updatedRecord) {
                 showMiniToast('未找到对应记录');
                 return false;
@@ -3641,13 +3655,204 @@
     }
 
     // ========== 历史记录管理 ==========
-    let __tomatoHistoryParseCache = { source: '', recordsAll: null };
+    const HISTORY_INDEX_CONTRACT_VERSION = 2;
+    const LEGACY_HISTORY_INDEX_CONTRACT_VERSION = 1;
+    const HISTORY_IO_TIMEOUT_MS = 5000;
+    const HISTORY_SHARD_CACHE_LIMIT = 2;
+    const HISTORY_SHARD_CACHE_RECORD_LIMIT = 20000;
+    const HISTORY_SHARD_CACHE_BYTE_LIMIT = 8 * 1024 * 1024;
+    const HISTORY_SHARD_RETENTION_GRACE_MS = 60000;
+    const HISTORY_SHARD_CLEANUP_LIMIT = 16;
+    const HISTORY_RECORD_MEMORY_LIMIT = 250000;
+    const HISTORY_TEXT_MEMORY_LIMIT = 32 * 1024 * 1024;
+    let __tomatoHistoryShardCache = new Map();
+    const __tomatoHistoryShardRetainUntil = new Map();
     let __tomatoHistoryLoadPromise = null;
     let __tomatoHistoryMutationQueue = Promise.resolve();
+    let __tomatoHistoryWriteSignal = null;
     const HISTORY_LOCAL_STORAGE_KEY = 'siyuan-tomato-history';
     const HISTORY_LOCAL_FALLBACK_META_KEY = 'siyuan-tomato-history-fallback-meta';
+    function historyRecordLimitError() {
+        const error = new Error(`历史记录超过 ${HISTORY_RECORD_MEMORY_LIMIT} 条，请拆分或归档后重试`);
+        error.code = 'HISTORY_RECORD_LIMIT_EXCEEDED';
+        return error;
+    }
+
+    function assertHistoryRecordCount(count) {
+        if (Math.max(0, Number(count) || 0) > HISTORY_RECORD_MEMORY_LIMIT) throw historyRecordLimitError();
+    }
+
+    function assertHistoryTextSize(value) {
+        if (String(value || '').length <= HISTORY_TEXT_MEMORY_LIMIT) return;
+        const error = new Error('历史数据文件过大，请拆分或归档后重试');
+        error.code = 'HISTORY_TEXT_LIMIT_EXCEEDED';
+        throw error;
+    }
+
+    function historyTextLimitError(path = '') {
+        const error = new Error('历史数据文件过大，请拆分或归档后重试');
+        error.code = 'HISTORY_TEXT_LIMIT_EXCEEDED';
+        error.details = { path: String(path || ''), maxTextBytes: HISTORY_TEXT_MEMORY_LIMIT };
+        return error;
+    }
+
+    function historySourceError(message, details = {}) {
+        const error = new Error(message);
+        error.code = 'HISTORY_SOURCE_UNAVAILABLE';
+        error.details = details;
+        return error;
+    }
+
+    function historyWriterDisposedError() {
+        const error = new Error('番茄历史写入已停止');
+        error.code = 'HISTORY_WRITER_DISPOSED';
+        return error;
+    }
+
+    function assertHistoryWriteActive() {
+        if (__tomatoHistoryWriteSignal?.aborted) throw historyWriterDisposedError();
+    }
+
+    function isHistoryWriteCoordinationError(error) {
+        return error?.code === 'HISTORY_REVISION_CHANGED'
+            || error?.code === 'HISTORY_WRITER_DISPOSED'
+            || error?.code === 'HISTORY_WRITE_LEASE_LOST'
+            || error?.code === 'HISTORY_WRITER_UNAVAILABLE'
+            || error?.code === 'HISTORY_WRITER_TIMEOUT'
+            || error?.code === 'HISTORY_WRITER_BUSY';
+    }
+
+    async function withHistoryIoTimeout(path, operation) {
+        assertHistoryWriteActive();
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const writerSignal = __tomatoHistoryWriteSignal;
+        const abortFromWriter = () => {
+            try { controller?.abort?.(); } catch (e) {}
+        };
+        writerSignal?.addEventListener?.('abort', abortFromWriter, { once: true });
+        let timer = null;
+        try {
+            const timeout = new Promise((resolve, reject) => {
+                timer = setTimeout(() => {
+                    try { controller?.abort?.(); } catch (e) {}
+                    reject(historySourceError(`读取历史文件超时: ${path}`, {
+                        path,
+                        timeoutMs: HISTORY_IO_TIMEOUT_MS,
+                    }));
+                }, HISTORY_IO_TIMEOUT_MS);
+            });
+            return await Promise.race([
+                Promise.resolve().then(() => operation(controller?.signal)),
+                timeout,
+            ]);
+        } catch (cause) {
+            if (writerSignal?.aborted) throw historyWriterDisposedError();
+            if (cause?.code) throw cause;
+            throw historySourceError(`读取历史文件失败: ${path}`, {
+                path,
+                timeoutMs: HISTORY_IO_TIMEOUT_MS,
+                cause: String(cause?.message || ''),
+            });
+        } finally {
+            if (timer !== null) clearTimeout(timer);
+            writerSignal?.removeEventListener?.('abort', abortFromWriter);
+        }
+    }
+
+    async function requestHistoryFileText(path, options = {}) {
+        return withHistoryIoTimeout(path, async (signal) => {
+            const response = await fetch('/api/file/getFile', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path }),
+                ...(signal ? { signal } : {}),
+            });
+            if (response.status === 404 && options?.optional === true) return null;
+            if (!response.ok) {
+                throw historySourceError(`读取历史文件失败: ${path}`, { path, status: response.status });
+            }
+            return readHistoryResponseText(response, path);
+        });
+    }
+
+    async function requestHistoryDirectoryPayload() {
+        return withHistoryIoTimeout(HISTORY_STORAGE_DIR, async (signal) => {
+            const response = await fetch('/api/file/readDir', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: HISTORY_STORAGE_DIR }),
+                ...(signal ? { signal } : {}),
+            });
+            if (response.status === 404) return { code: 0, data: [] };
+            if (!response.ok) {
+                throw historySourceError('读取历史目录失败', {
+                    path: HISTORY_STORAGE_DIR,
+                    status: response.status,
+                });
+            }
+            const raw = await readHistoryResponseText(response, HISTORY_STORAGE_DIR);
+            try { return JSON.parse(String(raw || '')); }
+            catch (cause) {
+                throw historySourceError('历史目录响应格式错误', {
+                    path: HISTORY_STORAGE_DIR,
+                    cause: String(cause?.message || ''),
+                });
+            }
+        });
+    }
+
+    async function readHistoryResponseText(response, path) {
+        const declaredLength = Number(response?.headers?.get?.('content-length'));
+        if (Number.isFinite(declaredLength) && declaredLength > HISTORY_TEXT_MEMORY_LIMIT) {
+            throw historyTextLimitError(path);
+        }
+        const reader = response?.body?.getReader?.();
+        if (!reader || typeof TextDecoder !== 'function') {
+            const value = await response.text();
+            assertHistoryTextSize(value);
+            return String(value || '');
+        }
+        const decoder = new TextDecoder();
+        const chunks = [];
+        let receivedBytes = 0;
+        while (true) {
+            const part = await reader.read();
+            if (part.done) break;
+            receivedBytes += Number(part.value?.byteLength) || 0;
+            if (receivedBytes > HISTORY_TEXT_MEMORY_LIMIT) {
+                try { await reader.cancel(); } catch (e) {}
+                throw historyTextLimitError(path);
+            }
+            chunks.push(decoder.decode(part.value, { stream: true }));
+        }
+        chunks.push(decoder.decode());
+        const value = chunks.join('');
+        assertHistoryTextSize(value);
+        return value;
+    }
+
+    async function ensureHistoryStorageDir() {
+        return withHistoryIoTimeout(HISTORY_STORAGE_DIR, (signal) => (
+            __tomatoEnsureDir(HISTORY_STORAGE_DIR, signal ? { signal } : {})
+        ));
+    }
+
+    async function putHistoryFileText(path, value) {
+        return withHistoryIoTimeout(path, (signal) => (
+            __tomatoPutFileText(path, value, 'application/json', signal ? { signal } : {})
+        ));
+    }
+
+    async function removeHistoryFile(path, isDir = false) {
+        return withHistoryIoTimeout(path, (signal) => (
+            __tomatoRemoveFile(path, isDir, signal ? { signal } : {})
+        ));
+    }
+
     function normalizeHistoryRecords(records) {
-        return (Array.isArray(records) ? records : []).map(record => {
+        const list = Array.isArray(records) ? records : [];
+        assertHistoryRecordCount(list.length);
+        list.forEach(record => {
             if (record?.date) {
                 record.date = normalizeLegacyDate(record.date);
             } else if (record?.start) {
@@ -3658,8 +3863,8 @@
                 const end = toDateSafe(record.end);
                 if (Number.isFinite(end.getTime())) record.timePeriod = getTimePeriod(end.getHours());
             }
-            return record;
         });
+        return list;
     }
 
     function getHistoryRecordStorageYear(record) {
@@ -3684,29 +3889,153 @@
         return grouped;
     }
 
-    async function readHistoryJsonFileStrict(path) {
-        const response = await fetch('/api/file/getFile', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path }),
+    function hashHistoryText(value) {
+        const source = String(value == null ? '' : value);
+        let hash = 2166136261;
+        for (let index = 0; index < source.length; index += 1) {
+            hash ^= source.charCodeAt(index);
+            hash = Math.imul(hash, 16777619);
+        }
+        return (hash >>> 0).toString(16).padStart(8, '0');
+    }
+
+    function historyShardFileName(year, meta = null) {
+        const normalizedYear = /^(?:\d{4}|unknown)$/.test(String(year || '')) ? String(year) : '';
+        if (!normalizedYear) return '';
+        const candidate = String(meta?.file || '').trim();
+        if (candidate === `${normalizedYear}.json`
+            || isImmutableHistoryShardFileName(normalizedYear, candidate)) {
+            return candidate;
+        }
+        return `${normalizedYear}.json`;
+    }
+
+    function isImmutableHistoryShardFileName(year, fileName) {
+        const normalizedYear = /^(?:\d{4}|unknown)$/.test(String(year || '')) ? String(year) : '';
+        return !!normalizedYear
+            && new RegExp(`^${normalizedYear}-\\d{1,20}-[0-9a-f]{8}\\.json$`).test(String(fileName || ''));
+    }
+
+    function isImmutableHistoryIndex(index) {
+        if (Number(index?.contractVersion) !== HISTORY_INDEX_CONTRACT_VERSION
+            || !index?.shards || typeof index.shards !== 'object') return false;
+        return Object.entries(index.shards).every(([year, meta]) => (
+            isImmutableHistoryShardFileName(year, meta?.file)
+        ));
+    }
+
+    function historyIndexIdentity(index) {
+        if (!index || typeof index !== 'object') return '';
+        const shards = Object.entries(index.shards || {}).sort(([left], [right]) => left.localeCompare(right));
+        return JSON.stringify({
+            contractVersion: Number(index.contractVersion) || 0,
+            revision: Math.max(0, Number(index.revision) || 0),
+            shards,
         });
-        if (!response.ok) throw new Error(`读取历史文件失败: ${path}`);
-        const text = await response.text();
+    }
+
+    async function assertHistoryIndexCommitAllowed(expectedIndex) {
+        assertHistoryWriteActive();
+        const writer = globalThis.__dockTomatoHistoryWriter;
+        if (writer && typeof writer.assert === 'function') await writer.assert();
+        const currentIndex = await readHistoryIndex();
+        assertHistoryWriteActive();
+        if (historyIndexIdentity(currentIndex) === historyIndexIdentity(expectedIndex)) return true;
+        const error = new Error('历史索引已被其他窗口更新，请重试');
+        error.code = 'HISTORY_REVISION_CHANGED';
+        throw error;
+    }
+
+    function createHistoryShardFileName(year, revision, hash) {
+        return `${year}-${Math.max(0, Math.floor(Number(revision) || 0))}-${String(hash || '').toLowerCase()}.json`;
+    }
+
+    function isHistoryShardFileName(name) {
+        return /^(?:\d{4}|unknown)(?:-\d{1,20}-[0-9a-f]{8})?\.json$/.test(String(name || ''));
+    }
+
+    function referencedHistoryShardNames(index) {
+        const names = new Set();
+        Object.entries(index?.shards || {}).forEach(([year, meta]) => {
+            const name = historyShardFileName(year, meta);
+            if (name) names.add(name);
+        });
+        return names;
+    }
+
+    function historyShardFileRevision(name) {
+        const match = String(name || '').match(/^(?:\d{4}|unknown)-(\d{1,20})-[0-9a-f]{8}\.json$/);
+        return match ? Math.max(0, Number(match[1]) || 0) : 0;
+    }
+
+    async function cleanupHistoryShardFiles(activeIndex, previousIndex = null) {
+        const activeNames = referencedHistoryShardNames(activeIndex);
+        const previousNames = referencedHistoryShardNames(previousIndex);
+        const now = Date.now();
+        const orphanCutoff = now - HISTORY_SHARD_RETENTION_GRACE_MS;
+        previousNames.forEach((name) => {
+            __tomatoHistoryShardRetainUntil.set(name, now + HISTORY_SHARD_RETENTION_GRACE_MS);
+        });
+        let names = [];
+        try { names = await listHistoryShardNames(); }
+        catch (error) {
+            Logger.warn('读取待清理历史分片失败:', error);
+            return;
+        }
+        let cleanupAttempts = 0;
+        for (const name of names) {
+            if (activeNames.has(name)) continue;
+            const retainUntil = Math.max(0, Number(__tomatoHistoryShardRetainUntil.get(name)) || 0);
+            if (retainUntil > now) continue;
+            const revision = historyShardFileRevision(name);
+            const safeToRemove = /^(?:\d{4}|unknown)\.json$/.test(name)
+                || (revision > 0 && revision < orphanCutoff);
+            if (!safeToRemove) continue;
+            if (cleanupAttempts >= HISTORY_SHARD_CLEANUP_LIMIT) break;
+            cleanupAttempts += 1;
+            try {
+                if (!await removeHistoryFile(`${HISTORY_STORAGE_DIR}/${name}`, false)) {
+                    Logger.warn(`清理旧历史分片失败: ${name}`);
+                } else {
+                    __tomatoHistoryShardRetainUntil.delete(name);
+                }
+            } catch (error) {
+                Logger.warn(`清理旧历史分片失败: ${name}`, error);
+            }
+        }
+    }
+
+    function getHistoryShardCoverage(records) {
+        let minStartMs = Infinity;
+        let maxEndMs = -Infinity;
+        (Array.isArray(records) ? records : []).forEach((record) => {
+            const startMs = toDateSafe(record?.start)?.getTime?.();
+            const endMs = toDateSafe(record?.end)?.getTime?.();
+            if (Number.isFinite(startMs)) minStartMs = Math.min(minStartMs, startMs);
+            if (Number.isFinite(endMs)) maxEndMs = Math.max(maxEndMs, endMs);
+        });
+        return {
+            minStart: Number.isFinite(minStartMs) ? new Date(minStartMs).toISOString() : null,
+            maxEnd: Number.isFinite(maxEndMs) ? new Date(maxEndMs).toISOString() : null,
+        };
+    }
+
+    async function readHistoryFileTextStrict(path) {
+        const text = await requestHistoryFileText(path);
         if (!String(text || '').trim()) throw new Error(`历史文件为空: ${path}`);
+        return String(text);
+    }
+
+    async function readHistoryJsonFileStrict(path) {
+        const text = await readHistoryFileTextStrict(path);
         const parsed = JSON.parse(String(text));
         if (!Array.isArray(parsed)) throw new Error(`历史文件格式错误: ${path}`);
         return normalizeHistoryRecords(parsed);
     }
 
     async function readOptionalHistoryJsonFileStrict(path) {
-        const response = await fetch('/api/file/getFile', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path }),
-        });
-        if (response.status === 404) return [];
-        if (!response.ok) throw new Error(`读取旧历史文件失败: ${path}`);
-        const text = await response.text();
+        const text = await requestHistoryFileText(path, { optional: true });
+        if (text == null) return [];
         const parsed = safeJsonParse(String(text || ''));
         if (parsed && !Array.isArray(parsed) && typeof parsed.code === 'number') {
             const message = String(parsed.msg || '').toLowerCase();
@@ -3716,22 +4045,32 @@
         return normalizeHistoryRecords(parsed);
     }
 
-    async function listHistoryShardNames() {
-        const result = await postJSON('/api/file/readDir', { path: HISTORY_STORAGE_DIR });
-        if (!result?.ok || result?.data?.code !== 0) throw new Error('读取历史目录失败');
-        const payload = result.data?.data;
+    async function listHistoryShardNames(options = {}) {
+        const result = await requestHistoryDirectoryPayload();
+        if (!result || Number(result.code) !== 0) {
+            const message = String(result?.msg || result?.message || '').toLowerCase();
+            if (message.includes('not exist') || message.includes('not found')
+                || message.includes('no such file') || message.includes('不存在')) return [];
+            throw historySourceError('读取历史目录失败', {
+                path: HISTORY_STORAGE_DIR,
+                code: Number(result?.code) || -1,
+                message,
+            });
+        }
+        const payload = result.data;
         const entries = Array.isArray(payload)
             ? payload
             : (Array.isArray(payload?.files) ? payload.files
                 : (Array.isArray(payload?.items) ? payload.items
                     : (Array.isArray(payload?.children) ? payload.children : [])));
         return entries.map(entry => String(entry?.name || entry?.path || '').split('/').pop())
-            .filter(name => /^(?:\d{4}|unknown)\.json$/.test(name))
+            .filter(isHistoryShardFileName)
+            .filter(name => options?.canonicalOnly !== true || /^(?:\d{4}|unknown)\.json$/.test(name))
             .sort();
     }
 
     function invalidateHistoryStoreCache() {
-        __tomatoHistoryParseCache = { source: '', recordsAll: null };
+        __tomatoHistoryShardCache.clear();
         __tomatoHistoryLoadPromise = null;
         try {
             for (const key of __tomatoFileTextCache.keys()) {
@@ -3740,33 +4079,229 @@
         } catch (e) {}
     }
 
+    async function readHistoryIndex() {
+        if (!await ensureHistoryStorageDir()) throw new Error('创建历史目录失败');
+        try {
+            const path = `${HISTORY_STORAGE_DIR}/history-index.json`;
+            const raw = await requestHistoryFileText(path, { optional: true });
+            if (raw == null) return null;
+            const index = String(raw || '').trim() ? JSON.parse(raw) : null;
+            const contractVersion = Number(index?.contractVersion);
+            if ((contractVersion === HISTORY_INDEX_CONTRACT_VERSION
+                || contractVersion === LEGACY_HISTORY_INDEX_CONTRACT_VERSION)
+                && index?.shards && typeof index.shards === 'object') return index;
+        } catch (e) {
+            if (e?.code === 'HISTORY_TEXT_LIMIT_EXCEEDED' || e?.code === 'HISTORY_SOURCE_UNAVAILABLE') throw e;
+        }
+        return null;
+    }
+
+    function historyShardOverlaps(meta, startMs, endMs) {
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return true;
+        const minStartMs = Date.parse(String(meta?.minStart || ''));
+        const maxEndMs = Date.parse(String(meta?.maxEnd || ''));
+        if (!Number.isFinite(minStartMs) || !Number.isFinite(maxEndMs)) return true;
+        return minStartMs < endMs && maxEndMs > startMs;
+    }
+
+    async function listHistoryShardEntries(startMs = NaN, endMs = NaN) {
+        const index = await readHistoryIndex();
+        if (index) {
+            return Object.entries(index.shards)
+                .filter(([year]) => /^(?:\d{4}|unknown)$/.test(year))
+                .filter(([, meta]) => historyShardOverlaps(meta, startMs, endMs))
+                .map(([year, meta]) => ({
+                    name: historyShardFileName(year, meta),
+                    hash: String(meta?.hash || ''),
+                    count: Math.max(0, Number(meta?.count) || 0),
+                    textLength: Number.isFinite(Number(meta?.textLength)) ? Math.max(0, Number(meta.textLength) || 0) : NaN,
+                }))
+                .sort((left, right) => left.name.localeCompare(right.name));
+        }
+        const names = await listHistoryShardNames();
+        if (names.some(name => !/^(?:\d{4}|unknown)\.json$/.test(name))) {
+            throw historySourceError('历史索引缺失，无法确定权威分片版本', { path: HISTORY_STORAGE_DIR });
+        }
+        return names.map(name => ({ name, hash: '' }));
+    }
+
+    function historyShardCacheWeight(recordCount, sourceTextLength) {
+        return Math.max(0, Number(sourceTextLength) || 0) * 2
+            + Math.max(0, Number(recordCount) || 0) * 192;
+    }
+
+    function prepareHistoryShardRead(entry, sourceTextLength = entry?.textLength) {
+        const hasDeclaredCount = Object.prototype.hasOwnProperty.call(entry || {}, 'count')
+            && Number.isFinite(Number(entry?.count));
+        const expectedCount = hasDeclaredCount ? Math.max(0, Number(entry.count) || 0) : NaN;
+        const hasDeclaredTextLength = Number.isFinite(Number(sourceTextLength));
+        if (!hasDeclaredCount || !hasDeclaredTextLength) {
+            __tomatoHistoryShardCache.clear();
+            return false;
+        }
+        const expectedWeight = historyShardCacheWeight(expectedCount, sourceTextLength);
+        while (__tomatoHistoryShardCache.size >= HISTORY_SHARD_CACHE_LIMIT
+            || historyShardCacheRecordCount() + expectedCount > HISTORY_SHARD_CACHE_RECORD_LIMIT
+            || historyShardCacheByteCount() + expectedWeight > HISTORY_SHARD_CACHE_BYTE_LIMIT) {
+            if (!__tomatoHistoryShardCache.size) break;
+            __tomatoHistoryShardCache.delete(__tomatoHistoryShardCache.keys().next().value);
+        }
+        return expectedCount <= HISTORY_SHARD_CACHE_RECORD_LIMIT
+            && expectedWeight > 0
+            && expectedWeight <= HISTORY_SHARD_CACHE_BYTE_LIMIT;
+    }
+
+    async function readHistoryShard(entry, options = {}) {
+        const name = String(entry?.name || '');
+        const hash = String(entry?.hash || '');
+        const useCache = options?.cache !== false;
+        const cached = useCache ? __tomatoHistoryShardCache.get(name) : null;
+        if (cached && (!hash || cached.hash === hash)) {
+            __tomatoHistoryShardCache.delete(name);
+            __tomatoHistoryShardCache.set(name, cached);
+            return cached.records;
+        }
+        if (useCache) prepareHistoryShardRead(entry);
+        const path = `${HISTORY_STORAGE_DIR}/${name}`;
+        const raw = await readHistoryFileTextStrict(path);
+        if (hash && hashHistoryText(raw) !== hash) {
+            const error = historySourceError(`历史分片校验失败: ${name}`, { path });
+            error.code = 'HISTORY_REVISION_CHANGED';
+            throw error;
+        }
+        const cacheable = useCache && prepareHistoryShardRead(entry, raw.length);
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) throw historySourceError(`历史分片格式错误: ${name}`, { path });
+        const records = normalizeHistoryRecords(parsed);
+        assertHistoryRecordCount(records.length);
+        if (cacheable) retainHistoryShard(name, hash, records, raw.length);
+        return records;
+    }
+
+    function historyShardCacheRecordCount() {
+        let count = 0;
+        __tomatoHistoryShardCache.forEach(entry => { count += entry.records.length; });
+        return count;
+    }
+
+    function historyShardCacheByteCount() {
+        let bytes = 0;
+        __tomatoHistoryShardCache.forEach(entry => { bytes += Math.max(0, Number(entry.weight) || 0); });
+        return bytes;
+    }
+
+    function retainHistoryShard(name, hash, records, sourceTextLength = 0) {
+        assertHistoryRecordCount(records.length);
+        const weight = historyShardCacheWeight(records.length, sourceTextLength);
+        __tomatoHistoryShardCache.delete(name);
+        if (records.length > HISTORY_SHARD_CACHE_RECORD_LIMIT
+            || weight <= 0
+            || weight > HISTORY_SHARD_CACHE_BYTE_LIMIT) return records;
+        while (__tomatoHistoryShardCache.size >= HISTORY_SHARD_CACHE_LIMIT
+            || historyShardCacheRecordCount() + records.length > HISTORY_SHARD_CACHE_RECORD_LIMIT
+            || historyShardCacheByteCount() + weight > HISTORY_SHARD_CACHE_BYTE_LIMIT) {
+            if (!__tomatoHistoryShardCache.size) break;
+            __tomatoHistoryShardCache.delete(__tomatoHistoryShardCache.keys().next().value);
+        }
+        __tomatoHistoryShardCache.set(name, { hash, records, weight });
+        return records;
+    }
+
+    function readLocalHistoryFallback() {
+        const metaRaw = localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+        if (!metaRaw) return null;
+        const meta = JSON.parse(metaRaw);
+        assertHistoryRecordCount(meta?.recordCount);
+        const raw = localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY);
+        if (!String(raw || '').trim()) throw new Error('本地历史回退标记缺少数据');
+        assertHistoryTextSize(raw);
+        const parsed = JSON.parse(String(raw));
+        if (!Array.isArray(parsed)) throw new Error('本地历史回退数据格式错误');
+        assertHistoryRecordCount(parsed.length);
+        return normalizeHistoryRecords(parsed);
+    }
+
+    function nextHistoryFallbackRevision() {
+        let previousRevision = 0;
+        try {
+            previousRevision = Math.max(0, Number(JSON.parse(
+                localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY) || '{}',
+            )?.updatedAt) || 0);
+        } catch (e) {}
+        return Math.max(Date.now(), previousRevision + 1);
+    }
+
     async function readAllHistoryShardRecords(options = {}) {
         if (options?.force === true) invalidateHistoryStoreCache();
-        if (__tomatoHistoryParseCache?.source === 'shards' && Array.isArray(__tomatoHistoryParseCache.recordsAll)) {
-            return __tomatoHistoryParseCache.recordsAll;
+        const entries = await listHistoryShardEntries();
+        const indexedCount = entries.reduce((sum, entry) => sum + Math.max(0, Number(entry.count) || 0), 0);
+        assertHistoryRecordCount(indexedCount);
+        const records = [];
+        for (const entry of entries) {
+            const shardRecords = await readHistoryShard(entry, { cache: false });
+            assertHistoryRecordCount(records.length + shardRecords.length);
+            for (const record of shardRecords) records.push(record);
         }
-        if (!await __tomatoEnsureDir(HISTORY_STORAGE_DIR)) throw new Error('创建历史目录失败');
-        const names = await listHistoryShardNames();
-        const chunks = await Promise.all(names.map(name => readHistoryJsonFileStrict(`${HISTORY_STORAGE_DIR}/${name}`)));
-        const records = chunks.flat();
-        __tomatoHistoryParseCache = { source: 'shards', recordsAll: records };
         return records;
+    }
+
+    async function loadHistoryRangeRecords(startMs, endMs, options = {}) {
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+            return loadHistoryRecords(options);
+        }
+        if (options?.force === true) invalidateHistoryStoreCache();
+        if (localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY)) {
+            const fallback = readLocalHistoryFallback();
+            return fallback.filter(record => {
+                const recordStartMs = toDateSafe(record?.start)?.getTime?.() || 0;
+                const recordEndMs = toDateSafe(record?.end)?.getTime?.() || 0;
+                return Number.isFinite(recordStartMs) && Number.isFinite(recordEndMs)
+                    && recordStartMs < endMs && recordEndMs > startMs;
+            });
+        }
+        const entries = await listHistoryShardEntries(startMs, endMs);
+        const indexedRangeCount = entries.reduce((sum, entry) => sum + Math.max(0, Number(entry.count) || 0), 0);
+        assertHistoryRecordCount(indexedRangeCount);
+        const records = [];
+        let scannedRecords = 0;
+        for (const entry of entries) {
+            const shardRecords = await readHistoryShard(entry);
+            scannedRecords += shardRecords.length;
+            assertHistoryRecordCount(scannedRecords);
+            for (const record of shardRecords) {
+                const recordStartMs = toDateSafe(record?.start)?.getTime?.() || 0;
+                const recordEndMs = toDateSafe(record?.end)?.getTime?.() || 0;
+                if (Number.isFinite(recordStartMs) && Number.isFinite(recordEndMs)
+                    && recordStartMs < endMs && recordEndMs > startMs) records.push(record);
+            }
+        }
+        return records;
+    }
+
+    async function getHistoryStoreSummary() {
+        const fallbackMetaRaw = localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+        if (fallbackMetaRaw) {
+            const fallbackMeta = JSON.parse(fallbackMetaRaw);
+            return {
+                recordCount: Math.max(0, Number(fallbackMeta?.recordCount) || 0),
+                maxEndMs: Date.parse(String(fallbackMeta?.maxEnd || '')) || 0,
+            };
+        }
+        const index = await readHistoryIndex();
+        if (!index) return { recordCount: 0, maxEndMs: 0 };
+        let recordCount = 0;
+        let maxEndMs = 0;
+        Object.values(index.shards).forEach(meta => {
+            recordCount += Math.max(0, Number(meta?.count) || 0);
+            maxEndMs = Math.max(maxEndMs, Date.parse(String(meta?.maxEnd || '')) || 0);
+        });
+        return { recordCount, maxEndMs };
     }
 
     async function loadHistoryRecords(options = {}) {
         if (options?.force !== true && __tomatoHistoryLoadPromise) return __tomatoHistoryLoadPromise;
         const promise = (async () => {
-            try {
-                const hasFallbackMeta = !!localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
-                if (hasFallbackMeta) {
-                    const raw = String(localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY) || '[]');
-                    const parsed = JSON.parse(raw);
-                    if (!Array.isArray(parsed)) throw new Error('本地历史回退数据格式错误');
-                    return normalizeHistoryRecords(parsed);
-                }
-            } catch (e) {
-                Logger.warn('读取本地历史回退数据失败:', e.message);
-            }
+            if (localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY)) return readLocalHistoryFallback();
             return readAllHistoryShardRecords(options);
         })();
         __tomatoHistoryLoadPromise = promise;
@@ -3779,38 +4314,134 @@
     }
 
     async function writeHistoryShardSet(records) {
-        if (!await __tomatoEnsureDir(HISTORY_STORAGE_DIR)) throw new Error('创建历史目录失败');
+        assertHistoryRecordCount(records?.length);
+        if (!await ensureHistoryStorageDir()) throw new Error('创建历史目录失败');
+        const historyIndexFilePath = `${HISTORY_STORAGE_DIR}/history-index.json`;
+        const existingIndex = await readHistoryIndex();
+        const previousRevision = Math.max(0, Number(existingIndex?.revision) || 0);
+        const revision = Math.max(previousRevision + 1, Date.now());
         const grouped = groupHistoryRecordsByYear(records);
-        const existingNames = await listHistoryShardNames();
-        const targetNames = new Set();
+        const shards = {};
         for (const [year, yearRecords] of grouped) {
-            const name = `${year}.json`;
-            targetNames.add(name);
-            const path = `${HISTORY_STORAGE_DIR}/${name}`;
             const data = JSON.stringify(yearRecords, null, 2);
-            const current = await __tomatoGetFileText(path);
-            if (current?.exists && String(current.text || '') === data) continue;
-            const ok = await __tomatoPutFileText(path, data);
-            if (!ok) throw new Error(`保存历史文件失败: ${name}`);
-        }
-        for (const name of existingNames) {
-            if (!targetNames.has(name)) {
-                const removed = await __tomatoRemoveFile(`${HISTORY_STORAGE_DIR}/${name}`, false);
-                if (!removed) throw new Error(`删除历史文件失败: ${name}`);
+            assertHistoryTextSize(data);
+            const coverage = getHistoryShardCoverage(yearRecords);
+            const hash = hashHistoryText(data);
+            const existingMeta = existingIndex?.shards?.[year];
+            let name = historyShardFileName(year, existingMeta);
+            let reuseExisting = Number(existingIndex?.contractVersion) === HISTORY_INDEX_CONTRACT_VERSION
+                && isImmutableHistoryShardFileName(year, existingMeta?.file)
+                && String(existingMeta?.hash || '') === hash;
+            if (reuseExisting) {
+                try { reuseExisting = await readHistoryFileTextStrict(`${HISTORY_STORAGE_DIR}/${name}`) === data; }
+                catch (e) { reuseExisting = false; }
             }
+            if (!reuseExisting) {
+                name = createHistoryShardFileName(year, revision, hash);
+                if (!await putHistoryFileText(`${HISTORY_STORAGE_DIR}/${name}`, data)) {
+                    throw new Error(`保存历史文件失败: ${name}`);
+                }
+            }
+            shards[year] = {
+                file: name,
+                hash,
+                count: yearRecords.length,
+                textLength: data.length,
+                minStart: coverage.minStart,
+                maxEnd: coverage.maxEnd,
+            };
         }
+        const indexData = JSON.stringify({
+            contractVersion: HISTORY_INDEX_CONTRACT_VERSION,
+            revision,
+            updatedAt: new Date().toISOString(),
+            shards,
+        }, null, 2);
+        await assertHistoryIndexCommitAllowed(existingIndex);
+        if (!await putHistoryFileText(historyIndexFilePath, indexData)) {
+            throw new Error('保存历史索引失败');
+        }
+        await cleanupHistoryShardFiles({ shards }, existingIndex);
         invalidateHistoryStoreCache();
+        try { void Promise.resolve(globalThis.__dockTomato?.stats?.syncFallback?.(records, false, revision)).catch(() => {}); } catch (e) {}
+        return true;
+    }
+
+    async function writeHistoryYearRecords(year, records, currentIndex) {
+        if (!/^(?:\d{4}|unknown)$/.test(year) || !currentIndex?.shards) {
+            throw new Error('年度历史写入参数无效');
+        }
+        assertHistoryRecordCount(records?.length);
+        const shards = { ...currentIndex.shards };
+        const previousRevision = Math.max(0, Number(currentIndex.revision) || 0);
+        const revision = Math.max(previousRevision + 1, Date.now());
+        if (records.length) {
+            const data = JSON.stringify(records, null, 2);
+            assertHistoryTextSize(data);
+            const coverage = getHistoryShardCoverage(records);
+            const hash = hashHistoryText(data);
+            const existingMeta = shards[year];
+            let name = historyShardFileName(year, existingMeta);
+            let reuseExisting = isImmutableHistoryShardFileName(year, existingMeta?.file)
+                && String(existingMeta?.hash || '') === hash;
+            if (reuseExisting) {
+                try { reuseExisting = await readHistoryFileTextStrict(`${HISTORY_STORAGE_DIR}/${name}`) === data; }
+                catch (e) { reuseExisting = false; }
+            }
+            if (!reuseExisting) {
+                name = createHistoryShardFileName(year, revision, hash);
+                if (!await putHistoryFileText(`${HISTORY_STORAGE_DIR}/${name}`, data)) {
+                    throw new Error(`保存历史文件失败: ${name}`);
+                }
+            }
+            shards[year] = {
+                file: name,
+                hash,
+                count: records.length,
+                textLength: data.length,
+                minStart: coverage.minStart,
+                maxEnd: coverage.maxEnd,
+            };
+        } else {
+            delete shards[year];
+        }
+        const indexData = JSON.stringify({
+            contractVersion: HISTORY_INDEX_CONTRACT_VERSION,
+            revision,
+            updatedAt: new Date().toISOString(),
+            shards,
+        }, null, 2);
+        await assertHistoryIndexCommitAllowed(currentIndex);
+        if (!await putHistoryFileText(`${HISTORY_STORAGE_DIR}/history-index.json`, indexData)) {
+            throw new Error('保存历史索引失败');
+        }
+        await cleanupHistoryShardFiles({ shards }, currentIndex);
+        invalidateHistoryStoreCache();
+        try { void Promise.resolve(globalThis.__dockTomato?.stats?.syncFallback?.([], false, revision)).catch(() => {}); } catch (e) {}
         return true;
     }
 
     function queueHistoryOperation(operation) {
-        const queued = __tomatoHistoryMutationQueue.then(operation, operation);
+        const runOperation = async (signal = null) => {
+            __tomatoHistoryWriteSignal = signal;
+            try {
+                assertHistoryWriteActive();
+                return await operation();
+            } finally {
+                if (__tomatoHistoryWriteSignal === signal) __tomatoHistoryWriteSignal = null;
+            }
+        };
+        const execute = () => {
+            const writer = globalThis.__dockTomatoHistoryWriter;
+            return writer && typeof writer.run === 'function' ? writer.run(runOperation) : runOperation();
+        };
+        const queued = __tomatoHistoryMutationQueue.then(execute, execute);
         __tomatoHistoryMutationQueue = queued.catch(() => {});
         return queued;
     }
 
     async function persistHistoryRecords(records) {
-        const dataToSave = JSON.stringify(records, null, 2);
+        assertHistoryRecordCount(records?.length);
         const isRecoveringFallback = !!localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
         try {
             await writeHistoryShardSet(records);
@@ -3823,10 +4454,20 @@
             try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'file' } })); } catch (e) {}
             return true;
         } catch (fileError) {
+            if (isHistoryWriteCoordinationError(fileError)) throw fileError;
             try {
+                const dataToSave = JSON.stringify(records, null, 2);
+                assertHistoryTextSize(dataToSave);
+                const coverage = getHistoryShardCoverage(records);
+                const fallbackRevision = nextHistoryFallbackRevision();
                 localStorage.setItem(HISTORY_LOCAL_STORAGE_KEY, dataToSave);
-                localStorage.setItem(HISTORY_LOCAL_FALLBACK_META_KEY, JSON.stringify({ updatedAt: Date.now() }));
+                localStorage.setItem(HISTORY_LOCAL_FALLBACK_META_KEY, JSON.stringify({
+                    updatedAt: fallbackRevision,
+                    recordCount: records.length,
+                    maxEnd: coverage.maxEnd,
+                }));
                 invalidateHistoryStoreCache();
+                try { void Promise.resolve(globalThis.__dockTomato?.stats?.syncFallback?.(records, true, fallbackRevision)).catch(() => {}); } catch (e) {}
                 try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'localStorage' } })); } catch (e) {}
                 return true;
             } catch (localError) {
@@ -3841,16 +4482,102 @@
             Logger.error('保存失败：记录数据无效');
             return false;
         }
+        assertHistoryRecordCount(records.length);
         return queueHistoryOperation(() => persistHistoryRecords(records));
     }
 
-    async function mutateHistoryRecords(mutator) {
+    function resolveHistoryMutationYear(options = {}) {
+        const explicitYear = String(options?.year || '');
+        if (/^(?:\d{4}|unknown)$/.test(explicitYear)) return explicitYear;
+        const years = new Set();
+        const appendRecord = (record) => {
+            if (!(record && typeof record === 'object')) return;
+            years.add(getHistoryRecordStorageYear(record));
+        };
+        appendRecord(options?.record);
+        appendRecord(options?.recordKey);
+        (Array.isArray(options?.records) ? options.records : []).forEach(appendRecord);
+        if (options?.date != null || options?.timestamp != null || options?.start != null || options?.end != null) {
+            appendRecord({
+                date: options.date,
+                timestamp: options.timestamp,
+                start: options.start,
+                end: options.end,
+            });
+        }
+        return years.size === 1 ? Array.from(years)[0] : '';
+    }
+
+    async function mutateHistoryRecordsOnce(mutator, options = {}) {
+        const year = resolveHistoryMutationYear(options);
+        if (/^(?:\d{4}|unknown)$/.test(year)
+            && !localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY)) {
+            const index = await readHistoryIndex();
+            if (isImmutableHistoryIndex(index)) {
+                const entry = index.shards[year]
+                    ? {
+                        name: historyShardFileName(year, index.shards[year]),
+                        hash: String(index.shards[year]?.hash || ''),
+                        count: Math.max(0, Number(index.shards[year]?.count) || 0),
+                        textLength: Math.max(0, Number(index.shards[year]?.textLength) || 0),
+                    }
+                    : null;
+                const records = entry ? (await readHistoryShard(entry)).slice() : [];
+                const result = await mutator(records);
+                if (result !== false) {
+                    assertHistoryRecordCount(records.length);
+                    try {
+                        if (records.some(record => getHistoryRecordStorageYear(record) !== year)) {
+                            throw new Error('年度历史变更跨年份');
+                        }
+                        await writeHistoryYearRecords(year, records, index);
+                    } catch (error) {
+                        if (isHistoryWriteCoordinationError(error)) throw error;
+                        const allRecords = [];
+                        const otherEntries = Object.entries(index.shards)
+                            .filter(([entryYear]) => entryYear !== year && /^(?:\d{4}|unknown)$/.test(entryYear))
+                            .map(([entryYear, meta]) => ({
+                                name: historyShardFileName(entryYear, meta),
+                                hash: String(meta?.hash || ''),
+                                count: Math.max(0, Number(meta?.count) || 0),
+                                textLength: Math.max(0, Number(meta?.textLength) || 0),
+                            }))
+                            .sort((left, right) => left.name.localeCompare(right.name));
+                        const indexedOtherCount = Object.entries(index.shards)
+                            .filter(([entryYear]) => entryYear !== year && /^(?:\d{4}|unknown)$/.test(entryYear))
+                            .reduce((sum, [, meta]) => sum + Math.max(0, Number(meta?.count) || 0), 0);
+                        assertHistoryRecordCount(indexedOtherCount + records.length);
+                        for (const otherEntry of otherEntries) {
+                            const shardRecords = await readHistoryShard(otherEntry);
+                            assertHistoryRecordCount(allRecords.length + shardRecords.length + records.length);
+                            for (const record of shardRecords) allRecords.push(record);
+                        }
+                        for (const record of records) allRecords.push(record);
+                        if (!await persistHistoryRecords(allRecords)) throw error;
+                    }
+                    return result;
+                }
+                if (options?.fallbackOnMiss !== true) return false;
+            }
+        }
+        const records = await loadHistoryRecords({ force: true });
+        const result = await mutator(records);
+        if (result === false) return false;
+        const saved = await persistHistoryRecords(records);
+        return saved ? result : false;
+    }
+
+    async function mutateHistoryRecords(mutator, options = {}) {
         return queueHistoryOperation(async () => {
-            const records = await loadHistoryRecords({ force: true });
-            const result = await mutator(records);
-            if (result === false) return false;
-            const saved = await persistHistoryRecords(records);
-            return saved ? result : false;
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+                try {
+                    return await mutateHistoryRecordsOnce(mutator, options);
+                } catch (error) {
+                    if (error?.code !== 'HISTORY_REVISION_CHANGED' || attempt >= 2) throw error;
+                    invalidateHistoryStoreCache();
+                }
+            }
+            return false;
         });
     }
 
@@ -3866,21 +4593,39 @@
                 if (seen.has(key)) continue;
                 seen.add(key);
                 records.push(record);
+                assertHistoryRecordCount(records.length);
             }
         }
         return records;
     }
 
     async function verifyHistoryMigration(expectedRecords) {
-        const actualRecords = await readAllHistoryShardRecords({ force: true });
-        const expected = expectedRecords.map(record => JSON.stringify(record)).sort();
-        const actual = actualRecords.map(record => JSON.stringify(record)).sort();
-        return expected.length === actual.length && expected.every((value, index) => value === actual[index]);
+        assertHistoryRecordCount(expectedRecords?.length);
+        invalidateHistoryStoreCache();
+        const index = await readHistoryIndex();
+        if (!index) return false;
+        const grouped = groupHistoryRecordsByYear(expectedRecords);
+        const expectedYears = Array.from(grouped.keys()).sort();
+        const actualYears = Object.keys(index.shards).filter(year => /^(?:\d{4}|unknown)$/.test(year)).sort();
+        if (expectedYears.length !== actualYears.length
+            || expectedYears.some((year, position) => year !== actualYears[position])) return false;
+        for (const year of expectedYears) {
+            const records = grouped.get(year);
+            const data = JSON.stringify(records, null, 2);
+            assertHistoryTextSize(data);
+            const meta = index.shards[year];
+            if (Number(meta?.count) !== records.length || String(meta?.hash || '') !== hashHistoryText(data)) return false;
+            const stored = await readHistoryFileTextStrict(
+                `${HISTORY_STORAGE_DIR}/${historyShardFileName(year, meta)}`,
+            );
+            if (stored !== data) return false;
+        }
+        return true;
     }
 
     async function clearLegacyHistorySources() {
-        const legacyCleared = await __tomatoPutFileText(LEGACY_HISTORY_FILE_PATH, '[]');
-        const currentCleared = await __tomatoPutFileText(NEW_HISTORY_FILE_PATH, '[]');
+        const legacyCleared = await putHistoryFileText(LEGACY_HISTORY_FILE_PATH, '[]');
+        const currentCleared = await putHistoryFileText(NEW_HISTORY_FILE_PATH, '[]');
         if (!legacyCleared || !currentCleared) return false;
         const [legacyRecords, currentRecords] = await Promise.all([
             readHistoryJsonFileStrict(LEGACY_HISTORY_FILE_PATH),
@@ -3892,23 +4637,27 @@
         return !localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY) && !localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
     }
 
-    async function migrateLegacyHistoryToYearShards() {
+    async function migrateLegacyHistoryToYearShardsOnce() {
         let migrationRecords = null;
         try {
-            const [legacyRecords, currentRecords, shardRecords] = await Promise.all([
+            const [legacyRecords, currentRecords] = await Promise.all([
                 readOptionalHistoryJsonFileStrict(LEGACY_HISTORY_FILE_PATH),
                 readOptionalHistoryJsonFileStrict(NEW_HISTORY_FILE_PATH),
-                readAllHistoryShardRecords({ force: true }),
             ]);
-            const hasLocalFallback = !!localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+            const fallbackMetaRaw = localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+            const hasLocalFallback = !!fallbackMetaRaw;
+            if (fallbackMetaRaw) assertHistoryRecordCount(JSON.parse(fallbackMetaRaw)?.recordCount);
             const localRaw = String(localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY) || '');
+            assertHistoryTextSize(localRaw);
             if (hasLocalFallback && !localRaw.trim()) throw new Error('本地历史回退标记缺少数据');
             let localRecords = [];
             if (localRaw.trim()) {
                 localRecords = JSON.parse(localRaw);
                 if (!Array.isArray(localRecords)) throw new Error('旧本地历史格式错误');
+                assertHistoryRecordCount(localRecords.length);
             }
             if (legacyRecords.length === 0 && currentRecords.length === 0 && !localRaw.trim() && !hasLocalFallback) return true;
+            const shardRecords = hasLocalFallback ? [] : await readAllHistoryShardRecords({ force: true });
             const mergedRecords = hasLocalFallback
                 ? normalizeHistoryRecords(localRecords)
                 : mergeUniqueHistoryRecords(shardRecords, legacyRecords, currentRecords, localRecords);
@@ -3919,10 +4668,19 @@
             invalidateHistoryStoreCache();
             return true;
         } catch (e) {
+            if (isHistoryWriteCoordinationError(e)) throw e;
             if (Array.isArray(migrationRecords)) {
                 try {
-                    localStorage.setItem(HISTORY_LOCAL_STORAGE_KEY, JSON.stringify(migrationRecords, null, 2));
-                    localStorage.setItem(HISTORY_LOCAL_FALLBACK_META_KEY, JSON.stringify({ updatedAt: Date.now() }));
+                    const coverage = getHistoryShardCoverage(migrationRecords);
+                    const fallbackData = JSON.stringify(migrationRecords, null, 2);
+                    assertHistoryTextSize(fallbackData);
+                    const fallbackRevision = nextHistoryFallbackRevision();
+                    localStorage.setItem(HISTORY_LOCAL_STORAGE_KEY, fallbackData);
+                    localStorage.setItem(HISTORY_LOCAL_FALLBACK_META_KEY, JSON.stringify({
+                        updatedAt: fallbackRevision,
+                        recordCount: migrationRecords.length,
+                        maxEnd: coverage.maxEnd,
+                    }));
                     invalidateHistoryStoreCache();
                 } catch (fallbackError) {
                     Logger.error('保存历史迁移后备数据失败:', fallbackError);
@@ -3931,6 +4689,20 @@
             Logger.error('年度历史迁移失败，旧数据源未主动清理:', e);
             return false;
         }
+    }
+
+    async function migrateLegacyHistoryToYearShards() {
+        return queueHistoryOperation(async () => {
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+                try {
+                    return await migrateLegacyHistoryToYearShardsOnce();
+                } catch (error) {
+                    if (error?.code !== 'HISTORY_REVISION_CHANGED' || attempt >= 2) throw error;
+                    invalidateHistoryStoreCache();
+                }
+            }
+            return false;
+        });
     }
 
     function __tomatoFindHistoryRecordIndex(records, recordKey) {
@@ -3966,14 +4738,7 @@
     async function __tomatoHistoryLoadRange(startISO, endISO) {
         const startMs = toDateSafe(startISO)?.getTime?.() || 0;
         const endMs = toDateSafe(endISO)?.getTime?.() || 0;
-        const list = await __tomatoHistoryLoadAll();
-        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return list;
-        return list.filter(r => {
-            const s = toDateSafe(r?.start)?.getTime?.() || 0;
-            const e = toDateSafe(r?.end)?.getTime?.() || 0;
-            if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return false;
-            return s < endMs && e > startMs;
-        });
+        return loadHistoryRangeRecords(startMs, endMs);
     }
 
     async function __tomatoHistoryUpdateTime(recordKey, patch) {
@@ -3991,7 +4756,7 @@
                 records[idx].end = nextEnd.toISOString();
                 __tomatoNormalizeHistoryRecordFields(records[idx]);
                 return true;
-            });
+            }, { recordKey });
             if (!ok) return false;
             try { markTimelineHistoryDirty(); } catch (e) {}
             try { updateTimelineBar(true); } catch (e) {}
@@ -4009,7 +4774,7 @@
                 if (idx < 0) return false;
                 records.splice(idx, 1);
                 return true;
-            });
+            }, { recordKey });
             if (!ok) return false;
             try { markTimelineHistoryDirty(); } catch (e) {}
             try { updateTimelineBar(true); } catch (e) {}
@@ -4041,7 +4806,7 @@
                 __tomatoNormalizeHistoryRecordFields(r2);
                 records.splice(idx, 1, r1, r2);
                 return true;
-            });
+            }, { recordKey });
             if (!ok) return false;
             try { markTimelineHistoryDirty(); } catch (e) {}
             try { updateTimelineBar(true); } catch (e) {}
@@ -4216,7 +4981,7 @@
                 if (index < 0) return false;
                 records.splice(index, 1);
                 return true;
-            });
+            }, { record });
             if (success) {
                 try { markTimelineHistoryDirty(); } catch (e) {}
                 try { updateTimelineBar(true); } catch (e) {}
@@ -4491,40 +5256,42 @@
     }
 
     // 显示过期事项通知（右上角，5秒后自动消失）
-    function showExpiredRemindersNotification(expiredItems) {
+    function showExpiredRemindersNotification(expiredEntries) {
         // 移除已存在的通知
         const existingNotification = document.querySelector('.tomy-expired-notification');
         if (existingNotification) {
             existingNotification.remove();
         }
 
-        const count = expiredItems.length;
-
-        // 生成过期事项列表HTML（简化版）
-        let itemsHtml = '';
-        const displayItems = expiredItems.slice(0, 10); // 最多显示10个
-
-        displayItems.forEach((item) => {
-            const blockName = item.blockName || '未命名任务';
-            itemsHtml += `
-                <div class="tomy-expired-item">${escapeHtml(blockName)}</div>
-            `;
-        });
-
-        if (expiredItems.length > 10) {
-            itemsHtml += `<div class="tomy-expired-more">...共 ${count} 个</div>`;
-        }
+        let pendingEntries = (Array.isArray(expiredEntries) ? expiredEntries : [])
+            .map((entry) => {
+                const reminder = entry?.reminder || entry;
+                const at = toDateSafe(entry?.at);
+                const hasValidTime = at instanceof Date && !isNaN(at.getTime());
+                return {
+                    reminder,
+                    blockId: String(reminder?.blockId || '').trim(),
+                    dateKey: hasValidTime ? formatDateKey(at) : '',
+                    timeKey: hasValidTime
+                        ? `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+                        : '',
+                };
+            })
+            .filter(entry => entry.reminder);
+        if (pendingEntries.length === 0) return;
 
         const notification = document.createElement('div');
         notification.className = 'tomy-expired-notification';
         notification.innerHTML = `
-            <div class="tomy-notification-icon">⚠️</div>
+            <div class="tomy-notification-icon"></div>
             <div class="tomy-notification-content">
-                <div class="tomy-notification-title"><span style="color:#e74c3c">已过期</span> · ${count}</div>
-                <div class="tomy-expired-list">${itemsHtml}</div>
+                <div class="tomy-notification-title"><span>已过期</span><span class="tomy-expired-count" data-role="expired-count">${pendingEntries.length}</span></div>
+                <div class="tomy-expired-list"></div>
             </div>
-            <button class="tomy-notification-close" data-action="close-notification">×</button>
+            <button type="button" class="tomy-notification-close" data-action="close-notification" aria-label="关闭过期提醒">×</button>
         `;
+        const notificationIcon = notification.querySelector('.tomy-notification-icon');
+        if (notificationIcon) __setReminderDockIcon(notificationIcon, 'alarm');
 
         // 添加样式（如果还没有添加）
         if (!document.getElementById('tomy-expired-notification-styles')) {
@@ -4532,18 +5299,24 @@
             style.id = 'tomy-expired-notification-styles';
             style.textContent = `
                 .tomy-expired-notification {
+                    --tomy-expired-line: color-mix(in srgb, var(--b3-theme-on-background) 12%, transparent);
+                    --tomy-expired-soft: color-mix(in srgb, var(--b3-theme-on-background) 5%, var(--b3-theme-background));
                     position: fixed;
                     top: 20px;
                     right: 20px;
                     background: var(--b3-theme-background, #fff);
                     border-radius: 8px;
-                    padding: 12px 16px;
+                    box-sizing: border-box;
+                    width: min(360px, calc(100vw - 40px));
+                    max-width: none;
+                    padding: 8px 12px;
                     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
                     z-index: 9999;
-                    max-width: 240px;
-                    display: flex;
-                    align-items: flex-start;
-                    gap: 10px;
+                    display: grid;
+                    grid-template-columns: 22px minmax(0, 1fr);
+                    align-items: start;
+                    column-gap: 8px;
+                    row-gap: 0;
                     cursor: pointer;
                     animation: slideInRight 0.3s ease-out;
                     will-change: transform, opacity;
@@ -4583,19 +5356,51 @@
                 }
 
                 .tomy-notification-icon {
-                    font-size: 24px;
-                    line-height: 1;
+                    width: 22px;
+                    height: 22px;
+                    display: grid;
+                    place-items: center;
+                    border-radius: 7px;
+                    color: oklch(58% .17 28);
+                    background: color-mix(in srgb, oklch(58% .17 28) 13%, var(--b3-theme-background));
+                    flex: 0 0 auto;
+                }
+
+                .tomy-notification-icon svg {
+                    width: 14px;
+                    height: 14px;
                 }
 
                 .tomy-notification-content {
-                    flex: 1;
+                    display: contents;
                 }
 
                 .tomy-notification-title {
+                    grid-column: 2;
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
                     font-size: 15px;
-                    font-weight: 600;
-                    color: var(--b3-theme-on-background, #333);
-                    margin-bottom: 4px;
+                    line-height: 1.25;
+                    font-weight: 720;
+                    color: oklch(58% .17 28);
+                    padding-right: 28px;
+                }
+
+                .tomy-expired-count {
+                    min-width: 20px;
+                    height: 18px;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 0 5px;
+                    border-radius: 9px;
+                    color: oklch(58% .17 28);
+                    background: color-mix(in srgb, oklch(58% .17 28) 13%, var(--b3-theme-background));
+                    font-size: 10px;
+                    line-height: 1;
+                    font-weight: 700;
+                    font-variant-numeric: tabular-nums;
                 }
 
                 .tomy-notification-text {
@@ -4615,6 +5420,11 @@
                 }
 
                 .tomy-notification-close {
+                    position: absolute;
+                    top: 6px;
+                    right: 8px;
+                    width: 24px;
+                    height: 24px;
                     background: none;
                     border: none;
                     font-size: 20px;
@@ -4622,7 +5432,6 @@
                     cursor: pointer;
                     padding: 0;
                     line-height: 1;
-                    margin-left: 8px;
                 }
 
                 .tomy-notification-close:hover {
@@ -4630,16 +5439,112 @@
                 }
 
                 .tomy-expired-list {
-                    margin-top: 6px;
+                    grid-column: 1 / -1;
+                    display: grid;
+                    margin-top: 4px;
                 }
 
                 .tomy-expired-item {
-                    font-size: 13px;
                     color: var(--b3-theme-on-background, #333);
-                    padding: 3px 0;
+                    padding: 4px 0;
+                    display: grid;
+                    grid-template-columns: 70px minmax(0, 1fr) 26px;
+                    align-items: center;
+                    gap: 8px;
+                    min-width: 0;
+                }
+
+                .tomy-expired-item + .tomy-expired-item {
+                    border-top: 1px solid var(--tomy-expired-line);
+                }
+
+                .tomy-expired-item-content {
+                    min-width: 0;
+                }
+
+                .tomy-expired-time-rail {
+                    align-self: stretch;
+                    min-width: 0;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    padding-right: 8px;
+                    border-right: 1px solid var(--tomy-expired-line);
+                    font-variant-numeric: tabular-nums;
+                }
+
+                .tomy-expired-time-main {
+                    color: var(--b3-theme-on-background);
+                    font-size: 13px;
+                    line-height: 1.25;
+                    font-weight: 720;
+                }
+
+                .tomy-expired-time-date {
                     overflow: hidden;
+                    color: var(--b3-theme-on-surface-light, #777);
+                    font-size: 10px;
+                    line-height: 1.25;
+                    font-weight: 600;
                     text-overflow: ellipsis;
                     white-space: nowrap;
+                }
+
+                .tomy-expired-item-name {
+                    min-width: 0;
+                    font-size: 14px;
+                    font-weight: 650;
+                    line-height: 1.35;
+                    white-space: normal;
+                    overflow-wrap: anywhere;
+                    word-break: break-word;
+                }
+
+                .tomy-expired-complete {
+                    position: relative;
+                    width: 26px;
+                    height: 26px;
+                    display: grid;
+                    place-items: center;
+                    padding: 5px;
+                    border: 0;
+                    border-radius: 7px;
+                    background: transparent;
+                    color: oklch(55% .12 150);
+                    cursor: pointer;
+                    transition: background-color 180ms cubic-bezier(.22, 1, .36, 1), opacity 180ms cubic-bezier(.22, 1, .36, 1), transform 180ms cubic-bezier(.22, 1, .36, 1);
+                }
+
+                .tomy-expired-complete::before {
+                    content: '';
+                    position: absolute;
+                    inset: -9px;
+                }
+
+                .tomy-expired-complete svg {
+                    display: block;
+                    width: 16px;
+                    height: 16px;
+                }
+
+                .tomy-expired-complete:hover:not(:disabled) {
+                    color: oklch(48% .14 150);
+                    background: color-mix(in srgb, oklch(55% .12 150) 18%, transparent);
+                    transform: scale(1.06);
+                }
+
+                .tomy-expired-complete:focus-visible {
+                    outline: 2px solid var(--b3-theme-primary-light, #7ca7f6);
+                    outline-offset: 2px;
+                }
+
+                .tomy-expired-complete:active:not(:disabled) {
+                    transform: scale(.94);
+                }
+
+                .tomy-expired-complete:disabled {
+                    cursor: wait;
+                    opacity: .58;
                 }
 
                 .tomy-expired-more {
@@ -4653,6 +5558,7 @@
                         left: 16px;
                         right: 16px;
                         top: 16px;
+                        width: auto;
                         max-width: none;
                     }
                 }
@@ -4672,13 +5578,102 @@
         document.body.appendChild(notification);
 
         let autoCloseTimer = null;
-        const dismissNotification = () => {
+        const stopAutoClose = () => {
             if (autoCloseTimer !== null) {
                 clearTimeout(autoCloseTimer);
                 autoCloseTimer = null;
             }
+        };
+        const dismissNotification = () => {
+            stopAutoClose();
             closeExpiredNotification(notification);
         };
+
+        const renderItems = () => {
+            const list = notification.querySelector('.tomy-expired-list');
+            const countEl = notification.querySelector('[data-role="expired-count"]');
+            if (!list || !countEl) return;
+            countEl.textContent = String(pendingEntries.length);
+            list.replaceChildren();
+
+            pendingEntries.slice(0, 10).forEach((entry) => {
+                const item = document.createElement('div');
+                item.className = 'tomy-expired-item';
+
+                const timeRail = document.createElement('div');
+                timeRail.className = 'tomy-expired-time-rail';
+
+                const occurrenceTime = document.createElement('time');
+                occurrenceTime.className = 'tomy-expired-time-main';
+                occurrenceTime.dateTime = `${entry.dateKey}T${entry.timeKey}`;
+                occurrenceTime.textContent = entry.timeKey;
+
+                const occurrenceDate = document.createElement('div');
+                occurrenceDate.className = 'tomy-expired-time-date';
+                occurrenceDate.textContent = entry.dateKey;
+
+                timeRail.appendChild(occurrenceTime);
+                timeRail.appendChild(occurrenceDate);
+
+                const itemContent = document.createElement('div');
+                itemContent.className = 'tomy-expired-item-content';
+
+                const name = document.createElement('div');
+                name.className = 'tomy-expired-item-name';
+                name.textContent = entry.reminder?.blockName || '未命名任务';
+                name.title = name.textContent;
+
+                itemContent.appendChild(name);
+
+                const completeBtn = document.createElement('button');
+                completeBtn.type = 'button';
+                completeBtn.className = 'tomy-expired-complete';
+                __setReminderDockIcon(completeBtn, 'complete');
+                completeBtn.title = '完成';
+                completeBtn.setAttribute('aria-label', `完成提醒：${name.textContent}`);
+                const canComplete = !!(entry.blockId && entry.dateKey && entry.timeKey);
+                completeBtn.disabled = !canComplete;
+                if (!canComplete) completeBtn.title = '缺少提醒发生信息，无法完成';
+                completeBtn.onclick = async (event) => {
+                    event.stopPropagation();
+                    if (completeBtn.disabled) return;
+                    stopAutoClose();
+                    completeBtn.disabled = true;
+                    completeBtn.textContent = '…';
+                    completeBtn.setAttribute('aria-busy', 'true');
+                    const ok = await __markReminderOccurrenceCompleted(entry.blockId, entry.dateKey, entry.timeKey, {
+                        source: 'docktomato-expired-notification',
+                    });
+                    if (!ok) {
+                        completeBtn.disabled = false;
+                        __setReminderDockIcon(completeBtn, 'complete');
+                        completeBtn.removeAttribute('aria-busy');
+                        showMiniToast('标记失败');
+                        return;
+                    }
+                    pendingEntries = pendingEntries.filter(item => item !== entry);
+                    showMiniToast('已标记完成');
+                    if (pendingEntries.length === 0) {
+                        dismissNotification();
+                        return;
+                    }
+                    renderItems();
+                };
+
+                item.appendChild(timeRail);
+                item.appendChild(itemContent);
+                item.appendChild(completeBtn);
+                list.appendChild(item);
+            });
+
+            if (pendingEntries.length > 10) {
+                const more = document.createElement('div');
+                more.className = 'tomy-expired-more';
+                more.textContent = `...共 ${pendingEntries.length} 个`;
+                list.appendChild(more);
+            }
+        };
+        renderItems();
         notification.addEventListener('click', dismissNotification, { once: true });
 
         // 5秒后自动消失
@@ -4701,16 +5696,14 @@
                 return;
             }
 
-            const expiredReminders = __collectExpiredReminderEntries(reminders, new Date())
-                .map(entry => entry.reminder)
-                .filter(Boolean);
+            const expiredEntries = __collectExpiredReminderEntries(reminders, new Date());
 
-            if (expiredReminders.length > 0) {
+            if (expiredEntries.length > 0) {
                 const popupDayKey = formatDateKey(new Date());
                 const popupKey = [
                     popupDayKey,
-                    ...expiredReminders
-                        .map(item => String(item?.blockId || item?.id || item?.blockName || '').trim())
+                    ...expiredEntries
+                        .map(entry => String(entry?.reminder?.blockId || entry?.reminder?.id || entry?.reminder?.blockName || '').trim())
                         .filter(Boolean)
                         .sort()
                 ].join('|');
@@ -4723,7 +5716,7 @@
                 // 延迟显示，让页面先渲染完成
                 expiredReminderNotificationTimer = setTimeout(() => {
                     expiredReminderNotificationTimer = null;
-                    showExpiredRemindersNotification(expiredReminders);
+                    showExpiredRemindersNotification(expiredEntries);
                 }, 500);
             }
         } catch (e) {
@@ -4778,7 +5771,6 @@
         const now = toDateSafe(nowDate || new Date());
         if (!(now instanceof Date) || isNaN(now.getTime())) return [];
         const entries = [];
-        const seen = new Set();
         for (const reminder of (Array.isArray(reminders) ? reminders : [])) {
             try {
                 if (!reminder || reminder.enabled === false) continue;
@@ -4787,10 +5779,6 @@
                 if (lastDueAt.getTime() >= now.getTime()) continue;
                 const nextAt = getNextReminderDateTime(reminder, now);
                 if (nextAt && Number.isFinite(nextAt.getTime?.()) && nextAt.getTime() === lastDueAt.getTime()) continue;
-                const blockId = String(reminder.blockId || '').trim();
-                const dedupeKey = blockId || `${formatDateKey(lastDueAt)} ${lastDueAt.getHours()}:${lastDueAt.getMinutes()} ${entries.length}`;
-                if (seen.has(dedupeKey)) continue;
-                seen.add(dedupeKey);
                 entries.push({ reminder, at: lastDueAt });
             } catch (e) {}
         }
@@ -5159,7 +6147,42 @@
 
     function calculateFocusTimeStats(records, groupId = null) {
         const focusRecords = filterRecordsByFocusTime(records, groupId);
-        
+        const statsCore = globalThis.__dockTomatoStatsFacade?.core;
+        if (statsCore && focusRecords.length) {
+            const normalized = focusRecords.map((record) => ({
+                ...record,
+                ...(Object.prototype.hasOwnProperty.call(record || {}, 'actualFocusMinutes')
+                    ? { durationSec: Math.max(0, Number(record.actualFocusMinutes) || 0) * 60 }
+                    : {}),
+            }));
+            let fromMs = Infinity;
+            let toMs = -Infinity;
+            normalized.forEach((record) => {
+                const startMs = toDateSafe(record?.start)?.getTime?.();
+                const endMs = toDateSafe(record?.end)?.getTime?.();
+                if (Number.isFinite(startMs)) fromMs = Math.min(fromMs, startMs);
+                if (Number.isFinite(endMs)) toMs = Math.max(toMs, endMs);
+            });
+            if (Number.isFinite(fromMs) && Number.isFinite(toMs) && toMs > fromMs) {
+                const result = statsCore.queryFocus(normalized, {
+                    from: new Date(fromMs).toISOString(),
+                    to: new Date(toMs).toISOString(),
+                    includeAssociations: false,
+                });
+                return {
+                    totalRecords: focusRecords.length,
+                    tomatoCount: result.totals.countdownSessionCount,
+                    tomatoActual: result.totals.countdownSec / 60,
+                    tomatoPlanned: result.totals.plannedCountdownMin,
+                    stopwatchCount: result.totals.stopwatchSessionCount,
+                    stopwatchActual: result.totals.stopwatchSec / 60,
+                    breakCount: result.totals.breakSessionCount,
+                    breakActual: result.totals.breakSec / 60,
+                    focusTime: result.totals.focusSec / 60,
+                };
+            }
+        }
+
         const stats = {
             totalRecords: focusRecords.length,
             tomatoCount: focusRecords.filter(r => r.mode === 'countdown' && r.durationMin >= 1).length,
@@ -5772,11 +6795,12 @@
         }
     }
 
-    async function postJSON(url, data) {
+    async function postJSON(url, data, options = {}) {
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data ?? {})
+            body: JSON.stringify(data ?? {}),
+            ...(options?.signal ? { signal: options.signal } : {}),
         });
         const text = await response.text();
         return { response, ok: response.ok, status: response.status, data: safeJsonParse(text) };
@@ -12624,27 +13648,6 @@
         } catch (e) {}
     }
 
-    function primeTimelineHistoryCaches(records) {
-        if (!Array.isArray(records) || !timelineHistoryCacheByDateKey.size) return;
-        for (const [dateKey, cache] of timelineHistoryCacheByDateKey) {
-            const d = toDateSafe(`${dateKey}T00:00:00`);
-            const startMs = d?.getTime?.();
-            if (!Number.isFinite(startMs)) continue;
-            const endMs = startMs + 86400000;
-            cache.records = records.filter(r => {
-                if (!r?.start || !r?.end) return false;
-                const rs = toDateSafe(r.start)?.getTime?.() || 0;
-                const re = toDateSafe(r.end)?.getTime?.() || 0;
-                if (!Number.isFinite(rs) || !Number.isFinite(re) || re <= rs) return false;
-                return rs < endMs && re > startMs;
-            });
-            cache.refreshToken = (Number(cache.refreshToken) || 0) + 1;
-            cache.refreshing = false;
-            cache.dirty = false;
-            cache.version += 1;
-        }
-    }
-
     function refreshTimelineHistoryCacheForDateIfNeeded(dateKey) {
         const cache = getTimelineHistoryCache(dateKey);
         const needsRefresh = cache.dirty;
@@ -12656,23 +13659,15 @@
         cache.refreshToken = refreshToken;
 
         (async () => {
-            const all = await loadHistoryRecords();
             const dayRange = (() => {
                 const d = toDateSafe(`${cache.dateKey}T00:00:00`);
                 const startMs = d?.getTime?.();
                 if (!Number.isFinite(startMs)) return null;
                 return { startMs, endMs: startMs + 86400000 };
             })();
-            const nextRecords = (all || []).filter(r => {
-                if (!r || !dayRange) return false;
-                const startIso = r.start;
-                const endIso = r.end;
-                if (!startIso || !endIso) return false;
-                const startMs = toDateSafe(startIso)?.getTime?.() || 0;
-                const endMs = toDateSafe(endIso)?.getTime?.() || 0;
-                if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return false;
-                return startMs < dayRange.endMs && endMs > dayRange.startMs;
-            });
+            const nextRecords = dayRange
+                ? await loadHistoryRangeRecords(dayRange.startMs, dayRange.endMs)
+                : [];
             if (cache.refreshToken !== refreshToken) return;
             cache.records = nextRecords;
             cache.version += 1;
@@ -15024,7 +16019,6 @@
             let didCreateHistoryRecord = false;
             let didSaveHistoryRecords = false;
             let didSkipHistoryForShortRecord = false;
-            let savedRecords = null;
 
             // 🔧 如果开启隐藏短记录：以秒为准，避免因分钟四舍五入导致“1分钟短记录”
             if (userSettings.hideShortRecords && Number(durationSecToSave || 0) < 60 && !hasLuminaHistoryRecords(recordData)) {
@@ -15051,7 +16045,6 @@
                     return true;
                 };
                 didSaveHistoryRecords = await mutateHistoryRecords(records => {
-                    savedRecords = records;
                     if (modeAtEnd === 'break' || modeAtEnd === 'stopwatch-break') {
                         recordData.mode = modeAtEnd === 'break' ? 'break' : 'stopwatch-break';
                         recordData.sessionId = recordSessionId || pendingBreakSessionId;
@@ -15064,7 +16057,7 @@
                         didAppendRecord = pushRecordIfNeeded(records);
                     }
                     return didAppendRecord;
-                });
+                }, { record: recordData });
                 if (canMutateLiveTimerStateFromSnapshot()) lastSavedDistractionCount = syncedDistractionTotal || 0;
                 // 🔧 清除按钮高亮设置（记录已保存）
                 // 注意：只清除颜色，保留 activeRoutineButtonIndex 供新按钮使用
@@ -15079,7 +16072,6 @@
                 if (didAppendRecord && didSaveHistoryRecords) {
                     Logger.info('✅ 记录已保存');
                     markTimelineHistoryDirty();
-                    primeTimelineHistoryCaches(savedRecords || []);
                     try { if (userSettings?.timeline?.enabled) updateTimelineBar(true); } catch (e) {}
                 } else if (didAppendRecord) {
                     Logger.warn('历史记录保存失败，跳过时间轴缓存更新');
@@ -16611,6 +17603,47 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     function calculateDailyStats(records) {
+        const statsCore = globalThis.__dockTomatoStatsFacade?.core;
+        if (statsCore && Array.isArray(records) && records.length) {
+            const normalizedRecords = records.map((record) => (
+                Object.prototype.hasOwnProperty.call(record || {}, 'actualFocusMinutes')
+                    ? { ...record, durationSec: Math.max(0, Number(record.actualFocusMinutes) || 0) * 60 }
+                    : record
+            ));
+            let firstMs = Infinity;
+            let lastMs = -Infinity;
+            normalizedRecords.forEach((record) => {
+                const startMs = toDateSafe(record?.start)?.getTime?.();
+                const endMs = toDateSafe(record?.end)?.getTime?.();
+                if (Number.isFinite(startMs)) firstMs = Math.min(firstMs, startMs);
+                if (Number.isFinite(endMs)) lastMs = Math.max(lastMs, endMs);
+            });
+            if (Number.isFinite(firstMs) && Number.isFinite(lastMs)) {
+                const first = new Date(firstMs);
+                first.setHours(0, 0, 0, 0);
+                const last = new Date(lastMs);
+                last.setHours(24, 0, 0, 0);
+                const result = statsCore.queryFocus(normalizedRecords, {
+                    from: first.toISOString(),
+                    to: last.toISOString(),
+                    bucket: 'day',
+                    includeAssociations: false,
+                });
+                return result.buckets.map((bucket) => ({
+                    date: String(bucket.key || '').slice(0, 10),
+                    tomatoCount: bucket.countdownSessionCount,
+                    tomatoActual: bucket.countdownSec / 60,
+                    tomatoPlanned: bucket.plannedCountdownMin,
+                    stopwatchCount: bucket.stopwatchSessionCount,
+                    stopwatchActual: bucket.stopwatchSec / 60,
+                    breakCount: bucket.breakSessionCount,
+                    breakActual: bucket.breakSec / 60,
+                    focusTime: bucket.focusSec / 60,
+                    distractionCount: bucket.distractionCount,
+                })).filter((day) => day.focusTime > 0 || day.breakActual > 0 || day.distractionCount > 0)
+                    .sort((a, b) => b.date.localeCompare(a.date));
+            }
+        }
         const dailyStatsMap = {};
         
         // 🔧 v9.5 新增：用于去重统计计划时间，同一个 sessionId 只计算一次
@@ -17134,6 +18167,9 @@ function calculateWeeklyStats(dailyStatsArray) {
             document.querySelectorAll('.tomato-task-highlight').forEach(el => {
                 el.classList.remove('tomato-task-highlight');
             });
+            historyState.allRecords = [];
+            historyState.filteredRecords = [];
+            historyState.dateList = [];
         };
 
         const closeBtn = document.createElement('button');
@@ -17787,6 +18823,55 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     function calculateRoutineGroupStats(records, startDateStr, endDateStr, rangeTotalMinutes, includeUnrecorded) {
+        const statsCore = globalThis.__dockTomatoStatsFacade?.core;
+        if (statsCore) {
+            const start = new Date(`${startDateStr}T00:00:00`);
+            const endMs = start.getTime() + Math.max(0, Number(rangeTotalMinutes) || 0) * 60000;
+            if (Number.isFinite(start.getTime()) && endMs > start.getTime()) {
+                const result = statsCore.queryRoutine(records || [], {
+                    from: start.toISOString(),
+                    to: new Date(endMs).toISOString(),
+                    routineButtons: Array.isArray(userSettings?.routineButtons) ? userSettings.routineButtons : [],
+                    routineGroups: Array.isArray(userSettings?.routineGroups) ? userSettings.routineGroups : [],
+                });
+                const list = result.groups.map((group) => ({
+                    id: group.id,
+                    label: group.label,
+                    focus: group.focusSec / 60,
+                    break: group.breakSec / 60,
+                    total: group.totalSec / 60,
+                    buttons: (group.buttons || []).map((button) => ({
+                        ...button,
+                        focus: button.focusSec / 60,
+                        break: button.breakSec / 60,
+                        total: button.totalSec / 60,
+                        color: button.color || getRoutineStatsColorForKey(button.key),
+                    })),
+                    color: getRoutineStatsColorForKey(group.id),
+                }));
+                const totalFocus = list.reduce((sum, item) => sum + item.focus, 0);
+                const totalBreak = list.reduce((sum, item) => sum + item.break, 0);
+                const totalAll = totalFocus + totalBreak;
+                const unrecordedMinutes = includeUnrecorded === false ? 0 : result.totals.unrecordedSec / 60;
+                if (unrecordedMinutes > 0) {
+                    list.push({ id: '__unrecorded', label: '无记录时间', focus: 0, break: 0, total: unrecordedMinutes, buttons: [], color: '#BDBDBD' });
+                }
+                const toPieItems = (kind) => list
+                    .filter((item) => (kind === 'focus' ? item.focus : item.break) > 0)
+                    .map((item) => ({ id: item.id, label: item.label, value: kind === 'focus' ? item.focus : item.break, color: item.color }))
+                    .sort((a, b) => b.value - a.value);
+                return {
+                    list,
+                    focusPie: toPieItems('focus'),
+                    breakPie: toPieItems('break'),
+                    totalFocus,
+                    totalBreak,
+                    totalAll,
+                    rangeTotalMinutes: totalAll + unrecordedMinutes,
+                    unrecordedMinutes,
+                };
+            }
+        }
         const buttons = Array.isArray(userSettings?.routineButtons) ? userSettings.routineButtons : [];
         const groups = Array.isArray(userSettings?.routineGroups) ? userSettings.routineGroups : [];
         const groupNameById = new Map();
@@ -19706,24 +20791,24 @@ function calculateWeeklyStats(dailyStatsArray) {
                             showToastDialog('提示', '开始/结束时间不合法', 'info');
                             return;
                         }
-                        let updatedRecords = null;
+                        let committedRecord = null;
                         let recordFound = false;
-                        const success = await mutateHistoryRecords(records => {
-                            const idx = findRecordIndex(records, record);
+                        const success = await mutateHistoryRecords(yearRecords => {
+                            const idx = findRecordIndex(yearRecords, record);
                             if (idx < 0) return false;
                             recordFound = true;
                             const ms = endMs - startMs;
-                            records[idx].start = ns.toISOString();
-                            records[idx].end = ne.toISOString();
-                            records[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
-                            records[idx].durationMin = Math.max(0, Math.round(ms / 60000));
-                            records[idx].timestamp = Math.round(endMs);
-                            records[idx].date = formatDateKey(ne);
-                            records[idx].dateTime = ne.toLocaleString('zh-CN');
-                            records[idx].timePeriod = getTimePeriod(ne.getHours());
-                            updatedRecords = records;
+                            yearRecords[idx].start = ns.toISOString();
+                            yearRecords[idx].end = ne.toISOString();
+                            yearRecords[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
+                            yearRecords[idx].durationMin = Math.max(0, Math.round(ms / 60000));
+                            yearRecords[idx].timestamp = Math.round(endMs);
+                            yearRecords[idx].date = formatDateKey(ne);
+                            yearRecords[idx].dateTime = ne.toLocaleString('zh-CN');
+                            yearRecords[idx].timePeriod = getTimePeriod(ne.getHours());
+                            committedRecord = { ...yearRecords[idx] };
                             return true;
-                        });
+                        }, { record });
                         if (!recordFound) {
                             showToastDialog('提示', '未找到对应记录（可能已被刷新）', 'info');
                             close();
@@ -19731,7 +20816,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                         }
                         if (success) {
                             markTimelineHistoryDirty();
-                            rebuildHistoryState(updatedRecords || []);
+                            if (committedRecord) Object.assign(record, committedRecord);
+                            rebuildHistoryState(records);
                             try { updatePageButtons(); } catch (e) {}
                             close();
                             showPage(historyState?.currentPage || selectedDate);
@@ -19810,15 +20896,15 @@ function calculateWeeklyStats(dailyStatsArray) {
                             showToastDialog('提示', '拆分点不在记录范围内', 'info');
                             return;
                         }
-                        let updatedRecords = null;
+                        let splitRecords = null;
                         let validationMessage = '';
-                        const success = await mutateHistoryRecords(records => {
-                            const idx = findRecordIndex(records, record);
+                        const success = await mutateHistoryRecords(yearRecords => {
+                            const idx = findRecordIndex(yearRecords, record);
                             if (idx < 0) {
                                 validationMessage = '未找到对应记录（可能已被刷新）';
                                 return false;
                             }
-                            const original = records[idx];
+                            const original = yearRecords[idx];
                             const origStartMs = toDateSafe(original?.start)?.getTime?.() || 0;
                             const origEndMs = toDateSafe(original?.end)?.getTime?.() || 0;
                             if (!Number.isFinite(origStartMs) || !Number.isFinite(origEndMs) || origEndMs <= origStartMs) {
@@ -19853,10 +20939,10 @@ function calculateWeeklyStats(dailyStatsArray) {
                                 if (recA.plannedDuration != null) recB.plannedDuration = 0;
                                 if (recA.distractionCount != null) recA.distractionCount = 0;
                             }
-                            records.splice(idx, 1, recA, recB);
-                            updatedRecords = records;
+                            yearRecords.splice(idx, 1, recA, recB);
+                            splitRecords = [recA, recB];
                             return true;
-                        });
+                        }, { record });
                         if (validationMessage) {
                             showToastDialog('提示', validationMessage, 'info');
                             close();
@@ -19864,7 +20950,9 @@ function calculateWeeklyStats(dailyStatsArray) {
                         }
                         if (success) {
                             markTimelineHistoryDirty();
-                            rebuildHistoryState(updatedRecords || []);
+                            const recordIndex = findRecordIndex(records, record);
+                            if (recordIndex >= 0 && splitRecords) records.splice(recordIndex, 1, ...splitRecords);
+                            rebuildHistoryState(records);
                             try { updatePageButtons(); } catch (e) {}
                             close();
                             showPage(historyState?.currentPage || selectedDate);
@@ -20073,15 +21161,14 @@ function calculateWeeklyStats(dailyStatsArray) {
             };
             applyRoutineButtonMetaToRecord(newRecord, routineMeta);
 
-            let updatedRecords = null;
-            const success = await mutateHistoryRecords(records => {
-                records.push(newRecord);
-                updatedRecords = records;
+            const success = await mutateHistoryRecords(yearRecords => {
+                yearRecords.push(newRecord);
                 return true;
-            });
+            }, { record: newRecord });
             if (success) {
                 markTimelineHistoryDirty();
-                rebuildHistoryState(updatedRecords || []);
+                records.push(newRecord);
+                rebuildHistoryState(records);
                 slices = getDaySlices(selectedDate);
                 try { renderEditorTimelineWithDrag(); } catch (e) {}
                 try { updatePageButtons(); } catch (e) {}
@@ -20118,25 +21205,26 @@ function calculateWeeklyStats(dailyStatsArray) {
             const ns = new Date(startMs);
             const ne = new Date(endMs);
 
-            let updatedRecords = null;
-            const success = await mutateHistoryRecords(records => {
-                const idx = findRecordIndex(records, record);
+            let committedRecord = null;
+            const success = await mutateHistoryRecords(yearRecords => {
+                const idx = findRecordIndex(yearRecords, record);
                 if (idx < 0) return false;
                 const ms = endMs - startMs;
-                records[idx].start = ns.toISOString();
-                records[idx].end = ne.toISOString();
-                records[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
-                records[idx].durationMin = Math.max(0, Math.round(ms / 60000));
-                records[idx].timestamp = Math.round(endMs);
-                records[idx].date = formatDateKey(ne);
-                records[idx].dateTime = ne.toLocaleString('zh-CN');
-                records[idx].timePeriod = getTimePeriod(ne.getHours());
-                updatedRecords = records;
+                yearRecords[idx].start = ns.toISOString();
+                yearRecords[idx].end = ne.toISOString();
+                yearRecords[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
+                yearRecords[idx].durationMin = Math.max(0, Math.round(ms / 60000));
+                yearRecords[idx].timestamp = Math.round(endMs);
+                yearRecords[idx].date = formatDateKey(ne);
+                yearRecords[idx].dateTime = ne.toLocaleString('zh-CN');
+                yearRecords[idx].timePeriod = getTimePeriod(ne.getHours());
+                committedRecord = { ...yearRecords[idx] };
                 return true;
-            });
+            }, { record });
             if (success) {
                 markTimelineHistoryDirty();
-                rebuildHistoryState(updatedRecords || []);
+                if (committedRecord) Object.assign(record, committedRecord);
+                rebuildHistoryState(records);
                 slices = getDaySlices(selectedDate);
                 try { renderEditorTimelineWithDrag(); } catch (e) {}
                 try { updatePageButtons(); } catch (e) {}
@@ -20391,31 +21479,32 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         const applyRecordAssociation = async (record, assocValue) => {
             try {
-                let updatedRecords = null;
-                const success = await mutateHistoryRecords(records => {
-                    const idx = findRecordIndex(records, record);
+                let committedRecord = null;
+                const success = await mutateHistoryRecords(yearRecords => {
+                    const idx = findRecordIndex(yearRecords, record);
                     if (idx < 0) return false;
                     if (assocValue === '__clear__') {
-                        records[idx].taskBlockId = null;
-                        records[idx].taskBlockName = null;
-                        records[idx].databaseBlockId = null;
-                        applyRoutineButtonMetaToRecord(records[idx], null);
+                        yearRecords[idx].taskBlockId = null;
+                        yearRecords[idx].taskBlockName = null;
+                        yearRecords[idx].databaseBlockId = null;
+                        applyRoutineButtonMetaToRecord(yearRecords[idx], null);
                     } else {
                         const selIdx = Number(assocValue);
                         const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
                         if (!btn) return false;
                         const meta = getRoutineButtonRecordMeta(btn, selIdx);
-                        records[idx].taskBlockId = meta?.blockId || null;
-                        records[idx].taskBlockName = meta?.name || null;
-                        records[idx].databaseBlockId = null;
-                        applyRoutineButtonMetaToRecord(records[idx], meta);
+                        yearRecords[idx].taskBlockId = meta?.blockId || null;
+                        yearRecords[idx].taskBlockName = meta?.name || null;
+                        yearRecords[idx].databaseBlockId = null;
+                        applyRoutineButtonMetaToRecord(yearRecords[idx], meta);
                     }
-                    updatedRecords = records;
+                    committedRecord = { ...yearRecords[idx] };
                     return true;
-                });
+                }, { record });
                 if (success) {
                     markTimelineHistoryDirty();
-                    rebuildHistoryState(updatedRecords || []);
+                    if (committedRecord) Object.assign(record, committedRecord);
+                    rebuildHistoryState(records);
                     try { updatePageButtons(); } catch (e) {}
                 }
                 return success;
@@ -20585,23 +21674,21 @@ function calculateWeeklyStats(dailyStatsArray) {
                         const ms = newEndMs - newStartMs;
                         const newStart = new Date(newStartMs);
                         const newEnd = new Date(newEndMs);
-                        let updatedRecords = null;
                         let recordFound = false;
-                        const ok = await mutateHistoryRecords(records => {
-                            const idx = findRecordIndex(records, record);
+                        const ok = await mutateHistoryRecords(yearRecords => {
+                            const idx = findRecordIndex(yearRecords, record);
                             if (idx < 0) return false;
                             recordFound = true;
-                            records[idx].start = newStart.toISOString();
-                            records[idx].end = newEnd.toISOString();
-                            records[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
-                            records[idx].durationMin = Math.max(0, Math.round(ms / 60000));
-                            records[idx].timestamp = Math.round(newEndMs);
-                            records[idx].date = formatDateKey(newEnd);
-                            records[idx].dateTime = newEnd.toLocaleString('zh-CN');
-                            records[idx].timePeriod = getTimePeriod(newEnd.getHours());
-                            updatedRecords = records;
+                            yearRecords[idx].start = newStart.toISOString();
+                            yearRecords[idx].end = newEnd.toISOString();
+                            yearRecords[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
+                            yearRecords[idx].durationMin = Math.max(0, Math.round(ms / 60000));
+                            yearRecords[idx].timestamp = Math.round(newEndMs);
+                            yearRecords[idx].date = formatDateKey(newEnd);
+                            yearRecords[idx].dateTime = newEnd.toLocaleString('zh-CN');
+                            yearRecords[idx].timePeriod = getTimePeriod(newEnd.getHours());
                             return true;
-                        });
+                        }, { record });
                         if (!recordFound) {
                             showToast('未找到对应记录（可能已被刷新）', 2000);
                             return;
@@ -20641,7 +21728,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         startInput.value = toDateTimeLocalValue(record.start);
                         endInput.value = toDateTimeLocalValue(record.end);
                         updateMenuHeader();
-                        rebuildHistoryState(updatedRecords || []);
+                        rebuildHistoryState(records);
                         slices = getDaySlices(selectedDate);
                         try { renderEditorTimelineWithDrag(); } catch (e) {}
                         try { updatePageButtons(); } catch (e) {}
@@ -20680,15 +21767,15 @@ function calculateWeeklyStats(dailyStatsArray) {
                         assocSelect.disabled = true;
                         const value = assocSelect.value;
                         let recordFound = false;
-                        const ok = await mutateHistoryRecords(records => {
-                            const idx = findRecordIndex(records, record);
+                        const ok = await mutateHistoryRecords(yearRecords => {
+                            const idx = findRecordIndex(yearRecords, record);
                             if (idx < 0) return false;
                             recordFound = true;
                             if (value === '__clear__') {
-                                records[idx].taskBlockId = null;
-                                records[idx].taskBlockName = null;
-                                records[idx].databaseBlockId = null;
-                                applyRoutineButtonMetaToRecord(records[idx], null);
+                                yearRecords[idx].taskBlockId = null;
+                                yearRecords[idx].taskBlockName = null;
+                                yearRecords[idx].databaseBlockId = null;
+                                applyRoutineButtonMetaToRecord(yearRecords[idx], null);
                             } else {
                                 const selIdx = Number(value);
                                 const btn = Number.isFinite(selIdx) ? routineButtons?.[selIdx] : null;
@@ -20699,17 +21786,17 @@ function calculateWeeklyStats(dailyStatsArray) {
                                 const nextMode = useBreak
                                     ? (timerType === 'pomodoro' ? 'break' : 'stopwatch-break')
                                     : (timerType === 'pomodoro' ? 'countdown' : 'stopwatch');
-                                records[idx].taskBlockId = meta?.blockId || null;
-                                records[idx].taskBlockName = meta?.name || null;
-                                records[idx].databaseBlockId = null;
-                                applyRoutineButtonMetaToRecord(records[idx], meta);
-                                records[idx].mode = nextMode;
-                                records[idx].plannedDuration = (nextMode === 'countdown' || nextMode === 'break')
-                                    ? Math.max(1, Math.round(Number(records[idx].plannedDuration || records[idx].durationMin || 1)))
+                                yearRecords[idx].taskBlockId = meta?.blockId || null;
+                                yearRecords[idx].taskBlockName = meta?.name || null;
+                                yearRecords[idx].databaseBlockId = null;
+                                applyRoutineButtonMetaToRecord(yearRecords[idx], meta);
+                                yearRecords[idx].mode = nextMode;
+                                yearRecords[idx].plannedDuration = (nextMode === 'countdown' || nextMode === 'break')
+                                    ? Math.max(1, Math.round(Number(yearRecords[idx].plannedDuration || yearRecords[idx].durationMin || 1)))
                                     : null;
                             }
                             return true;
-                        });
+                        }, { record });
                         if (!recordFound) {
                             showToast('未找到对应记录（可能已被刷新）', 2000);
                             return;
@@ -21328,7 +22415,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                     if (writeIndex === records.length) return false;
                     records.length = writeIndex;
                     return true;
-                });
+                }, { date });
                 
                 if (success) {
                     // 🔧 v9.0 修复：使用自定义提示替代 alert
@@ -25387,8 +26474,10 @@ window.__setTomatoFloatState = function (payload) {
             // 计算今日已完成专注时间（分钟）- 复用统计图表的逻辑
             const getTodayCompletedMinutes = async () => {
                 try {
-                    const records = await loadHistoryRecords();
-                    const today = formatDateKey(new Date());
+                    const now = new Date();
+                    const today = formatDateKey(now);
+                    const startMs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+                    const records = await loadHistoryRangeRecords(startMs, startMs + 86400000);
                     const todayRecords = (Array.isArray(records) ? records : []).filter(r => {
                         const recordDate = r.date || getRecordDateKeyByEnd(r) || formatDateKey(r.start);
                         return recordDate === today;
@@ -32459,15 +33548,15 @@ window.__setTomatoFloatState = function (payload) {
             currentDuration = loadedDefaultTime;
             remainingSeconds = loadedDefaultTime * 60;
             Logger.info('🍅 默认番茄时间已设置为:', loadedDefaultTime, '分钟');
-            
+
             await loadFocusTimeSettings();
-            let records = [];
+            let historySummary = { recordCount: 0, maxEndMs: 0 };
             try {
-                records = await loadHistoryRecords();
+                historySummary = await getHistoryStoreSummary();
             } catch (e) {
                 Logger.warn('🍅 历史记录暂时不可用，计时器继续初始化:', e);
             }
-            Logger.info('🍅 历史记录条数:', records.length);
+            Logger.info('🍅 历史记录条数:', historySummary.recordCount);
             window.showPage = showPage;
             
             // ========== 多端同步：初始化同步管理器 ==========
@@ -33289,6 +34378,12 @@ window.__setTomatoFloatState = function (payload) {
 
     const cleanupTomato = () => {
         __tomatoDestroyed = true;
+        try { invalidateHistoryStoreCache(); } catch (e) {}
+        try {
+            historyState.allRecords = [];
+            historyState.filteredRecords = [];
+            historyState.dateList = [];
+        } catch (e) {}
         try { uninstallAppResumeListeners(); } catch (e) {}
         try { uninstallReminderSyncEndScheduleReconcile(); } catch (e) {}
         try { uninstallReminderTaskAttrSync(); } catch (e) {}
@@ -38090,6 +39185,7 @@ window.__setTomatoFloatState = function (payload) {
             try { await __syncReminderDeviceSchedule(reminder.blockId || id, reminder, { silent: true }); } catch (e) {}
         }
         try { scheduleWechatReminderReconcile(String(options?.reason || 'task-context-changed')); } catch (e) {}
+        try { __invalidateReminderDockCache(); } catch (e) {}
         try { refreshReminderDockPanel(options?.forceRefresh === true); } catch (e) {}
         try { updateReminderBadge(); } catch (e) {}
         return {
@@ -38755,7 +39851,11 @@ window.__setTomatoFloatState = function (payload) {
                 }
 
                 const reminders = [];
-                const seenReminderIds = new Set();
+                const seenReminderRows = new Set();
+                const directReminderIds = new Set(blocks
+                    .filter(block => String(block?.type || '').trim().toLowerCase() !== 'l')
+                    .map(block => String(block?.id || '').trim())
+                    .filter(Boolean));
                 for (const block of blocks) {
                     try {
                         if (String(block?.type || '').trim().toLowerCase() === 'l') {
@@ -38783,8 +39883,10 @@ window.__setTomatoFloatState = function (payload) {
                                     }
                                     if (__isCompletedReminderTaskBlockRow(taskRows[0])) continue;
                                 }
-                                if (!canonicalId || seenReminderIds.has(canonicalId)) continue;
-                                seenReminderIds.add(canonicalId);
+                                if (!canonicalId || directReminderIds.has(canonicalId)) continue;
+                                const legacyRowKey = `legacy:${String(block?.id || '').trim()}`;
+                                if (!legacyRowKey || seenReminderRows.has(legacyRowKey)) continue;
+                                seenReminderRows.add(legacyRowKey);
                                 reminders.push(reminder);
                                 continue;
                             }
@@ -38803,8 +39905,9 @@ window.__setTomatoFloatState = function (payload) {
                             taskRepeatState: block.task_repeat_state,
                         });
                         const reminderId = String(reminder?.blockId || block.id || '').trim();
-                        if (!reminderId || seenReminderIds.has(reminderId)) continue;
-                        seenReminderIds.add(reminderId);
+                        const directRowKey = `direct:${String(block?.id || reminderId).trim()}`;
+                        if (!reminderId || seenReminderRows.has(directRowKey)) continue;
+                        seenReminderRows.add(directRowKey);
                         reminders.push(reminder);
                     } catch (e) {
                         Logger.warn('解析提醒数据失败:', e);
@@ -40214,6 +41317,22 @@ window.__setTomatoFloatState = function (payload) {
         }
         return st;
     };
+
+    const __assignReminderDockUnfinishedRenderKeys = (entries) => {
+        const source = Array.isArray(entries) ? entries : [];
+        const keyCounts = new Map();
+        for (const entry of source) {
+            const reminder = entry?.reminder || {};
+            const at = entry?.at;
+            const dateKey = formatDateKey(at);
+            const timeKey = String(at?.getHours?.() ?? '').padStart(2, '0') + ':' + String(at?.getMinutes?.() ?? '').padStart(2, '0');
+            const baseKey = `u|${String(entry?.kind || '')}|${String(reminder.blockId || '')}|${dateKey}|${timeKey}`;
+            const occurrenceIndex = keyCounts.get(baseKey) || 0;
+            keyCounts.set(baseKey, occurrenceIndex + 1);
+            entry.__dockRenderKey = `${baseKey}|${occurrenceIndex}`;
+        }
+        return source.map(entry => entry.__dockRenderKey);
+    };
     
     // 尝试通过 eventBus 监听布局事件来注册 Dock
     function tryRegisterDockViaEventBus() {
@@ -40854,13 +41973,7 @@ window.__setTomatoFloatState = function (payload) {
         }
 
         showList();
-        const keys = entries.map(entry => {
-            const reminder = entry.reminder || {};
-            const at = entry.at;
-            const dateKey = formatDateKey(at);
-            const timeKey = String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0');
-            return `u|${entry.kind}|${String(reminder.blockId || '')}|${dateKey}|${timeKey}`;
-        });
+        const keys = __assignReminderDockUnfinishedRenderKeys(entries);
         const byKey = state.nodeByKey;
         const keySet = new Set(keys);
 
@@ -40923,10 +42036,7 @@ window.__setTomatoFloatState = function (payload) {
             const inner = document.createElement('div');
             inner.className = 'tomato-reminder-group-inner';
             for (const entry of groupEntries) {
-                const at = entry.at;
-                const dateKey = formatDateKey(at);
-                const timeKey = String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0');
-                const key = `u|${entry.kind}|${String(entry.reminder?.blockId || '')}|${dateKey}|${timeKey}`;
+                const key = entry.__dockRenderKey;
                 let node = byKey.get(key);
                 if (!node) {
                     node = createUnfinishedItem();
