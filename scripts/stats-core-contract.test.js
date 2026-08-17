@@ -1,3 +1,6 @@
+// The fixtures use explicit +08:00 boundaries and local-time buckets.
+process.env.TZ = 'Asia/Shanghai';
+
 const assert = require('node:assert/strict');
 const stats = require('../kernel.js');
 
