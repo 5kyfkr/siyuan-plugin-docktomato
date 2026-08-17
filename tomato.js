@@ -14328,14 +14328,22 @@
         return `${mins}:${secs}`;
     }
 
+    // 历史统计数据可能来自秒数换算，展示时统一使用整数，避免浮点误差污染界面。
+    function formatHistoryStatNumber(value) {
+        const number = Number(value);
+        return Number.isFinite(number) ? String(Math.round(number)) : '0';
+    }
+
     function formatFocusTime(minutes) {
-        if (minutes < 60) return `${minutes}分钟`;
-        return `${(minutes / 60).toFixed(1)}小时`;
+        const roundedMinutes = Math.max(0, Math.round(Number(minutes) || 0));
+        if (roundedMinutes < 60) return `${roundedMinutes}分钟`;
+        return `${Math.round(roundedMinutes / 60)}小时`;
     }
 
     function formatFocusTimeForTable(minutes) {
-        if (minutes < 60) return `${minutes}分`;
-        return `${(minutes / 60).toFixed(1)}小时`;
+        const roundedMinutes = Math.max(0, Math.round(Number(minutes) || 0));
+        if (roundedMinutes < 60) return `${roundedMinutes}分`;
+        return `${Math.round(roundedMinutes / 60)}小时`;
     }
 
     function formatDate(date) {
@@ -17820,7 +17828,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             for (let i = 4; i >= 0; i--) {
                 const value = Math.round(scaleMaxValue * i / 4);
                 const label = document.createElement('div');
-                label.textContent = value > 60 ? `${(value / 60).toFixed(1)}h` : `${value}m`;
+                label.textContent = value > 60 ? `${formatHistoryStatNumber(value / 60)}h` : `${formatHistoryStatNumber(value)}m`;
                 label.style.cssText = `text-align: right;`;
                 yAxis.appendChild(label);
             }
@@ -19865,11 +19873,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                     <div style="display: grid; grid-template-columns: 80px repeat(9, 1fr); gap: 5px; padding: 8px; background: ${bgColor}; border-bottom: 1px solid var(--b3-theme-surface-light); min-width: 880px;">
                         <div style="text-align: left; font-weight: bold;">${formatMonth(month.monthStart)}</div>
                         <div style="text-align: center;">${month.tomatoCount}</div>
-                        <div style="text-align: center; color: ${actualColor};">${month.tomatoActual}分</div>
-                        <div style="text-align: center;">${month.tomatoPlanned}分</div>
+                        <div style="text-align: center; color: ${actualColor};">${formatHistoryStatNumber(month.tomatoActual)}分</div>
+                        <div style="text-align: center;">${formatHistoryStatNumber(month.tomatoPlanned)}分</div>
                         <div style="text-align: center;">${month.stopwatchCount}</div>
-                        <div style="text-align: center;">${month.stopwatchActual}分</div>
-                        <div style="text-align: center;">${month.breakActual}分</div>
+                        <div style="text-align: center;">${formatHistoryStatNumber(month.stopwatchActual)}分</div>
+                        <div style="text-align: center;">${formatHistoryStatNumber(month.breakActual)}分</div>
                         <div style="text-align: center; color: ${focusColor}; font-weight: bold;">${formatFocusTimeForTable(month.focusTime)}</div>
                         <div style="text-align: center;">${month.distractionCount || 0}</div>
                         <div style="text-align: center; color: ${actualColor}; font-weight: bold;">${completionRate}%</div>
@@ -20066,11 +20074,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                         <div style="display: grid; grid-template-columns: 120px repeat(9, 1fr); gap: 5px; padding: 8px; background: ${bgColor}; border-bottom: 1px solid var(--b3-theme-surface-light); min-width: 880px;">
                             <div style="text-align: left; font-weight: bold;">${week.displayDate || formatWeek(week.weekStart, week.weekEnd)}</div>
                             <div style="text-align: center;">${week.tomatoCount}</div>
-                            <div style="text-align: center; color: ${actualColor};">${week.tomatoActual}分</div>
-                            <div style="text-align: center;">${week.tomatoPlanned}分</div>
+                            <div style="text-align: center; color: ${actualColor};">${formatHistoryStatNumber(week.tomatoActual)}分</div>
+                            <div style="text-align: center;">${formatHistoryStatNumber(week.tomatoPlanned)}分</div>
                             <div style="text-align: center;">${week.stopwatchCount}</div>
-                            <div style="text-align: center;">${week.stopwatchActual}分</div>
-                            <div style="text-align: center;">${week.breakActual}分</div>
+                            <div style="text-align: center;">${formatHistoryStatNumber(week.stopwatchActual)}分</div>
+                            <div style="text-align: center;">${formatHistoryStatNumber(week.breakActual)}分</div>
                             <div style="text-align: center; color: ${focusColor}; font-weight: bold;">${formatFocusTimeForTable(week.focusTime)}</div>
                             <div style="text-align: center;">${week.distractionCount || 0}</div>
                             <div style="text-align: center; color: ${actualColor}; font-weight: bold;">${completionRate}%</div>
@@ -20290,11 +20298,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                                   }">
                         <div style="text-align: left; font-weight: bold;">${day.date}</div>
                         <div style="text-align: center;">${day.tomatoCount}</div>
-                        <div style="text-align: center; color: ${actualColor};">${day.tomatoActual}分</div>
-                        <div style="text-align: center;">${day.tomatoPlanned}分</div>
+                        <div style="text-align: center; color: ${actualColor};">${formatHistoryStatNumber(day.tomatoActual)}分</div>
+                        <div style="text-align: center;">${formatHistoryStatNumber(day.tomatoPlanned)}分</div>
                         <div style="text-align: center;">${day.stopwatchCount}</div>
-                        <div style="text-align: center;">${day.stopwatchActual}分</div>
-                        <div style="text-align: center;">${day.breakActual}分</div>
+                        <div style="text-align: center;">${formatHistoryStatNumber(day.stopwatchActual)}分</div>
+                        <div style="text-align: center;">${formatHistoryStatNumber(day.breakActual)}分</div>
                         <div style="text-align: center; color: ${focusColor}; font-weight: bold;">${formatFocusTimeForTable(day.focusTime)}</div>
                         <div style="text-align: center;">${day.distractionCount || 0}</div>
                         <div style="text-align: center; color: ${actualColor}; font-weight: bold;">${completionRate}%</div>
@@ -22536,7 +22544,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             statsHTML += `
                 <div style="margin: 6px 0;">
                     🍅 ${dailyTomatoCount} 个番茄<br>
-                    实际: ${dailyTomatoActual}分钟 | 计划: ${dailyTomatoPlanned}分钟<br>
+                    实际: ${formatHistoryStatNumber(dailyTomatoActual)}分钟 | 计划: ${formatHistoryStatNumber(dailyTomatoPlanned)}分钟<br>
                     完成度: <span style="color:${rateColor}; font-weight:bold">${completionRate}%</span>
                 </div>
             `;
@@ -22546,7 +22554,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             statsHTML += `
                 <div style="margin-top: 6px;">
                     ⏱️ ${dailyStopwatchCount} 次正计时<br>
-                    总时长: ${dailyStopwatchActual}分钟
+                    总时长: ${formatHistoryStatNumber(dailyStopwatchActual)}分钟
                 </div>
             `;
         }
@@ -22555,7 +22563,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             statsHTML += `
                 <div style="margin-top: 6px;">
                     ☕ ${dailyBreakCount} 次休息<br>
-                    总时长: ${dailyBreakActual}分钟
+                    总时长: ${formatHistoryStatNumber(dailyBreakActual)}分钟
                 </div>
             `;
         }
@@ -22675,7 +22683,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const totalDuration = todaySameTaskRecords.reduce((sum, r) => sum + (r.durationMin || 0), 0);
                 const totalCount = todaySameTaskRecords.length;
                 mergedDurationText = `<div style="font-size: 11px; margin-top: 2px; color: var(--b3-theme-primary);">
-                    📊 本日合计: ${totalDuration}分钟 (${totalCount}次)
+                    📊 本日合计: ${formatHistoryStatNumber(totalDuration)}分钟 (${totalCount}次)
                 </div>`;
             }
         }
@@ -26494,8 +26502,8 @@ window.__setTomatoFloatState = function (payload) {
             const updateTooltipContent = async (tooltip) => {
                 const completedMinutes = await getTodayCompletedMinutes();
                 const targetMinutes = userSettings.dailyFocusTargetMinutes || 180;
-                const completedHours = (completedMinutes / 60).toFixed(1);
-                const targetHours = (targetMinutes / 60).toFixed(1);
+                const completedHours = formatHistoryStatNumber(completedMinutes / 60);
+                const targetHours = formatHistoryStatNumber(targetMinutes / 60);
                 tooltip.innerHTML = `已专注${completedHours}小时/目标${targetHours}小时`;
             };
 
