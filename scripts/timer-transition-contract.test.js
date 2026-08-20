@@ -21,7 +21,7 @@ assert.match(transitionBlock, /return recordEndTime\(false, isStopwatchMode\)/, 
 const switchStart = source.indexOf('    async function switchToCountdownAndStart(');
 const switchEnd = source.indexOf('    async function startBreakMode(', switchStart);
 const switchBlock = source.slice(switchStart, switchEnd);
-assert.match(switchBlock, /const pendingRecordSave = finalizeCurrentSegmentBeforeTransition\(\);[\s\S]*await requireTimerPersistence\(pendingRecordSave,[\s\S]*await startTimer\(\)/, 'mode switches must finish the shared record journal before starting the next canonical timer');
+assert.match(switchBlock, /const pendingRecordSave = finalizeCurrentSegmentBeforeTransition\(\);[\s\S]*await requireTimerPersistence\(pendingRecordSave,[\s\S]*await startTimer\([^)]*\)/, 'mode switches must finish the shared record journal before starting the next canonical timer');
 
 const stopStart = source.indexOf('    async function stopTimer(');
 const stopEnd = source.indexOf('    let currentStartTimestamp', stopStart);
@@ -34,14 +34,14 @@ const resetStart = source.indexOf('    async function resetCurrentMode(');
 const resetEnd = source.indexOf('    async function completeCurrentTomato(', resetStart);
 const resetBlock = source.slice(resetStart, resetEnd);
 assert.match(resetBlock, /const isStopwatchBreak = timerMode === 'stopwatch-break';/, 'reset must identify stopwatch breaks');
-assert.match(resetBlock, /recordEndTime\(true, isStopwatchBreak\)/, 'reset must persist stopwatch breaks with stopwatch timestamps');
+assert.match(resetBlock, /recordEndTime\(true, isStopwatchBreak(?:, \{ confirm \})?\)/, 'reset must persist stopwatch breaks with stopwatch timestamps');
 assert.match(resetBlock, /cancelTrackedTimerNotification\('finish-break', false\)[\s\S]*finishBreakFromContinuation\(\)/, 'finishing a break must cancel its notification before restoring focus');
-assert.ok(resetBlock.lastIndexOf('await requireTimerPersistence(pendingRecordSave') < resetBlock.indexOf("commitTimerState(syncState, 'reset')"), 'reset must close its record journal before committing IDLE');
+assert.ok(resetBlock.lastIndexOf('await requireTimerPersistence(pendingRecordSave') < resetBlock.indexOf("commitTimerState(syncState, 'reset'"), 'reset must close its record journal before committing IDLE');
 
 const completeStart = source.indexOf('    async function completeCurrentTomato(');
 const completeEnd = source.indexOf('    function isCurrentTaskAssociation(', completeStart);
 const completeBlock = source.slice(completeStart, completeEnd);
-assert.ok(completeBlock.indexOf('await requireTimerPersistence(pendingRecordSave') < completeBlock.indexOf("commitTimerState(syncState, 'complete')"), 'completion must close its record journal before committing IDLE');
+assert.ok(completeBlock.indexOf('await requireTimerPersistence(pendingRecordSave') < completeBlock.indexOf("commitTimerState(syncState, 'complete'"), 'completion must close its record journal before committing IDLE');
 
 const contextMenuStart = source.indexOf('    async function showContextMenu(');
 const contextMenuEnd = source.indexOf('\n \tfunction getWeekStartDate(', contextMenuStart);

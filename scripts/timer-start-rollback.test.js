@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'tomato.js'), 'utf8');
-const start = source.indexOf('    async function startTimer()');
+const start = source.indexOf('    async function startTimer(');
 const end = source.indexOf('    async function pauseTimer()', start);
 assert.ok(start >= 0 && end > start, 'startTimer must remain extractable');
 const block = source.slice(start, end);

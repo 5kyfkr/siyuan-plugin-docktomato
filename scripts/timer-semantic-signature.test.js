@@ -70,7 +70,7 @@ assert.notEqual(
     'schema upgrades must be visible to semantic signature',
 );
 
-const updateStart = source.indexOf('        async updateLocal(newState, forcePush = true, forceSync = false)');
+const updateStart = source.indexOf('        async updateLocal(');
 const updateEnd = source.indexOf('        checkStateChanged(currentState, newState)', updateStart);
 assert.ok(updateStart >= 0 && updateEnd > updateStart, 'updateLocal must remain extractable');
 const updateBlock = source.slice(updateStart, updateEnd);

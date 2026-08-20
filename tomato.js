@@ -912,12 +912,13 @@
             return null;
         },
         
-        async saveToCloud(state = null, forceSync = false) {
+        async saveToCloud(state = null, forceSync = false, options = {}) {
             const targetState = cloneSyncState(state || this.localState);
             if (!targetState) {
                 Logger.warn('🔄 SyncManager: 保存失败，状态为空');
                 return false;
             }
+            const confirm = options?.confirm !== false;
 
             try {
                 Logger.info('🔄 SyncManager: 保存状态到云端，sequenceId:', targetState.sequenceId, ', status:', targetState.status, ', forceSync:', forceSync);
@@ -932,6 +933,7 @@
                 if (result.code === 0) {
                     Logger.info('🔄 SyncManager: 状态已保存到云端');
                     this.scheduleSiyuanSync(forceSync);
+                    if (!confirm) return true;
                     // The put endpoint acknowledges acceptance, not necessarily
                     // visibility to the next reader. Confirm the exact semantic
                     // state and transport version before reporting a commit. The
@@ -1050,10 +1052,11 @@
                 nextState,
                 opts.forcePush !== false,
                 opts.forceSync === true,
+                { confirm: opts.confirm !== false },
             );
         },
 
-        async updateLocal(newState, forcePush = true, forceSync = false) {
+        async updateLocal(newState, forcePush = true, forceSync = false, options = {}) {
             const wasUninitialized = !this.localState || typeof this.localState !== 'object';
             if (wasUninitialized) {
                 this.localState = typeof prepareCanonicalStateForSync === 'function'
@@ -1099,7 +1102,7 @@
             Logger.debug('🔄 SyncManager: 本地状态更新，sequenceId:', this.localState.sequenceId);
 
             if (forcePush && isSyncEnabled()) {
-                const saved = await this.saveToCloud(null, forceSync);
+                const saved = await this.saveToCloud(null, forceSync, options);
                 if (!saved) {
                     this.localState = previousState;
                     this.lastUpdateChanged = false;
@@ -10500,6 +10503,9 @@
     let activeRoutineButtonIndex = null;
     let activeRoutineButtonBlockId = null;
     let lastRoutineButtonHighlightKey = null;
+    let routineButtonTransitionTail = Promise.resolve();
+    let routineButtonTransitionToken = 0;
+    let routineButtonTransitionPending = false;
 
     const __routineIconObjectUrlCache = new Map();
 
@@ -10603,6 +10609,7 @@
         const isActive = state?.status === 'RUNNING' || state?.status === 'PAUSED';
         const buttons = Array.isArray(userSettings?.routineButtons) ? userSettings.routineButtons : [];
         if (!isActive || buttons.length === 0) {
+            if (typeof routineButtonTransitionPending !== 'undefined' && routineButtonTransitionPending && buttons.length > 0) return;
             activeRoutineButtonIndex = null;
             activeRoutineButtonBlockId = null;
             routineButtonHighlightColor = null;
@@ -10647,7 +10654,7 @@
             el.classList.remove('tomato-routine-running');
         });
 
-        if (!running) return;
+        if (!running && !routineButtonTransitionPending) return;
 
         let targetIndex = activeRoutineButtonIndex;
         let blockIdToMatch = activeId || taskId;
@@ -10675,7 +10682,7 @@
                 el.classList.remove('tomato-routine-running');
             });
         }
-        if (resetActive) {
+        if (resetActive && !routineButtonTransitionPending) {
             activeRoutineButtonIndex = null;
             activeRoutineButtonBlockId = null;
         }
@@ -12729,67 +12736,104 @@
 
                 const blockId = String(config?.blockId || '').trim() || null;
                 let taskName = String(config?.name || '').trim();
-                if ((!taskName || taskName === '未命名任务') && blockId) {
-                    taskName = await getBlockContent(blockId);
-                }
-                if (!taskName || taskName === '未命名任务') {
+                const taskNameNeedsResolve = (!taskName || taskName === '未命名任务') && !!blockId;
+                const taskNamePromise = taskNameNeedsResolve
+                    ? Promise.resolve().then(() => getBlockContent(blockId)).catch(() => '')
+                    : Promise.resolve(taskName);
+                if (!taskName && !blockId) {
                     showToast('请先设置按钮名称', 2000);
-                    return;
-                }
-                setFocusRestoreSource(null);
-
-                try {
-                    if (timerMode === 'countdown' && (isRunning || isTimerPaused)) {
-                        await completeCurrentTomato();
-                    } else if (isRunning || isTimerPaused) {
-                        await resetCurrentMode();
-                    }
-                } catch (error) {
-                    Logger.error('routineToolbarClickHandler: timer finalization failed', error);
-                    showMiniToast('计时记录保存失败，请重试');
                     return;
                 }
 
                 // 使用按钮自己的颜色应用到时间轴高亮
                 routineButtonHighlightColor = config?.color || null;
-
-                clearTaskBlockHighlight();
-                stopHighlightKeepAlive();
-                await setTaskAssociation(blockId, taskName, null);
                 activeRoutineButtonIndex = String(index ?? '');
                 activeRoutineButtonBlockId = blockId;
+                routineButtonTransitionPending = true;
                 updateRoutineButtonRunningHighlight(true);
 
-                if (config.useBreakMode === true) {
-                    if (config.timerType === 'pomodoro') {
-                        const duration = config.tomatoDuration || 5;
-                        await startBreakMode(duration);
-                        if (blockId && hasRestorableFocusSource()) {
-                            highlightTaskBlock(blockId);
-                            setTimeout(() => { highlightTaskBlock(blockId); }, 100);
-                            startHighlightKeepAlive();
+                const transitionToken = ++routineButtonTransitionToken;
+                showMiniToast(`正在切换: ${taskName || '任务'}`);
+                const runRoutineTransition = async () => {
+                    try {
+                        const resolvedTaskName = String(await taskNamePromise || taskName || '').trim();
+                        if (!resolvedTaskName || resolvedTaskName === '未命名任务') {
+                            if (transitionToken === routineButtonTransitionToken) {
+                                routineButtonTransitionPending = false;
+                                clearRoutineButtonRunningHighlight(true);
+                                showToast('请先设置按钮名称', 2000);
+                            }
+                            return;
                         }
-                        showToast(`开始休息倒计时: ${taskName} (${duration}分钟)`, 2000);
-                    } else {
-                        await startStopwatchBreakMode();
-                        if (blockId && hasRestorableFocusSource()) {
-                            highlightTaskBlock(blockId);
-                            setTimeout(() => { highlightTaskBlock(blockId); }, 100);
-                            startHighlightKeepAlive();
+
+                        setFocusRestoreSource(null);
+                        if (timerMode === 'countdown' && (isRunning || isTimerPaused)) {
+                            await completeCurrentTomato({ confirm: false });
+                        } else if (isRunning || isTimerPaused) {
+                            await resetCurrentMode({ confirm: false });
                         }
-                        showToast(`开始休息正计时: ${taskName}`, 2000);
+
+                        // A newer click owns the next transition. The current
+                        // segment has already been finalized, so let the newer
+                        // queued operation start its selected routine instead.
+                        if (transitionToken !== routineButtonTransitionToken) return;
+
+                        routineButtonHighlightColor = config?.color || null;
+                        activeRoutineButtonIndex = String(index ?? '');
+                        activeRoutineButtonBlockId = blockId;
+                        routineButtonTransitionPending = true;
+                        updateRoutineButtonRunningHighlight(true);
+                        clearTaskBlockHighlight();
+                        stopHighlightKeepAlive();
+                        await setTaskAssociation(blockId, resolvedTaskName, null, {
+                            persist: false,
+                            resolveContext: false,
+                        });
+
+                        if (config.useBreakMode === true) {
+                            if (config.timerType === 'pomodoro') {
+                                const duration = config.tomatoDuration || 5;
+                                await startBreakMode(duration, { confirm: false });
+                                if (blockId && hasRestorableFocusSource()) {
+                                    highlightTaskBlock(blockId);
+                                    setTimeout(() => { highlightTaskBlock(blockId); }, 100);
+                                    startHighlightKeepAlive();
+                                }
+                                showToast(`开始休息倒计时: ${resolvedTaskName} (${duration}分钟)`, 2000);
+                            } else {
+                                await startStopwatchBreakMode({ confirm: false });
+                                if (blockId && hasRestorableFocusSource()) {
+                                    highlightTaskBlock(blockId);
+                                    setTimeout(() => { highlightTaskBlock(blockId); }, 100);
+                                    startHighlightKeepAlive();
+                                }
+                                showToast(`开始休息正计时: ${resolvedTaskName}`, 2000);
+                            }
+                        } else if (config.timerType === 'pomodoro') {
+                            const duration = config.tomatoDuration || 30;
+                            if (blockId) await switchToCountdownAndStartWithTask(duration, blockId, resolvedTaskName, { associationAlreadySet: true, confirm: false });
+                            else await switchToCountdownAndStart(duration, { confirm: false });
+                            showToast(`开始番茄计时: ${resolvedTaskName} (${duration}分钟)`, 2000);
+                        } else {
+                            if (blockId) await switchToStopwatchAndStartWithTask(blockId, resolvedTaskName, { associationAlreadySet: true, confirm: false });
+                            else await switchToStopwatchAndStart({ confirm: false });
+                            showToast(`开始专注正计时: ${resolvedTaskName}`, 2000);
+                        }
+                        if (transitionToken === routineButtonTransitionToken) {
+                            routineButtonTransitionPending = false;
+                            updateRoutineButtonRunningHighlight(true);
+                        }
+                    } catch (error) {
+                        Logger.error('routineToolbarClickHandler: timer transition failed', error);
+                        if (transitionToken === routineButtonTransitionToken) {
+                            routineButtonTransitionPending = false;
+                            clearRoutineButtonRunningHighlight(true);
+                            showMiniToast('计时切换失败，请重试');
+                        }
                     }
-                } else if (config.timerType === 'pomodoro') {
-                    const duration = config.tomatoDuration || 30;
-                    if (blockId) await switchToCountdownAndStartWithTask(duration, blockId, taskName);
-                    else await switchToCountdownAndStart(duration);
-                    showToast(`开始番茄计时: ${taskName} (${duration}分钟)`, 2000);
-                } else {
-                    if (blockId) await switchToStopwatchAndStartWithTask(blockId, taskName);
-                    else await switchToStopwatchAndStart();
-                    showToast(`开始专注正计时: ${taskName}`, 2000);
-                }
-                updateRoutineButtonRunningHighlight(true);
+                };
+                const queuedTransition = routineButtonTransitionTail.then(runRoutineTransition, runRoutineTransition);
+                routineButtonTransitionTail = queuedTransition.catch(() => {});
                 return;
             }
             
@@ -16149,9 +16193,10 @@
         }
     }
 
-    async function startTimer() {
+    async function startTimer(options = {}) {
         if (isRunning) return;
         const wasPausedAtStart = !!isTimerPaused || syncState?.status === 'PAUSED';
+        const confirmSync = options?.confirm !== false;
 
         try {
             taskAssociationCleared = false;
@@ -16399,7 +16444,10 @@
                 });
                 try {
                     // 第三个参数 true 表示 forceSync，确保开始状态能立即同步到其他设备
-                    const transition = await TransitionExecutor.execute({ transitionId: createTomatoUuid('start') }, () => syncState);
+                    const transition = await TransitionExecutor.execute({
+                        transitionId: createTomatoUuid('start'),
+                        confirm: confirmSync,
+                    }, () => syncState);
                     if (transition?.state) syncState = transition.state;
                     if (!transition?.ok) throw new Error(transition?.blocked ? 'START_TRANSITION_BLOCKED' : 'START_TRANSITION_FAILED');
                 } catch (e) {
@@ -16798,6 +16846,7 @@
         const isCompleted = options?.isCompleted === true;
         const plannedDurationOverride = options?.plannedDurationOverride ?? null;
         const skipSyncUpdate = options?.skipSyncUpdate === true;
+        const confirmSync = options?.confirm !== false;
         const requestedEndTimeMs = Number(options?.endTimeMs);
         const explicitEndTimeMs = Number.isFinite(requestedEndTimeMs) && requestedEndTimeMs > 0
             ? requestedEndTimeMs
@@ -17206,6 +17255,7 @@
                     historyDrafts: transitionDrafts.historyDrafts,
                     accountingDrafts: queuedAccountingDrafts,
                     allowEffectOnly: isLegacyTimerState,
+                    confirm: confirmSync,
                 },
                 latest => buildCanonicalDraft(latest),
             );
@@ -17310,10 +17360,14 @@
         return rawName;
     }
 
-    async function setTaskAssociation(taskBlockId, taskBlockName, databaseBlockId) {
+    async function setTaskAssociation(taskBlockId, taskBlockName, databaseBlockId, options = {}) {
+        const persist = options?.persist !== false;
+        const resolveContext = options?.resolveContext !== false;
+        const confirm = options?.confirm !== false;
         const prevTaskBlockId = currentTaskBlockId;
         const prevTaskBlockName = currentTaskBlockName;
         const prevDatabaseBlockId = currentDatabaseBlockId;
+        const previousAssociation = syncState?.integrationEnvelope?.taskAssociation;
         localAssociationChangedAtMs = Date.now();
         const resolvedTaskBlockId = String(taskBlockId || '').trim() || null;
         const fallbackTaskBlockName = __sanitizeTaskAssociationName(taskBlockName) || String(taskBlockName || '').trim() || null;
@@ -17329,7 +17383,13 @@
         let v2Association = null;
         if (resolvedTaskBlockId || currentDatabaseBlockId) {
             let attrHostId = resolvedTaskBlockId || currentDatabaseBlockId;
-            try { attrHostId = (await resolveTomatoAttrContext(resolvedTaskBlockId || currentDatabaseBlockId))?.attrHostId || attrHostId; } catch (e) {}
+            if (resolveContext) {
+                try { attrHostId = (await resolveTomatoAttrContext(resolvedTaskBlockId || currentDatabaseBlockId))?.attrHostId || attrHostId; } catch (e) {}
+            }
+            const sameAssociation = previousAssociation
+                && String(previousAssociation.taskBlockId || '') === String(resolvedTaskBlockId || '')
+                && String(previousAssociation.taskBlockName || '') === String(currentTaskBlockName || '')
+                && String(previousAssociation.databaseBlockId || '') === String(currentDatabaseBlockId || '');
             v2Association = buildTaskAssociationSnapshot({
                 taskBlockId: resolvedTaskBlockId,
                 taskBlockName: currentTaskBlockName,
@@ -17337,6 +17397,7 @@
                 attrHostId,
                 source: focusRestoreSource || 'manual',
                 sourceKind: focusRestoreSource || 'manual',
+                associationVersion: sameAssociation ? previousAssociation.associationVersion : null,
             });
         }
         
@@ -17374,7 +17435,7 @@
             }
         }
 
-        if (isTaskAssociationSyncEnabled() && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
+        if (persist && isTaskAssociationSyncEnabled() && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             try {
                 await commitTimerState({
                     ...syncState,
@@ -17385,7 +17446,7 @@
                         ...(syncState.integrationEnvelope || {}),
                         taskAssociation: v2Association,
                     },
-                }, 'association');
+                }, 'association', { confirm });
             } catch (e) {}
         }
 
@@ -17470,7 +17531,8 @@
         return recordEndTime(false, isStopwatchMode);
     }
 
-    async function switchToCountdownAndStart(duration) {
+    async function switchToCountdownAndStart(duration, options = {}) {
+        const confirm = options?.confirm !== false;
         setFocusRestoreSource(resolveCurrentAssociationFocusSource());
         // 🔧 修复：切换到番茄钟模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
@@ -17494,7 +17556,7 @@
         lastTickTime = 0;
         updateDisplay();
         try {
-            await startTimer();
+            await startTimer({ confirm });
         } catch (e) {
             Logger.error('startTimer失败:', e);
             showMiniToast('启动计时失败');
@@ -17504,6 +17566,8 @@
 
     // 带任务块关联的番茄钟切换
     async function switchToCountdownAndStartWithTask(duration, taskBlockId, taskBlockName, options = null) {
+        const associationAlreadySet = options?.associationAlreadySet === true;
+        const confirm = options?.confirm !== false;
         setFocusRestoreSource(options);
         // 🔧 修复：切换到番茄钟模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
@@ -17527,11 +17591,13 @@
         lastTomatoConfig = { duration, mode: 'countdown' };
         lastTickTime = 0;
 
-        await setTaskAssociation(taskBlockId, taskBlockName, currentDatabaseBlockId);
+        if (!associationAlreadySet) {
+            await setTaskAssociation(taskBlockId, taskBlockName, currentDatabaseBlockId, { confirm });
+        }
 
         updateDisplay();
         try {
-            await startTimer();
+            await startTimer({ confirm });
         } catch (e) {
             Logger.error('startTimer失败:', e);
             showMiniToast('启动计时失败');
@@ -17553,7 +17619,8 @@
         }
     }
 
-    async function switchToStopwatchAndStart() {
+    async function switchToStopwatchAndStart(options = {}) {
+        const confirm = options?.confirm !== false;
         setFocusRestoreSource(resolveCurrentAssociationFocusSource());
         // 🔧 修复：切换到正计时模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
@@ -17586,7 +17653,7 @@
         
         updateDisplay();
         try {
-            await startTimer();
+            await startTimer({ confirm });
         } catch (e) {
             Logger.error('startTimer失败:', e);
             showMiniToast('启动计时失败');
@@ -17596,6 +17663,8 @@
 
     // 带任务块关联的正计时切换
     async function switchToStopwatchAndStartWithTask(taskBlockId, taskBlockName, options = null) {
+        const associationAlreadySet = options?.associationAlreadySet === true;
+        const confirm = options?.confirm !== false;
         setFocusRestoreSource(options);
         // 🔧 修复：切换到正计时模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
@@ -17629,11 +17698,13 @@
         startTime = Date.now(); // 同时设置 startTime，供 pauseTimer 使用
         // 日志移除：减少开销
 
-        await setTaskAssociation(taskBlockId, taskBlockName, currentDatabaseBlockId);
+        if (!associationAlreadySet) {
+            await setTaskAssociation(taskBlockId, taskBlockName, currentDatabaseBlockId, { confirm });
+        }
 
         updateDisplay();
         try {
-            await startTimer();
+            await startTimer({ confirm });
         } catch (e) {
             Logger.error('startTimer失败:', e);
             showMiniToast('启动计时失败');
@@ -17655,7 +17726,8 @@
         }
     }
 
-    async function startBreakMode(duration) {
+    async function startBreakMode(duration, options = {}) {
+        const confirm = options?.confirm !== false;
         const focusContinuationAtBreak = TimerStateMachine.captureFocusContinuation(syncState, Date.now());
         if (timerMode === 'countdown') {
             let actualRemaining = null;
@@ -17736,7 +17808,10 @@
         updateDisplay();
         if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             // 第三个参数 true 表示 forceSync，确保开始状态能立即同步到其他设备
-            const transition = await TransitionExecutor.execute({ transitionId: createTomatoUuid('prepare-break') }, state => ({
+            const transition = await TransitionExecutor.execute({
+                transitionId: createTomatoUuid('prepare-break'),
+                confirm,
+            }, state => ({
                 ...state,
                 mode: 'break',
                 duration: duration * 60,
@@ -17751,10 +17826,11 @@
         }
 
         updateDisplay();
-        await startTimer();
+        await startTimer({ confirm });
     }
 
-    async function startStopwatchBreakMode() {
+    async function startStopwatchBreakMode(options = {}) {
+        const confirm = options?.confirm !== false;
         const focusContinuationAtBreak = TimerStateMachine.captureFocusContinuation(syncState, Date.now());
         if (timerMode === 'countdown') {
             let actualRemaining = null;
@@ -17840,12 +17916,12 @@
         updateDisplay();
         if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             // 第三个参数 true 表示 forceSync，确保开始状态能立即同步到其他设备
-            await commitTimerState(syncState, 'stopwatch-break');
+            await commitTimerState(syncState, 'stopwatch-break', { confirm });
         }
 
         updateDisplay();
         try {
-            await startTimer();
+            await startTimer({ confirm });
         } catch (e) {
             Logger.error('startTimer失败:', e);
             showMiniToast('启动计时失败');
@@ -17982,7 +18058,8 @@
         return true;
     }
 
-    async function resetCurrentMode() {
+    async function resetCurrentMode(options = {}) {
+        const confirm = options?.confirm !== false;
         return withTimerFinalizationLock('reset-current-mode', async () => {
             const wasPaused = !!isTimerPaused;
             let pendingRecordSave = null;
@@ -18000,9 +18077,9 @@
                     isTimerPaused = false;
                     startTime = 0;
                     lastTickTime = 0;
-                    pendingRecordSave = recordEndTime(true, isStopwatchBreak);
+                    pendingRecordSave = recordEndTime(true, isStopwatchBreak, { confirm });
                 } else if (hasBreakStart) {
-                    pendingRecordSave = recordEndTime(true, isStopwatchBreak);
+                    pendingRecordSave = recordEndTime(true, isStopwatchBreak, { confirm });
                 }
 
                 if (syncState?.continuation?.focusTimerSnapshot) {
@@ -18064,7 +18141,7 @@
                 syncState.distractionSavedCount = 0;
                 await requireTimerPersistence(pendingRecordSave, 'reset-current-mode');
                 if (isSyncEnabled() && SyncManager.updateLocal) {
-                    await commitTimerState(syncState, 'break-reset');
+                    await commitTimerState(syncState, 'break-reset', { confirm });
                     Logger.info('🔄 休息模式重置状态已同步到云端');
                 }
                 clearRoutineButtonRunningHighlight(true);
@@ -18083,7 +18160,7 @@
                     isTimerPaused = false;
                     startTime = 0;
                     lastTickTime = 0;
-                    pendingRecordSave = recordEndTime(true);
+                    pendingRecordSave = recordEndTime(true, false, { confirm });
                 } else if (syncState && syncState.startTime && syncState.status !== 'IDLE') {
                     // 🔧 v9.0 修复：即使本地状态未运行，但云端有运行记录时也保存
                     Logger.info('🔍 resetCurrentMode: 倒计时从云端状态恢复并重置，准备保存记录');
@@ -18091,7 +18168,7 @@
                     if (cloudRemaining < syncState.duration) {
                         // 从云端计算实际用时
                         remainingSeconds = cloudRemaining;
-                        pendingRecordSave = recordEndTime(true);
+                        pendingRecordSave = recordEndTime(true, false, { confirm });
                     }
                 } else {
                     Logger.info('🔍 resetCurrentMode: 倒计时重置，条件不满足，跳过保存');
@@ -18116,7 +18193,7 @@
                     if (actualElapsed > 0 || stopwatchDisplayOffset > 0) {
                         // 确保 elapsedSeconds 是最新值
                         elapsedSeconds = actualElapsed;
-                        pendingRecordSave = recordEndTime(true, true);
+                        pendingRecordSave = recordEndTime(true, true, { confirm });
                     }
                 }
                 if (timerId !== null) clearInterval(timerId);
@@ -18199,7 +18276,7 @@
                 } else {
                     syncState.duration = 0;
                 }
-                await commitTimerState(syncState, 'reset');
+                await commitTimerState(syncState, 'reset', { confirm });
                 Logger.info('🔄 重置状态已同步到云端');
             }
         });
@@ -18216,7 +18293,11 @@
             timerId = null;
             try { cancelTrackedTimerNotification('complete-timer', false).catch(() => {}); } catch (e) {}
 
-            const pendingRecordSave = recordEndTime(false, false, { isCompleted: true, plannedDurationOverride: 'elapsed' });
+            const pendingRecordSave = recordEndTime(false, false, {
+                isCompleted: true,
+                plannedDurationOverride: 'elapsed',
+                confirm: opts.confirm !== false,
+            });
 
             isRunning = false;
             isTimerPaused = false;
@@ -18247,7 +18328,7 @@
                 syncState.pausedElapsedSeconds = null;
                 syncState.distractionCount = 0;
                 syncState.distractionSavedCount = 0;
-                await commitTimerState(syncState, 'complete');
+                await commitTimerState(syncState, 'complete', { confirm: opts.confirm !== false });
             }
             if (opts.suppressToast !== true) showToast('✅ 已完成番茄', 1600);
         });
@@ -30294,7 +30375,11 @@ window.__setTomatoFloatState = function (payload) {
                 let committedState = latest;
                 if (stateChanged) {
                     try {
-                        committedState = await SyncManager.commitCanonicalState(candidate, { forcePush: true, forceSync: true });
+                        committedState = await SyncManager.commitCanonicalState(candidate, {
+                            forcePush: true,
+                            forceSync: true,
+                            confirm: command?.confirm !== false,
+                        });
                     } catch (error) {
                         // Keep the durable journal pending. The put response may
                         // have been lost after the server accepted the write; the
@@ -30332,12 +30417,13 @@ window.__setTomatoFloatState = function (payload) {
 
     // Compatibility boundary for legacy UI paths. Activity-state writes go
     // through the same ordered executor while callers keep their old API.
-    async function commitTimerState(nextState = syncState, prefix = 'state') {
+    async function commitTimerState(nextState = syncState, prefix = 'state', options = {}) {
         if (!isSyncEnabled() || !TransitionExecutor?.execute) {
             return { ok: true, changed: false, state: cloneSyncState(nextState) };
         }
+        const confirm = options?.confirm !== false;
         const result = await TransitionExecutor.execute(
-            { transitionId: createTomatoUuid(prefix) },
+            { transitionId: createTomatoUuid(prefix), confirm },
             () => cloneSyncState(nextState),
         );
         if (result?.state) syncState = result.state;

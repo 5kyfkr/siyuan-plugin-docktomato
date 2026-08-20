@@ -7,14 +7,14 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'tomato.js'), 'utf8');
 const helperStart = source.indexOf('    async function startStopwatchForCurrentPhase()');
-const helperEnd = source.indexOf('    async function resetCurrentMode()', helperStart);
+const helperEnd = source.indexOf('    async function resetCurrentMode(', helperStart);
 assert.ok(helperStart >= 0 && helperEnd > helperStart, 'stopwatch phase helper must remain extractable');
 
 const helperSource = source.slice(helperStart, helperEnd);
 const menuCalls = source.match(/await startStopwatchForCurrentPhase\(\)/g) || [];
 assert.equal(menuCalls.length, 2, 'both stopwatch context menu implementations must preserve the current phase');
 
-const resetStart = source.indexOf('    async function resetCurrentMode()');
+const resetStart = source.indexOf('    async function resetCurrentMode(');
 const resetEnd = source.indexOf('    async function completeCurrentTomato(', resetStart);
 const resetSource = source.slice(resetStart, resetEnd);
 assert.match(resetSource, /if \(!isStopwatchBreak && preBreakState\?\.mode === 'countdown'\)/, 'normal pomodoro breaks may retain their existing return behavior');

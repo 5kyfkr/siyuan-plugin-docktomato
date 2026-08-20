@@ -58,9 +58,18 @@ assert.match(stateChangeBlock, /newState\.status === 'RUNNING' && \(!isRunning \
 assert.doesNotMatch(stateChangeBlock, /newState\.status === 'IDLE'[\s\S]{0,300}newState\.sequenceId/, 'accepted remote idle states must not be filtered by sequence ID again');
 assert.match(stateChangeBlock, /if \(newState\.status === 'IDLE'\)/, 'accepted remote idle states must fully clear stale local runtime data');
 
-const startTimerStart = source.indexOf('    async function startTimer()');
+const startTimerStart = source.indexOf('    async function startTimer(');
 const startTimerEnd = source.indexOf('    async function pauseTimer()', startTimerStart);
 const startTimerBlock = source.slice(startTimerStart, startTimerEnd);
 assert.match(startTimerBlock, /syncState\.routineButtonId = activeRoutineMeta\?\.id \|\| null/, 'timer starts must publish the routine button identity');
+
+const routineHandlerStart = source.indexOf('        const routineToolbarClickHandler = async (e) => {');
+const routineHandlerEnd = source.indexOf('        timelineBar.addEventListener(\'click\', routineToolbarClickHandler', routineHandlerStart);
+assert.ok(routineHandlerStart >= 0 && routineHandlerEnd > routineHandlerStart, 'routine button handler must remain extractable');
+const routineHandlerBlock = source.slice(routineHandlerStart, routineHandlerEnd);
+assert.match(routineHandlerBlock, /routineButtonTransitionPending = true;[\s\S]*updateRoutineButtonRunningHighlight\(true\)/, 'routine clicks must update the selected button before async persistence');
+assert.match(routineHandlerBlock, /const queuedTransition = routineButtonTransitionTail\.then\(runRoutineTransition, runRoutineTransition\)/, 'routine transitions must run through one ordered async queue');
+assert.match(routineHandlerBlock, /Promise\.resolve\(\)\.then\(\(\) => getBlockContent\(blockId\)\)/, 'routine task-name lookup must be deferred off the click stack');
+assert.match(routineHandlerBlock, /const resolvedTaskName = String\(await taskNamePromise/, 'routine task-name lookup must not block the click handler before visual feedback');
 
 console.log('timer routine sync contract tests passed');
