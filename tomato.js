@@ -12753,7 +12753,6 @@
                 updateRoutineButtonRunningHighlight(true);
 
                 const transitionToken = ++routineButtonTransitionToken;
-                showMiniToast(`正在切换: ${taskName || '任务'}`);
                 const runRoutineTransition = async () => {
                     try {
                         const resolvedTaskName = String(await taskNamePromise || taskName || '').trim();
