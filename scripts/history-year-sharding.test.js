@@ -6,8 +6,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'tomato.js'), 'utf8');
-assert.match(source, /didSaveHistoryRecords = await mutateHistoryRecords\([\s\S]*?\}, \{ record: recordData \}\)/,
-    'timer completion must let the repository infer its target year from the new record');
+assert.match(source, /TransitionExecutor\.execute\([\s\S]*historyDrafts[\s\S]*accountingDrafts/,
+    'timer completion must persist history through the ordered transition executor');
 assert.match(source, /async function __tomatoHistoryUpdateTime[\s\S]*?\}, \{ recordKey \}\)/,
     'record edits must route through the inferred single-year mutation path');
 assert.match(source, /async function deleteRecord\(record\)[\s\S]*?\}, \{ record \}\)/,

@@ -884,8 +884,13 @@
     }
 
     function phaseOf(record) {
-        const phase = text(record?.mode);
-        return PHASES.has(phase) ? phase : '';
+        const legacyMode = text(record?.mode);
+        if (PHASES.has(legacyMode)) return legacyMode;
+        const phase = text(record?.phase);
+        const timerMode = text(record?.timerMode);
+        if (phase === 'break') return timerMode === 'stopwatch' ? 'stopwatch-break' : 'break';
+        if (phase === 'focus') return timerMode === 'stopwatch' ? 'stopwatch' : 'countdown';
+        return '';
     }
 
     function normalizeRecord(record, index = 0) {
@@ -896,9 +901,11 @@
         const endMs = parseTime(record.end);
         if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
         const wallSec = (endMs - startMs) / 1000;
-        const storedSec = number(record.durationSec) > 0
+        const storedSec = number(record.durationMs) > 0
+            ? number(record.durationMs) / 1000
+            : (number(record.durationSec) > 0
             ? number(record.durationSec)
-            : (number(record.durationMin) > 0 ? number(record.durationMin) * 60 : wallSec);
+            : (number(record.durationMin) > 0 ? number(record.durationMin) * 60 : wallSec));
         if (!(storedSec > 0)) return null;
         const candidateIds = uniqueStrings([
             record.taskBlockId,

@@ -150,6 +150,18 @@
     const NEW_SETTINGS_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-settings.json`;
     const NEW_FOCUS_TIME_SETTINGS_PATH = `${PLUGIN_STORAGE_DIR}/tomato-focus-settings.json`;
     const NEW_SYNC_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-sync.json`;
+    const TIMER_JOURNAL_FILE_PATH = `${PLUGIN_STORAGE_DIR}/timer-journal.json`;
+    const ACCOUNTING_LEDGER_FILE_PATH = `${PLUGIN_STORAGE_DIR}/task-accounting-ledger.json`;
+    const ACCOUNTING_LEDGER_SCHEMA_VERSION = 3;
+    const ACCOUNTING_LEDGER_RECENT_ENTRY_LIMIT = 2000;
+    const ACCOUNTING_RETRY_BASE_DELAY_MS = 30000;
+    const ACCOUNTING_RETRY_MAX_DELAY_MS = 300000;
+    const TIMER_LOCAL_ASSOCIATION_KEY = 'siyuan-tomato-local-association-v2';
+    const TIMER_JOURNAL_LOCAL_KEY = 'siyuan-tomato-journal-v2';
+    const TOMATO_STATE_SCHEMA_VERSION = 2;
+    const TOMATO_HISTORY_SCHEMA_VERSION = 2;
+    const TOMATO_HARD_LIMIT_SEC = 86400;
+    const TOMATO_MINUTE_ATTR_DEFAULT_VERSION = 1;
     const NEW_AUDIO_STORAGE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-audio/`;
     const REMINDER_DOCK_TYPE = '::tomato-reminder';
     const DEFAULT_LUMINA_CONFIG_PATH = '/data/storage/petal/siyuan-lumina/shuoshuo-config';
@@ -288,6 +300,18 @@
     }
 
     const __tomatoFileTextCache = new Map();
+    const __tomatoFileWriteQueues = new Map();
+
+    function __tomatoQueueFileWrite(path, action) {
+        const key = String(path ?? '');
+        const previous = __tomatoFileWriteQueues.get(key) || Promise.resolve();
+        const next = previous.catch(() => {}).then(action);
+        __tomatoFileWriteQueues.set(key, next);
+        next.finally(() => {
+            if (__tomatoFileWriteQueues.get(key) === next) __tomatoFileWriteQueues.delete(key);
+        }).catch(() => {});
+        return next;
+    }
 
     async function __tomatoGetFileText(path) {
         const key = String(path ?? '');
@@ -301,26 +325,25 @@
                 body: JSON.stringify({ path: key }),
             });
             if (!response.ok) {
-                const v = { exists: false, text: '' };
-                __tomatoFileTextCache.set(key, v);
-                return v;
+                return { exists: false, available: response.status === 404, missing: response.status === 404, text: '' };
             }
             const text = await response.text();
             try {
                 const obj = safeJsonParse(text);
                 if (obj && typeof obj === 'object' && typeof obj.code === 'number' && typeof obj.msg === 'string' && ('data' in obj) && obj.code !== 0) {
-                    const v = { exists: false, text: '' };
-                    __tomatoFileTextCache.set(key, v);
-                    return v;
+                    const message = obj.msg.toLowerCase();
+                    const missing = message.includes('not exist') || message.includes('not found')
+                        || message.includes('no such file') || message.includes('不存在');
+                    // The server answered, but the file is not readable. Do not
+                    // cache this result: a later request may succeed or create it.
+                    return { exists: false, available: missing, missing, text: '' };
                 }
             } catch (e) {}
-            const v = { exists: true, text: text ?? '' };
+            const v = { exists: true, available: true, text: text ?? '' };
             __tomatoFileTextCache.set(key, v);
             return v;
         } catch (e) {
-            const v = { exists: false, text: '' };
-            __tomatoFileTextCache.set(key, v);
-            return v;
+            return { exists: false, available: false, text: '' };
         }
     }
 
@@ -451,6 +474,7 @@
     // ========== 番茄钟同步状态数据结构 ==========
     // 使用绝对时间模型，支持跨设备同步
     let syncState = {
+        stateSchemaVersion: TOMATO_STATE_SCHEMA_VERSION,
         mode: 'countdown',  // 'countdown' | 'stopwatch' | 'break'
         duration: 30,  // 总时长（秒）
         status: 'IDLE',  // 'IDLE' | 'RUNNING' | 'PAUSED' | 'COMPLETED'
@@ -461,6 +485,7 @@
         pausedIntervals: [],  // [{start: ts, end: ts}, ...]
         currentPauseStart: null,  // 当前暂停开始时间
         sequenceId: 0,  // 序列号，单调递增用于冲突解决
+        stateVersion: 0,
         lastModifiedDevice: '',  // 最后修改设备ID
         lastModifiedTime: 0,  // 最后修改时间
         taskBlockId: null,  // 关联的任务块ID
@@ -474,11 +499,321 @@
         distractionSavedCount: 0,
         notificationSchedules: {},  // { [deviceId]: { id, timerKey, status, scheduledAtMs, dueAtMs, canceledAtMs, mode, delayInSeconds } }
         endDialog: null,  // {id,type,startAtMs,durationSec,endedAtMs,closed,closedAtMs,closedByDevice}
+        // v2 canonical timer fields. Legacy fields above remain as a read/write
+        // projection until all existing UI paths have moved to the adapter.
+        activeTimer: null,
+        continuation: null,
+        writerLease: null,
+        integrationEnvelope: {
+            taskAssociation: null,
+            routineButton: null,
+            distraction: { count: 0, savedCount: 0 },
+            notificationSchedules: {},
+        },
+        openRecordId: null,
     };
 
     function cloneSyncState(state) {
         if (!state || typeof state !== 'object') return state;
         return JSON.parse(JSON.stringify(state));
+    }
+
+    // Keep business-state comparisons deterministic. Transport metadata is
+    // intentionally excluded from this representation and is handled by the
+    // SyncManager version comparator instead.
+    function canonicalizeForSignature(value) {
+        if (value === undefined) return null;
+        if (value === null || typeof value !== 'object') return value;
+        if (Array.isArray(value)) return value.map(item => canonicalizeForSignature(item));
+        const result = {};
+        Object.keys(value).sort().forEach(key => {
+            result[key] = canonicalizeForSignature(value[key]);
+        });
+        return result;
+    }
+
+    function isTaskAssociationSyncEnabledForSignature() {
+        try {
+            return userSettings?.sync?.syncTaskAssociation === true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function buildSemanticStateForSignature(state) {
+        const st = state && typeof state === 'object' ? state : {};
+        const syncTaskAssociation = isTaskAssociationSyncEnabledForSignature();
+        const envelope = st.integrationEnvelope && typeof st.integrationEnvelope === 'object'
+            ? st.integrationEnvelope
+            : {};
+        const taskAssociation = syncTaskAssociation
+            ? (envelope.taskAssociation || {
+                taskBlockId: st.taskBlockId ?? null,
+                taskBlockName: st.taskBlockName ?? null,
+                databaseBlockId: st.databaseBlockId ?? null,
+            })
+            : null;
+        const routineButton = envelope.routineButton || {
+            id: st.routineButtonId ?? null,
+            blockId: st.routineButtonBlockId ?? null,
+            name: st.routineButtonName ?? null,
+            color: st.routineButtonColor ?? null,
+            icon: st.routineButtonIcon ?? null,
+            groupId: st.routineButtonGroupId ?? null,
+        };
+        const distraction = envelope.distraction || {
+            count: st.distractionCount ?? 0,
+            savedCount: st.distractionSavedCount ?? 0,
+        };
+        return canonicalizeForSignature({
+            stateSchemaVersion: Number(st.stateSchemaVersion || 1),
+            status: st.status || 'IDLE',
+            activeTimer: st.activeTimer || null,
+            continuation: st.continuation || null,
+            integrationEnvelope: {
+                taskAssociation,
+                routineButton,
+                distraction,
+                notificationSchedules: envelope.notificationSchedules || st.notificationSchedules || {},
+            },
+            writerLease: st.writerLease || null,
+            endDialog: st.endDialog || null,
+        });
+    }
+
+    function buildSemanticSignature(state) {
+        return JSON.stringify(buildSemanticStateForSignature(state));
+    }
+
+    function createTomatoUuid(prefix = 'id') {
+        const p = String(prefix || 'id').replace(/[^a-z0-9_-]/gi, '') || 'id';
+        try {
+            if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+                return `${p}_${crypto.randomUUID()}`;
+            }
+        } catch (e) {}
+        return `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+    }
+
+    function normalizeTomatoPhase(mode, phase = null) {
+        const m = String(mode || '').trim();
+        if (phase === 'break' || m === 'break' || m === 'stopwatch-break') return 'break';
+        return 'focus';
+    }
+
+    function normalizeTomatoTimerMode(mode, phase = null) {
+        const m = String(mode || '').trim();
+        const p = normalizeTomatoPhase(m, phase);
+        if (p === 'break') return m === 'stopwatch-break' ? 'stopwatch' : 'countdown';
+        return m === 'stopwatch' ? 'stopwatch' : 'countdown';
+    }
+
+    function projectLegacyMode(phase, timerMode) {
+        const p = phase === 'break' ? 'break' : 'focus';
+        const m = timerMode === 'stopwatch' ? 'stopwatch' : 'countdown';
+        if (p === 'break') return m === 'stopwatch' ? 'stopwatch-break' : 'break';
+        return m;
+    }
+
+    function calculateActiveMs(activeTimer, nowMs = Date.now()) {
+        const timer = activeTimer && typeof activeTimer === 'object' ? activeTimer : null;
+        if (!timer) return 0;
+        const accumulated = Math.max(0, Number(timer.accumulatedMs) || 0);
+        if (timer.status === 'PAUSED' || timer.pausedAtMs != null) return accumulated;
+        const segmentStart = Number(timer.segmentStartMs) || 0;
+        return accumulated + (segmentStart > 0 ? Math.max(0, Number(nowMs) - segmentStart) : 0);
+    }
+
+    function buildTaskAssociationSnapshot(source = {}) {
+        const value = source && typeof source === 'object' ? source : {};
+        const taskBlockId = String(value.taskBlockId || '').trim() || null;
+        const databaseBlockId = String(value.databaseBlockId || '').trim() || null;
+        if (!taskBlockId && !databaseBlockId) return null;
+        return {
+            taskBlockId,
+            taskBlockName: value.taskBlockName == null ? null : String(value.taskBlockName),
+            databaseBlockId,
+            attrHostId: String(value.attrHostId || taskBlockId || databaseBlockId || '').trim() || null,
+            source: String(value.source || value.sourceKind || 'manual'),
+            sourceKind: String(value.sourceKind || value.source || 'manual'),
+            associationVersion: String(value.associationVersion || value.transitionId || createTomatoUuid('assoc')),
+        };
+    }
+
+    function promoteLegacyIntegrationFields(state) {
+        const st = state && typeof state === 'object' ? state : {};
+        if (!st.integrationEnvelope || typeof st.integrationEnvelope !== 'object' || Array.isArray(st.integrationEnvelope)) {
+            st.integrationEnvelope = {};
+        }
+        const envelope = st.integrationEnvelope;
+        if (Object.prototype.hasOwnProperty.call(st, 'distractionCount')
+            || Object.prototype.hasOwnProperty.call(st, 'distractionSavedCount')) {
+            envelope.distraction = {
+                count: Math.max(0, Number(st.distractionCount) || 0),
+                savedCount: Math.max(0, Number(st.distractionSavedCount) || 0),
+            };
+        }
+        if (Object.prototype.hasOwnProperty.call(st, 'notificationSchedules')) {
+            const schedules = st.notificationSchedules;
+            envelope.notificationSchedules = schedules
+                && typeof schedules === 'object'
+                && !Array.isArray(schedules)
+                ? cloneSyncState(schedules)
+                : {};
+        }
+        return st;
+    }
+
+    function mergeV2StateWithLegacyFields(state) {
+        const st = cloneSyncState(state || {});
+        const timer = st.activeTimer && typeof st.activeTimer === 'object' ? st.activeTimer : null;
+        if (timer) {
+            const phase = normalizeTomatoPhase(timer.mode || st.mode, timer.phase);
+            const timerMode = normalizeTomatoTimerMode(timer.mode || st.mode, phase);
+            st.mode = projectLegacyMode(phase, timerMode);
+            st.status = timer.status || st.status || 'IDLE';
+            st.startTime = timer.segmentStartMs || timer.startedAtMs || null;
+            st.stopwatchStartTimeMs = timer.timerMode === 'stopwatch' ? (timer.startedAtMs || st.startTime) : null;
+            st.currentPauseStart = timer.pausedAtMs || null;
+            st.pausedElapsedSeconds = timer.timerMode === 'stopwatch'
+                ? Math.floor(calculateActiveMs(timer) / 1000)
+                : null;
+            st.duration = timer.timerMode === 'stopwatch'
+                ? TOMATO_HARD_LIMIT_SEC
+                : Math.max(1, Number(timer.plannedDurationSec) || Number(st.duration) || 1);
+            st.openRecordId = timer.openRecordId || null;
+        }
+        const association = st.integrationEnvelope?.taskAssociation || null;
+        if (association && isTaskAssociationSyncEnabledForSignature()) {
+            st.taskBlockId = association.taskBlockId || null;
+            st.taskBlockName = association.taskBlockName || null;
+            st.databaseBlockId = association.databaseBlockId || null;
+        }
+        return st;
+    }
+
+    function hydrateLegacyState(rawState) {
+        const schemaVersion = typeof TOMATO_STATE_SCHEMA_VERSION === 'number' ? TOMATO_STATE_SCHEMA_VERSION : 2;
+        const source = promoteLegacyIntegrationFields(
+            rawState && typeof rawState === 'object' ? cloneSyncState(rawState) : cloneSyncState(syncState),
+        );
+        if (Number(source.stateSchemaVersion) >= schemaVersion) {
+            if (source.stateVersion == null && source.sequenceId != null) source.stateVersion = source.sequenceId;
+            if (!source.sequenceId && source.stateVersion) source.sequenceId = source.stateVersion;
+            return mergeV2StateWithLegacyFields(source);
+        }
+        const status = ['RUNNING', 'PAUSED', 'COMPLETED', 'IDLE'].includes(source.status)
+            ? source.status : 'IDLE';
+        const legacyMode = String(source.mode || 'countdown');
+        const phase = normalizeTomatoPhase(legacyMode);
+        const timerMode = normalizeTomatoTimerMode(legacyMode, phase);
+        const plannedDurationSec = timerMode === 'stopwatch' ? null : Math.max(1, Number(source.duration) || 0);
+        const migrated = {
+            ...source,
+            stateSchemaVersion: status === 'RUNNING' || status === 'PAUSED' ? 1 : schemaVersion,
+            stateVersion: Number(source.stateVersion ?? source.sequenceId ?? 0),
+            sequenceId: Number(source.sequenceId ?? source.stateVersion ?? 0),
+            integrationEnvelope: {
+                taskAssociation: isTaskAssociationSyncEnabledForSignature()
+                    ? buildTaskAssociationSnapshot(source) : null,
+                routineButton: source.routineButtonId || source.routineButtonBlockId
+                    ? {
+                        id: source.routineButtonId || null,
+                        blockId: source.routineButtonBlockId || null,
+                        name: source.routineButtonName || null,
+                        color: source.routineButtonColor || null,
+                        icon: source.routineButtonIcon || null,
+                        groupId: source.routineButtonGroupId || null,
+                    } : null,
+                distraction: {
+                    count: Math.max(0, Number(source.distractionCount) || 0),
+                    savedCount: Math.max(0, Number(source.distractionSavedCount) || 0),
+                },
+                notificationSchedules: source.notificationSchedules || {},
+            },
+            activeTimer: null,
+            continuation: source.continuation || null,
+            writerLease: (status === 'RUNNING' || status === 'PAUSED')
+                ? {
+                    ownerDeviceId: String(source.writerLease?.ownerDeviceId || source.lastModifiedDevice || SYNC_DEVICE_ID || ''),
+                    leaseId: String(source.writerLease?.leaseId || createTomatoUuid('lease')),
+                    acquiredAtMs: Number(source.writerLease?.acquiredAtMs || source.lastModifiedTime || Date.now()),
+                } : null,
+            openRecordId: null,
+        };
+        // v2 intentionally does not synthesize a physical record for a legacy
+        // RUNNING/PAUSED timer. It remains on the legacy path until IDLE.
+        if (status === 'IDLE' || status === 'COMPLETED') migrated.stateSchemaVersion = schemaVersion;
+        return migrated;
+    }
+
+    function projectLegacyFields(state) {
+        const st = mergeV2StateWithLegacyFields(state);
+        const timer = st.activeTimer;
+        if (timer) {
+            st.mode = projectLegacyMode(timer.phase, timer.timerMode);
+        }
+        const distraction = st.integrationEnvelope?.distraction;
+        if (distraction && typeof distraction === 'object') {
+            st.distractionCount = Math.max(0, Number(distraction.count) || 0);
+            st.distractionSavedCount = Math.max(0, Number(distraction.savedCount) || 0);
+        }
+        const schedules = st.integrationEnvelope?.notificationSchedules;
+        if (schedules && typeof schedules === 'object' && !Array.isArray(schedules)) {
+            st.notificationSchedules = cloneSyncState(schedules);
+        }
+        st.stateVersion = Number(st.sequenceId || st.stateVersion || 0);
+        return st;
+    }
+
+    function getLocalTaskAssociationSidecar() {
+        try {
+            const raw = localStorage.getItem(TIMER_LOCAL_ASSOCIATION_KEY);
+            if (!raw) return null;
+            const value = JSON.parse(raw);
+            return value && typeof value === 'object' ? value : null;
+        } catch (e) { return null; }
+    }
+
+    function setLocalTaskAssociationSidecar(value) {
+        try {
+            if (!value) localStorage.removeItem(TIMER_LOCAL_ASSOCIATION_KEY);
+            else localStorage.setItem(TIMER_LOCAL_ASSOCIATION_KEY, JSON.stringify(value));
+        } catch (e) {}
+        return value || null;
+    }
+
+    function getEffectiveTaskAssociation(state = syncState) {
+        const canonical = state?.integrationEnvelope?.taskAssociation || null;
+        if (isTaskAssociationSyncEnabledForSignature()) return canonical || buildTaskAssociationSnapshot(state);
+        const local = getLocalTaskAssociationSidecar();
+        const timer = state?.activeTimer;
+        if (!local || !timer) return null;
+        const boundId = timer.phase === 'break'
+            ? (timer.parentSessionId || state?.continuation?.focusSessionId || '')
+            : (timer.sessionId || '');
+        const association = local.association && typeof local.association === 'object' ? local.association : null;
+        const versionMatches = !local.associationVersion || !association?.associationVersion
+            || String(local.associationVersion) === String(association.associationVersion);
+        return String(local.boundSessionId || '') === String(boundId || '')
+            && String(local.localOwnerDeviceId || '') === String(SYNC_DEVICE_ID || '')
+            && versionMatches ? association : null;
+    }
+
+    function prepareCanonicalStateForSync(state) {
+        const next = hydrateLegacyState(state);
+        next.stateSchemaVersion = Number(next.stateSchemaVersion) || TOMATO_STATE_SCHEMA_VERSION;
+        if (!isTaskAssociationSyncEnabledForSignature()) {
+            next.taskBlockId = null;
+            next.taskBlockName = null;
+            next.databaseBlockId = null;
+            if (!next.integrationEnvelope || typeof next.integrationEnvelope !== 'object') next.integrationEnvelope = {};
+            next.integrationEnvelope.taskAssociation = null;
+            if (next.continuation && typeof next.continuation === 'object') {
+                next.continuation = { ...next.continuation, taskSnapshot: null };
+            }
+        }
+        return projectLegacyFields(next);
     }
 
     // 本地写入会单调推进修改时间，因此所有设备都能按同一顺序选择唯一状态。
@@ -512,16 +847,17 @@
         _pendingSiyuanSyncTimer: null,
         _pendingSiyuanSyncForce: false,
         _focusHandler: null,
+        lastUpdateChanged: false,
         
         async init(initialState, onChangeCallback) {
-            this.localState = cloneSyncState(initialState);
+            this.localState = prepareCanonicalStateForSync(initialState);
             this.onStateChange = onChangeCallback;
             
             const cloudState = await this.loadFromCloud();
             let stateRestored = false;
             
             if (shouldAcceptRemoteSyncState(cloudState, this.localState)) {
-                this.localState = cloneSyncState(cloudState);
+                this.localState = prepareCanonicalStateForSync(cloudState);
                 stateRestored = cloudState.status !== 'IDLE';
                 Logger.info('🔄 SyncManager: 从云端恢复更新状态', {
                     status: cloudState.status,
@@ -557,7 +893,7 @@
                             const state = JSON.parse(text);
                             if (state && typeof state.sequenceId === 'number') {
                                 Logger.info('🔄 SyncManager: 从云端加载状态成功，sequenceId:', state.sequenceId, ', status:', state.status, ', mode:', state.mode);
-                                return state;
+                                return prepareCanonicalStateForSync(state);
                             } else {
                                 Logger.warn('🔄 SyncManager: 云端状态格式不正确，缺少 sequenceId');
                             }
@@ -593,11 +929,37 @@
 
                 const response = await fetch('/api/file/putFile', { method: 'POST', body: formData });
                 const result = await response.json();
-
                 if (result.code === 0) {
                     Logger.info('🔄 SyncManager: 状态已保存到云端');
                     this.scheduleSiyuanSync(forceSync);
-
+                    // The put endpoint acknowledges acceptance, not necessarily
+                    // visibility to the next reader. Confirm the exact semantic
+                    // state and transport version before reporting a commit. The
+                    // file API can expose the previous snapshot briefly after a
+                    // successful put, so retry only the confirmation read.
+                    const confirmationDelaysMs = [0, 80, 180, 400, 800];
+                    let lastConfirmed = null;
+                    for (const delayMs of confirmationDelaysMs) {
+                        if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
+                        lastConfirmed = await this.loadFromCloud();
+                        const versionMatches = !!lastConfirmed
+                            && compareSyncStateVersions(lastConfirmed, targetState) === 0;
+                        const semanticMatches = !!lastConfirmed
+                            && buildSemanticSignature(lastConfirmed) === buildSemanticSignature(targetState);
+                        if (versionMatches && semanticMatches) return true;
+                    }
+                    Logger.warn('🔄 SyncManager: 写入回读校验失败', {
+                        targetSequenceId: Number(targetState.sequenceId || 0),
+                        confirmedSequenceId: Number(lastConfirmed?.sequenceId || 0),
+                        versionComparison: lastConfirmed ? compareSyncStateVersions(lastConfirmed, targetState) : null,
+                        semanticMatches: !!lastConfirmed
+                            && buildSemanticSignature(lastConfirmed) === buildSemanticSignature(targetState),
+                    });
+                    // putFile code 0 is the durable local-write acknowledgement.
+                    // SiYuan's subsequent reader may still expose the previous
+                    // snapshot while sync/cache propagation catches up. Do not
+                    // roll back a timer transition solely because that readback
+                    // window was stale; ordered polling will reconcile it later.
                     return true;
                 } else {
                     Logger.warn('🔄 SyncManager: 保存失败，错误码:', result.code, ', 消息:', result.msg);
@@ -679,31 +1041,70 @@
             return compareSyncStateVersions(stateA, stateB);
         },
 
+        // Canonical callers use this entry point. Version allocation remains
+        // exclusively inside updateLocal so legacy callers cannot double-step
+        // sequenceId/stateVersion during the migration.
+        async commitCanonicalState(nextState, options = {}) {
+            const opts = options && typeof options === 'object' ? options : {};
+            return this.updateLocal(
+                nextState,
+                opts.forcePush !== false,
+                opts.forceSync === true,
+            );
+        },
+
         async updateLocal(newState, forcePush = true, forceSync = false) {
             const wasUninitialized = !this.localState || typeof this.localState !== 'object';
             if (wasUninitialized) {
-                this.localState = cloneSyncState(syncState);
+                this.localState = typeof prepareCanonicalStateForSync === 'function'
+                    ? prepareCanonicalStateForSync(syncState)
+                    : cloneSyncState(syncState);
             }
-            const hasActualChange = wasUninitialized || this.checkStateChanged(this.localState, newState);
+            if (forcePush && isSyncEnabled()) {
+                const latestRemote = await this.loadFromCloud();
+                if (latestRemote && shouldAcceptRemoteSyncState(latestRemote, this.localState)) {
+                    this.localState = prepareCanonicalStateForSync(latestRemote);
+                }
+            }
+            const rawCandidateState = {
+                ...this.localState,
+                ...cloneSyncState(newState || {}),
+            };
+            const candidateState = typeof prepareCanonicalStateForSync === 'function'
+                ? prepareCanonicalStateForSync(rawCandidateState)
+                : rawCandidateState;
+            const hasActualChange = wasUninitialized || this.checkStateChanged(this.localState, candidateState);
+            this.lastUpdateChanged = hasActualChange;
 
+            // A semantic no-op must not mutate transport metadata or write a
+            // newer snapshot. This is important for LWW polling and for
+            // callers that merely re-apply the current state.
+            if (!hasActualChange) {
+                return cloneSyncState(this.localState);
+            }
+
+            const previousState = cloneSyncState(this.localState);
             const oldSequenceId = Number(this.localState.sequenceId || 0);
             const highestKnownModifiedTime = Math.max(
                 Number(this.localState.lastModifiedTime || 0),
-                Number(newState?.lastModifiedTime || 0)
+                Number(candidateState.lastModifiedTime || 0)
             );
-            this.localState = { ...this.localState, ...cloneSyncState(newState) };
-            const mergedSequenceId = Number(this.localState.sequenceId || 0);
-            this.localState.sequenceId = hasActualChange
-                ? Math.max(oldSequenceId, mergedSequenceId) + 1
-                : Math.max(oldSequenceId, mergedSequenceId);
-
+            this.localState = candidateState;
+            const nextSequenceId = oldSequenceId + 1;
+            this.localState.sequenceId = nextSequenceId;
+            this.localState.stateVersion = nextSequenceId;
             this.localState.lastModifiedDevice = SYNC_DEVICE_ID;
             this.localState.lastModifiedTime = Math.max(Date.now(), highestKnownModifiedTime + 1);
 
             Logger.debug('🔄 SyncManager: 本地状态更新，sequenceId:', this.localState.sequenceId);
 
             if (forcePush && isSyncEnabled()) {
-                await this.saveToCloud(null, forceSync);
+                const saved = await this.saveToCloud(null, forceSync);
+                if (!saved) {
+                    this.localState = previousState;
+                    this.lastUpdateChanged = false;
+                    throw new Error('SYNC_COMMIT_FAILED');
+                }
             }
 
             if (this.onStateChange) {
@@ -715,52 +1116,14 @@
         
         checkStateChanged(currentState, newState) {
             if (!currentState || !newState) return true;
-            
-            const keyFields = [
-                'status', 'startTime', 'mode', 'duration',
-                'routineButtonId', 'routineButtonBlockId', 'routineButtonName', 'routineButtonColor'
-            ];
-            const syncAssociation = (() => {
-                try { return userSettings?.sync?.syncTaskAssociation === true; } catch (e) { return false; }
-            })();
-            if (syncAssociation) {
-                keyFields.push('taskBlockId', 'taskBlockName', 'databaseBlockId');
-            }
-            
-            for (const field of keyFields) {
-                if (currentState[field] !== newState[field]) {
-                    return true;
-                }
-            }
-            
-            const currentPausedStr = JSON.stringify(currentState.pausedIntervals || []);
-            const newPausedStr = JSON.stringify(newState.pausedIntervals || []);
-            if (currentPausedStr !== newPausedStr) {
-                return true;
-            }
-            
-            if (currentState.currentPauseStart !== newState.currentPauseStart) {
-                return true;
-            }
-
-            if ((currentState.stopwatchDisplayOffset || 0) !== (newState.stopwatchDisplayOffset || 0)) {
-                return true;
-            }
-
-            const currentEndDialogStr = JSON.stringify(currentState.endDialog || null);
-            const newEndDialogStr = JSON.stringify(newState.endDialog || null);
-            if (currentEndDialogStr !== newEndDialogStr) {
-                return true;
-            }
-            
-            return false;
+            return buildSemanticSignature(currentState) !== buildSemanticSignature(newState);
         },
         
         async applyRemote(remoteState) {
             if (!remoteState) return cloneSyncState(this.localState);
             const comparison = compareSyncStateVersions(remoteState, this.localState);
             if (shouldAcceptRemoteSyncState(remoteState, this.localState)) {
-                this.localState = cloneSyncState(remoteState);
+                this.localState = prepareCanonicalStateForSync(remoteState);
                 if (this.onStateChange) {
                     this.onStateChange(cloneSyncState(this.localState));
                 }
@@ -796,6 +1159,14 @@
                     this._focusHandler = null;
                 }
             } catch (e) {}
+        },
+
+        clearPendingSiyuanSync() {
+            if (this._pendingSiyuanSyncTimer) {
+                try { clearTimeout(this._pendingSiyuanSyncTimer); } catch (e) {}
+                this._pendingSiyuanSyncTimer = null;
+            }
+            this._pendingSiyuanSyncForce = false;
         },
         
         async poll(force = false) {
@@ -844,6 +1215,7 @@
         },
 
         destroy() {
+            this.clearPendingSiyuanSync();
             this.stopPolling();
             this.localState = null;
             this.onStateChange = null;
@@ -861,6 +1233,14 @@
     // 基于绝对时间计算剩余时间，不依赖本地递减
     const StateCalculator = {
         calculateRemaining(state) {
+            const activeTimer = state?.activeTimer && typeof state.activeTimer === 'object'
+                ? state.activeTimer
+                : null;
+            if (activeTimer && activeTimer.timerMode !== 'stopwatch') {
+                const plannedSec = Math.max(0, Number(activeTimer.plannedDurationSec) || 0);
+                if (state.status === 'IDLE' || state.status === 'COMPLETED') return plannedSec;
+                return Math.max(0, Math.floor(plannedSec - (calculateActiveMs(activeTimer) / 1000)));
+            }
             if (!state || state.status === 'IDLE' || state.status === 'COMPLETED') {
                 return state?.duration || 0;
             }
@@ -892,6 +1272,16 @@
         
         calculateElapsed(state) {
             if (!state) return 0;
+
+            const activeTimer = state.activeTimer && typeof state.activeTimer === 'object'
+                ? state.activeTimer
+                : null;
+            if (activeTimer) {
+                const elapsed = Math.max(0, Math.floor(calculateActiveMs(activeTimer) / 1000));
+                return activeTimer.timerMode === 'stopwatch'
+                    ? Math.min(elapsed, Number(activeTimer.hardLimitSec || CONFIG.MAX_STOPWATCH_SECONDS))
+                    : elapsed;
+            }
 
             if (state.mode === 'stopwatch' || state.mode === 'stopwatch-break') {
                 const now = Date.now();
@@ -960,6 +1350,265 @@
             const secs = seconds % 60;
             return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
         }
+    };
+
+    // ========== v2 durable journal / state machine adapters ==========
+    // The journal is intentionally small and single-writer. It is persisted
+    // in the synced plugin directory, with localStorage as an offline fallback.
+    const TimerJournal = {
+        async read() {
+            const requireSharedJournal = typeof isSyncEnabled === 'function' && isSyncEnabled();
+            try {
+                if (requireSharedJournal) {
+                    __tomatoFileTextCache.delete(TIMER_JOURNAL_FILE_PATH);
+                }
+                const file = await __tomatoGetFileText(TIMER_JOURNAL_FILE_PATH);
+                if (requireSharedJournal && file?.available === false) {
+                    return { status: 'unavailable', unavailable: true };
+                }
+                if (file?.exists && String(file.text || '').trim()) {
+                    const parsed = JSON.parse(file.text);
+                    if (parsed && typeof parsed === 'object') return parsed;
+                }
+            } catch (e) {
+                if (requireSharedJournal) return { status: 'unavailable', unavailable: true };
+            }
+            if (requireSharedJournal) return null;
+            try {
+                const raw = localStorage.getItem(TIMER_JOURNAL_LOCAL_KEY);
+                const parsed = raw ? JSON.parse(raw) : null;
+                return parsed && typeof parsed === 'object' ? parsed : null;
+            } catch (e) { return null; }
+        },
+        async persist(journal) {
+            const value = cloneSyncState({
+                transitionId: String(journal?.transitionId || createTomatoUuid('transition')),
+                baseSequenceId: Number(journal?.baseSequenceId || 0),
+                nextState: cloneSyncState(journal?.nextState || null),
+                historyDrafts: Array.isArray(journal?.historyDrafts) ? cloneSyncState(journal.historyDrafts) : [],
+                accountingDrafts: Array.isArray(journal?.accountingDrafts) ? cloneSyncState(journal.accountingDrafts) : [],
+                // Legacy recordEndTime callers persist history/accounting drafts
+                // themselves. Their canonical state is committed by the caller's
+                // surrounding transition, so recovery must not wait for a
+                // matching lastCommittedTransitionId that does not exist.
+                stateCommitRequired: journal?.stateCommitRequired !== false,
+                status: ['pending', 'state-committed', 'committed', 'aborted'].includes(journal?.status) ? journal.status : 'pending',
+                updatedAtMs: Date.now(),
+            });
+            let fileSaved = false;
+            let localSaved = false;
+            try {
+                await __tomatoEnsureDir(PLUGIN_STORAGE_DIR);
+                fileSaved = await __tomatoPutFileText(TIMER_JOURNAL_FILE_PATH, JSON.stringify(value, null, 2)) === true;
+            } catch (e) {}
+            try {
+                localStorage.setItem(TIMER_JOURNAL_LOCAL_KEY, JSON.stringify(value));
+                localSaved = true;
+            } catch (e) {}
+            // When sync is enabled, the shared journal is the hand-off point
+            // for ordered device takeover. A localStorage-only write must not
+            // be reported as durable in that mode.
+            if (typeof isSyncEnabled === 'function' && isSyncEnabled()) return fileSaved;
+            return fileSaved || localSaved;
+        },
+        async clear() {
+            try { localStorage.removeItem(TIMER_JOURNAL_LOCAL_KEY); } catch (e) {}
+            try { await __tomatoRemoveFile(TIMER_JOURNAL_FILE_PATH); } catch (e) {}
+            return true;
+        },
+        isBlocking(journal) {
+            return !!journal && ['pending', 'state-committed'].includes(String(journal.status || ''));
+        },
+    };
+
+    const TimerStateMachine = {
+        hardLimitSec: TOMATO_HARD_LIMIT_SEC,
+        createFocusState(options = {}, baseState = syncState) {
+            const opts = options && typeof options === 'object' ? options : {};
+            const phase = opts.phase === 'break' ? 'break' : 'focus';
+            const timerMode = opts.timerMode === 'stopwatch' ? 'stopwatch' : 'countdown';
+            const now = Number(opts.nowMs || Date.now());
+            const focusSessionId = String(opts.focusSessionId || createTomatoUuid('focus'));
+            const sessionId = phase === 'break' ? String(opts.sessionId || createTomatoUuid('break')) : focusSessionId;
+            const association = opts.taskAssociation ? buildTaskAssociationSnapshot(opts.taskAssociation) : null;
+            const timer = {
+                phase,
+                timerMode,
+                mode: projectLegacyMode(phase, timerMode),
+                status: 'RUNNING',
+                sessionId,
+                parentSessionId: phase === 'break' ? focusSessionId : null,
+                focusSessionId,
+                startedAtMs: now,
+                segmentStartMs: now,
+                accumulatedMs: 0,
+                pausedAtMs: null,
+                openRecordId: createTomatoUuid('record'),
+                plannedDurationSec: timerMode === 'stopwatch' ? null : Math.max(1, Number(opts.plannedDurationSec || 0)),
+                hardLimitSec: TOMATO_HARD_LIMIT_SEC,
+                ownerDeviceId: String(opts.ownerDeviceId || SYNC_DEVICE_ID || ''),
+            };
+            const next = {
+                ...cloneSyncState(baseState || {}),
+                stateSchemaVersion: TOMATO_STATE_SCHEMA_VERSION,
+                status: 'RUNNING',
+                activeTimer: timer,
+                continuation: phase === 'break' ? {
+                    ...(baseState?.continuation || {}),
+                    focusSessionId,
+                    taskSnapshot: association || baseState?.continuation?.taskSnapshot || null,
+                } : (baseState?.continuation || null),
+                writerLease: {
+                    ownerDeviceId: timer.ownerDeviceId,
+                    leaseId: String(opts.leaseId || createTomatoUuid('lease')),
+                    acquiredAtMs: now,
+                },
+                integrationEnvelope: {
+                    ...(baseState?.integrationEnvelope || {}),
+                    taskAssociation: isTaskAssociationSyncEnabledForSignature() ? association : null,
+                },
+                openRecordId: timer.openRecordId,
+            };
+            return projectLegacyFields(next);
+        },
+        captureFocusContinuation(state, nowMs = Date.now()) {
+            const source = state && typeof state === 'object' ? state : {};
+            const timer = source.activeTimer && typeof source.activeTimer === 'object' ? source.activeTimer : null;
+            if (!timer || timer.phase === 'break') return null;
+            const at = Number(nowMs) || Date.now();
+            const accumulatedMs = calculateActiveMs(timer, at);
+            const snapshot = {
+                ...cloneSyncState(timer),
+                phase: 'focus',
+                mode: projectLegacyMode('focus', timer.timerMode),
+                status: 'PAUSED',
+                accumulatedMs,
+                segmentStartMs: null,
+                pausedAtMs: at,
+                openRecordId: null,
+                hardLimitSec: Number(timer.hardLimitSec || TOMATO_HARD_LIMIT_SEC),
+            };
+            return {
+                focusSessionId: String(timer.focusSessionId || timer.sessionId || ''),
+                taskSnapshot: isTaskAssociationSyncEnabledForSignature()
+                    ? cloneSyncState(source.integrationEnvelope?.taskAssociation || null)
+                    : null,
+                focusTimerSnapshot: snapshot,
+            };
+        },
+        restoreFocusContinuation(state, nowMs = Date.now(), ownerDeviceId = SYNC_DEVICE_ID) {
+            const next = cloneSyncState(state || {});
+            const continuation = next.continuation && typeof next.continuation === 'object'
+                ? next.continuation
+                : null;
+            const snapshot = continuation?.focusTimerSnapshot && typeof continuation.focusTimerSnapshot === 'object'
+                ? continuation.focusTimerSnapshot
+                : null;
+            if (!snapshot) return projectLegacyFields(next);
+            const at = Number(nowMs) || Date.now();
+            const timer = {
+                ...cloneSyncState(snapshot),
+                phase: 'focus',
+                mode: projectLegacyMode('focus', snapshot.timerMode),
+                status: 'PAUSED',
+                pausedAtMs: at,
+                segmentStartMs: null,
+                openRecordId: null,
+                ownerDeviceId: String(ownerDeviceId || SYNC_DEVICE_ID || ''),
+                hardLimitSec: Number(snapshot.hardLimitSec || TOMATO_HARD_LIMIT_SEC),
+            };
+            next.activeTimer = timer;
+            next.openRecordId = null;
+            next.status = 'PAUSED';
+            next.currentPauseStart = at;
+            next.writerLease = {
+                ownerDeviceId: timer.ownerDeviceId,
+                leaseId: createTomatoUuid('lease'),
+                acquiredAtMs: at,
+            };
+            next.continuation = null;
+            if (!next.integrationEnvelope || typeof next.integrationEnvelope !== 'object') next.integrationEnvelope = {};
+            next.integrationEnvelope.taskAssociation = isTaskAssociationSyncEnabledForSignature()
+                ? cloneSyncState(continuation.taskSnapshot || null)
+                : null;
+            return projectLegacyFields(next);
+        },
+        pause(state, nowMs = Date.now()) {
+            const next = cloneSyncState(state);
+            if (!next.activeTimer) return next;
+            const timer = next.activeTimer;
+            if (timer.status !== 'RUNNING') return next;
+            const at = Number(nowMs) || Date.now();
+            timer.accumulatedMs = calculateActiveMs(timer, at);
+            timer.status = 'PAUSED';
+            timer.pausedAtMs = at;
+            timer.segmentStartMs = null;
+            timer.openRecordId = null;
+            next.status = 'PAUSED';
+            next.openRecordId = null;
+            next.currentPauseStart = at;
+            return projectLegacyFields(next);
+        },
+        resume(state, nowMs = Date.now(), ownerDeviceId = SYNC_DEVICE_ID) {
+            const next = cloneSyncState(state);
+            if (!next.activeTimer) return next;
+            const timer = next.activeTimer;
+            if (timer.status !== 'PAUSED') return next;
+            const at = Number(nowMs) || Date.now();
+            timer.status = 'RUNNING';
+            timer.pausedAtMs = null;
+            timer.segmentStartMs = at;
+            timer.openRecordId = createTomatoUuid('record');
+            timer.ownerDeviceId = String(ownerDeviceId || SYNC_DEVICE_ID || '');
+            next.openRecordId = timer.openRecordId;
+            next.status = 'RUNNING';
+            next.currentPauseStart = null;
+            next.writerLease = {
+                ownerDeviceId: timer.ownerDeviceId,
+                leaseId: createTomatoUuid('lease'),
+                acquiredAtMs: at,
+            };
+            return projectLegacyFields(next);
+        },
+        closeSegment(state, nowMs = Date.now(), reason = 'manual-end') {
+            const next = cloneSyncState(state);
+            const timer = next.activeTimer;
+            if (!timer) return { state: next, record: null };
+            const endMs = Number(nowMs) || Date.now();
+            const startMs = Number(timer.segmentStartMs || timer.startedAtMs || endMs);
+            const durationMs = Math.max(0, endMs - startMs);
+            const record = {
+                recordId: String(timer.openRecordId || createTomatoUuid('record')),
+                transitionId: createTomatoUuid('transition'),
+                sessionId: timer.sessionId,
+                focusSessionId: timer.focusSessionId || timer.parentSessionId || timer.sessionId,
+                phase: timer.phase,
+                mode: projectLegacyMode(timer.phase, timer.timerMode),
+                timerMode: timer.timerMode,
+                start: new Date(startMs).toISOString(),
+                end: new Date(endMs).toISOString(),
+                durationMs,
+                durationSec: durationMs / 1000,
+                durationMin: durationMs / 60000,
+                plannedDurationSec: timer.plannedDurationSec,
+                plannedDuration: timer.plannedDurationSec == null ? null : timer.plannedDurationSec / 60,
+                endReason: reason,
+                disposition: 'pending',
+                visibility: durationMs < 60000 ? 'hidden' : 'visible',
+                schemaVersion: TOMATO_HISTORY_SCHEMA_VERSION,
+                parentSessionId: timer.parentSessionId || null,
+                recordKind: durationMs < 60000 ? 'accounting-only' : timer.phase,
+            };
+            timer.accumulatedMs = Math.max(0, Number(timer.accumulatedMs) || 0) + durationMs;
+            timer.status = 'IDLE';
+            timer.segmentStartMs = null;
+            timer.openRecordId = null;
+            next.openRecordId = null;
+            next.activeTimer = null;
+            next.status = 'IDLE';
+            next.writerLease = null;
+            return { state: projectLegacyFields(next), record };
+        },
     };
 
     function getExpiredTimerSnapshot(state, nowMs = Date.now()) {
@@ -1113,15 +1762,17 @@
         if (!dialog || !contentArea) return;
         if (!historyState) return;
 
+        try { await loadUserSettings(); } catch (e) {}
+        try { await loadFocusTimeSettings(); } catch (e) {}
+
         let allRecords = [];
         try {
-            allRecords = await loadHistoryRecords();
+            allRecords = HistoryRepository.displayView(await loadHistoryRecords(), {
+                includeShort: userSettings.hideShortRecords === false,
+            });
         } catch (e) {
             return;
         }
-
-        try { await loadUserSettings(); } catch (e) {}
-        try { await loadFocusTimeSettings(); } catch (e) {}
 
         historyState.allRecords = allRecords;
 
@@ -1134,7 +1785,7 @@
                 filteredRecords = filteredRecords.filter(r => hasLuminaHistoryRecords(r) || r?.mode !== 'idle');
             }
             if (userSettings.hideShortRecords) {
-                filteredRecords = filteredRecords.filter(r => hasLuminaHistoryRecords(r) || (r && typeof r.durationSec === 'number' && r.durationSec >= 60));
+                filteredRecords = filteredRecords.filter(r => hasLuminaHistoryRecords(r) || !isSubMinuteHistoryRecord(r));
             }
         } catch (e) {}
 
@@ -1176,27 +1827,7 @@
     function buildSyncSignature(st) {
         try {
             if (!st) return '';
-            return [
-                st.status,
-                st.mode,
-                String(st.startTime || ''),
-                String(st.stopwatchStartTimeMs || ''),
-                String(st.stopwatchDisplayOffset ?? ''),
-                String(st.duration || ''),
-                String(st.currentPauseStart || ''),
-                String(st.pausedElapsedSeconds ?? ''),
-                JSON.stringify(st.endDialog || null),
-                String(st.sequenceId || 0),
-                String(st.lastModifiedTime || 0),
-                String(st.taskBlockId || ''),
-                String(st.taskBlockName || ''),
-                String(st.databaseBlockId || ''),
-                String(st.routineButtonId || ''),
-                String(st.routineButtonBlockId || ''),
-                String(st.routineButtonName || ''),
-                String(st.routineButtonColor || ''),
-                JSON.stringify(st.notificationSchedules || {})
-            ].join('|');
+            return buildSemanticSignature(st);
         } catch (e) {
             return '';
         }
@@ -1479,6 +2110,15 @@
         updateFromSyncState();
         isRunning = state.status === 'RUNNING';
         isTimerPaused = state.status === 'PAUSED';
+        const activeTimer = state.activeTimer && typeof state.activeTimer === 'object' ? state.activeTimer : null;
+        if (activeTimer) {
+            currentSessionId = String(activeTimer.focusSessionId || activeTimer.parentSessionId || activeTimer.sessionId || '') || null;
+            if (activeTimer.phase === 'break') {
+                pendingBreakSessionId = String(activeTimer.parentSessionId || activeTimer.focusSessionId || '') || null;
+            }
+        } else if (state.status === 'IDLE') {
+            currentSessionId = null;
+        }
 
         const isStopwatchMode = timerMode === 'stopwatch' || timerMode === 'stopwatch-break';
         const syncedStartTimeMs = Number(isStopwatchMode
@@ -2208,7 +2848,7 @@
             enabled: true,         // 是否启用任务块番茄时间累加功能
             enableHourAttr: true,  // 是否启用小时格式属性
             hourAttrName: 'custom-tomato-time',  // 小时格式属性名称
-            enableMinuteAttr: false,  // 是否启用分钟格式属性
+            enableMinuteAttr: true,  // 是否启用分钟格式属性
             minuteAttrName: 'custom-tomato-minutes',  // 分钟格式属性名称
             enableCountAttr: true,  // 是否启用实际番茄数属性
             countAttrName: 'custom-tomato-count',  // 实际番茄数属性名称
@@ -2411,7 +3051,7 @@
             enabled: true,
             enableHourAttr: true,
             hourAttrName: 'custom-tomato-time',
-            enableMinuteAttr: false,
+            enableMinuteAttr: true,
             minuteAttrName: 'custom-tomato-minutes',
             enableCountAttr: true,
             countAttrName: 'custom-tomato-count',
@@ -2421,12 +3061,22 @@
         const cfg = (userSettings.taskBlockTomatoTime && typeof userSettings.taskBlockTomatoTime === 'object')
             ? userSettings.taskBlockTomatoTime
             : {};
+        const hasMinuteAttrDefaultMigration = Number(cfg.minuteAttrDefaultVersion) >= TOMATO_MINUTE_ATTR_DEFAULT_VERSION;
+        if (!hasMinuteAttrDefaultMigration) {
+            // The old false value was the plugin default, not an explicit
+            // opt-out. Upgrade that legacy state once; later user changes are
+            // protected by the migration marker.
+            cfg.enableMinuteAttr = true;
+            cfg.minuteAttrDefaultVersion = TOMATO_MINUTE_ATTR_DEFAULT_VERSION;
+            userSettingsAutoFixPending = true;
+        }
         userSettings.taskBlockTomatoTime = {
             ...cfg,
             enabled: cfg.enabled !== false,
             enableHourAttr: cfg.enableHourAttr !== false,
             hourAttrName: String(cfg.hourAttrName || '').trim() || defaults.hourAttrName,
-            enableMinuteAttr: cfg.enableMinuteAttr === true,
+            enableMinuteAttr: cfg.enableMinuteAttr !== false,
+            minuteAttrDefaultVersion: TOMATO_MINUTE_ATTR_DEFAULT_VERSION,
             minuteAttrName: String(cfg.minuteAttrName || '').trim() || defaults.minuteAttrName,
             enableCountAttr: cfg.enableCountAttr !== false,
             countAttrName: String(cfg.countAttrName || '').trim() || defaults.countAttrName,
@@ -2660,6 +3310,7 @@
     let lastTickTime = 0;
     let preBreakState = null;
     let lastTomatoConfig = { duration: 30, mode: 'countdown' };
+    let pendingFocusCountdownDuration = null;
     let pausedRemainingSeconds = null;
     let reminderIntervalId = null;
     let activeEndDialog = null;
@@ -2741,7 +3392,11 @@
                 closedByDevice: SYNC_DEVICE_ID,
             };
             // 第三个参数 true 表示 forceSync，确保对话框关闭状态能立即同步
-            await SyncManager.updateLocal(syncState, true, true);
+            const transition = await TransitionExecutor.execute({ transitionId: createTomatoUuid('end-dialog-close'), allowForeignLease: true }, state => ({
+                ...state,
+                endDialog: cloneSyncState(syncState.endDialog),
+            }));
+            if (transition?.state) syncState = transition.state;
         } catch (e) {}
     }
 
@@ -2847,7 +3502,7 @@
     function getLuminaTimerModeLabel(modeValue = null) {
         const mode = String(modeValue || timerMode || '').trim();
         if (mode === 'break' || mode === 'stopwatch-break') return '休息计时';
-        if (mode === 'stopwatch') return '正计时';
+        if (mode === 'stopwatch') return '专注正计时';
         if (mode === 'countdown') return '番茄计时';
         return '';
     }
@@ -2911,7 +3566,7 @@
         if (!activity.running && !activity.paused) return '';
         const mode = String(modeValue || syncState?.mode || timerMode || '').trim();
         if (mode === 'countdown') return '番茄';
-        if (mode === 'stopwatch') return '正计时';
+        if (mode === 'stopwatch') return '专注正计时';
         if (mode === 'break' || mode === 'stopwatch-break') return '休息';
         return '';
     }
@@ -3450,8 +4105,11 @@
                 syncState.distractionCount = currentDistractionCount || 0;
                 if (timerMode === 'countdown') {
                     syncState.duration = currentDuration * 60;
+                    if (syncState.activeTimer && typeof syncState.activeTimer === 'object') {
+                        syncState.activeTimer.plannedDurationSec = currentDuration * 60;
+                    }
                 }
-                await SyncManager.updateLocal(syncState, true);
+                await commitTimerState(syncState, 'distraction');
             } catch (e) {}
         }
 
@@ -3568,14 +4226,17 @@
     }
 
     async function loadUserSettings() {
+        let sharedLoaded = false;
         try {
             const r = await __tomatoGetFileText(SETTINGS_FILE_PATH);
             const text = r?.exists ? (r.text ?? '') : '';
             if (text && String(text).trim()) {
                 const settings = JSON.parse(text);
                 userSettings = { ...userSettings, ...settings };
+                sharedLoaded = true;
             }
-        } catch (e) {
+        } catch (e) {}
+        if (!sharedLoaded) {
             try {
                 const raw = localStorage.getItem('tomato-user-settings');
                 if (raw && raw.trim()) {
@@ -3599,19 +4260,23 @@
     }
 
     async function saveUserSettings() {
-        try {
-            try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
-            const ok = await __tomatoPutFileText(SETTINGS_FILE_PATH, JSON.stringify(userSettings, null, 2));
-            if (!ok) throw new Error('思源API保存失败');
-        } catch (e) {
-            Logger.error('保存设置失败:', e);
-            try { localStorage.setItem('tomato-user-settings', JSON.stringify(userSettings)); } catch (localError) {}
-        }
+        const snapshot = JSON.stringify(userSettings, null, 2);
+        await __tomatoQueueFileWrite(SETTINGS_FILE_PATH, async () => {
+            try {
+                try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
+                const ok = await __tomatoPutFileText(SETTINGS_FILE_PATH, snapshot);
+                if (!ok) throw new Error('思源API保存失败');
+            } catch (e) {
+                Logger.error('保存设置失败:', e);
+                try { localStorage.setItem('tomato-user-settings', snapshot); } catch (localError) {}
+            }
+        });
         try { __publishTomatoFocusModeState(); } catch (e) {}
     }
 
     // ========== 专注时间设置管理 ==========
     async function loadFocusTimeSettings() {
+        let sharedLoaded = false;
         try {
             const r = await __tomatoGetFileText(FOCUS_TIME_SETTINGS_PATH);
             const text = r?.exists ? (r.text ?? '') : '';
@@ -3619,39 +4284,47 @@
                 const settings = JSON.parse(text);
                 if (settings && Array.isArray(settings.groups)) {
                     focusTimeSettings = settings;
+                    sharedLoaded = true;
                 } else {
                     focusTimeSettings = getDefaultFocusSettings();
                 }
-            } else {
-                focusTimeSettings = getDefaultFocusSettings();
             }
-        } catch (e) {
-            focusTimeSettings = getDefaultFocusSettings();
+        } catch (e) {}
+        if (!sharedLoaded) {
+            try {
+                const raw = localStorage.getItem('focus-time-settings');
+                const settings = raw ? JSON.parse(raw) : null;
+                if (settings && Array.isArray(settings.groups)) {
+                    focusTimeSettings = settings;
+                    sharedLoaded = true;
+                }
+            } catch (e) {}
         }
+        if (!sharedLoaded) focusTimeSettings = getDefaultFocusSettings();
         return focusTimeSettings;
     }
 
     async function saveFocusTimeSettings() {
-        try {
-            try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
-            const ok = await __tomatoPutFileText(FOCUS_TIME_SETTINGS_PATH, JSON.stringify(focusTimeSettings, null, 2));
-            if (ok) {
+        const snapshot = JSON.stringify(focusTimeSettings, null, 2);
+        return __tomatoQueueFileWrite(FOCUS_TIME_SETTINGS_PATH, async () => {
+            try {
+                try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
+                const ok = await __tomatoPutFileText(FOCUS_TIME_SETTINGS_PATH, snapshot);
+                if (!ok) throw new Error('思源API保存失败');
                 Logger.info('专注时间设置保存成功');
                 return true;
-            } else {
-                throw new Error('思源API保存失败');
+            } catch (e) {
+                Logger.warn('保存专注时间设置失败:', e);
+                try {
+                    localStorage.setItem('focus-time-settings', snapshot);
+                    Logger.info('已回退到localStorage保存');
+                    return true;
+                } catch (localError) {
+                    Logger.error('保存到localStorage也失败:', localError);
+                    return false;
+                }
             }
-        } catch (e) {
-            Logger.warn('保存专注时间设置失败:', e);
-            try {
-                localStorage.setItem('focus-time-settings', JSON.stringify(focusTimeSettings));
-                Logger.info('已回退到localStorage保存');
-                return true;
-            } catch (localError) {
-                Logger.error('保存到localStorage也失败:', localError);
-                return false;
-            }
-        }
+        });
     }
 
     // ========== 历史记录管理 ==========
@@ -3853,6 +4526,42 @@
         const list = Array.isArray(records) ? records : [];
         assertHistoryRecordCount(list.length);
         list.forEach(record => {
+            if (!record || typeof record !== 'object') return;
+            if (!record.recordId) {
+                record.recordId = `legacy_${hashHistoryText(JSON.stringify([
+                    record.start || '', record.end || '', record.mode || '',
+                    record.taskBlockId || '', record.databaseBlockId || '', record.durationSec || record.durationMin || 0,
+                ]))}`;
+            }
+            if (!record.disposition) record.disposition = 'normal';
+            if (!record.visibility) record.visibility = 'visible';
+            if (!record.recordKind) record.recordKind = 'history';
+            const legacySec = Number(record.durationSec);
+            const legacyMin = Number(record.durationMin);
+            if (!Number.isFinite(Number(record.durationMs))) {
+                if (Number.isFinite(legacySec)) record.durationMs = Math.max(0, legacySec * 1000);
+                else if (Number.isFinite(legacyMin)) record.durationMs = Math.max(0, legacyMin * 60000);
+                else record.durationMs = 0;
+            }
+            record.durationSec = Number(record.durationMs) / 1000;
+            record.durationMin = Number(record.durationMs) / 60000;
+            if (record.plannedDurationSec == null && Number.isFinite(Number(record.plannedDuration))) {
+                record.plannedDurationSec = Number(record.plannedDuration) * 60;
+            }
+            if (record.plannedDuration == null && Number.isFinite(Number(record.plannedDurationSec))) {
+                record.plannedDuration = Number(record.plannedDurationSec) / 60;
+            }
+            if (!record.phase) {
+                record.phase = record.mode === 'break' || record.mode === 'stopwatch-break' ? 'break' : 'focus';
+            }
+            if (!record.timerMode) record.timerMode = record.mode === 'stopwatch' || record.mode === 'stopwatch-break' ? 'stopwatch' : 'countdown';
+            if (!record.sourceKind) record.sourceKind = record.source || 'manual';
+            if (!record.source) record.source = record.sourceKind;
+            if (!record.associationVersion && (record.taskBlockId || record.databaseBlockId)) {
+                record.associationVersion = `legacy_${hashHistoryText(JSON.stringify([
+                    record.recordId, record.taskBlockId || '', record.databaseBlockId || '',
+                ]))}`;
+            }
             if (record?.date) {
                 record.date = normalizeLegacyDate(record.date);
             } else if (record?.start) {
@@ -3865,6 +4574,19 @@
             }
         });
         return list;
+    }
+
+    function getHistoryRecordDurationMs(record) {
+        const durationMs = Number(record?.durationMs);
+        if (Number.isFinite(durationMs)) return Math.max(0, durationMs);
+        const durationSec = Number(record?.durationSec);
+        if (Number.isFinite(durationSec)) return Math.max(0, durationSec * 1000);
+        const durationMin = Number(record?.durationMin);
+        return Number.isFinite(durationMin) ? Math.max(0, durationMin * 60000) : 0;
+    }
+
+    function isSubMinuteHistoryRecord(record) {
+        return getHistoryRecordDurationMs(record) < 60000;
     }
 
     function getHistoryRecordStorageYear(record) {
@@ -4455,6 +5177,13 @@
             return true;
         } catch (fileError) {
             if (isHistoryWriteCoordinationError(fileError)) throw fileError;
+            // When synchronization is enabled, localStorage is only a
+            // migration fallback. Treat a shared-file failure as a hard write
+            // failure so another device cannot observe a false commit.
+            if (typeof isSyncEnabled === 'function' && isSyncEnabled()) {
+                Logger.error('同步开启时共享历史写入失败，拒绝使用本地 fallback:', fileError);
+                return false;
+            }
             try {
                 const dataToSave = JSON.stringify(records, null, 2);
                 assertHistoryTextSize(dataToSave);
@@ -4580,6 +5309,89 @@
             return false;
         });
     }
+
+    const HistoryRepository = {
+        normalize(records) { return normalizeHistoryRecords(records); },
+        isPending(record) { return String(record?.disposition || '') === 'pending'; },
+        displayView(records, options = {}) {
+            const includeShort = options?.includeShort === true;
+            return normalizeHistoryRecords(records).filter(record => {
+                if (record.disposition !== 'normal') return false;
+                const ordinaryRecord = record.visibility !== 'hidden' && record.recordKind !== 'accounting-only';
+                const restorableShortRecord = includeShort
+                    && isSubMinuteHistoryRecord(record)
+                    && (record.visibility === 'hidden' || record.recordKind === 'accounting-only');
+                return ordinaryRecord || restorableShortRecord;
+            });
+        },
+        statisticsView(records) {
+            return this.displayView(records, { includeShort: false });
+        },
+        accountingView(records) {
+            return normalizeHistoryRecords(records).filter(record => (
+                record.disposition === 'normal'
+            ));
+        },
+        async appendPending(record, options = {}) {
+            const draft = normalizeHistoryRecords([cloneSyncState(record || {})])[0];
+            draft.disposition = 'pending';
+            const result = await mutateHistoryRecords(records => {
+                if (records.some(item => String(item?.recordId || '') === String(draft.recordId))) return false;
+                records.push(draft);
+                return true;
+            }, { record: draft, ...(options || {}) });
+            return result ? draft : null;
+        },
+        async commitPending(recordId) {
+            const id = String(recordId || '').trim();
+            if (!id) return false;
+            const result = await mutateHistoryRecords(records => {
+                const item = records.find(record => String(record?.recordId || '') === id);
+                if (!item) return false;
+                if (item.disposition === 'normal') return false;
+                item.disposition = 'normal';
+                return true;
+            }, { record: { recordId: id } });
+            return result;
+        },
+        async ensureNormal(record) {
+            const draft = normalizeHistoryRecords([cloneSyncState(record || {})])[0];
+            const id = String(draft?.recordId || '').trim();
+            if (!id) return false;
+            draft.disposition = 'normal';
+            const result = await mutateHistoryRecords(records => {
+                const item = records.find(entry => String(entry?.recordId || '') === id);
+                if (item) {
+                    if (item.disposition === 'normal') return false;
+                    Object.assign(item, draft, { disposition: 'normal' });
+                    return true;
+                }
+                records.push(draft);
+                return true;
+            }, { record: draft });
+            if (result) return true;
+            const latest = await loadHistoryRecords({ force: true }).catch(() => []);
+            const repaired = latest.some(entry => String(entry?.recordId || '') === id && entry.disposition === 'normal');
+            return repaired;
+        },
+        async markTombstone(recordId, correctionId = null) {
+            const id = String(recordId || '').trim();
+            if (!id) return false;
+            return mutateHistoryRecords(records => {
+                const item = records.find(record => String(record?.recordId || '') === id);
+                if (!item) return false;
+                item.disposition = 'discarded';
+                item.tombstoneId = String(correctionId || createTomatoUuid('tombstone'));
+                return true;
+            }, { record: { recordId: id } });
+        },
+        async loadStatistics(options = {}) {
+            return this.statisticsView(await loadHistoryRecords(options));
+        },
+        async loadAccounting(options = {}) {
+            return this.accountingView(await loadHistoryRecords(options));
+        },
+    };
 
     function mergeUniqueHistoryRecords(...sources) {
         const records = [];
@@ -4721,9 +5533,10 @@
         const start = toDateSafe(record.start);
         const end = toDateSafe(record.end);
         if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end.getTime() <= start.getTime()) return;
-        const sec = Math.max(1, Math.round((end.getTime() - start.getTime()) / 1000));
-        record.durationSec = sec;
-        record.durationMin = Math.max(1, Math.round(sec / 60));
+        const durationMs = Math.max(0, end.getTime() - start.getTime());
+        record.durationMs = durationMs;
+        record.durationSec = durationMs / 1000;
+        record.durationMin = durationMs / 60000;
         record.timestamp = end.getTime();
         record.date = formatDateKey(end);
         record.dateTime = end.toLocaleString('zh-CN');
@@ -4731,14 +5544,14 @@
     }
 
     async function __tomatoHistoryLoadAll() {
-        const records = await loadHistoryRecords();
+        const records = HistoryRepository.statisticsView(await loadHistoryRecords());
         return Array.isArray(records) ? records : [];
     }
 
     async function __tomatoHistoryLoadRange(startISO, endISO) {
         const startMs = toDateSafe(startISO)?.getTime?.() || 0;
         const endMs = toDateSafe(endISO)?.getTime?.() || 0;
-        return loadHistoryRangeRecords(startMs, endMs);
+        return HistoryRepository.statisticsView(await loadHistoryRangeRecords(startMs, endMs));
     }
 
     async function __tomatoHistoryUpdateTime(recordKey, patch) {
@@ -4841,7 +5654,7 @@
      */
     async function exportHistoryToICS() {
         try {
-            const records = await loadHistoryRecords();
+            const records = HistoryRepository.statisticsView(await loadHistoryRecords());
             if (!records || records.length === 0) {
                 showMiniToast('暂无历史记录可导出');
                 return;
@@ -4883,7 +5696,7 @@
                 const modeLabels = {
                     'countdown': '🍅 番茄专注',
                     'break': '☕ 休息',
-                    'stopwatch': '⏱️ 正计时',
+                    'stopwatch': '⏱️ 专注正计时',
                     'stopwatch-break': '☕ 正计时休息',
                     'idle': '📋 闲置'
                 };
@@ -5926,6 +6739,31 @@
     function setFocusRestoreSource(options = null) {
         focusRestoreSource = normalizeFocusRestoreSource(options);
         return focusRestoreSource;
+    }
+
+    function resolveCurrentAssociationFocusSource() {
+        const taskBlockId = String(currentTaskBlockId || syncState?.taskBlockId || '').trim();
+        const databaseBlockId = String(currentDatabaseBlockId || syncState?.databaseBlockId || '').trim();
+        if (!taskBlockId && !databaseBlockId) return '';
+
+        const candidates = [
+            syncState?.integrationEnvelope?.taskAssociation,
+            getLocalTaskAssociationSidecar()?.association,
+        ];
+        let matchedCandidate = false;
+        for (const candidate of candidates) {
+            if (!candidate || typeof candidate !== 'object') continue;
+            const candidateTaskId = String(candidate.taskBlockId || '').trim();
+            const candidateDatabaseId = String(candidate.databaseBlockId || '').trim();
+            const matches = (taskBlockId && candidateTaskId === taskBlockId)
+                || (databaseBlockId && candidateDatabaseId === databaseBlockId);
+            if (!matches) continue;
+            matchedCandidate = true;
+            const source = normalizeFocusRestoreSource(candidate.source || candidate.sourceKind);
+            if (source) return source;
+        }
+
+        return matchedCandidate ? '' : normalizeFocusRestoreSource(focusRestoreSource);
     }
 
     function getCurrentFocusRestoreOptions() {
@@ -7909,7 +8747,7 @@
         };
 
         const tomatoHighlight = createColorRow('🍅 番茄记录', userSettings.timeline.highlightColors.tomato);
-        const stopwatchHighlight = createColorRow('⏱️ 正计时记录', userSettings.timeline.highlightColors.stopwatch);
+        const stopwatchHighlight = createColorRow('⏱️ 专注正计时记录', userSettings.timeline.highlightColors.stopwatch);
         const breakHighlight = createColorRow('☕ 休息记录', userSettings.timeline.highlightColors.break);
         highlightWrap.appendChild(tomatoHighlight.rowEl);
         highlightWrap.appendChild(stopwatchHighlight.rowEl);
@@ -8331,11 +9169,20 @@
 
     function getNotificationSchedulesMap(state = syncState) {
         if (!state || typeof state !== 'object') return {};
-        const current = state.notificationSchedules;
-        if (!current || typeof current !== 'object' || Array.isArray(current)) {
-            state.notificationSchedules = {};
+        if (!state.integrationEnvelope || typeof state.integrationEnvelope !== 'object' || Array.isArray(state.integrationEnvelope)) {
+            state.integrationEnvelope = {};
         }
-        return state.notificationSchedules;
+        const envelope = state.integrationEnvelope;
+        const current = envelope.notificationSchedules;
+        if (!current || typeof current !== 'object' || Array.isArray(current)) {
+            envelope.notificationSchedules = state.notificationSchedules
+                && typeof state.notificationSchedules === 'object'
+                && !Array.isArray(state.notificationSchedules)
+                ? state.notificationSchedules
+                : {};
+        }
+        state.notificationSchedules = envelope.notificationSchedules;
+        return envelope.notificationSchedules;
     }
 
     function getCurrentDeviceNotificationSchedule(state = syncState) {
@@ -8439,7 +9286,7 @@
         }
         persistNotificationScheduleState._running = true;
         try {
-            await SyncManager.updateLocal(syncState, true, !__tomatoInitBootstrapping);
+            await commitTimerState(syncState, 'notification');
         } catch (e) {
         } finally {
             persistNotificationScheduleState._running = false;
@@ -8683,6 +9530,7 @@
             // 🔧 修复：正计时模式下需要传递 isStopwatch = true
             pendingRecordSave = recordEndTime(false, timerMode === 'stopwatch' || timerMode === 'stopwatch-break');
         }
+        await requireTimerPersistence(pendingRecordSave, 'reset-to-last-tomato');
         await stopTimer({ skipEndRecord: !!pendingRecordSave });
         pausedRemainingSeconds = null;
         isRunning = false;
@@ -8712,10 +9560,6 @@
         // 注意：不再自动清除任务块关联，用户可以通过📋️图标的删除按钮手动清除
         if (controlButton) controlButton.innerHTML = '▶️';
         updateDisplay();
-        if (pendingRecordSave) {
-            await waitForTimerPersistence(pendingRecordSave, 'reset-to-last-tomato');
-        }
-
         // 注意：同步到云端的操作由 stopTimer() 统一处理，这里不再重复调用
         // 避免在 UI 操作中产生同步写入导致的卡顿
     }
@@ -8754,7 +9598,7 @@
             syncState.pausedElapsedSeconds = null;
             syncState.distractionCount = 0;
             syncState.distractionSavedCount = 0;
-            await SyncManager.updateLocal(syncState, true);
+            await commitTimerState(syncState, 'break-reset');
         }
     }
 
@@ -8831,8 +9675,11 @@
         `;
         const acknowledgeAndCloseEndDialog = async () => {
             if (type === 'break-end') {
+                const restoredCanonical = await finishBreakFromContinuation();
                 const isStopwatchBreakEnd = timerMode === 'stopwatch-break' || preBreakState?.mode === 'stopwatch';
-                if (isStopwatchBreakEnd) {
+                if (restoredCanonical) {
+                    preBreakState = null;
+                } else if (isStopwatchBreakEnd) {
                     preBreakState = null;
                 } else if (preBreakState) {
                     if (isRunning) {
@@ -8877,7 +9724,7 @@
                                 closedByDevice: SYNC_DEVICE_ID,
                             };
                         }
-                        await SyncManager.updateLocal(syncState, true);
+                        await commitTimerState(syncState, 'break-resume');
                         Logger.info('🔄 休息完成后状态已同步到云端');
                     }
                 } else {
@@ -8979,10 +9826,15 @@
                 btn.style.cssText = `padding: 8px 12px; background: #9E9E9E; color: white; border: 1px solid rgba(0,0,0,0.2);
                     border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 60px;`;
                 btn.onclick = async () => {
-                    if (isRunning) await recordEndTime();
-                    await syncAcknowledgeEndDialogClose(endDialogId);
-                    closeDialog();
-                    startBreakMode(min);
+                    try {
+                        if (isRunning) await recordEndTime();
+                        await syncAcknowledgeEndDialogClose(endDialogId);
+                        closeDialog();
+                        await startBreakMode(min);
+                    } catch (e) {
+                        Logger.error('startBreakMode失败:', e);
+                        showMiniToast('启动计时失败');
+                    }
                 };
                 breakRow.appendChild(btn);
             });
@@ -9024,9 +9876,9 @@
                         closeDialog();
                         // 使用保存的任务块信息
                         if (savedTaskBlockId) {
-                            switchToCountdownAndStartWithTask(min, savedTaskBlockId, savedTaskBlockName, focusRestoreOptions);
+                            await switchToCountdownAndStartWithTask(min, savedTaskBlockId, savedTaskBlockName, focusRestoreOptions);
                         } else {
-                            switchToCountdownAndStart(min);
+                            await switchToCountdownAndStart(min);
                         }
                     };
                     buttonContainer.appendChild(btn);
@@ -9034,7 +9886,7 @@
                 
                 // 添加正计时按钮
                 const stopwatchBtn = document.createElement('button');
-                stopwatchBtn.textContent = `⏱️ 正计时`;
+                stopwatchBtn.textContent = `⏱️ 专注正计时`;
                 stopwatchBtn.style.cssText = `padding: 8px 12px; background: #4CAF50; color: white; border: 1px solid rgba(0,0,0,0.2);
                     border-radius: 8px; cursor: pointer; font-size: 13px; min-width: 60px;`;
                 stopwatchBtn.onclick = async () => {
@@ -9060,16 +9912,16 @@
                         await syncAcknowledgeEndDialogClose(endDialogId);
                         closeDialog();
                         if (savedTaskBlockId) {
-                            switchToCountdownAndStartWithTask(min, savedTaskBlockId, savedTaskBlockName, focusRestoreOptions);
+                            await switchToCountdownAndStartWithTask(min, savedTaskBlockId, savedTaskBlockName, focusRestoreOptions);
                         } else {
-                            switchToCountdownAndStart(min);
+                            await switchToCountdownAndStart(min);
                         }
                     };
                     buttonContainer.appendChild(btn);
                 });
 
                 const continueBtn = document.createElement('button');
-                continueBtn.textContent = `⏱️ 继续正计时`;
+                continueBtn.textContent = `⏱️ 继续专注正计时`;
                 continueBtn.style.cssText = `padding: 8px 12px; background: #4CAF50; color: white; border: 1px solid rgba(0,0,0,0.2);
                     border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 80px;`;
                 continueBtn.onclick = async () => {
@@ -10763,7 +11615,7 @@
                 <div class="form-group">
                     <label>计时类型</label>
                     <select class="input-timer-type" style="width: 100%; padding: 8px 10px; border: 1px solid var(--b3-theme-border, #d9d9d9); border-radius: 4px; font-size: 14px; box-sizing: border-box;">
-                        <option value="stopwatch" ${config?.timerType !== 'pomodoro' ? 'selected' : ''}>正计时</option>
+                        <option value="stopwatch" ${config?.timerType !== 'pomodoro' ? 'selected' : ''}>专注正计时</option>
                         <option value="pomodoro" ${config?.timerType === 'pomodoro' ? 'selected' : ''}>番茄计时</option>
                     </select>
                 </div>
@@ -11709,7 +12561,7 @@
             syncState.pausedElapsedSeconds = null;
             syncState.currentPauseStart = null;
             // 第三个参数 true 表示 forceSync，确保开始状态能立即同步到其他设备
-            await SyncManager.updateLocal(syncState, true, true);
+            await commitTimerState(syncState, 'stopwatch-start');
         }
 
         Logger.info('🍅 开始正计时:', taskName);
@@ -11886,10 +12738,16 @@
                 }
                 setFocusRestoreSource(null);
 
-                if (timerMode === 'countdown' && (isRunning || isTimerPaused)) {
-                    await completeCurrentTomato();
-                } else if (isRunning || isTimerPaused) {
-                    await resetCurrentMode();
+                try {
+                    if (timerMode === 'countdown' && (isRunning || isTimerPaused)) {
+                        await completeCurrentTomato();
+                    } else if (isRunning || isTimerPaused) {
+                        await resetCurrentMode();
+                    }
+                } catch (error) {
+                    Logger.error('routineToolbarClickHandler: timer finalization failed', error);
+                    showMiniToast('计时记录保存失败，请重试');
+                    return;
                 }
 
                 // 使用按钮自己的颜色应用到时间轴高亮
@@ -11929,7 +12787,7 @@
                 } else {
                     if (blockId) await switchToStopwatchAndStartWithTask(blockId, taskName);
                     else await switchToStopwatchAndStart();
-                    showToast(`开始正计时: ${taskName}`, 2000);
+                    showToast(`开始专注正计时: ${taskName}`, 2000);
                 }
                 updateRoutineButtonRunningHighlight(true);
                 return;
@@ -13744,7 +14602,7 @@
                 label = '🍅 番茄钟';
             } else if (record.mode === 'stopwatch') {
                 color = stopwatchColor;
-                label = '⏱️ 正计时';
+                label = '⏱️ 专注正计时';
             } else if (record.mode === 'break' || record.mode === 'stopwatch-break') {
                 color = breakColor;
                 label = '☕ 休息';
@@ -13798,7 +14656,6 @@
         const parent = parentEl || timelineActiveLayer || timelineSegments;
         if (!parent) return;
         if (endMin <= startMin) return;
-
         const appendSegment = (displayStartMin, displayEndMin, segMeta, partIndex = 0) => {
             const startPercentRaw = ((displayStartMin - offsetMin) / totalMin) * 100;
             const endPercentRaw = ((displayEndMin - offsetMin) / totalMin) * 100;
@@ -14077,7 +14934,7 @@
             if (effectivePaused) return;
             const startTs = toMs(syncState?.stopwatchStartTimeMs || syncState?.startTime || stopwatchStartTimeMs || startTime || 0);
             if (!startTs) return;
-            drawActiveRange(startTs, nowTs, stopwatchColor, 0.8, '⏱️ 正计时', {
+            drawActiveRange(startTs, nowTs, stopwatchColor, 0.8, '⏱️ 专注正计时', {
                 taskBlockId: currentTaskBlockId,
                 taskBlockName: currentTaskBlockName,
                 databaseBlockId: currentDatabaseBlockId,
@@ -15074,6 +15931,7 @@
                 endTimeMs,
                 skipSyncUpdate: true,
             });
+            await requireTimerPersistence(pendingRecordSave, 'timer-end');
             Logger.info('🍅 计时完成流程已触发', { source, mode: endMode, endTimeMs: endTimeMs || Date.now() });
             if (timerId !== null) {
                 clearInterval(timerId);
@@ -15147,7 +16005,6 @@
                     try { showMiniToast('计时已完成'); } catch (e) {}
                 }
             }
-            await waitForTimerPersistence(pendingRecordSave, 'timer-end');
         });
     }
 
@@ -15294,6 +16151,7 @@
 
     async function startTimer() {
         if (isRunning) return;
+        const wasPausedAtStart = !!isTimerPaused || syncState?.status === 'PAUSED';
 
         try {
             taskAssociationCleared = false;
@@ -15466,6 +16324,48 @@
                 syncState.pausedElapsedSeconds = null;
             }
 
+            if (Number(syncState?.stateSchemaVersion || 0) >= (typeof TOMATO_STATE_SCHEMA_VERSION === 'number' ? TOMATO_STATE_SCHEMA_VERSION : 2)) {
+                const pausedLeaseOwner = String(syncState?.writerLease?.ownerDeviceId || syncState?.activeTimer?.ownerDeviceId || '').trim();
+                if (wasPausedAtStart && pausedLeaseOwner && pausedLeaseOwner !== SYNC_DEVICE_ID) {
+                    const transferred = await TransitionExecutor.transferLease(SYNC_DEVICE_ID);
+                    if (!transferred) throw new Error('RESUME_LEASE_TRANSFER_FAILED');
+                    syncState = SyncManager.getState ? SyncManager.getState() : syncState;
+                }
+                const association = buildTaskAssociationSnapshot({
+                    taskBlockId: currentTaskBlockId,
+                    taskBlockName: currentTaskBlockName,
+                    databaseBlockId: currentDatabaseBlockId,
+                    source: focusRestoreSource || 'manual',
+                    sourceKind: focusRestoreSource || 'manual',
+                    associationVersion: syncState?.integrationEnvelope?.taskAssociation?.associationVersion,
+                });
+                if (wasPausedAtStart && syncState.activeTimer) {
+                    syncState = TimerStateMachine.resume(syncState, Date.now(), SYNC_DEVICE_ID);
+                } else {
+                    const phase = timerMode === 'break' || timerMode === 'stopwatch-break' ? 'break' : 'focus';
+                    syncState = TimerStateMachine.createFocusState({
+                        phase,
+                        timerMode: timerMode === 'stopwatch' || timerMode === 'stopwatch-break' ? 'stopwatch' : 'countdown',
+                        plannedDurationSec: timerMode === 'stopwatch' || timerMode === 'stopwatch-break' ? null : currentDuration * 60,
+                        taskAssociation: association,
+                        focusSessionId: phase === 'break' ? (pendingBreakSessionId || currentSessionId || undefined) : (currentSessionId || undefined),
+                        ownerDeviceId: SYNC_DEVICE_ID,
+                    }, syncState);
+                    currentSessionId = syncState.activeTimer?.focusSessionId || syncState.activeTimer?.sessionId || currentSessionId;
+                }
+                if (!isTaskAssociationSyncEnabled()) {
+                    const focusBindingId = syncState.activeTimer?.phase === 'break'
+                        ? (syncState.activeTimer?.parentSessionId || syncState.continuation?.focusSessionId)
+                        : syncState.activeTimer?.sessionId;
+                    setLocalTaskAssociationSidecar(association ? {
+                        localOwnerDeviceId: SYNC_DEVICE_ID,
+                        boundSessionId: focusBindingId,
+                        associationVersion: association.associationVersion,
+                        association,
+                    } : null);
+                }
+            }
+
             if ((timerMode === 'countdown' || timerMode === 'break') && shouldUseScheduledTimerNotificationBackend()) {
                 try {
                     const scheduled = await ensureTrackedTimerNotification('start-timer', false);
@@ -15499,9 +16399,12 @@
                 });
                 try {
                     // 第三个参数 true 表示 forceSync，确保开始状态能立即同步到其他设备
-                    await SyncManager.updateLocal(syncState, true, true);
+                    const transition = await TransitionExecutor.execute({ transitionId: createTomatoUuid('start') }, () => syncState);
+                    if (transition?.state) syncState = transition.state;
+                    if (!transition?.ok) throw new Error(transition?.blocked ? 'START_TRANSITION_BLOCKED' : 'START_TRANSITION_FAILED');
                 } catch (e) {
-                    Logger.warn('🔄 startTimer: 同步到云端失败（忽略）', e);
+                    Logger.warn('🔄 startTimer: 同步到云端失败', e);
+                    throw e;
                 }
             }
         } catch (e) {
@@ -15537,6 +16440,10 @@
             }
             remainingSeconds = Math.ceil(remainingMs / 1000);
             pausedRemainingSeconds = remainingSeconds;
+            // Close the current physical segment before changing the live
+            // pause snapshot. This preserves task attribution when the user
+            // changes association while paused.
+            pendingRecordSave = recordEndTime(false, false, { skipSyncUpdate: true });
         } else if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
             // 🔧 修复：正计时使用 stopwatchStartTimeMs 计算
             const elapsedMs = now - (stopwatchStartTimeMs || startTime);
@@ -15547,6 +16454,8 @@
                 pendingRecordSave = recordEndTime(false, true, { skipSyncUpdate: true });
             }
         }
+
+        await requireTimerPersistence(pendingRecordSave, 'pause-segment');
 
         if (timerId !== null) clearInterval(timerId);
         timerId = null;
@@ -15601,17 +16510,20 @@
             syncState.pausedElapsedSeconds = elapsedSeconds;
             syncState.stopwatchDisplayOffset = Math.max(0, Math.floor(Number(stopwatchDisplayOffset) || 0));
         }
+        if (Number(syncState?.stateSchemaVersion || 0) >= (typeof TOMATO_STATE_SCHEMA_VERSION === 'number' ? TOMATO_STATE_SCHEMA_VERSION : 2) && syncState.activeTimer) {
+            syncState = TimerStateMachine.pause(syncState, now);
+        }
         
         // 🔧 修复：同步暂停状态到云端
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             syncState.distractionCount = currentDistractionCount || 0;
             Logger.info('🔄 pauseTimer: 同步暂停状态到云端');
             // 第三个参数 true 表示 forceSync，确保暂停状态能立即同步到其他设备
-            await SyncManager.updateLocal(syncState, true, true);
+            const transition = await TransitionExecutor.execute({ transitionId: createTomatoUuid('pause') }, () => syncState);
+            if (transition?.state) syncState = transition.state;
+            if (!transition?.ok) throw new Error(transition?.blocked ? 'PAUSE_TRANSITION_BLOCKED' : 'PAUSE_TRANSITION_FAILED');
         }
-        if (pendingRecordSave) {
-            await waitForTimerPersistence(pendingRecordSave, 'pause-timer');
-        }
+        // The segment was persisted before the pause snapshot was committed.
     }
 
     async function stopTimer(options = {}) {
@@ -15650,6 +16562,7 @@
             segmentTaskBlockName = null;
             segmentDatabaseBlockId = null;
         }
+        await requireTimerPersistence(pendingRecordSave, 'stop-timer');
         currentPauseStart = null;
         // 停止提示音
         try { stopAllAudio(); } catch (e) {}
@@ -15676,19 +16589,17 @@
         syncState.pausedElapsedSeconds = null;
         syncState.distractionCount = 0;
         syncState.distractionSavedCount = 0;
-        
-        // 🔧 修复：同步停止状态到云端（fire-and-forget 模式，避免阻塞 UI）
-        if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
-            // 🔧 优化：使用 fire-and-forget 模式，不 await 避免阻塞 UI
-            // 第三个参数 true 表示 forceSync，确保停止状态能立即同步到其他设备
-            SyncManager.updateLocal(syncState, true, true).then(() => {
-                Logger.info('🔄 stopTimer: 状态已异步同步到云端');
-            }).catch(e => {
-                Logger.debug('🔄 stopTimer: 同步到云端失败（忽略）', e);
-            });
+        if (Number(syncState?.stateSchemaVersion || 0) >= (typeof TOMATO_STATE_SCHEMA_VERSION === 'number' ? TOMATO_STATE_SCHEMA_VERSION : 2)) {
+            syncState.activeTimer = null;
+            syncState.openRecordId = null;
+            syncState.writerLease = null;
         }
-        if (pendingRecordSave) {
-            waitForTimerPersistence(pendingRecordSave, 'stop-timer');
+
+        // 提交停止状态后再向调用方返回，避免“本地已停止、云端仍在运行”。
+        if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
+            const transition = await TransitionExecutor.execute({ transitionId: createTomatoUuid('stop') }, () => syncState);
+            if (transition?.state) syncState = transition.state;
+            if (!transition?.ok) throw new Error('STOP_SYNC_COMMIT_FAILED');
         }
     }
 
@@ -15738,6 +16649,15 @@
             }, Math.max(1000, Number(timeoutMs) || 8000));
         });
         return Promise.race([guarded, timeout]);
+    }
+
+    async function requireTimerPersistence(promise, label = 'timer-persist') {
+        if (!promise) return true;
+        const saved = await waitForTimerPersistence(promise, label);
+        if (saved !== true) {
+            throw new Error(`${label.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_FAILED`);
+        }
+        return true;
     }
 
     function hasExactHistoryDuplicate(records, recordData) {
@@ -15816,6 +16736,49 @@
         ].map(normalizeTomatoRecordKeyPart).join('|');
     }
 
+    function buildLegacyTimerRecordIdentity(startTimestamp, mode, taskBlockId, databaseBlockId, isReset, isCompleted) {
+        const key = buildRecordEndTimeInFlightKey(startTimestamp, mode, taskBlockId, databaseBlockId, isReset, isCompleted);
+        return key ? `legacy_${hashHistoryText(key)}` : '';
+    }
+
+    function isLegacyTimerStateSnapshot(state) {
+        const value = state && typeof state === 'object' ? state : null;
+        return !!value
+            && !value.activeTimer
+            && ['RUNNING', 'PAUSED'].includes(String(value.status || ''));
+    }
+
+    async function ensureTimerLeaseForFinalization(state, allowActiveTimerTransfer = false) {
+        const value = state && typeof state === 'object' ? state : null;
+        const isLegacy = isLegacyTimerStateSnapshot(value);
+        const hasActiveTimer = !!(value?.activeTimer && typeof value.activeTimer === 'object')
+            && ['RUNNING', 'PAUSED'].includes(String(value?.status || ''));
+        if (!isLegacy && !(allowActiveTimerTransfer && hasActiveTimer)) return { ok: true, state };
+        const owner = String(
+            value?.writerLease?.ownerDeviceId
+            || value?.activeTimer?.ownerDeviceId
+            || value?.lastModifiedDevice
+            || ''
+        ).trim();
+        if (!owner || owner === SYNC_DEVICE_ID) return { ok: true, state };
+
+        try {
+            const transferred = await TransitionExecutor.transferLease(SYNC_DEVICE_ID);
+            if (!transferred) return { ok: false, reason: 'lease-transfer-failed', state };
+            const accepted = typeof SyncManager?.getState === 'function'
+                ? SyncManager.getState()
+                : syncState;
+            if (!accepted || typeof accepted !== 'object') {
+                return { ok: false, reason: 'lease-state-refresh-failed', state };
+            }
+            syncState = accepted;
+            return { ok: true, state: accepted };
+        } catch (error) {
+            Logger.warn('recordEndTime: timer lease transfer failed', error);
+            return { ok: false, reason: 'lease-transfer-error', state };
+        }
+    }
+
     function buildTomatoTaskDurationApplyKey(recordData, fallbackTaskBlockId = '') {
         const start = String(recordData?.start || '').trim();
         const mode = String(recordData?.mode || '').trim();
@@ -15861,8 +16824,32 @@
         const lastSavedDistractionCountAtEnd = lastSavedDistractionCount;
         const routineMetaAtEnd = getActiveRoutineButtonRecordMeta();
         const routineButtonHighlightColorAtEnd = routineButtonHighlightColor;
+        const hideShortRecordsAtEnd = userSettings?.hideShortRecords !== false;
         const initialRemainingSecondsAtEnd = getInitialRemainingAtStart();
-        const syncStateAtEnd = syncState && typeof syncState === 'object' ? { ...syncState } : null;
+        let syncStateAtEnd = syncState && typeof syncState === 'object' ? { ...syncState } : null;
+        let v2TimerSnapshot = syncStateAtEnd?.activeTimer && typeof syncStateAtEnd.activeTimer === 'object'
+            ? syncStateAtEnd.activeTimer : null;
+        let isLegacyTimerState = isLegacyTimerStateSnapshot(syncStateAtEnd);
+        const allowActiveTimerTransfer = isReset || isCompleted;
+        if (isLegacyTimerState || allowActiveTimerTransfer) {
+            const lease = await ensureTimerLeaseForFinalization(syncStateAtEnd, allowActiveTimerTransfer);
+            if (!lease.ok) {
+                Logger.warn('recordEndTime: timer finalization blocked', {
+                    reason: lease.reason,
+                    ownerDeviceId: syncStateAtEnd?.writerLease?.ownerDeviceId
+                        || syncStateAtEnd?.activeTimer?.ownerDeviceId
+                        || syncStateAtEnd?.lastModifiedDevice
+                        || null,
+                });
+                return false;
+            }
+            syncStateAtEnd = lease.state && typeof lease.state === 'object'
+                ? { ...lease.state }
+                : syncStateAtEnd;
+            v2TimerSnapshot = syncStateAtEnd?.activeTimer && typeof syncStateAtEnd.activeTimer === 'object'
+                ? syncStateAtEnd.activeTimer : null;
+            isLegacyTimerState = isLegacyTimerStateSnapshot(syncStateAtEnd);
+        }
         const currentSessionIdAtEnd = currentSessionId;
         const currentPauseStartAtEnd = currentPauseStart;
         const canMutateLiveTimerStateFromSnapshot = () => {
@@ -15918,7 +16905,10 @@
 
         const now = new Date(endTimeMs);
         
-        const actualElapsedMs = Math.max(0, endTimeMs - startTimeMs);
+        const effectiveStartTimeMs = Number(v2TimerSnapshot?.segmentStartMs) > 0
+            ? Number(v2TimerSnapshot.segmentStartMs)
+            : startTimeMs;
+        const actualElapsedMs = Math.max(0, endTimeMs - effectiveStartTimeMs);
         const actualElapsedSec = Math.floor(actualElapsedMs / 1000);
         const actualElapsedMin = Math.round(actualElapsedMs / 60000);
 
@@ -15952,6 +16942,16 @@
             isReset,
             isCompleted
         );
+        const legacyRecordId = isLegacyTimerState
+            ? buildLegacyTimerRecordIdentity(
+                startTimestamp,
+                modeAtEnd,
+                inFlightTaskBlockId,
+                inFlightDatabaseBlockId,
+                isReset,
+                isCompleted,
+            )
+            : '';
         if (recordEndTimeInFlightKey && recordEndTimeInFlightKeys.has(recordEndTimeInFlightKey)) {
             Logger.info('🔍 recordEndTime: 跳过正在保存的重复记录', { key: recordEndTimeInFlightKey });
             return false;
@@ -15965,7 +16965,9 @@
 
         // 结束链路可能不等待历史落盘；sessionId 必须在第一次 await 前按快照确定。
         if (!recordSessionId || shouldBeNewTomato) {
-            recordSessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            recordSessionId = legacyRecordId
+                ? `session_${legacyRecordId}`
+                : 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
             if (canMutateLiveTimerStateFromSnapshot() && currentSessionId === currentSessionIdAtEnd) currentSessionId = recordSessionId;
             Logger.info('🔍 recordEndTime: 生成新的 sessionId =', recordSessionId, ', shouldBeNewTomato =', shouldBeNewTomato, ', isResumingFromBreak =', isResumingFromBreak);
         }
@@ -15974,25 +16976,72 @@
         }
 
         try {
-            const durationMinToSave = finalElapsedMin;
-            const durationSecToSave = finalElapsedSec;
+            const durationMsToSave = Math.max(0, Math.min(
+                actualElapsedMs,
+                (modeAtEnd === 'countdown' || modeAtEnd === 'break')
+                    ? Math.max(1, Number(v2TimerSnapshot?.plannedDurationSec || currentDurationAtEnd * 60) * 1000)
+                    : (typeof TOMATO_HARD_LIMIT_SEC === 'number' ? TOMATO_HARD_LIMIT_SEC : 86400) * 1000
+            ));
+            const durationSecToSave = durationMsToSave / 1000;
+            const durationMinToSave = durationMsToSave / 60000;
             const syncedDistractionTotal = typeof syncStateAtEnd?.distractionCount === 'number' ? syncStateAtEnd.distractionCount : (currentDistractionCountAtEnd || 0);
             const syncedDistractionSaved = typeof syncStateAtEnd?.distractionSavedCount === 'number' ? syncStateAtEnd.distractionSavedCount : (lastSavedDistractionCountAtEnd || 0);
             const distractionDelta = Math.max(0, (syncedDistractionTotal || 0) - (syncedDistractionSaved || 0));
 
             // 日志移除：减少开销
 
-            const assocTaskBlockId = (segmentTaskBlockIdAtEnd ?? currentTaskBlockIdAtEnd) || null;
-            const assocTaskBlockName = (segmentTaskBlockNameAtEnd ?? currentTaskBlockNameAtEnd) || null;
-            const assocDatabaseBlockId = (segmentDatabaseBlockIdAtEnd ?? currentDatabaseBlockIdAtEnd) || null;
+            const v2TimerAtEnd = v2TimerSnapshot;
+            if (v2TimerAtEnd?.status === 'PAUSED' && !Number(v2TimerAtEnd.segmentStartMs) && !v2TimerAtEnd.openRecordId) {
+                // There is no open physical segment left to close. The outer
+                // stop/reset transition will still commit the terminal state.
+                if (recordEndTimeInFlightKey) recordEndTimeInFlightKeys.delete(recordEndTimeInFlightKey);
+                return true;
+            }
+            if (Number(v2TimerAtEnd?.segmentStartMs) > 0) {
+                startTimeMs = Number(v2TimerAtEnd.segmentStartMs);
+                startTimestamp = new Date(startTimeMs).toISOString();
+            }
+            // Resolve the association against the active focus binding. This
+            // prevents a local sidecar from being applied to a remote session
+            // or to a later association version after a break/lease transfer.
+            const associationAtEnd = getEffectiveTaskAssociation(syncStateAtEnd) || null;
+            const useValidatedV2Association = Number(syncStateAtEnd?.stateSchemaVersion || 0) >= TOMATO_STATE_SCHEMA_VERSION
+                && !!v2TimerAtEnd;
+            const assocTaskBlockId = useValidatedV2Association
+                ? (associationAtEnd?.taskBlockId || null)
+                : ((segmentTaskBlockIdAtEnd ?? currentTaskBlockIdAtEnd) || null);
+            const assocTaskBlockName = useValidatedV2Association
+                ? (associationAtEnd?.taskBlockName || null)
+                : ((segmentTaskBlockNameAtEnd ?? currentTaskBlockNameAtEnd) || null);
+            const assocDatabaseBlockId = useValidatedV2Association
+                ? (associationAtEnd?.databaseBlockId || null)
+                : ((segmentDatabaseBlockIdAtEnd ?? currentDatabaseBlockIdAtEnd) || null);
             const shouldSaveTaskAssociation = !!(assocTaskBlockId || assocTaskBlockName || assocDatabaseBlockId);
+            let attrHostIdAtEnd = associationAtEnd?.attrHostId || null;
+            if (!attrHostIdAtEnd && assocTaskBlockId) {
+                try { attrHostIdAtEnd = (await resolveTomatoAttrContext(assocTaskBlockId))?.attrHostId || assocTaskBlockId; } catch (e) { attrHostIdAtEnd = assocTaskBlockId; }
+            }
+            const sourceKindAtEnd = String(associationAtEnd?.sourceKind || associationAtEnd?.source || 'manual');
+            const associationVersionAtEnd = String(associationAtEnd?.associationVersion || createTomatoUuid('assoc'));
+            const phaseAtEnd = modeAtEnd === 'break' || modeAtEnd === 'stopwatch-break' ? 'break' : 'focus';
+            const physicalSessionId = phaseAtEnd === 'break'
+                ? String(v2TimerAtEnd?.sessionId || createTomatoUuid('break'))
+                : recordSessionId;
+            const focusSessionIdAtEnd = String(v2TimerAtEnd?.focusSessionId || (phaseAtEnd === 'break'
+                ? (v2TimerAtEnd?.parentSessionId || pendingBreakSessionId || recordSessionId)
+                : recordSessionId) || '');
             
             const recordData = {
+                recordId: String(v2TimerAtEnd?.openRecordId || legacyRecordId || createTomatoUuid('record')),
+                transitionId: createTomatoUuid('transition'),
                 start: startTimestamp,
                 end: now.toISOString(),
+                durationMs: durationMsToSave,
                 durationMin: durationMinToSave,
                 durationSec: durationSecToSave,
                 mode: modeAtEnd,
+                phase: phaseAtEnd,
+                timerMode: modeAtEnd === 'stopwatch' || modeAtEnd === 'stopwatch-break' ? 'stopwatch' : 'countdown',
                 timestamp: now.getTime(),
                 date: formatDateKey(now),
                 dateTime: now.toLocaleString('zh-CN'),
@@ -16002,13 +17051,31 @@
                 taskBlockId: shouldSaveTaskAssociation ? assocTaskBlockId : null,
                 taskBlockName: shouldSaveTaskAssociation ? assocTaskBlockName : null,
                 databaseBlockId: shouldSaveTaskAssociation ? assocDatabaseBlockId : null,
+                attrHostId: shouldSaveTaskAssociation ? attrHostIdAtEnd : null,
+                source: sourceKindAtEnd,
+                sourceKind: sourceKindAtEnd,
+                associationVersion: associationVersionAtEnd,
                 // 🔧 v9.5 新增：会话ID，用于关联同一个番茄钟的多次暂停/恢复
-                sessionId: recordSessionId,
+                sessionId: physicalSessionId,
                 // 🔧 v9.5 新增：计划时长，用于统计去重
                 plannedDuration: plannedDurationOverride === 'elapsed'
                     ? durationMinToSave
                     : (Number.isFinite(plannedDurationOverride) ? plannedDurationOverride : currentDurationAtEnd),
+                plannedDurationSec: modeAtEnd === 'stopwatch' || modeAtEnd === 'stopwatch-break'
+                    ? null
+                    : (plannedDurationOverride === 'elapsed'
+                        ? durationMsToSave / 1000
+                        : (Number.isFinite(plannedDurationOverride) ? Number(plannedDurationOverride) * 60 : currentDurationAtEnd * 60)),
                 distractionCount: distractionDelta,
+                disposition: 'pending',
+                visibility: 'visible',
+                schemaVersion: TOMATO_HISTORY_SCHEMA_VERSION,
+                parentSessionId: phaseAtEnd === 'break'
+                    ? (v2TimerAtEnd?.parentSessionId || syncStateAtEnd?.continuation?.focusSessionId || pendingBreakSessionId || null)
+                    : null,
+                focusSessionId: focusSessionIdAtEnd,
+                endReason: isCompleted ? 'completed' : (isReset ? 'aborted' : (phaseAtEnd === 'break' ? 'finish-break' : 'manual-end')),
+                recordKind: phaseAtEnd === 'break' ? 'break' : 'focus',
                 // 🔧 新增：按钮颜色，用于时间轴高亮显示
                 routineButtonId: routineMetaAtEnd?.id || null,
                 routineButtonName: routineMetaAtEnd?.name || null,
@@ -16022,68 +17089,61 @@
                 recordData.luminaRecords = attachedLuminaRecords;
             }
             const taskDurationApplyKey = buildTomatoTaskDurationApplyKey(recordData, assocTaskBlockId);
+            const accountingPolicyForJournal = getTomatoAccountingPolicy();
+            const accountingDraftForJournal = assocTaskBlockId && attrHostIdAtEnd && accountingPolicyForJournal.enabled !== false ? {
+                effectId: `duration:${recordData.recordId}`,
+                transitionId: recordData.transitionId,
+                recordId: recordData.recordId,
+                focusSessionId: recordData.focusSessionId,
+                kind: 'duration',
+                countDelta: 0,
+                taskBlockId: assocTaskBlockId,
+                attrHostId: attrHostIdAtEnd,
+                sourceKind: sourceKindAtEnd,
+                associationVersion: associationVersionAtEnd,
+                timerMode: modeAtEnd === 'stopwatch' || modeAtEnd === 'stopwatch-break' ? 'stopwatch' : 'countdown',
+                historyRevision: 0,
+                policy: accountingPolicyForJournal,
+                policyHash: hashAccountingPolicy(accountingPolicyForJournal),
+                durationMs: durationMsToSave,
+                applyKey: taskDurationApplyKey,
+            } : null;
+            const countAccountingDraftForJournal = assocTaskBlockId && attrHostIdAtEnd
+                && accountingPolicyForJournal.enabled !== false
+                && modeAtEnd === 'countdown' && isCompleted && !isReset && !isStopwatch
+                ? {
+                    effectId: `count:${recordData.focusSessionId}`,
+                    transitionId: recordData.transitionId,
+                    recordId: recordData.recordId,
+                    focusSessionId: recordData.focusSessionId,
+                    kind: 'count',
+                    countDelta: 1,
+                    taskBlockId: assocTaskBlockId,
+                    attrHostId: attrHostIdAtEnd,
+                    sourceKind: sourceKindAtEnd,
+                    associationVersion: associationVersionAtEnd,
+                    timerMode: 'countdown',
+                    historyRevision: 0,
+                    policy: accountingPolicyForJournal,
+                    policyHash: hashAccountingPolicy(accountingPolicyForJournal),
+                    durationMs: 0,
+                    applyKey: `count:${recordData.focusSessionId}`,
+                }
+                : null;
+            const accountingDraftsForJournal = [accountingDraftForJournal, countAccountingDraftForJournal].filter(Boolean);
+            const transitionDrafts = {
+                historyDrafts: [recordData],
+                accountingDrafts: accountingDraftsForJournal,
+            };
 
-            let didAppendRecord = false;
-            let didCreateHistoryRecord = false;
-            let didSaveHistoryRecords = false;
             let didSkipHistoryForShortRecord = false;
 
-            // 🔧 如果开启隐藏短记录：以秒为准，避免因分钟四舍五入导致“1分钟短记录”
-            if (userSettings.hideShortRecords && Number(durationSecToSave || 0) < 60 && !hasLuminaHistoryRecords(recordData)) {
-                Logger.info('🔍 recordEndTime: 时长小于1分钟且开启隐藏短记录，跳过保存');
+            // 短片段仍持久化为 accounting-only，统计/历史视图会过滤它，
+            // 这样任务累计不会因为“隐藏短记录”而丢失。
+            if (hideShortRecordsAtEnd && durationMsToSave < 60000 && !hasLuminaHistoryRecords(recordData)) {
+                recordData.visibility = 'hidden';
+                recordData.recordKind = 'accounting-only';
                 didSkipHistoryForShortRecord = true;
-            } else {
-                const pushRecordIfNeeded = (records) => {
-                    const duplicateIndex = findHistoryDuplicateIndex(records, recordData);
-                    if (duplicateIndex >= 0) {
-                        if (hasLuminaHistoryRecords(recordData) && appendLuminaRecordToHistoryRecord(records[duplicateIndex], recordData.luminaRecords[0])) {
-                            const extra = recordData.luminaRecords.slice(1);
-                            extra.forEach(entry => appendLuminaRecordToHistoryRecord(records[duplicateIndex], entry));
-                            return true;
-                        }
-                        Logger.info('🔍 recordEndTime: 检测到完全重复记录，跳过保存', {
-                            start: recordData.start,
-                            end: recordData.end,
-                            mode: recordData.mode
-                        });
-                        return false;
-                    }
-                    records.push(recordData);
-                    didCreateHistoryRecord = true;
-                    return true;
-                };
-                didSaveHistoryRecords = await mutateHistoryRecords(records => {
-                    if (modeAtEnd === 'break' || modeAtEnd === 'stopwatch-break') {
-                        recordData.mode = modeAtEnd === 'break' ? 'break' : 'stopwatch-break';
-                        recordData.sessionId = recordSessionId || pendingBreakSessionId;
-                        recordData.plannedDuration = currentDurationAtEnd;
-                        didAppendRecord = pushRecordIfNeeded(records);
-                    } else if (modeAtEnd === 'countdown') {
-                        didAppendRecord = pushRecordIfNeeded(records);
-                        if (currentStartTimestamp === currentStartTimestampAtEnd) isFreshTomatoStart = false;
-                    } else if (modeAtEnd === 'stopwatch') {
-                        didAppendRecord = pushRecordIfNeeded(records);
-                    }
-                    return didAppendRecord;
-                }, { record: recordData });
-                if (canMutateLiveTimerStateFromSnapshot()) lastSavedDistractionCount = syncedDistractionTotal || 0;
-                // 🔧 清除按钮高亮设置（记录已保存）
-                // 注意：只清除颜色，保留 activeRoutineButtonIndex 供新按钮使用
-                if (canMutateLiveTimerStateFromSnapshot() && routineButtonHighlightColor === routineButtonHighlightColorAtEnd) routineButtonHighlightColor = null;
-                if (!skipSyncUpdate && canMutateLiveTimerStateFromSnapshot() && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
-                    try {
-                        syncState.distractionCount = syncedDistractionTotal || 0;
-                        syncState.distractionSavedCount = syncedDistractionTotal || 0;
-                        await SyncManager.updateLocal(syncState, true);
-                    } catch (e) {}
-                }
-                if (didAppendRecord && didSaveHistoryRecords) {
-                    Logger.info('✅ 记录已保存');
-                    markTimelineHistoryDirty();
-                    try { if (userSettings?.timeline?.enabled) updateTimelineBar(true); } catch (e) {}
-                } else if (didAppendRecord) {
-                    Logger.warn('历史记录保存失败，跳过时间轴缓存更新');
-                }
             }
 
             // 🔧 v9.5：如果这是番茄钟记录，保存 sessionId 供休息记录使用
@@ -16107,30 +17167,70 @@
             }
 
             Logger.info('🔍 自定义属性更新检查:', { taskBlockId: currentTaskBlockIdAtEnd, durationSecToSave, timerMode: modeAtEnd });
-            const shouldUpdateTaskDurationAttrs = didSkipHistoryForShortRecord || (didCreateHistoryRecord && didSaveHistoryRecords);
-            const shouldUpdateTomatoCount = currentTaskBlockIdAtEnd && modeAtEnd === 'countdown' && isCompleted && !isReset && !isStopwatch && didCreateHistoryRecord && didSaveHistoryRecords;
-            if (currentTaskBlockIdAtEnd && durationSecToSave > 0 && modeAtEnd !== 'break' && modeAtEnd !== 'stopwatch-break' && shouldUpdateTaskDurationAttrs) {
-                // 🔧 修复：传递秒数以便更精确地处理小于1分钟的记录
-                // 🔧 修复：添加 await 确保异步函数正确执行
-                Logger.info('🔍 调用 updateTaskBlockTomatoTime:', currentTaskBlockIdAtEnd, durationSecToSave);
-                await updateTaskBlockTomatoTime(currentTaskBlockIdAtEnd, durationSecToSave, {
-                    applyKey: taskDurationApplyKey,
-                    countDelta: shouldUpdateTomatoCount ? 1 : 0,
+            const shouldUpdateTaskDurationAttrs = didSkipHistoryForShortRecord || durationSecToSave > 0;
+            const shouldUpdateTomatoCount = assocTaskBlockId && modeAtEnd === 'countdown' && isCompleted && !isReset && !isStopwatch;
+            const accountingTaskBlockId = assocTaskBlockId || currentTaskBlockIdAtEnd;
+            const queuedAccountingDrafts = accountingDraftsForJournal.filter(effect => {
+                if (effect.kind === 'count') return !!shouldUpdateTomatoCount;
+                return !!(accountingTaskBlockId
+                    && durationSecToSave > 0
+                    && modeAtEnd !== 'break'
+                    && modeAtEnd !== 'stopwatch-break'
+                    && shouldUpdateTaskDurationAttrs);
+            });
+            const buildCanonicalDraft = (baseState) => {
+                const draft = cloneSyncState(baseState || syncStateAtEnd || syncState || {});
+                const active = draft.activeTimer && typeof draft.activeTimer === 'object'
+                    ? draft.activeTimer : null;
+                if (!active) return draft;
+                active.accumulatedMs = Math.max(Number(active.accumulatedMs) || 0, Number(active.accumulatedMs || 0) + durationMsToSave);
+                active.segmentStartMs = null;
+                active.openRecordId = null;
+                draft.openRecordId = null;
+                const terminal = isCompleted || isReset || phaseAtEnd === 'break' || !skipSyncUpdate;
+                if (terminal) {
+                    draft.activeTimer = null;
+                    draft.status = 'IDLE';
+                    draft.writerLease = null;
+                } else {
+                    active.status = 'PAUSED';
+                    active.pausedAtMs = endTimeMs;
+                    draft.status = 'PAUSED';
+                    draft.currentPauseStart = endTimeMs;
+                }
+                return draft;
+            };
+            const transition = await TransitionExecutor.execute(
+                {
+                    transitionId: recordData.transitionId,
+                    historyDrafts: transitionDrafts.historyDrafts,
+                    accountingDrafts: queuedAccountingDrafts,
+                    allowEffectOnly: isLegacyTimerState,
+                },
+                latest => buildCanonicalDraft(latest),
+            );
+            if (!transition?.ok) {
+                Logger.warn('recordEndTime: transition rejected', {
+                    blocked: transition?.blocked === true,
+                    notOwner: transition?.notOwner === true,
+                    stale: transition?.stale === true,
+                    journalStatus: transition?.journal?.status || null,
                 });
-                Logger.info('🔍 updateTaskBlockTomatoTime 执行完成');
-            } else {
-                Logger.info('🔍 跳过自定义属性更新，条件不满足:', {
-                    hasTaskBlockId: !!currentTaskBlockIdAtEnd,
-                    durationSecToSave,
-                    timerMode: modeAtEnd,
-                    didCreateHistoryRecord,
-                    didSaveHistoryRecords,
-                    didSkipHistoryForShortRecord
-                });
+                if (recordEndTimeInFlightKey) recordEndTimeInFlightKeys.delete(recordEndTimeInFlightKey);
+                return false;
             }
+            if (transition.state) syncState = transition.state;
+            if (canMutateLiveTimerStateFromSnapshot()) lastSavedDistractionCount = syncedDistractionTotal || 0;
+            if (canMutateLiveTimerStateFromSnapshot() && routineButtonHighlightColor === routineButtonHighlightColorAtEnd) routineButtonHighlightColor = null;
+            if (modeAtEnd === 'countdown' && currentStartTimestamp === currentStartTimestampAtEnd) isFreshTomatoStart = false;
+            Logger.info('✅ 记录已通过事务执行器保存');
+            markTimelineHistoryDirty();
+            try { if (userSettings?.timeline?.enabled) updateTimelineBar(true); } catch (e) {}
         } catch (e) {
             // 错误日志保留用于调试
             console.error('保存记录时出错:', e);
+            if (recordEndTimeInFlightKey) recordEndTimeInFlightKeys.delete(recordEndTimeInFlightKey);
+            return false;
         }
 
         // 🔧 修复：正计时保存完成后清除正计时的时间变量
@@ -16226,6 +17326,19 @@
         currentTaskBlockId = resolvedTaskBlockId;
         currentTaskBlockName = resolvedTaskBlockName || null;
         currentDatabaseBlockId = databaseBlockId || null;
+        let v2Association = null;
+        if (resolvedTaskBlockId || currentDatabaseBlockId) {
+            let attrHostId = resolvedTaskBlockId || currentDatabaseBlockId;
+            try { attrHostId = (await resolveTomatoAttrContext(resolvedTaskBlockId || currentDatabaseBlockId))?.attrHostId || attrHostId; } catch (e) {}
+            v2Association = buildTaskAssociationSnapshot({
+                taskBlockId: resolvedTaskBlockId,
+                taskBlockName: currentTaskBlockName,
+                databaseBlockId: currentDatabaseBlockId,
+                attrHostId,
+                source: focusRestoreSource || 'manual',
+                sourceKind: focusRestoreSource || 'manual',
+            });
+        }
         
         // 🔧 修复：清除关联时，同时清除日常按钮的状态，恢复默认图标
         if (!resolvedTaskBlockId) {
@@ -16238,24 +17351,41 @@
         try { updateTaskBlockTooltip(); } catch (e) {}
 
         if (syncState) {
+            if (!syncState.integrationEnvelope || typeof syncState.integrationEnvelope !== 'object') syncState.integrationEnvelope = {};
             if (isTaskAssociationSyncEnabled()) {
                 syncState.taskBlockId = currentTaskBlockId;
                 syncState.taskBlockName = currentTaskBlockName;
                 syncState.databaseBlockId = currentDatabaseBlockId;
+                syncState.integrationEnvelope.taskAssociation = v2Association;
             } else {
                 syncState.taskBlockId = null;
                 syncState.taskBlockName = null;
                 syncState.databaseBlockId = null;
+                syncState.integrationEnvelope.taskAssociation = null;
+                const bindingId = syncState.activeTimer?.phase === 'break'
+                    ? (syncState.activeTimer?.parentSessionId || syncState.continuation?.focusSessionId)
+                    : syncState.activeTimer?.sessionId;
+                setLocalTaskAssociationSidecar(v2Association && bindingId ? {
+                    localOwnerDeviceId: SYNC_DEVICE_ID,
+                    boundSessionId: bindingId,
+                    associationVersion: v2Association.associationVersion,
+                    association: v2Association,
+                } : null);
             }
         }
 
         if (isTaskAssociationSyncEnabled() && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             try {
-                await SyncManager.updateLocal({
+                await commitTimerState({
+                    ...syncState,
                     taskBlockId: currentTaskBlockId,
                     taskBlockName: currentTaskBlockName,
                     databaseBlockId: currentDatabaseBlockId,
-                }, true);
+                    integrationEnvelope: {
+                        ...(syncState.integrationEnvelope || {}),
+                        taskAssociation: v2Association,
+                    },
+                }, 'association');
             } catch (e) {}
         }
 
@@ -16269,6 +17399,8 @@
                 prevTaskBlockId,
                 prevTaskBlockName,
                 prevDatabaseBlockId,
+                source: v2Association?.source || focusRestoreSource || 'manual',
+                sourceKind: v2Association?.sourceKind || focusRestoreSource || 'manual',
             };
             try { globalThis.__taskHorizonOnTomatoAssociationChanged?.(detail); } catch (e) {}
             try { window.dispatchEvent(new CustomEvent('tomato:association-changed', { detail })); } catch (e) {}
@@ -16324,7 +17456,7 @@
         }
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             try {
-                await SyncManager.updateLocal(syncState, true);
+                await commitTimerState(syncState, 'rollback');
             } catch (e) {}
         }
     }
@@ -16339,12 +17471,13 @@
     }
 
     async function switchToCountdownAndStart(duration) {
-        setFocusRestoreSource(null);
+        setFocusRestoreSource(resolveCurrentAssociationFocusSource());
         // 🔧 修复：切换到番茄钟模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
 
         // 🔧 修复：正计时模式下需要传递 isStopwatch = true
         const pendingRecordSave = finalizeCurrentSegmentBeforeTransition();
+        await requireTimerPersistence(pendingRecordSave, 'switch-to-countdown');
         preBreakState = null;
         pausedRemainingSeconds = null;
         currentStartTimestamp = null;
@@ -16357,6 +17490,7 @@
         remainingSeconds = duration * 60;
         isRunning = false;
         lastTomatoConfig = { duration, mode: 'countdown' };
+        pendingFocusCountdownDuration = null;
         lastTickTime = 0;
         updateDisplay();
         try {
@@ -16365,9 +17499,6 @@
             Logger.error('startTimer失败:', e);
             showMiniToast('启动计时失败');
             await rollbackFailedTimerStart(false);
-        }
-        if (pendingRecordSave) {
-            await waitForTimerPersistence(pendingRecordSave, 'switch-to-countdown');
         }
     }
 
@@ -16379,6 +17510,7 @@
 
         // 🔧 修复：正计时模式下需要传递 isStopwatch = true
         const pendingRecordSave = finalizeCurrentSegmentBeforeTransition();
+        await requireTimerPersistence(pendingRecordSave, 'switch-to-countdown-with-task');
         preBreakState = null;
         pausedRemainingSeconds = null;
 
@@ -16419,18 +17551,16 @@
             // 启动保持高亮的定时器
             startHighlightKeepAlive();
         }
-        if (pendingRecordSave) {
-            await waitForTimerPersistence(pendingRecordSave, 'switch-to-countdown-with-task');
-        }
     }
 
     async function switchToStopwatchAndStart() {
-        setFocusRestoreSource(null);
+        setFocusRestoreSource(resolveCurrentAssociationFocusSource());
         // 🔧 修复：切换到正计时模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
 
         // 🔧 修复：正计时模式下需要传递 isStopwatch = true
         const pendingRecordSave = finalizeCurrentSegmentBeforeTransition();
+        await requireTimerPersistence(pendingRecordSave, 'switch-to-stopwatch');
         preBreakState = null;
         timerMode = 'stopwatch';
         // 🔧 修复：同步更新 syncState.mode，确保自定义属性更新正确判断模式
@@ -16462,9 +17592,6 @@
             showMiniToast('启动计时失败');
             await rollbackFailedTimerStart(false);
         }
-        if (pendingRecordSave) {
-            await waitForTimerPersistence(pendingRecordSave, 'switch-to-stopwatch');
-        }
     }
 
     // 带任务块关联的正计时切换
@@ -16474,6 +17601,7 @@
         clearTimelineActiveLayers();
 
         const pendingRecordSave = finalizeCurrentSegmentBeforeTransition();
+        await requireTimerPersistence(pendingRecordSave, 'switch-to-stopwatch-with-task');
         preBreakState = null;
         timerMode = 'stopwatch';
         // 🔧 修复：同步更新 syncState.mode，确保自定义属性更新正确判断模式
@@ -16525,12 +17653,10 @@
             // 启动保持高亮的定时器
             startHighlightKeepAlive();
         }
-        if (pendingRecordSave) {
-            await waitForTimerPersistence(pendingRecordSave, 'switch-to-stopwatch-with-task');
-        }
     }
 
     async function startBreakMode(duration) {
+        const focusContinuationAtBreak = TimerStateMachine.captureFocusContinuation(syncState, Date.now());
         if (timerMode === 'countdown') {
             let actualRemaining = null;
             if (isRunning && startTime > 0) {
@@ -16584,6 +17710,7 @@
         // 🔧 保存按钮颜色，因为 recordEndTime 会清除它
         const savedButtonColor = routineButtonHighlightColor;
         const pendingRecordSave = finalizeCurrentSegmentBeforeTransition();
+        await requireTimerPersistence(pendingRecordSave, 'start-break-mode');
         
         // 🔧 恢复按钮颜色
         routineButtonHighlightColor = savedButtonColor;
@@ -16609,17 +17736,26 @@
         updateDisplay();
         if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             // 第三个参数 true 表示 forceSync，确保开始状态能立即同步到其他设备
-            await SyncManager.updateLocal(syncState, true, true);
+            const transition = await TransitionExecutor.execute({ transitionId: createTomatoUuid('prepare-break') }, state => ({
+                ...state,
+                mode: 'break',
+                duration: duration * 60,
+                status: 'IDLE',
+                activeTimer: null,
+                openRecordId: null,
+                writerLease: null,
+                continuation: focusContinuationAtBreak || state.continuation || null,
+            }));
+            if (transition?.state) syncState = transition.state;
+            if (!transition?.ok) throw new Error(transition?.blocked ? 'BREAK_TRANSITION_BLOCKED' : 'BREAK_TRANSITION_FAILED');
         }
 
         updateDisplay();
         await startTimer();
-        if (pendingRecordSave) {
-            await waitForTimerPersistence(pendingRecordSave, 'start-break-mode');
-        }
     }
 
     async function startStopwatchBreakMode() {
+        const focusContinuationAtBreak = TimerStateMachine.captureFocusContinuation(syncState, Date.now());
         if (timerMode === 'countdown') {
             let actualRemaining = null;
             if (isRunning && startTime > 0) {
@@ -16670,6 +17806,7 @@
         // 🔧 保存按钮颜色，因为 recordEndTime 会清除它
         const savedButtonColor = routineButtonHighlightColor;
         const pendingRecordSave = finalizeCurrentSegmentBeforeTransition();
+        await requireTimerPersistence(pendingRecordSave, 'start-stopwatch-break-mode');
 
         // 🔧 恢复按钮颜色
         routineButtonHighlightColor = savedButtonColor;
@@ -16698,11 +17835,12 @@
             currentPauseStart: null,
             distractionCount: 0,
             distractionSavedCount: 0,
+            continuation: focusContinuationAtBreak || syncState.continuation || null,
         });
         updateDisplay();
         if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             // 第三个参数 true 表示 forceSync，确保开始状态能立即同步到其他设备
-            await SyncManager.updateLocal(syncState, true, true);
+            await commitTimerState(syncState, 'stopwatch-break');
         }
 
         updateDisplay();
@@ -16713,9 +17851,6 @@
             showMiniToast('启动计时失败');
             await rollbackFailedTimerStart(false);
         }
-        if (pendingRecordSave) {
-            await waitForTimerPersistence(pendingRecordSave, 'start-stopwatch-break-mode');
-        }
     }
 
     async function startStopwatchForCurrentPhase() {
@@ -16724,6 +17859,127 @@
             return;
         }
         await switchToStopwatchAndStart();
+    }
+
+    function normalizeCountdownDurationMinutes(durationMinutes) {
+        const rawMinutes = Number(durationMinutes);
+        const safeMinutes = Number.isFinite(rawMinutes) && rawMinutes > 0 ? rawMinutes : 5;
+        return Math.max(5, Math.min(180, Math.round(safeMinutes / 5) * 5));
+    }
+
+    async function setActiveCountdownDuration(durationMinutes) {
+        const requestedMinutes = normalizeCountdownDurationMinutes(durationMinutes);
+        const transition = await TransitionExecutor.execute(
+            { transitionId: createTomatoUuid('adjust-duration') },
+            state => {
+                const next = cloneSyncState(state);
+                const timer = next.activeTimer;
+                if (!timer || timer.timerMode === 'stopwatch' || !['RUNNING', 'PAUSED'].includes(timer.status)) {
+                    return next;
+                }
+                const activeMs = calculateActiveMs(timer);
+                const minimumMinutes = Math.max(5, Math.ceil((activeMs + 1) / 60000));
+                const minimumSteppedMinutes = Math.ceil(minimumMinutes / 5) * 5;
+                const plannedDurationSec = Math.max(requestedMinutes, minimumSteppedMinutes) * 60;
+                timer.plannedDurationSec = plannedDurationSec;
+                next.duration = plannedDurationSec;
+                return projectLegacyFields(next);
+            },
+        );
+        if (!transition?.state || transition.blocked) return { ok: false, blocked: !!transition?.blocked };
+        syncState = transition.state;
+        const activeTimer = syncState.activeTimer;
+        if (!activeTimer || activeTimer.timerMode === 'stopwatch') return { ok: false };
+        const actualMinutes = normalizeCountdownDurationMinutes(Number(activeTimer.plannedDurationSec || 300) / 60);
+        currentDuration = actualMinutes;
+        remainingSeconds = StateCalculator.calculateRemaining(syncState);
+        pausedRemainingSeconds = syncState.status === 'PAUSED' ? remainingSeconds : null;
+        updateFromSyncState();
+        updateDisplay();
+        return { ok: true, durationMinutes: actualMinutes, state: syncState };
+    }
+
+    function setPendingCountdownDuration(durationMinutes) {
+        const normalizedMinutes = normalizeCountdownDurationMinutes(durationMinutes);
+        currentDuration = normalizedMinutes;
+        remainingSeconds = normalizedMinutes * 60;
+        pausedRemainingSeconds = null;
+        syncState.duration = normalizedMinutes * 60;
+        syncState.mode = timerMode === 'break' ? 'break' : 'countdown';
+        updateDisplay();
+        return { ok: true, durationMinutes: normalizedMinutes };
+    }
+
+    function getNextFocusCountdownDuration() {
+        if (timerMode !== 'break' && timerMode !== 'stopwatch-break') {
+            return normalizeCountdownDurationMinutes(currentDuration);
+        }
+        if (pendingFocusCountdownDuration != null) {
+            return normalizeCountdownDurationMinutes(pendingFocusCountdownDuration);
+        }
+        const continuationTimer = syncState?.continuation?.focusTimerSnapshot;
+        const continuationDurationSec = Number(continuationTimer?.plannedDurationSec);
+        if (continuationTimer?.timerMode === 'countdown'
+            && Number.isFinite(continuationDurationSec) && continuationDurationSec > 0) {
+            return normalizeCountdownDurationMinutes(continuationDurationSec / 60);
+        }
+        const preBreakDuration = Number(preBreakState?.currentDuration);
+        if (preBreakState?.mode === 'countdown' && Number.isFinite(preBreakDuration) && preBreakDuration > 0) {
+            return normalizeCountdownDurationMinutes(preBreakDuration);
+        }
+        const recentFocusDuration = Number(lastTomatoConfig?.duration);
+        if (lastTomatoConfig?.mode === 'countdown' && Number.isFinite(recentFocusDuration) && recentFocusDuration > 0) {
+            return normalizeCountdownDurationMinutes(recentFocusDuration);
+        }
+        return normalizeCountdownDurationMinutes(__getDefaultTomatoTimeMinutes());
+    }
+
+    function setNextFocusCountdownDuration(durationMinutes) {
+        const normalizedMinutes = normalizeCountdownDurationMinutes(durationMinutes);
+        pendingFocusCountdownDuration = normalizedMinutes;
+        return { ok: true, durationMinutes: normalizedMinutes };
+    }
+
+    async function finishBreakFromContinuation() {
+        const current = SyncManager.getState ? SyncManager.getState() : syncState;
+        if (!current?.continuation?.focusTimerSnapshot) return false;
+        const transition = await TransitionExecutor.execute(
+            { transitionId: createTomatoUuid('finish-break') },
+            state => TimerStateMachine.restoreFocusContinuation(state, Date.now(), SYNC_DEVICE_ID),
+        );
+        if (!transition?.state) return false;
+        syncState = transition.state;
+        pendingFocusCountdownDuration = null;
+        const timer = syncState.activeTimer;
+        if (!timer) return false;
+        timerMode = timer.timerMode === 'stopwatch' ? 'stopwatch' : 'countdown';
+        currentDuration = timer.plannedDurationSec == null
+            ? currentDuration
+            : Math.max(1, Number(timer.plannedDurationSec) / 60);
+        currentSessionId = timer.focusSessionId || timer.sessionId || currentSessionId;
+        isRunning = false;
+        isTimerPaused = true;
+        pausedRemainingSeconds = timer.timerMode === 'stopwatch'
+            ? Math.floor(Number(timer.accumulatedMs || 0) / 1000)
+            : Math.max(0, Math.ceil(Number(timer.plannedDurationSec || 0) - Number(timer.accumulatedMs || 0) / 1000));
+        remainingSeconds = timer.timerMode === 'stopwatch'
+            ? pausedRemainingSeconds
+            : pausedRemainingSeconds;
+        elapsedSeconds = timer.timerMode === 'stopwatch' ? pausedRemainingSeconds : elapsedSeconds;
+        currentStartTimestamp = null;
+        currentStartTimeMs = 0;
+        stopwatchStartTimestamp = timer.timerMode === 'stopwatch' ? null : stopwatchStartTimestamp;
+        stopwatchStartTimeMs = timer.timerMode === 'stopwatch' ? 0 : stopwatchStartTimeMs;
+        preBreakState = null;
+        if (timer.timerMode === 'countdown') {
+            const association = syncState.integrationEnvelope?.taskAssociation;
+            currentTaskBlockId = association?.taskBlockId || currentTaskBlockId;
+            currentTaskBlockName = association?.taskBlockName || currentTaskBlockName;
+            currentDatabaseBlockId = association?.databaseBlockId || currentDatabaseBlockId;
+        }
+        updateFromSyncState();
+        updateDisplay();
+        return true;
     }
 
     async function resetCurrentMode() {
@@ -16747,6 +18003,17 @@
                     pendingRecordSave = recordEndTime(true, isStopwatchBreak);
                 } else if (hasBreakStart) {
                     pendingRecordSave = recordEndTime(true, isStopwatchBreak);
+                }
+
+                if (syncState?.continuation?.focusTimerSnapshot) {
+                    await requireTimerPersistence(pendingRecordSave, 'finish-break');
+                    try { await cancelTrackedTimerNotification('finish-break', false); } catch (e) {}
+                    const restored = await finishBreakFromContinuation();
+                    if (restored) {
+                        clearRoutineButtonRunningHighlight(true);
+                        endTimerFocus('finish-break');
+                        return;
+                    }
                 }
 
                 if (!isStopwatchBreak && preBreakState?.mode === 'countdown') {
@@ -16795,15 +18062,13 @@
                 syncState.pausedElapsedSeconds = null;
                 syncState.distractionCount = 0;
                 syncState.distractionSavedCount = 0;
+                await requireTimerPersistence(pendingRecordSave, 'reset-current-mode');
                 if (isSyncEnabled() && SyncManager.updateLocal) {
-                    await SyncManager.updateLocal(syncState, true);
+                    await commitTimerState(syncState, 'break-reset');
                     Logger.info('🔄 休息模式重置状态已同步到云端');
                 }
                 clearRoutineButtonRunningHighlight(true);
                 endTimerFocus('reset-current-mode');
-                if (pendingRecordSave) {
-                    await waitForTimerPersistence(pendingRecordSave, 'reset-current-mode');
-                }
                 return;
             }
             
@@ -16915,6 +18180,7 @@
             if (timerMode === 'countdown' || timerMode === 'break') {
                 try { await cancelTrackedTimerNotification('reset-timer', false); } catch (e) {}
             }
+            await requireTimerPersistence(pendingRecordSave, 'reset-current-mode');
             
             // 🔧 v9.0 修复：重置后同步状态到云端
             if (isSyncEnabled() && SyncManager.updateLocal) {
@@ -16933,11 +18199,8 @@
                 } else {
                     syncState.duration = 0;
                 }
-                await SyncManager.updateLocal(syncState, true);
+                await commitTimerState(syncState, 'reset');
                 Logger.info('🔄 重置状态已同步到云端');
-            }
-            if (pendingRecordSave) {
-                await waitForTimerPersistence(pendingRecordSave, 'reset-current-mode');
             }
         });
     }
@@ -16972,6 +18235,8 @@
             endTimerFocus('complete-current-tomato');
             try { hideProgressBar(); } catch (e) {}
 
+            await requireTimerPersistence(pendingRecordSave, 'complete-current-tomato');
+
             if (isSyncEnabled() && SyncManager.updateLocal) {
                 syncState.status = 'IDLE';
                 syncState.startTime = null;
@@ -16982,9 +18247,8 @@
                 syncState.pausedElapsedSeconds = null;
                 syncState.distractionCount = 0;
                 syncState.distractionSavedCount = 0;
-                await SyncManager.updateLocal(syncState, true);
+                await commitTimerState(syncState, 'complete');
             }
-            await waitForTimerPersistence(pendingRecordSave, 'complete-current-tomato');
             if (opts.suppressToast !== true) showToast('✅ 已完成番茄', 1600);
         });
     }
@@ -17009,7 +18273,11 @@
     async function stopAssociatedTaskAfterDone(blockId, options = {}) {
         const id = String(blockId || '').trim();
         const opts = (options && typeof options === 'object') ? options : {};
-        if (!id || !isCurrentTaskAssociation(id)) {
+        const effectiveAssociation = getEffectiveTaskAssociation(syncState) || null;
+        const associationMatches = effectiveAssociation
+            ? [effectiveAssociation.taskBlockId, effectiveAssociation.databaseBlockId].some(value => String(value || '').trim() === id)
+            : isCurrentTaskAssociation(id);
+        if (!id || !associationMatches) {
             return { matched: false, stopped: false, associationCleared: false };
         }
 
@@ -17022,16 +18290,22 @@
             mode: modeBefore,
             source: focusRestoreSource,
         };
+        let actionSucceeded = true;
         try {
             if (modeBefore === 'countdown' && (isRunning || isTimerPaused)) {
                 await completeCurrentTomato({ suppressToast: opts.suppressToast !== false });
             } else if (hadActiveTimer) {
                 await resetCurrentMode();
             } else {
-                try { await stopTimer(); } catch (e) {}
+                await stopTimer();
             }
         } catch (e) {
+            actionSucceeded = false;
             try { Logger.warn('任务完成时停止番茄钟失败:', e); } catch (e2) {}
+        }
+
+        if (!actionSucceeded) {
+            return { matched: true, stopped: false, associationCleared: false, mode: modeBefore, reason: 'timer-settle-failed' };
         }
 
         lastCompletedAssociationFocusSnapshot = (focusSnapshot.source && (focusSnapshot.taskBlockId || focusSnapshot.databaseBlockId)) ? focusSnapshot : null;
@@ -17052,10 +18326,14 @@
 
     function createButtonGroup(values, currentValue, onClick, isBreak = false) {
         const group = document.createElement('div');
+        const handleActionError = (error) => {
+            Logger.error('计时操作失败:', error);
+            try { showMiniToast('计时保存失败，请稍后重试'); } catch (e) {}
+        };
         group.style.cssText = `
             display: flex;
             gap: 4px;
-            padding: 4px 8px;
+            padding: 3px 12px 5px;
             justify-content: center;
             flex-wrap: wrap;
         `;
@@ -17064,9 +18342,12 @@
             const btn = document.createElement('button');
             btn.textContent = val;
             btn.style.cssText = `
-                font-size: 11px;
-                padding: 2px 5px;
-                border-radius: 3px;
+                height: 26px;
+                min-height: 26px;
+                font-size: 12px;
+                font-weight: 600;
+                padding: 2px 6px;
+                border-radius: 4px;
                 border: 1px solid var(--b3-theme-surface-light);
                 background: ${val === currentValue ? 'var(--b3-theme-primary)' : 'transparent'};
                 color: ${val === currentValue ? 'white' : 'var(--b3-theme-on-background)'};
@@ -17086,9 +18367,9 @@
                     btn.style.background = 'transparent';
                 }
             };
-            btn.onclick = (e) => { 
-                e.stopPropagation(); 
-                onClick(val); 
+            btn.onclick = (e) => {
+                e.stopPropagation();
+                Promise.resolve().then(() => onClick(val)).catch(handleActionError);
                 const menu = document.getElementById('tomy-tomato-context-menu');
                 if (menu) menu.remove();
                 isContextMenuOpen = false;  // 菜单关闭
@@ -17100,9 +18381,12 @@
             const stopwatchBtn = document.createElement('button');
             stopwatchBtn.textContent = '计';
             stopwatchBtn.style.cssText = `
-                font-size: 11px;
-                padding: 2px 5px;
-                border-radius: 3px;
+                height: 26px;
+                min-height: 26px;
+                font-size: 12px;
+                font-weight: 600;
+                padding: 2px 6px;
+                border-radius: 4px;
                 border: 1px solid var(--b3-theme-surface-light);
                 background: ${timerMode === 'stopwatch-break' ? '#4CAF50' : 'transparent'};
                 color: ${timerMode === 'stopwatch-break' ? 'white' : 'var(--b3-theme-on-background)'};
@@ -17122,9 +18406,13 @@
                     stopwatchBtn.style.background = 'transparent';
                 }
             };
-            stopwatchBtn.onclick = async (e) => { 
-                e.stopPropagation(); 
-                await startStopwatchBreakMode(); 
+            stopwatchBtn.onclick = async (e) => {
+                e.stopPropagation();
+                try {
+                    await startStopwatchBreakMode();
+                } catch (error) {
+                    handleActionError(error);
+                }
                 const menu = document.getElementById('tomy-tomato-context-menu');
                 if (menu) menu.remove();
                 isContextMenuOpen = false;  // 菜单关闭
@@ -17172,6 +18460,75 @@
             visibility: hidden;
             transition: opacity 0.1s ease-out;
         `;
+
+        if (!document.getElementById('tomato-duration-slider-style')) {
+            const durationSliderStyle = document.createElement('style');
+            durationSliderStyle.id = 'tomato-duration-slider-style';
+            durationSliderStyle.textContent = `
+                .tomato-duration-slider {
+                    appearance: none;
+                    -webkit-appearance: none;
+                    background: transparent;
+                }
+                .tomato-duration-slider::-webkit-slider-runnable-track {
+                    height: 6px;
+                    border-radius: 999px;
+                    background: var(--b3-theme-surface-light);
+                    background: color-mix(in srgb, var(--b3-theme-primary) 18%, var(--b3-theme-background));
+                    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--b3-theme-primary) 38%, transparent);
+                }
+                .tomato-duration-slider::-moz-range-track {
+                    height: 6px;
+                    border-radius: 999px;
+                    background: var(--b3-theme-surface-light);
+                    background: color-mix(in srgb, var(--b3-theme-primary) 18%, var(--b3-theme-background));
+                    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--b3-theme-primary) 38%, transparent);
+                }
+                .tomato-duration-slider::-webkit-slider-thumb {
+                    appearance: none;
+                    -webkit-appearance: none;
+                    width: 22px;
+                    height: 22px;
+                    margin-top: -8px;
+                    border: 1px solid var(--b3-theme-primary);
+                    border-radius: 50%;
+                    background-color: var(--b3-theme-primary);
+                    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' d='M8 5v14l11-7z'/%3E%3C/svg%3E");
+                    background-repeat: no-repeat;
+                    background-position: center;
+                    background-size: 15px 15px;
+                    transition: transform 120ms cubic-bezier(0.25, 1, 0.5, 1), box-shadow 120ms ease, filter 120ms ease;
+                }
+                .tomato-duration-slider::-moz-range-thumb {
+                    width: 22px;
+                    height: 22px;
+                    border: 1px solid var(--b3-theme-primary);
+                    border-radius: 50%;
+                    background-color: var(--b3-theme-primary);
+                    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' d='M8 5v14l11-7z'/%3E%3C/svg%3E");
+                    background-repeat: no-repeat;
+                    background-position: center;
+                    background-size: 15px 15px;
+                    transition: transform 120ms cubic-bezier(0.25, 1, 0.5, 1), box-shadow 120ms ease, filter 120ms ease;
+                }
+                .tomato-duration-slider:hover::-webkit-slider-thumb {
+                    box-shadow: 0 0 0 3px color-mix(in srgb, var(--b3-theme-primary) 24%, transparent);
+                    filter: brightness(1.08);
+                }
+                .tomato-duration-slider:hover::-moz-range-thumb {
+                    box-shadow: 0 0 0 3px color-mix(in srgb, var(--b3-theme-primary) 24%, transparent);
+                    filter: brightness(1.08);
+                }
+                .tomato-duration-slider.is-pressed::-webkit-slider-thumb { transform: scale(0.82); }
+                .tomato-duration-slider.is-pressed::-moz-range-thumb { transform: scale(0.82); }
+                .tomato-duration-slider:focus-visible { outline: 2px solid var(--b3-theme-primary); outline-offset: 3px; }
+                @media (prefers-reduced-motion: reduce) {
+                    .tomato-duration-slider::-webkit-slider-thumb,
+                    .tomato-duration-slider::-moz-range-thumb { transition: none; }
+                }
+            `;
+            document.head.appendChild(durationSliderStyle);
+        }
 
         // 移动端：关闭悬浮条选项（放在最顶部，仅当悬浮条存在时显示）
         if (isMobileDevice() && isUsingFloatBar) {
@@ -17358,6 +18715,111 @@
             false
         ));
 
+        const hasActiveDuration = hasUnfinishedTimerState();
+        const isBreakDurationControl = timerMode === 'break' || timerMode === 'stopwatch-break';
+        // During a break this remains a focus-duration control. Its value is
+        // deliberately kept separate from the active break timer.
+        const showCountdownDurationControl = timerMode === 'countdown'
+            || isBreakDurationControl
+            || !hasActiveDuration;
+        if (showCountdownDurationControl) {
+            const durationControl = document.createElement('div');
+            durationControl.style.cssText = 'padding:1px 12px 7px;display:flex;align-items:center;gap:6px;min-width:0;';
+            const durationValue = document.createElement('span');
+            durationValue.style.cssText = 'font-size:12px;font-weight:700;color:var(--b3-theme-on-surface);font-variant-numeric:tabular-nums;white-space:nowrap;';
+            const durationSlider = document.createElement('input');
+            durationSlider.type = 'range';
+            durationSlider.className = 'tomato-duration-slider';
+            durationSlider.min = '5';
+            durationSlider.max = '180';
+            durationSlider.step = '5';
+            durationSlider.value = String(getNextFocusCountdownDuration());
+            durationSlider.setAttribute('aria-label', isBreakDurationControl
+                ? '点击结束休息并开始专注，拖动调整专注时长'
+                : (hasActiveDuration
+                    ? '点击结束当前计时并开始新计时，拖动调整当前时长'
+                    : '点击开始，拖动调整当前时长'));
+            durationSlider.style.cssText = 'width:auto;min-width:0;flex:1;height:22px;margin:0;cursor:pointer;';
+            let durationSliderDragged = false;
+            let durationSliderPointerDownX = null;
+            let durationSliderPressTimer = null;
+            let durationSliderInteraction = 'none';
+            const updateDurationValue = () => {
+                durationValue.textContent = `${durationSlider.value} 分`;
+            };
+            updateDurationValue();
+            durationSlider.oninput = updateDurationValue;
+            durationSlider.onchange = async () => {
+                // A pointer tap starts a new timer; do not race it with an
+                // active-duration adjustment triggered by the same gesture.
+                if (hasActiveDuration && durationSliderInteraction === 'tap') {
+                    updateDurationValue();
+                    return;
+                }
+                const result = isBreakDurationControl
+                    ? setNextFocusCountdownDuration(durationSlider.value)
+                    : (hasActiveDuration
+                        ? await setActiveCountdownDuration(durationSlider.value)
+                        : setPendingCountdownDuration(durationSlider.value));
+                if (result?.ok) durationSlider.value = String(Math.round(result.durationMinutes));
+                updateDurationValue();
+            };
+            const handleDurationActionError = (error) => {
+                Logger.error('计时操作失败:', error);
+                try { showMiniToast('计时保存失败，请稍后重试'); } catch (e) {}
+            };
+            const startDurationFromControl = async event => {
+                event.stopPropagation();
+                const duration = normalizeCountdownDurationMinutes(durationSlider.value);
+                try {
+                    await switchToCountdownAndStart(duration);
+                    const activeMenu = document.getElementById('tomy-tomato-context-menu');
+                    if (activeMenu) activeMenu.remove();
+                    isContextMenuOpen = false;
+                } catch (error) {
+                    handleDurationActionError(error);
+                }
+            };
+            durationSlider.addEventListener('pointerdown', event => {
+                if (durationSliderPressTimer) window.clearTimeout(durationSliderPressTimer);
+                durationSliderPointerDownX = event.clientX;
+                durationSliderDragged = false;
+                durationSliderInteraction = 'tap';
+                durationSlider.classList.add('is-pressed');
+            });
+            durationSlider.addEventListener('pointermove', event => {
+                if (durationSliderPointerDownX !== null
+                    && Math.abs(event.clientX - durationSliderPointerDownX) > 4) {
+                    durationSliderDragged = true;
+                    durationSliderInteraction = 'drag';
+                }
+            });
+            durationSlider.addEventListener('pointercancel', () => {
+                durationSliderPointerDownX = null;
+                durationSliderDragged = false;
+                durationSliderInteraction = 'none';
+                durationSlider.classList.remove('is-pressed');
+            });
+            durationSlider.addEventListener('pointerup', () => {
+                durationSliderPointerDownX = null;
+                // Keep the drag marker through the synthesized click event.
+                durationSliderPressTimer = window.setTimeout(() => {
+                    durationSliderDragged = false;
+                    durationSliderInteraction = 'none';
+                    durationSlider.classList.remove('is-pressed');
+                }, 120);
+            });
+            durationSlider.addEventListener('click', async event => {
+                event.stopPropagation();
+                if (durationSliderDragged) return;
+                durationSliderInteraction = 'none';
+                await startDurationFromControl(event);
+            });
+            durationControl.appendChild(durationSlider);
+            durationControl.appendChild(durationValue);
+            menu.appendChild(durationControl);
+        }
+
         const breakTitle = document.createElement('div');
         breakTitle.textContent = '☕ 休息';
         breakTitle.style.cssText = `
@@ -17380,7 +18842,7 @@
         menu.appendChild(hr2);
 
         const stopwatchItem = document.createElement('div');
-        stopwatchItem.textContent = '⏱️ 正计时模式';
+        stopwatchItem.textContent = '⏱️ 专注正计时';
         stopwatchItem.style.cssText = `
             padding: 6px 12px;
             cursor: pointer;
@@ -17390,26 +18852,38 @@
         `;
         stopwatchItem.onmouseenter = () => stopwatchItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
         stopwatchItem.onmouseleave = () => stopwatchItem.style.backgroundColor = '';
-        stopwatchItem.onclick = async (e) => { 
-            e.stopPropagation(); 
-            await startStopwatchForCurrentPhase();
-            menu.remove(); 
-            isContextMenuOpen = false;  // 菜单关闭
+        stopwatchItem.onclick = async (e) => {
+            e.stopPropagation();
+            try {
+                await startStopwatchForCurrentPhase();
+                menu.remove();
+                isContextMenuOpen = false;  // 菜单关闭
+            } catch (error) {
+                Logger.error('切换专注正计时失败:', error);
+                showMiniToast('计时保存失败，请稍后重试');
+            }
         };
         menu.appendChild(stopwatchItem);
 
         const resetItem = document.createElement('div');
-        resetItem.textContent = (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') ? '✅ 完成正计时' : '重置当前';
+        resetItem.textContent = (timerMode === 'break' || timerMode === 'stopwatch-break')
+            ? '结束休息'
+            : ((timerMode === 'stopwatch') ? '✅ 完成专注正计时' : '重置当前');
         resetItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
         resetItem.onmouseenter = () => resetItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
         resetItem.onmouseleave = () => resetItem.style.backgroundColor = '';
-        resetItem.onclick = async (e) => { 
-            e.stopPropagation(); 
-            await resetCurrentMode();
-            // 🔧 v9.0 修复：移动端重置后，如果要继续计时，需要先关闭菜单再等待用户手动开始
-            // 重置会清空时间戳，startTimer() 会创建新的时间戳并同步
-            menu.remove(); 
-            isContextMenuOpen = false;  // 菜单关闭
+        resetItem.onclick = async (e) => {
+            e.stopPropagation();
+            try {
+                await resetCurrentMode();
+                // 🔧 v9.0 修复：移动端重置后，如果要继续计时，需要先关闭菜单再等待用户手动开始
+                // 重置会清空时间戳，startTimer() 会创建新的时间戳并同步
+                menu.remove();
+                isContextMenuOpen = false;  // 菜单关闭
+            } catch (error) {
+                Logger.error('重置计时失败:', error);
+                showMiniToast('计时保存失败，请稍后重试');
+            }
         };
         menu.appendChild(resetItem);
 
@@ -18022,9 +19496,11 @@ function calculateWeeklyStats(dailyStatsArray) {
             el.classList.remove('tomato-task-highlight');
         });
         
-        const allRecords = await loadHistoryRecords();
         await loadUserSettings();
         await loadFocusTimeSettings();
+        const allRecords = HistoryRepository.displayView(await loadHistoryRecords(), {
+            includeShort: userSettings.hideShortRecords === false,
+        });
         
         // 保存到全局状态，供历史记录显示时使用
         historyState.allRecords = allRecords;
@@ -18038,9 +19514,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
         
         if (userSettings.hideShortRecords) {
-            // 使用 durationSec 确保过滤掉所有小于60秒的记录
-            // 注意：durationMin 可能因四舍五入而>=1，所以需要检查 durationSec
-            filteredRecords = filteredRecords.filter(r => hasLuminaHistoryRecords(r) || r.durationSec >= 60);
+            filteredRecords = filteredRecords.filter(r => hasLuminaHistoryRecords(r) || !isSubMinuteHistoryRecord(r));
         }
 
         const existing = document.getElementById('tomy-tomato-history-dialog');
@@ -19375,8 +20849,8 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         const charts = document.createElement('div');
         charts.style.cssText = `display:grid;grid-template-columns:repeat(auto-fit,minmax(${isMobile ? 260 : 320}px,1fr));gap:12px;margin-bottom:12px;`;
-        charts.appendChild(createRoutinePieChartCard('专注分布（番茄+正计时）', stats.focusPie, stats.totalFocus));
-        charts.appendChild(createRoutinePieChartCard('休息分布（倒计时+正计时）', stats.breakPie, stats.totalBreak));
+        charts.appendChild(createRoutinePieChartCard('专注分布（番茄+专注正计时）', stats.focusPie, stats.totalFocus));
+        charts.appendChild(createRoutinePieChartCard('休息分布（倒计时+专注正计时）', stats.breakPie, stats.totalBreak));
         if (includeUnrecorded) {
             charts.appendChild(createRoutinePieChartCard('时间占用（含无记录）', [
                 { id: 'focus_total', label: '专注', value: stats.totalFocus, color: '#43A047' },
@@ -20404,7 +21878,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             let out = Array.isArray(records) ? records.slice() : [];
             if (!userSettings.showBreakRecords) out = out.filter(r => hasLuminaHistoryRecords(r) || (r?.mode !== 'break' && r?.mode !== 'stopwatch-break'));
             if (!userSettings.showIdleRecords) out = out.filter(r => hasLuminaHistoryRecords(r) || r?.mode !== 'idle');
-            if (userSettings.hideShortRecords) out = out.filter(r => hasLuminaHistoryRecords(r) || Number(r?.durationSec || 0) >= 60);
+            if (userSettings.hideShortRecords) out = out.filter(r => hasLuminaHistoryRecords(r) || !isSubMinuteHistoryRecord(r));
             return out;
         };
         const rebuildHistoryState = (records) => {
@@ -21008,7 +22482,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const modeText = mode === 'countdown'
                     ? '🍅 番茄'
                     : (mode === 'stopwatch'
-                        ? '⏱️ 正计时'
+                        ? '⏱️ 专注正计时'
                         : (mode === 'break' || mode === 'stopwatch-break'
                             ? '☕ 休息'
                             : (mode === 'idle' ? '🕳️ 空白' : '记录')));
@@ -22553,7 +24027,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (dailyStopwatchCount > 0) {
             statsHTML += `
                 <div style="margin-top: 6px;">
-                    ⏱️ ${dailyStopwatchCount} 次正计时<br>
+            ⏱️ ${dailyStopwatchCount} 次专注正计时<br>
                     总时长: ${formatHistoryStatNumber(dailyStopwatchActual)}分钟
                 </div>
             `;
@@ -22626,24 +24100,29 @@ function calculateWeeklyStats(dailyStatsArray) {
         // 格式化时间显示（应用超过60分钟显示"X小时Y分"格式）
         let durationText = '';
         const formatDuration = (sec, min) => {
-            if (sec < 60) {
-                return `${sec}秒`;
+            const rawSeconds = Number(sec);
+            const fallbackSeconds = Number(min) * 60;
+            const roundedSeconds = Math.max(0, Math.round(Number.isFinite(rawSeconds) ? rawSeconds : fallbackSeconds));
+            if (roundedSeconds < 60) {
+                return `${roundedSeconds}秒`;
             }
             // 超过60分钟显示"X小时Y分"格式
-            if (sec >= 3600) {
-                const hours = Math.floor(sec / 3600);
-                const mins = Math.floor((sec % 3600) / 60);
+            if (roundedSeconds >= 3600) {
+                const hours = Math.floor(roundedSeconds / 3600);
+                const mins = Math.floor((roundedSeconds % 3600) / 60);
                 return `${hours}小时${mins}分`;
             }
-            return `${min}分钟`;
+            return `${Math.round(Number(min) || roundedSeconds / 60)}分钟`;
         };
         durationText = record.mode === 'lumina-note'
             ? '文字记录'
             : formatDuration(record.durationSec, record.durationMin);
         
         const resetText = (record.wasReset && record.mode !== 'stopwatch' && record.mode !== 'stopwatch-break') ? '<span style="color:#FF9800; font-weight:bold">🔄重置</span> ' : '';
-        const plannedText = record.mode === 'countdown' && record.plannedDuration && record.plannedDuration !== record.durationMin ?
-            ` (预设${record.plannedDuration}分)` : '';
+        const roundedPlannedMinutes = Math.max(0, Math.round(Number(record.plannedDuration) || 0));
+        const roundedActualMinutes = Math.max(0, Math.round(Number(record.durationMin) || 0));
+        const plannedText = record.mode === 'countdown' && roundedPlannedMinutes > 0 && roundedPlannedMinutes !== roundedActualMinutes
+            ? ` (预设${roundedPlannedMinutes}分)` : '';
         
         // 🔧 新增：任务块/日常按钮信息 - 添加点击跳转功能
         const displayTaskName = getRecordDisplayTaskName(record);
@@ -23757,7 +25236,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         pushSeparator();
 
         template.push({
-            label: (timerMode === 'break' || timerMode === 'stopwatch-break') ? '☕ 正计时休息' : '⏱️ 正计时模式',
+            label: (timerMode === 'break' || timerMode === 'stopwatch-break') ? '☕ 正计时休息' : '⏱️ 专注正计时',
             click: () => runAction(async () => { await startStopwatchForCurrentPhase(); })
         }, {
             label: isRunning ? '暂停' : '继续',
@@ -23767,8 +25246,16 @@ function calculateWeeklyStats(dailyStatsArray) {
                 else await startTimer();
             })
         }, {
-            label: (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') ? '✅ 完成正计时' : '重置当前',
-            click: () => runAction(async () => { await resetCurrentMode(); })
+            label: (timerMode === 'break' || timerMode === 'stopwatch-break')
+                ? '结束休息'
+                : ((timerMode === 'stopwatch') ? '✅ 完成专注正计时' : '重置当前'),
+            click: () => runAction(async () => {
+                if (timerMode === 'break' || timerMode === 'stopwatch-break') {
+                    await resetCurrentMode();
+                } else {
+                    await resetCurrentMode();
+                }
+            })
         }, {
             label: '查看历史',
             click: () => runAction(async () => { await showHistoryDialog(); })
@@ -23842,7 +25329,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         else if (paused) statusText = '已暂停';
         let modeText = '番茄钟';
         if (timerMode === 'break') modeText = '休息';
-        else if (timerMode === 'stopwatch') modeText = '正计时';
+        else if (timerMode === 'stopwatch') modeText = '专注正计时';
         else if (timerMode === 'stopwatch-break') modeText = '正计时休息';
         const hideModeText = true;
         const taskText = displayModel.taskText;
@@ -26568,9 +28055,9 @@ window.__setTomatoFloatState = function (payload) {
             e.preventDefault();
             e.stopPropagation();
             if (isRunning) {
-                pauseTimer().catch(Logger.error);
+                pauseTimer().catch((error) => Logger.error('暂停计时失败:', error));
             } else {
-                startTimer().catch(Logger.error);
+                startTimer().catch((error) => Logger.error('启动计时失败:', error));
             }
         };
 
@@ -26579,7 +28066,10 @@ window.__setTomatoFloatState = function (payload) {
             if (e.button !== 2) return;
             isRightClick = true;
             longPressTimer = setTimeout(() => {
-                resetCurrentMode();
+                Promise.resolve(resetCurrentMode()).catch((error) => {
+                    Logger.error('重置计时失败:', error);
+                    try { showMiniToast('计时保存失败，请稍后重试'); } catch (e) {}
+                });
                 isRightClick = false;
             }, 500);
         });
@@ -27360,6 +28850,8 @@ window.__setTomatoFloatState = function (payload) {
             taskBlockName: String(detail?.taskBlockName || currentTaskBlockName || syncState?.taskBlockName || '').trim(),
             databaseBlockId: String(detail?.databaseBlockId || currentDatabaseBlockId || syncState?.databaseBlockId || '').trim(),
             mode: String(detail?.mode || timerMode || syncState?.mode || '').trim(),
+            source: String(detail?.source || syncState?.integrationEnvelope?.taskAssociation?.source || focusRestoreSource || 'manual'),
+            sourceKind: String(detail?.sourceKind || syncState?.integrationEnvelope?.taskAssociation?.sourceKind || focusRestoreSource || 'manual'),
         };
         try { stopHighlightKeepAlive(); } catch (e) {}
         try { clearTaskBlockHighlight(); } catch (e) {}
@@ -27382,6 +28874,7 @@ window.__setTomatoFloatState = function (payload) {
             databaseBlockId,
             mode,
             source: normalizeFocusRestoreSource(focusRestoreSource),
+            sourceKind: normalizeFocusRestoreSource(focusRestoreSource),
             isRunning: !!isRunning,
             isPaused: !!isTimerPaused || syncStatus === 'PAUSED',
         };
@@ -27410,6 +28903,7 @@ window.__setTomatoFloatState = function (payload) {
             databaseBlockId,
             mode: String(timerMode || syncState?.mode || '').trim(),
             source,
+            sourceKind: source,
         };
         if (snapshot) {
             focusRestoreSource = source;
@@ -28069,10 +29563,793 @@ window.__setTomatoFloatState = function (payload) {
         return !!(setRes.ok && setRes.data?.code === 0);
     }
 
+    function getTomatoAccountingPolicy() {
+        const fallback = {
+            enabled: userSettings?.taskBlockTomatoTime?.enabled !== false,
+            tomatoSpentAttrMode: 'minutes',
+            // DockTomato's standalone fallback keeps the legacy count
+            // attribute. Task Horizon overrides this when it derives counts
+            // from spent time.
+            tomatoActualCountBySpentEnabled: false,
+            tomatoSpentAttrKeyMinutes: String(userSettings?.taskBlockTomatoTime?.minuteAttrName || 'custom-tomato-minutes'),
+            tomatoSpentAttrKeyHours: String(userSettings?.taskBlockTomatoTime?.hourAttrName || 'custom-tomato-time'),
+            tomatoCountAttrKey: String(userSettings?.taskBlockTomatoTime?.countAttrName || 'custom-tomato-count'),
+            policyRevision: 0,
+        };
+        try {
+            const api = globalThis.__taskHorizonTomatoV2;
+            if (api?.getCapabilities && api.getCapabilities()?.ready !== false && typeof api.getAccountingPolicy === 'function') {
+                const policy = api.getAccountingPolicy();
+                if (policy && typeof policy === 'object') return { ...fallback, ...policy };
+            }
+        } catch (e) {}
+        return fallback;
+    }
+
+    function hashAccountingPolicy(policy) {
+        return hashHistoryText(JSON.stringify(canonicalizeForSignature(policy || {})));
+    }
+
+    function getAccountingProjectionDeltas(policy, durationMs = 0, countDelta = 0) {
+        const resolvedPolicy = policy && typeof policy === 'object' ? policy : getTomatoAccountingPolicy();
+        if (resolvedPolicy.enabled === false) return {};
+        const config = ensureTaskBlockTomatoTimeConfig();
+        const mode = String(resolvedPolicy.tomatoSpentAttrMode || '').toLowerCase() === 'hours' ? 'hours' : 'minutes';
+        const deltas = {};
+        const add = (key, value) => {
+            const attrKey = String(key || '').trim();
+            const amount = Number(value) || 0;
+            if (attrKey && amount !== 0) deltas[attrKey] = (Number(deltas[attrKey]) || 0) + amount;
+        };
+        if (mode === 'hours' || config.enableHourAttr !== false) {
+            add(resolvedPolicy.tomatoSpentAttrKeyHours || config.hourAttrName || 'custom-tomato-time', Number(durationMs) / 3600000);
+        }
+        if (mode === 'minutes' || config.enableMinuteAttr === true) {
+            add(resolvedPolicy.tomatoSpentAttrKeyMinutes || config.minuteAttrName || 'custom-tomato-minutes', Number(durationMs) / 60000);
+        }
+        if (config.enableCountAttr !== false && resolvedPolicy.tomatoActualCountBySpentEnabled === false) {
+            add(resolvedPolicy.tomatoCountAttrKey || config.countAttrName || 'custom-tomato-count', Math.round(Number(countDelta) || 0));
+        }
+        return deltas;
+    }
+
+    function getAccountingBaselineKey(taskBlockId, attrHostId) {
+        return `${String(taskBlockId || '').trim()}\u0000${String(attrHostId || '').trim()}`;
+    }
+
+    function isAccountingCompletedEntry(entry) {
+        return !!entry && ['applied', 'skipped'].includes(String(entry.status || ''));
+    }
+
+    function addAccountingTotals(target, deltas) {
+        if (!target || !deltas || typeof deltas !== 'object') return;
+        Object.entries(deltas).forEach(([key, value]) => {
+            const attrKey = String(key || '').trim();
+            if (!attrKey) return;
+            target[attrKey] = (Number(target[attrKey]) || 0) + (Number(value) || 0);
+        });
+    }
+
+    function indexAccountingEntry(ledger, entry) {
+        if (!isAccountingCompletedEntry(entry) || entry.accountingIndexedAtMs) return false;
+        const taskBlockId = String(entry.taskBlockId || '').trim();
+        const attrHostId = String(entry.attrHostId || '').trim();
+        if (!taskBlockId || !attrHostId) return false;
+        const key = getAccountingBaselineKey(taskBlockId, attrHostId);
+        const aggregate = ledger.aggregates[key] && typeof ledger.aggregates[key] === 'object'
+            ? ledger.aggregates[key]
+            : { taskBlockId, attrHostId, durationMs: 0, countDelta: 0, updatedAtMs: 0 };
+        aggregate.taskBlockId = taskBlockId;
+        aggregate.attrHostId = attrHostId;
+        aggregate.durationMs = (Number(aggregate.durationMs) || 0) + Math.max(0, Number(entry.durationMs) || 0);
+        aggregate.countDelta = (Number(aggregate.countDelta) || 0) + (Number(entry.countDelta) || 0);
+        aggregate.updatedAtMs = Date.now();
+        ledger.aggregates[key] = aggregate;
+
+        const totals = ledger.totals[key] && typeof ledger.totals[key] === 'object'
+            ? ledger.totals[key]
+            : {};
+        addAccountingTotals(totals, getAccountingProjectionDeltas(
+            entry.policy || getTomatoAccountingPolicy(),
+            Number(entry.durationMs) || 0,
+            Number(entry.countDelta) || 0,
+        ));
+        ledger.totals[key] = totals;
+        entry.accountingIndexedAtMs = Date.now();
+        return true;
+    }
+
+    function normalizeAccountingLedger(value) {
+        const ledger = value && typeof value === 'object' ? value : {};
+        if (!ledger.entries || typeof ledger.entries !== 'object' || Array.isArray(ledger.entries)) ledger.entries = {};
+        if (!ledger.baselines || typeof ledger.baselines !== 'object' || Array.isArray(ledger.baselines)) ledger.baselines = {};
+        if (!ledger.totals || typeof ledger.totals !== 'object' || Array.isArray(ledger.totals)) ledger.totals = {};
+        if (!ledger.aggregates || typeof ledger.aggregates !== 'object' || Array.isArray(ledger.aggregates)) ledger.aggregates = {};
+        Object.values(ledger.entries).forEach(entry => {
+            if (isAccountingCompletedEntry(entry)) indexAccountingEntry(ledger, entry);
+        });
+        ledger.schemaVersion = ACCOUNTING_LEDGER_SCHEMA_VERSION;
+        return ledger;
+    }
+
+    function compactAccountingLedger(ledger) {
+        const entries = ledger?.entries;
+        if (!entries || typeof entries !== 'object') return false;
+        const completed = Object.entries(entries)
+            .filter(([, entry]) => isAccountingCompletedEntry(entry))
+            .sort(([, left], [, right]) => {
+                const leftAt = Number(left?.appliedAtMs || left?.createdAtMs || 0);
+                const rightAt = Number(right?.appliedAtMs || right?.createdAtMs || 0);
+                return leftAt - rightAt;
+            });
+        if (completed.length <= ACCOUNTING_LEDGER_RECENT_ENTRY_LIMIT) return false;
+        const keep = new Set(completed
+            .slice(-ACCOUNTING_LEDGER_RECENT_ENTRY_LIMIT)
+            .map(([effectId]) => effectId));
+        completed.forEach(([effectId]) => {
+            if (!keep.has(effectId)) delete entries[effectId];
+        });
+        return true;
+    }
+
+    function getAccountingEntryTotals(ledger, taskBlockId, attrHostId) {
+        const key = getAccountingBaselineKey(taskBlockId, attrHostId);
+        const indexedTotals = ledger?.totals?.[key];
+        if (indexedTotals && typeof indexedTotals === 'object') {
+            return Object.fromEntries(Object.entries(indexedTotals).map(([attrKey, value]) => [
+                attrKey,
+                Number(value) || 0,
+            ]));
+        }
+        const totals = {};
+        Object.values(ledger?.entries || {}).forEach(entry => {
+            if (!isAccountingCompletedEntry(entry)) return;
+            if (String(entry.taskBlockId || '').trim() !== String(taskBlockId || '').trim()) return;
+            if (String(entry.attrHostId || '').trim() !== String(attrHostId || '').trim()) return;
+            addAccountingTotals(totals, getAccountingProjectionDeltas(
+                entry.policy || getTomatoAccountingPolicy(),
+                Number(entry.durationMs) || 0,
+                Number(entry.countDelta) || 0,
+            ));
+        });
+        return totals;
+    }
+
+    let accountingRetryTimer = null;
+    let accountingRetryAttempt = 0;
+
+    const AccountingRepository = {
+        _tail: Promise.resolve(),
+        _ledgerCache: null,
+        _enqueue(action) {
+            const run = this._tail.then(action, action);
+            this._tail = run.catch(() => {});
+            return run;
+        },
+        async readLedger() {
+            // A cached ledger is safe only for offline/local operation. In
+            // sync mode every effect must start from the latest shared file so
+            // ordered devices do not write an older snapshot back over it.
+            const useCache = !(typeof isSyncEnabled === 'function' && isSyncEnabled());
+            if (useCache && this._ledgerCache) return cloneSyncState(this._ledgerCache);
+            let parsed = null;
+            let sharedReadUnavailable = false;
+            try {
+                if (!useCache) __tomatoFileTextCache.delete(ACCOUNTING_LEDGER_FILE_PATH);
+                const file = await __tomatoGetFileText(ACCOUNTING_LEDGER_FILE_PATH);
+                if (!useCache && file?.available === false) sharedReadUnavailable = true;
+                if (file?.exists && String(file.text || '').trim()) parsed = JSON.parse(file.text);
+            } catch (e) {
+                if (!useCache) sharedReadUnavailable = true;
+            }
+            if (sharedReadUnavailable) {
+                const error = new Error('共享计账账本读取失败');
+                error.code = 'ACCOUNTING_LEDGER_READ_FAILED';
+                throw error;
+            }
+            if (!parsed && useCache) {
+                try { parsed = JSON.parse(localStorage.getItem('siyuan-tomato-accounting-ledger-v2') || ''); } catch (e) {}
+            }
+            this._ledgerCache = normalizeAccountingLedger(parsed && typeof parsed === 'object'
+                ? parsed : { schemaVersion: ACCOUNTING_LEDGER_SCHEMA_VERSION, entries: {}, baselines: {}, totals: {}, aggregates: {}, updatedAtMs: 0 });
+            return cloneSyncState(this._ledgerCache);
+        },
+        async writeLedger(ledger) {
+            const normalized = normalizeAccountingLedger(ledger || {});
+            compactAccountingLedger(normalized);
+            const next = { ...normalized, schemaVersion: ACCOUNTING_LEDGER_SCHEMA_VERSION, updatedAtMs: Date.now() };
+            let localSaved = false;
+            let fileSaved = false;
+            try {
+                localStorage.setItem('siyuan-tomato-accounting-ledger-v2', JSON.stringify(next));
+                localSaved = true;
+            } catch (e) {}
+            try {
+                await __tomatoEnsureDir(PLUGIN_STORAGE_DIR);
+                fileSaved = await __tomatoPutFileText(ACCOUNTING_LEDGER_FILE_PATH, JSON.stringify(next, null, 2)) === true;
+            } catch (e) {}
+            const requiresSharedLedger = typeof isSyncEnabled === 'function' && isSyncEnabled();
+            if (!fileSaved && (requiresSharedLedger || !localSaved)) return null;
+            this._ledgerCache = cloneSyncState(next);
+            return next;
+        },
+        async applyEffect(effect) {
+            const draft = effect && typeof effect === 'object' ? cloneSyncState(effect) : null;
+            if (!draft?.effectId || !draft?.taskBlockId || !draft?.attrHostId) return { applied: false, skipped: true };
+            return this._enqueue(async () => {
+                const ledger = await this.readLedger();
+                const existing = ledger.entries[draft.effectId];
+                if (existing?.status === 'applied') return { applied: false, duplicate: true, entry: existing };
+                const policy = draft.policy || getTomatoAccountingPolicy();
+                const policyHash = String(draft.policyHash || hashAccountingPolicy(policy));
+                const entry = {
+                    ...draft,
+                    policyHash,
+                    status: 'pending',
+                    appliedAtMs: null,
+                    attrHostId: String(draft.attrHostId),
+                    historyRevision: Number(draft.historyRevision || 0),
+                };
+                const projectionDeltas = getAccountingProjectionDeltas(
+                    policy,
+                    Number(draft.durationMs) || 0,
+                    Number(draft.countDelta) || 0,
+                );
+                const projectionKeys = Object.keys(projectionDeltas);
+                const baselineKey = getAccountingBaselineKey(draft.taskBlockId, draft.attrHostId);
+                let effectAlreadyAppliedInAttrs = false;
+                let currentAttrsForEffect = null;
+                let baseline = ledger.baselines[baselineKey] && typeof ledger.baselines[baselineKey] === 'object'
+                    ? ledger.baselines[baselineKey]
+                    : { taskBlockId: draft.taskBlockId, attrHostId: draft.attrHostId, values: {}, lastProjectedValues: {} };
+                if (!baseline.values || typeof baseline.values !== 'object') baseline.values = {};
+                if (!baseline.lastProjectedValues || typeof baseline.lastProjectedValues !== 'object') baseline.lastProjectedValues = {};
+                if (projectionKeys.length > 0) {
+                    const currentAttrs = await readTomatoAttrContextAttrs({
+                        kind: 'task',
+                        taskId: draft.attrHostId,
+                        attrHostId: draft.attrHostId,
+                    });
+                    if (currentAttrs) {
+                        currentAttrsForEffect = currentAttrs;
+                        effectAlreadyAppliedInAttrs = normalizeTomatoTaskDurationAppliedKeys(
+                            currentAttrs[TOMATO_TASK_DURATION_APPLIED_ATTR]
+                        ).includes(`v2:${draft.effectId}`);
+                        const previousTotals = getAccountingEntryTotals(ledger, draft.taskBlockId, draft.attrHostId);
+                        projectionKeys.forEach(key => {
+                            const currentValue = Number.parseFloat(currentAttrs[key]) || 0;
+                            const lastProjected = Number.parseFloat(baseline.lastProjectedValues[key]);
+                            const storedBaseline = Number.parseFloat(baseline.values[key]);
+                            if (Number.isFinite(storedBaseline)) {
+                                if (Number.isFinite(lastProjected) && !effectAlreadyAppliedInAttrs) {
+                                    baseline.values[key] = storedBaseline + (currentValue - lastProjected);
+                                }
+                            } else {
+                                baseline.values[key] = currentValue - (Number(previousTotals[key]) || 0);
+                            }
+                            baseline.lastProjectedValues[key] = currentValue;
+                        });
+                        baseline.updatedAtMs = Date.now();
+                        ledger.baselines[baselineKey] = baseline;
+                    }
+                }
+                ledger.entries[draft.effectId] = entry;
+                if (draft.kind === 'count' && projectionKeys.length === 0) {
+                    entry.status = 'skipped';
+                    entry.appliedAtMs = Date.now();
+                    indexAccountingEntry(ledger, entry);
+                    const derivedCountLedger = await this.writeLedger(ledger);
+                    return derivedCountLedger
+                        ? { applied: false, skipped: true, entry }
+                        : { applied: false, durable: false, entry };
+                }
+                if (!await this.writeLedger(ledger)) {
+                    return { applied: false, durable: false, entry };
+                }
+                if (policy.enabled === false) {
+                    entry.status = 'skipped';
+                    entry.appliedAtMs = Date.now();
+                    indexAccountingEntry(ledger, entry);
+                    const skippedLedger = await this.writeLedger(ledger);
+                    return skippedLedger
+                        ? { applied: false, skipped: true, entry }
+                        : { applied: false, durable: false, entry };
+                }
+                const durationSeconds = Math.max(0, Number(draft.durationMs || 0) / 1000);
+                const countDelta = Number(draft.kind === 'count' ? (draft.countDelta || 1) : 0);
+                let result = false;
+                if (!effectAlreadyAppliedInAttrs) {
+                    try {
+                        result = await updateTaskBlockTomatoTime(draft.taskBlockId, durationSeconds, {
+                            applyKey: `v2:${draft.effectId}`,
+                            countDelta,
+                            countOnly: draft.kind === 'count',
+                            attrHostId: draft.attrHostId,
+                            sourceKind: draft.sourceKind,
+                            policy,
+                            timerMode: draft.timerMode || 'countdown',
+                        });
+                    } catch (e) {
+                        // The pending ledger entry is already durable. Keep it
+                        // pending so the next ordered recovery can retry the
+                        // Task Horizon attribute projection without blocking
+                        // the timer itself.
+                        Logger.warn('任务属性投影失败，保留 pending 记账效果:', e);
+                    }
+                }
+                let attributeApplied = effectAlreadyAppliedInAttrs || !!result;
+                let observedAttrs = null;
+                if (!attributeApplied) {
+                    // The attribute write may have succeeded while the applied
+                    // ledger write was interrupted. Inspect the durable apply
+                    // key before retrying so recovery can close the ledger
+                    // without adding the duration twice.
+                    try {
+                        const attrs = await readTomatoAttrContextAttrs({
+                            kind: 'task',
+                            taskId: draft.attrHostId,
+                            attrHostId: draft.attrHostId,
+                        });
+                        observedAttrs = attrs;
+                        attributeApplied = normalizeTomatoTaskDurationAppliedKeys(
+                            attrs?.[TOMATO_TASK_DURATION_APPLIED_ATTR]
+                        ).includes(`v2:${draft.effectId}`);
+                    } catch (e) {}
+                }
+                const taskAttrConfig = ensureTaskBlockTomatoTimeConfig();
+                if (!attributeApplied && (
+                    !currentAttrsForEffect
+                    || policy.enabled === false
+                    || taskAttrConfig.enabled === false
+                    || projectionKeys.length === 0
+                )) {
+                    entry.status = 'skipped';
+                    entry.appliedAtMs = Date.now();
+                    indexAccountingEntry(ledger, entry);
+                    const skippedLedger = await this.writeLedger(ledger);
+                    return skippedLedger
+                        ? { applied: false, skipped: true, entry }
+                        : { applied: false, durable: false, entry };
+                }
+                if (attributeApplied) {
+                    if (!observedAttrs && projectionKeys.length > 0) {
+                        observedAttrs = await readTomatoAttrContextAttrs({
+                            kind: 'task',
+                            taskId: draft.attrHostId,
+                            attrHostId: draft.attrHostId,
+                        });
+                    }
+                    if (observedAttrs && ledger.baselines[baselineKey]) {
+                        projectionKeys.forEach(key => {
+                            ledger.baselines[baselineKey].lastProjectedValues[key] = Number.parseFloat(observedAttrs[key]) || 0;
+                        });
+                        ledger.baselines[baselineKey].updatedAtMs = Date.now();
+                    }
+                    entry.status = 'applied';
+                    entry.appliedAtMs = Date.now();
+                    indexAccountingEntry(ledger, entry);
+                    const appliedLedger = await this.writeLedger(ledger);
+                    if (!appliedLedger) {
+                        entry.status = 'pending';
+                        entry.appliedAtMs = null;
+                        return { applied: false, durable: false, entry };
+                    }
+                    try { window.dispatchEvent(new CustomEvent('tomato:accounting-updated', { detail: { effectId: draft.effectId, taskBlockId: draft.taskBlockId, policyHash } })); } catch (e) {}
+                }
+                return { applied: entry.status === 'applied', durable: true, entry };
+            });
+        },
+        async applyQueue(effects = [], options = {}) {
+            const list = Array.isArray(effects) ? effects : [];
+            const scheduleRetry = options?.scheduleRetry !== false;
+            const out = [];
+            for (const effect of list) {
+                let result = null;
+                try {
+                    result = await this.applyEffect(effect);
+                } catch (error) {
+                    // An external Task Horizon read/write may reject after
+                    // applyEffect has already persisted the pending ledger
+                    // entry. Preserve that durable draft for ordered retry
+                    // instead of turning the whole timer transition into a
+                    // global failure.
+                    let entry = null;
+                    try {
+                        const ledger = await this.readLedger();
+                        entry = ledger.entries?.[String(effect?.effectId || '')] || null;
+                    } catch (e) {}
+                    if (entry?.status === 'pending') {
+                        result = { applied: false, durable: true, entry };
+                    } else {
+                        result = { applied: false, durable: false, error, entry };
+                    }
+                }
+                out.push(result);
+                if (scheduleRetry && result?.entry?.status === 'pending') scheduleAccountingRetry();
+            }
+            return out;
+        },
+        async retryPending() {
+            const ledger = await this.readLedger();
+            const pending = Object.values(ledger.entries || {}).filter(entry => entry?.status === 'pending');
+            if (pending.length === 0) return { pending: false, results: [] };
+            const results = await this.applyQueue(pending, { scheduleRetry: false });
+            const stillPending = results.some(result => result?.entry?.status === 'pending' || result?.durable === false);
+            return { pending: stillPending, results };
+        },
+        async reprojectPolicy(policy = getTomatoAccountingPolicy()) {
+            const nextPolicy = policy && typeof policy === 'object' ? cloneSyncState(policy) : getTomatoAccountingPolicy();
+            const policyHash = hashAccountingPolicy(nextPolicy);
+            return this._enqueue(async () => {
+                if (nextPolicy.enabled === false) return { changed: false, skipped: true };
+                const ledger = await this.readLedger();
+                const groups = new Map();
+                Object.values(ledger.aggregates || {}).forEach(aggregate => {
+                    const taskBlockId = String(aggregate?.taskBlockId || '').trim();
+                    const attrHostId = String(aggregate?.attrHostId || '').trim();
+                    if (!taskBlockId || !attrHostId) return;
+                    const key = `${taskBlockId}\u0000${attrHostId}`;
+                    const group = groups.get(key) || { taskBlockId, attrHostId, durationMs: 0, countDelta: 0, entries: [] };
+                    group.durationMs = Math.max(0, Number(aggregate.durationMs) || 0);
+                    group.countDelta = Number(aggregate.countDelta) || 0;
+                    groups.set(key, group);
+                });
+                Object.values(ledger.entries || {}).forEach(entry => {
+                    if (!isAccountingCompletedEntry(entry)) return;
+                    const taskBlockId = String(entry.taskBlockId || '').trim();
+                    const attrHostId = String(entry.attrHostId || '').trim();
+                    const key = `${taskBlockId}\u0000${attrHostId}`;
+                    const group = groups.get(key);
+                    if (group) group.entries.push(entry);
+                });
+                let changed = false;
+                for (const group of groups.values()) {
+                    const attrs = await readTomatoAttrContextAttrs({
+                        kind: 'task',
+                        taskId: group.attrHostId,
+                        attrHostId: group.attrHostId,
+                    });
+                    if (!attrs) continue;
+                    const previousTotals = getAccountingEntryTotals(ledger, group.taskBlockId, group.attrHostId);
+                    const projectedTotals = getAccountingProjectionDeltas(nextPolicy, group.durationMs, group.countDelta);
+                    const baselineKey = getAccountingBaselineKey(group.taskBlockId, group.attrHostId);
+                    const baseline = ledger.baselines[baselineKey] && typeof ledger.baselines[baselineKey] === 'object'
+                        ? ledger.baselines[baselineKey]
+                        : { taskBlockId: group.taskBlockId, attrHostId: group.attrHostId, values: {}, lastProjectedValues: {} };
+                    if (!baseline.values || typeof baseline.values !== 'object') baseline.values = {};
+                    if (!baseline.lastProjectedValues || typeof baseline.lastProjectedValues !== 'object') baseline.lastProjectedValues = {};
+                    const countKey = String(nextPolicy.tomatoCountAttrKey || 'custom-tomato-count');
+                    const patch = {};
+                    Object.entries(projectedTotals).forEach(([key, total]) => {
+                        const currentValue = Number.parseFloat(attrs[key]) || 0;
+                        const storedBaseline = Number.parseFloat(baseline.values[key]);
+                        const lastProjected = Number.parseFloat(baseline.lastProjectedValues[key]);
+                        if (Number.isFinite(storedBaseline)) {
+                            if (Number.isFinite(lastProjected)) {
+                                baseline.values[key] = storedBaseline + (currentValue - lastProjected);
+                            }
+                        } else {
+                            baseline.values[key] = currentValue - (Number(previousTotals[key]) || 0);
+                        }
+                        const projectedValue = (Number(baseline.values[key]) || 0) + (Number(total) || 0);
+                        patch[key] = key === countKey
+                            ? String(Math.max(0, Math.round(projectedValue)))
+                            : Math.max(0, projectedValue).toFixed(2);
+                    });
+                    if (Object.keys(patch).length === 0) continue;
+                    Object.entries(patch).forEach(([key, value]) => {
+                        baseline.lastProjectedValues[key] = Number.parseFloat(value) || 0;
+                    });
+                    baseline.updatedAtMs = Date.now();
+                    ledger.baselines[baselineKey] = baseline;
+                    const previousIndexedTotals = ledger.totals[baselineKey] && typeof ledger.totals[baselineKey] === 'object'
+                        ? ledger.totals[baselineKey]
+                        : {};
+                    if (JSON.stringify(canonicalizeForSignature(previousIndexedTotals)) !== JSON.stringify(canonicalizeForSignature(projectedTotals))) {
+                        changed = true;
+                    }
+                    ledger.totals[baselineKey] = projectedTotals;
+                    group.entries.forEach(entry => {
+                        if (entry.policyHash !== policyHash) {
+                            entry.policyHash = policyHash;
+                            entry.policy = cloneSyncState(nextPolicy);
+                            changed = true;
+                        }
+                    });
+                    // Persist the projection intent before touching task
+                    // attributes. If the attribute write fails, the durable
+                    // baseline lets the next retry reconcile instead of
+                    // adding the same duration twice.
+                    if (!await this.writeLedger(ledger)) continue;
+                    if (!await writeTomatoAttrContextAttrs({
+                        kind: 'task',
+                        taskId: group.attrHostId,
+                        attrHostId: group.attrHostId,
+                    }, patch)) continue;
+                    changed = true;
+                    try {
+                        window.dispatchEvent(new CustomEvent('tomato:accounting-updated', {
+                            detail: { source: 'task-horizon-policy', taskBlockId: group.taskBlockId, attrHostId: group.attrHostId, policyHash },
+                        }));
+                    } catch (e) {}
+                }
+                if (changed && !await this.writeLedger(ledger)) return { changed: false, durable: false };
+                return { changed, durable: true };
+            });
+        },
+        async setBaseline(taskBlockId, baseline) {
+            const id = String(taskBlockId || '').trim();
+            if (!id) return false;
+            return this._enqueue(async () => {
+                const ledger = await this.readLedger();
+                ledger.baselines[id] = { ...(baseline || {}), updatedAtMs: Date.now() };
+                return !!(await this.writeLedger(ledger));
+            });
+        },
+    };
+
+    function clearAccountingRetryTimer() {
+        if (accountingRetryTimer) {
+            try { clearTimeout(accountingRetryTimer); } catch (e) {}
+            accountingRetryTimer = null;
+        }
+        accountingRetryAttempt = 0;
+    }
+
+    function scheduleAccountingRetry(delayMs = null) {
+        if (__tomatoDestroyed || accountingRetryTimer) return;
+        const hasExplicitDelay = delayMs !== null && delayMs !== undefined && Number.isFinite(Number(delayMs));
+        const delay = hasExplicitDelay
+            ? Math.max(0, Number(delayMs))
+            : Math.min(
+                ACCOUNTING_RETRY_MAX_DELAY_MS,
+                ACCOUNTING_RETRY_BASE_DELAY_MS * (2 ** accountingRetryAttempt),
+            );
+        accountingRetryAttempt = Math.min(accountingRetryAttempt + 1, 4);
+        accountingRetryTimer = setTimeout(async () => {
+            accountingRetryTimer = null;
+            if (__tomatoDestroyed) return;
+            try {
+                const result = await AccountingRepository.retryPending();
+                if (result.pending) {
+                    scheduleAccountingRetry();
+                } else {
+                    accountingRetryAttempt = 0;
+                }
+            } catch (e) {
+                scheduleAccountingRetry();
+            }
+        }, delay);
+    }
+
+    const TransitionExecutor = {
+        _tail: Promise.resolve(),
+        _enqueue(action) {
+            const run = this._tail.then(action, action);
+            this._tail = run.catch(() => {});
+            return run;
+        },
+        async readLatestState() {
+            try {
+                const remote = await SyncManager.loadFromCloud();
+                if (remote && shouldAcceptRemoteSyncState(remote, SyncManager.getState())) {
+                    await SyncManager.applyRemote(remote);
+                }
+            } catch (e) {}
+            return SyncManager.getState() || prepareCanonicalStateForSync(syncState);
+        },
+        async recoverJournal() {
+            const journal = await TimerJournal.read();
+            if (journal?.unavailable) {
+                return { journal, recovered: false, blocking: true, unavailable: true };
+            }
+            if (!journal) {
+                return { journal: null, recovered: false, blocking: false };
+            }
+            const latest = await this.readLatestState();
+            const stateCommitRequired = journal.stateCommitRequired !== false;
+            if (journal.status === 'pending'
+                && String(latest?.lastCommittedTransitionId || '') === String(journal.transitionId || '')) {
+                journal.status = 'state-committed';
+                await TimerJournal.persist(journal);
+            }
+            if (journal.status === 'pending' && stateCommitRequired
+                && String(latest?.lastCommittedTransitionId || '') !== String(journal.transitionId || '')
+                && journal.nextState) {
+                try {
+                    const retriedState = await SyncManager.commitCanonicalState(journal.nextState, { forcePush: true, forceSync: true });
+                    if (String(retriedState?.lastCommittedTransitionId || '') === String(journal.transitionId || '')) {
+                        journal.nextState = retriedState;
+                        journal.status = 'state-committed';
+                        await TimerJournal.persist(journal);
+                    }
+                } catch (e) {
+                    // Keep pending. A later ordered refresh can retry the same
+                    // transition without exposing its drafts as committed.
+                }
+            }
+            const historyRecords = await loadHistoryRecords({ force: true }).catch(() => []);
+            const ids = new Set(historyRecords.map(record => String(record?.recordId || '')));
+            const historyReady = (journal.historyDrafts || []).every(draft => {
+                const record = historyRecords.find(item => String(item?.recordId || '') === String(draft?.recordId || ''));
+                return !!record && record.disposition === 'normal';
+            });
+            const ledger = await AccountingRepository.readLedger();
+            // A pending entry is already durable and is handed to the
+            // background retry queue. Only an absent ledger entry blocks
+            // recovery; a failed external attribute projection must not
+            // freeze the timer after its ledger draft was persisted.
+            const accountingComplete = (journal.accountingDrafts || []).every(effect => ['applied', 'skipped'].includes(ledger.entries?.[effect.effectId]?.status));
+
+            // A legacy recordEndTime journal has no canonical transition ID to
+            // observe. Once its durable history/effects are complete it can be
+            // closed immediately; otherwise it is replayed from its drafts.
+            if (journal.status === 'pending' && !stateCommitRequired) {
+                journal.status = 'state-committed';
+                await TimerJournal.persist(journal);
+            }
+
+            // History is part of the transition hand-off and must be normal
+            // before another transition starts. Accounting can remain pending
+            // and is retried in the background without blocking the timer.
+            if (journal.status === 'committed' && !historyReady) {
+                journal.status = 'state-committed';
+                await TimerJournal.persist(journal);
+            }
+
+            if (journal.status === 'committed' && !accountingComplete) scheduleAccountingRetry();
+
+            if (journal.status === 'state-committed') {
+                for (const draft of journal.historyDrafts || []) {
+                    try {
+                        await HistoryRepository.ensureNormal(draft);
+                    } catch (error) {
+                    }
+                }
+                await AccountingRepository.applyQueue(journal.accountingDrafts || []);
+                const nextHistory = await loadHistoryRecords({ force: true }).catch(() => []);
+                const nextLedger = await AccountingRepository.readLedger();
+                const finalizedHistory = (journal.historyDrafts || []).every(draft => nextHistory.some(record => (
+                    String(record?.recordId || '') === String(draft?.recordId || '') && record.disposition === 'normal'
+                )));
+                const finalizedAccountingDurable = (journal.accountingDrafts || []).every(effect => (
+                    ['pending', 'applied', 'skipped'].includes(nextLedger.entries?.[effect.effectId]?.status)
+                ));
+                if (finalizedHistory && finalizedAccountingDurable) {
+                    journal.status = 'committed';
+                    await TimerJournal.persist(journal);
+                }
+            } else if (journal.status === 'pending' && !stateCommitRequired && historyReady && accountingComplete) {
+                // The legacy path may have completed all side effects before a
+                // process exit, even though it never wrote a canonical marker.
+                journal.status = 'committed';
+                await TimerJournal.persist(journal);
+            }
+            let recovered = false;
+            let durableJournal = null;
+            if (journal.status === 'committed') {
+                durableJournal = await TimerJournal.read();
+                recovered = durableJournal?.status === 'committed'
+                    && String(durableJournal?.transitionId || '') === String(journal.transitionId || '');
+            }
+            const blocking = TimerJournal.isBlocking(journal)
+                || (journal.status === 'committed' && !recovered);
+            return { journal, recovered, blocking, ids };
+        },
+        async execute(command, builder) {
+            return this._enqueue(async () => {
+                const recovery = await this.recoverJournal();
+                if (recovery.blocking) {
+                    return { ok: false, blocked: true, journal: recovery.journal };
+                }
+                const latest = await this.readLatestState();
+                const leaseOwner = String(latest?.writerLease?.ownerDeviceId || latest?.activeTimer?.ownerDeviceId || '').trim();
+                const requiresLease = ['RUNNING', 'PAUSED'].includes(String(latest?.status || ''));
+                if (requiresLease && leaseOwner && leaseOwner !== SYNC_DEVICE_ID && command?.allowLeaseTransfer !== true && command?.allowForeignLease !== true) {
+                    return { ok: false, blocked: true, notOwner: true, state: latest };
+                }
+                const next = typeof builder === 'function' ? await builder(cloneSyncState(latest)) : cloneSyncState(command?.nextState || latest);
+                // A legacy UI callback may have captured a state before the
+                // executor refreshed from cloud. Reject it rather than merge a
+                // stale full snapshot over the accepted ordered state.
+                const nextSequenceId = Number(next?.sequenceId || 0);
+                const latestSequenceId = Number(latest?.sequenceId || 0);
+                if (nextSequenceId !== latestSequenceId) {
+                    return { ok: false, blocked: true, stale: true, state: latest };
+                }
+                const candidate = prepareCanonicalStateForSync(next);
+                const stateChanged = SyncManager.checkStateChanged(latest, candidate);
+                const historyDrafts = Array.isArray(command?.historyDrafts) ? cloneSyncState(command.historyDrafts) : [];
+                const accountingDrafts = Array.isArray(command?.accountingDrafts) ? cloneSyncState(command.accountingDrafts) : [];
+                const hasDrafts = historyDrafts.length > 0 || accountingDrafts.length > 0;
+                const effectOnly = !stateChanged && command?.allowEffectOnly === true && hasDrafts;
+                if (!stateChanged && !effectOnly) {
+                    return { ok: true, changed: false, state: latest };
+                }
+                const transitionId = String(command?.transitionId || createTomatoUuid('transition'));
+                if (stateChanged) candidate.lastCommittedTransitionId = transitionId;
+                const journal = {
+                    transitionId,
+                    baseSequenceId: Number(latest?.sequenceId || 0),
+                    nextState: stateChanged ? candidate : latest,
+                    historyDrafts,
+                    accountingDrafts,
+                    stateCommitRequired: stateChanged,
+                    status: 'pending',
+                };
+                const persistJournal = async () => {
+                    if (!await TimerJournal.persist(journal)) throw new Error('JOURNAL_PERSIST_FAILED');
+                };
+                try {
+                    await persistJournal();
+                } catch (error) {
+                    throw error;
+                }
+                for (const draft of journal.historyDrafts) {
+                    const record = await HistoryRepository.appendPending(draft);
+                    if (!record && !(await loadHistoryRecords()).some(item => String(item?.recordId || '') === String(draft?.recordId || ''))) {
+                        throw new Error('history draft persist failed');
+                    }
+                }
+                let committedState = latest;
+                if (stateChanged) {
+                    try {
+                        committedState = await SyncManager.commitCanonicalState(candidate, { forcePush: true, forceSync: true });
+                    } catch (error) {
+                        // Keep the durable journal pending. The put response may
+                        // have been lost after the server accepted the write; the
+                        // next recovery pass will re-read or retry this transition.
+                        try { await persistJournal(); } catch (e) {}
+                        throw error;
+                    }
+                }
+                journal.nextState = committedState;
+                journal.status = 'state-committed';
+                await persistJournal();
+                for (const draft of journal.historyDrafts) await HistoryRepository.commitPending(draft.recordId);
+                const accountingResults = await AccountingRepository.applyQueue(journal.accountingDrafts);
+                const accountingReady = accountingResults.every(result => result?.applied || result?.duplicate || result?.skipped || result?.durable === true);
+                if (!accountingReady) return { ok: false, stateCommitted: true, state: committedState, journal };
+                journal.status = 'committed';
+                await persistJournal();
+                try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'transition', transitionId } })); } catch (e) {}
+                return { ok: true, changed: stateChanged, effectsCommitted: hasDrafts, state: committedState, journal, accountingResults };
+            });
+        },
+        async transferLease(deviceId = SYNC_DEVICE_ID) {
+            const owner = String(deviceId || '').trim();
+            if (!owner) return false;
+            const result = await this.execute({ transitionId: createTomatoUuid('lease-transfer'), allowLeaseTransfer: true }, state => {
+                const next = cloneSyncState(state);
+                const now = Date.now();
+                next.writerLease = { ownerDeviceId: owner, leaseId: createTomatoUuid('lease'), acquiredAtMs: now };
+                if (next.activeTimer) next.activeTimer.ownerDeviceId = owner;
+                return next;
+            });
+            return !!result.ok;
+        },
+    };
+
+    // Compatibility boundary for legacy UI paths. Activity-state writes go
+    // through the same ordered executor while callers keep their old API.
+    async function commitTimerState(nextState = syncState, prefix = 'state') {
+        if (!isSyncEnabled() || !TransitionExecutor?.execute) {
+            return { ok: true, changed: false, state: cloneSyncState(nextState) };
+        }
+        const result = await TransitionExecutor.execute(
+            { transitionId: createTomatoUuid(prefix) },
+            () => cloneSyncState(nextState),
+        );
+        if (result?.state) syncState = result.state;
+        if (!result?.ok) throw new Error(result?.blocked ? 'TIMER_TRANSITION_BLOCKED' : 'TIMER_TRANSITION_FAILED');
+        return result;
+    }
+
     // ✅ 修复版本：更新任务块的番茄时间属性 - 增加详细的错误处理
     async function updateTaskBlockTomatoTime(blockId, durationSeconds, options = {}) {
         // 🔧 修复：参数改为秒数，以便更精确地处理小于1分钟的记录
-        if (!blockId || !durationSeconds || durationSeconds <= 0) {
+        const countOnly = options?.countOnly === true;
+        if (!blockId || ((!durationSeconds || durationSeconds <= 0) && !countOnly)) {
             Logger.info('🔍 更新任务块自定义属性: 参数无效', { blockId, durationSeconds });
             return false;
         }
@@ -28085,6 +30362,8 @@ window.__setTomatoFloatState = function (payload) {
         const opts = (options && typeof options === 'object') ? options : {};
         const applyKey = String(opts.applyKey || '').trim();
         const countDelta = Number(opts.countDelta || 0);
+        const attrHostOverride = String(opts.attrHostId || '').trim();
+        const policy = opts.policy && typeof opts.policy === 'object' ? opts.policy : getTomatoAccountingPolicy();
         const durationMinutes = durationSeconds / 60;
         Logger.info('🔍 更新任务块自定义属性:', {
             blockId,
@@ -28093,17 +30372,21 @@ window.__setTomatoFloatState = function (payload) {
         });
         // 获取配置
         const config = ensureTaskBlockTomatoTimeConfig();
-        const enableHourAttr = config.enableHourAttr !== false;
-        const hourAttrName = config.hourAttrName || 'custom-tomato-time';
-        const enableMinuteAttr = config.enableMinuteAttr === true;
-        const minuteAttrName = config.minuteAttrName || 'custom-tomato-minutes';
-        const enableCountAttr = config.enableCountAttr !== false;
-        const countAttrName = config.countAttrName || 'custom-tomato-count';
+        const mode = String(policy.tomatoSpentAttrMode || '').toLowerCase() === 'hours' ? 'hours' : 'minutes';
+        const enableHourAttr = policy.enabled !== false && (mode === 'hours' || config.enableHourAttr !== false);
+        const hourAttrName = String(policy.tomatoSpentAttrKeyHours || config.hourAttrName || 'custom-tomato-time');
+        const enableMinuteAttr = policy.enabled !== false && (mode === 'minutes' || config.enableMinuteAttr === true);
+        const minuteAttrName = String(policy.tomatoSpentAttrKeyMinutes || config.minuteAttrName || 'custom-tomato-minutes');
+        const enableCountAttr = config.enableCountAttr !== false
+            && policy.tomatoActualCountBySpentEnabled === false;
+        const countAttrName = String(policy.tomatoCountAttrKey || config.countAttrName || 'custom-tomato-count');
 
         Logger.info('🔍 属性配置:', { enableHourAttr, hourAttrName, enableMinuteAttr, minuteAttrName, enableCountAttr, countAttrName });
 
         try {
-            const attrContext = await resolveTomatoAttrContext(blockId);
+            const attrContext = attrHostOverride
+                ? { kind: 'task', taskId: blockId, attrHostId: attrHostOverride }
+                : await resolveTomatoAttrContext(blockId);
             const attrHostId = String(attrContext?.attrHostId || '').trim();
             const taskId = String(attrContext?.taskId || '').trim();
             if (!attrHostId || (attrContext?.kind === 'task' && taskId !== attrHostId)) {
@@ -28122,16 +30405,18 @@ window.__setTomatoFloatState = function (payload) {
                 }
                 const setAttrs = {};
                 let updateCount = 0;
-                const currentMode = timerMode;
+        // Use the effect's immutable mode snapshot when accounting runs after
+        // a focus-to-break transition; the live UI mode may already be break.
+        const currentMode = String(opts.timerMode || timerMode || '').trim();
                 if (currentMode === 'break' || currentMode === 'stopwatch-break') {
                     Logger.info('🔄 休息模式，不更新自定义属性');
                 } else {
-                    if (enableHourAttr) {
+                    if (!countOnly && enableHourAttr) {
                         const currentHourValue = parseFloat(attrs[hourAttrName]) || 0;
                         setAttrs[hourAttrName] = (currentHourValue + (durationMinutes / 60)).toFixed(2);
                         updateCount++;
                     }
-                    if (enableMinuteAttr) {
+                    if (!countOnly && enableMinuteAttr) {
                         const currentMinuteValue = parseFloat(attrs[minuteAttrName]) || 0;
                         setAttrs[minuteAttrName] = (currentMinuteValue + durationMinutes).toFixed(2);
                         updateCount++;
@@ -28737,7 +31022,7 @@ window.__setTomatoFloatState = function (payload) {
         // 添加正计时选项
         const stopwatchItem = document.createElement('button');
         stopwatchItem.className = 'b3-menu__item';
-        stopwatchItem.innerHTML = `<span class="b3-menu__label">⏱️ 正计时</span>`;
+        stopwatchItem.innerHTML = `<span class="b3-menu__label">⏱️ 专注正计时</span>`;
         stopwatchItem.style.cssText = 'width:100%;box-sizing:border-box;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
         stopwatchItem.onclick = () => onItemClick(null, 'stopwatch');
         // 🔧 修复：添加 hover 样式
@@ -28932,7 +31217,7 @@ window.__setTomatoFloatState = function (payload) {
             justify-content: center;
             gap: 8px;
         `;
-        stopwatchOption.innerHTML = `<span style="font-size:20px;">⏱️</span><span>正计时（不限时）</span>`;
+        stopwatchOption.innerHTML = `<span style="font-size:20px;">⏱️</span><span>专注正计时（不限时）</span>`;
         // 悬停效果
         stopwatchOption.onmouseenter = () => {
             stopwatchOption.style.background = 'var(--b3-theme-surface-light)';
@@ -31049,7 +33334,7 @@ window.__setTomatoFloatState = function (payload) {
         });
         {
             const hint = document.createElement('div');
-            hint.textContent = '关闭时，仅番茄/正计时运行中会弹出桌面悬浮窗';
+            hint.textContent = '关闭时，仅番茄/专注正计时运行中会弹出桌面悬浮窗';
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
             togglesSection.appendChild(hint);
         }
@@ -32055,7 +34340,7 @@ window.__setTomatoFloatState = function (payload) {
         minuteEnableLabel.style.cssText = 'font-size: 14px;';
         const minuteEnableSwitch = document.createElement('input');
         minuteEnableSwitch.type = 'checkbox';
-        minuteEnableSwitch.checked = taskBlockConfig.enableMinuteAttr === true;
+        minuteEnableSwitch.checked = taskBlockConfig.enableMinuteAttr !== false;
         minuteEnableSwitch.style.cssText = 'width: 20px; height: 20px; cursor: pointer;';
         minuteEnableSwitch.onchange = async (e) => {
             taskBlockConfig.enableMinuteAttr = e.target.checked;
@@ -33060,7 +35345,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const stopwatchBarLabel = document.createElement('span');
-        stopwatchBarLabel.innerHTML = '正计时进度条 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(默认绿色，进行时呼吸)</span>';
+        stopwatchBarLabel.innerHTML = '专注正计时进度条 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(默认绿色，进行时呼吸)</span>';
         stopwatchBarLabel.style.cssText = 'font-size: 14px;';
         const stopwatchBarSwitch = document.createElement('input');
         stopwatchBarSwitch.type = 'checkbox';
@@ -33222,7 +35507,7 @@ window.__setTomatoFloatState = function (payload) {
         statusContainer.innerHTML = `
             <div style="font-size: 14px; margin-bottom: 8px;"><strong>当前状态</strong></div>
             <div style="font-size: 13px; color: var(--b3-theme-on-surface);">
-                模式: ${syncState.mode === 'countdown' ? '倒计时' : syncState.mode === 'stopwatch' ? '正计时' : '休息'}\<br>
+                模式: ${syncState.mode === 'countdown' ? '倒计时' : syncState.mode === 'stopwatch' ? '专注正计时' : '休息'}\<br>
                 状态: ${currentStatus}\<br>
                 序列号: ${syncState.sequenceId || 0}\<br>
                 设备ID: ${SYNC_DEVICE_ID}
@@ -33284,7 +35569,16 @@ window.__setTomatoFloatState = function (payload) {
                 } catch (err) {}
                 if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
                     try {
-                        await SyncManager.updateLocal({ taskBlockId: null, taskBlockName: null, databaseBlockId: null }, true);
+                        await commitTimerState({
+                            ...syncState,
+                            taskBlockId: null,
+                            taskBlockName: null,
+                            databaseBlockId: null,
+                            integrationEnvelope: {
+                                ...(syncState.integrationEnvelope || {}),
+                                taskAssociation: null,
+                            },
+                        }, 'association-setting');
                     } catch (err) {}
                 }
             }
@@ -33555,6 +35849,7 @@ window.__setTomatoFloatState = function (payload) {
             const loadedDefaultTime = userSettings?.main?.defaultTomatoTime || DEFAULT_TOMATO_TIME;
             currentDuration = loadedDefaultTime;
             remainingSeconds = loadedDefaultTime * 60;
+            lastTomatoConfig = { duration: normalizeCountdownDurationMinutes(loadedDefaultTime), mode: 'countdown' };
             Logger.info('🍅 默认番茄时间已设置为:', loadedDefaultTime, '分钟');
 
             await loadFocusTimeSettings();
@@ -33940,7 +36235,19 @@ window.__setTomatoFloatState = function (payload) {
                 startTime: initResult.state.startTime,
                 sequenceId: initResult.state.sequenceId
             });
-            
+            try {
+                const recovery = await TransitionExecutor.recoverJournal();
+                if (recovery.blocking) {
+                    Logger.warn('🍅 计时事务仍在恢复，新的状态切换将暂时被阻止', { status: recovery.journal?.status });
+                }
+            } catch (e) {
+                Logger.warn('🍅 计时事务恢复失败，将在下一次操作前重试', e);
+            }
+            // Pending task-accounting effects are retried outside the button
+            // transition path so a temporary Task Horizon failure cannot make
+            // every subsequent timer action wait on the same external write.
+            scheduleAccountingRetry();
+
             try {
                 await SyncManager.poll();
                 Logger.info('🔄 SyncManager: 已执行首次轮询');
@@ -34378,8 +36685,16 @@ window.__setTomatoFloatState = function (payload) {
     // 🔧 性能优化：防抖 inject，避免频繁 DOM 变动导致多次执行
     let injectTimeout = null;
     let injectInitTimeout = null;
-    const debouncedInject = () => {
+    const isTomatoOwnedMutation = (mutation) => {
+        try {
+            const target = mutation?.target instanceof Element ? mutation.target : null;
+            if (target?.closest?.('#siyuan-tomato-timer, #siyuan-tomato-float-bar, #tomato-timeline-bar')) return true;
+        } catch (e) {}
+        return false;
+    };
+    const debouncedInject = (mutations) => {
         if (__tomatoDestroyed) return;
+        if (Array.isArray(mutations) && mutations.length > 0 && mutations.every(isTomatoOwnedMutation)) return;
         if (injectTimeout) clearTimeout(injectTimeout);
         injectTimeout = setTimeout(inject, 500);
     };
@@ -34399,6 +36714,7 @@ window.__setTomatoFloatState = function (payload) {
         try { stopWechatReminderReconcileLoop(); } catch (e) {}
         try { __closeReminderDockActionMenu(); } catch (e) {}
         try { __tomatoClearTrackedTimers(); } catch (e) {}
+        try { clearAccountingRetryTimer(); } catch (e) {}
         try { if (expiredReminderStartupTimer) clearTimeout(expiredReminderStartupTimer); } catch (e) {}
         try { expiredReminderStartupTimer = null; } catch (e) {}
         try { if (expiredReminderCheckInterval) clearInterval(expiredReminderCheckInterval); } catch (e) {}
@@ -34583,7 +36899,7 @@ window.__setTomatoFloatState = function (payload) {
                         syncState.currentPauseStart = syncState.currentPauseStart || Date.now();
                     }
                     try {
-                        const p = SyncManager.updateLocal(syncState, true);
+                        const p = commitTimerState(syncState, 'before-unload');
                         if (p && typeof p.then === 'function') {
                             p.then(() => {
                                 Logger.info('💾 状态已同步到云端', {
@@ -39562,6 +41878,9 @@ window.__setTomatoFloatState = function (payload) {
         getDurations: () => {
             try { return getTomatoDurations(); } catch (e) { return [5, 15, 25, 30, 45, 60]; }
         },
+        getDefaultDurationMinutes: () => {
+            try { return __getDefaultTomatoTimeMinutes(); } catch (e) { return 30; }
+        },
         startCountdown: async (blockId, taskName, durationMin, options = null) => {
             const id = String(blockId || '').trim();
             if (!id) return false;
@@ -39593,7 +41912,7 @@ window.__setTomatoFloatState = function (payload) {
                 await switchToStopwatchAndStartWithTask(id, name, options);
                 return true;
             } catch (e) {
-                try { showMiniToast('启动正计时失败'); } catch (e2) {}
+                try { showMiniToast('启动专注正计时失败'); } catch (e2) {}
                 return false;
             }
         },
@@ -39616,6 +41935,81 @@ window.__setTomatoFloatState = function (payload) {
             try { return { ...ensureTaskBlockTomatoTimeConfig() }; } catch (e) { return null; }
         },
     };
+
+    globalThis.__tomatoTimerV2 = {
+        getCapabilities: () => ({
+            pluginId: 'docktomato',
+            pluginVersion: '2.0.3',
+            contractVersion: 2,
+            schemaHash: hashHistoryText('docktomato-timer-v2-schema'),
+            ready: true,
+            accountingOwnerSupport: true,
+            ledgerApi: true,
+            eventVersion: 2,
+        }),
+        getState: () => cloneSyncState(prepareCanonicalStateForSync(syncState)),
+        getActiveFocusSnapshot: () => {
+            const state = prepareCanonicalStateForSync(syncState);
+            return {
+                ...getActiveTimerFocusSnapshot(),
+                source: state.integrationEnvelope?.taskAssociation?.source || 'manual',
+                sourceKind: state.integrationEnvelope?.taskAssociation?.sourceKind || 'manual',
+                sessionId: state.activeTimer?.sessionId || state.continuation?.focusSessionId || null,
+            };
+        },
+        getAccountingPolicy: () => getTomatoAccountingPolicy(),
+        getDefaultDurationMinutes: () => {
+            try { return __getDefaultTomatoTimeMinutes(); } catch (e) { return 30; }
+        },
+        getJournalStatus: async () => (await TimerJournal.read())?.status || null,
+        prepareAccountingEffect: (effect) => ({
+            ...cloneSyncState(effect || {}),
+            effectId: String(effect?.effectId || createTomatoUuid('effect')),
+            policyHash: String(effect?.policyHash || hashAccountingPolicy(effect?.policy || getTomatoAccountingPolicy())),
+        }),
+        applyAccountingEffect: async effect => AccountingRepository.applyEffect(effect),
+        getAccountingEffectStatus: async effectId => {
+            const ledger = await AccountingRepository.readLedger();
+            return ledger.entries?.[String(effectId || '')] || null;
+        },
+        ackAccountingEffect: async effectId => {
+            const ledger = await AccountingRepository.readLedger();
+            const entry = ledger.entries?.[String(effectId || '')];
+            if (!entry) return false;
+            entry.status = 'applied';
+            entry.appliedAtMs = entry.appliedAtMs || Date.now();
+            indexAccountingEntry(ledger, entry);
+            return !!(await AccountingRepository.writeLedger(ledger));
+        },
+        transferLease: async deviceId => TransitionExecutor.transferLease(deviceId),
+        settleAssociatedTask: async (blockId, options = {}) => {
+            const owner = String(syncState?.writerLease?.ownerDeviceId || syncState?.activeTimer?.ownerDeviceId || '');
+            if (owner && owner !== String(SYNC_DEVICE_ID || '')) return { ok: false, reason: 'not-owner' };
+            const mode = String(syncState?.mode || timerMode || 'countdown');
+            const action = mode === 'break' || mode === 'stopwatch-break'
+                ? 'finishBreak'
+                : (mode === 'stopwatch' ? 'reset' : 'complete');
+            try {
+                const result = await stopAssociatedTaskAfterDone(blockId, options);
+                const ok = !!(result?.matched && (result?.stopped || result?.associationCleared));
+                return { ...result, ok, action: ok ? action : null, reason: ok ? null : 'association-mismatch' };
+            } catch (e) {
+                return { ok: false, reason: `${action}-failed` };
+            }
+        },
+    };
+    try {
+        if (typeof EventManager !== 'undefined' && typeof EventManager.add === 'function' && typeof window !== 'undefined') {
+            EventManager.add(window, 'task-horizon:tomato-policy-changed', () => {
+                try {
+                    void AccountingRepository.reprojectPolicy(getTomatoAccountingPolicy()).catch(() => {});
+                    window.dispatchEvent(new CustomEvent('tomato:accounting-updated', {
+                        detail: { source: 'task-horizon-policy', policyHash: hashAccountingPolicy(getTomatoAccountingPolicy()) }
+                    }));
+                } catch (e) {}
+            }, {}, 'tomato-v2-policy-change');
+        }
+    } catch (e) {}
     async function flushReminderTransaction() {
         try {
             const response = await postJSON('/api/sqlite/flushTransaction', {});

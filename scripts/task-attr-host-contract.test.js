@@ -6,6 +6,9 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'tomato.js'), 'utf8');
+assert.match(source, /TOMATO_MINUTE_ATTR_DEFAULT_VERSION\s*=\s*1/, 'minute-format defaults must have an explicit migration version');
+assert.match(source, /cfg\.enableMinuteAttr\s*=\s*true[\s\S]*cfg\.minuteAttrDefaultVersion\s*=\s*TOMATO_MINUTE_ATTR_DEFAULT_VERSION/, 'legacy minute-format defaults must migrate to enabled once');
+assert.match(source, /enableMinuteAttr:\s*cfg\.enableMinuteAttr !== false[\s\S]*minuteAttrDefaultVersion:\s*TOMATO_MINUTE_ATTR_DEFAULT_VERSION/, 'minute-format accounting must preserve an explicit opt-out after migration');
 
 const resolverStart = source.indexOf('function resolveTomatoTaskAttrContextFromDom');
 const resolverEnd = source.indexOf('\n    async function getTomatoBlockAttrs', resolverStart);
@@ -39,6 +42,59 @@ assert.match(timeBlock, /withTomatoTaskAttrLock/, 'timer settlement must seriali
 assert.match(timeBlock, /readTomatoAttrContextAttrs/, 'timer settlement must read through the classified task-or-block context');
 assert.match(timeBlock, /writeTomatoAttrContextAttrs/, 'timer settlement must write through the classified task-or-block context');
 assert.doesNotMatch(timeBlock, /useTaskHorizon|writeId/, 'timer settlement must not keep the old write fallback');
+assert.match(timeBlock, /policy\.tomatoActualCountBySpentEnabled === false/, 'count attributes must only be written when Task Horizon is not deriving count from spent time');
+assert.match(timeBlock, /const countOnly = options\?\.countOnly === true;[\s\S]*!countOnly && enableHourAttr[\s\S]*!countOnly && enableMinuteAttr/, 'count-only effects must not also add duration');
+
+const projectionStart = source.indexOf('    function getAccountingProjectionDeltas(');
+const projectionEnd = source.indexOf('    function getAccountingBaselineKey(', projectionStart);
+assert.ok(projectionStart >= 0 && projectionEnd > projectionStart, 'accounting projection policy must remain extractable');
+const projectionContext = vm.createContext({
+    Number,
+    String,
+    ensureTaskBlockTomatoTimeConfig: () => ({
+        enableHourAttr: true,
+        hourAttrName: 'custom-hours',
+        enableMinuteAttr: false,
+        minuteAttrName: 'custom-minutes',
+        enableCountAttr: true,
+        countAttrName: 'custom-count',
+    }),
+    getTomatoAccountingPolicy: () => ({}),
+});
+vm.runInContext(`${source.slice(projectionStart, projectionEnd)}\nthis.project = getAccountingProjectionDeltas;`, projectionContext);
+const derivedCountProjection = projectionContext.project({
+    enabled: true,
+    tomatoSpentAttrMode: 'minutes',
+    tomatoActualCountBySpentEnabled: true,
+    tomatoSpentAttrKeyHours: 'custom-hours',
+    tomatoSpentAttrKeyMinutes: 'custom-minutes',
+    tomatoCountAttrKey: 'custom-count',
+}, 3_600_000, 1);
+assert.equal(derivedCountProjection['custom-hours'], 1);
+assert.equal(derivedCountProjection['custom-minutes'], 60);
+assert.equal(derivedCountProjection['custom-count'], undefined, 'spent-time count mode must not project the count attribute');
+const explicitCountProjection = projectionContext.project({
+    enabled: true,
+    tomatoSpentAttrMode: 'hours',
+    tomatoActualCountBySpentEnabled: false,
+    tomatoSpentAttrKeyHours: 'custom-hours',
+    tomatoSpentAttrKeyMinutes: 'custom-minutes',
+    tomatoCountAttrKey: 'custom-count',
+}, 3_600_000, 1);
+assert.equal(explicitCountProjection['custom-count'], 1, 'explicit count mode must retain the completed-focus count');
+
+const accountingStart = source.indexOf('    const AccountingRepository = {');
+const accountingEnd = source.indexOf('    const TransitionExecutor = {', accountingStart);
+const accountingBlock = source.slice(accountingStart, accountingEnd);
+assert.match(accountingBlock, /baseline\.values\[key\] = storedBaseline \+ \(currentValue - lastProjected\)/, 'new effects must absorb user edits into the persistent baseline');
+assert.match(accountingBlock, /baseline\.values\[key\][\s\S]*projectedTotals/, 'policy re-projection must combine the persistent baseline with ledger totals');
+
+const recordStart = source.indexOf('    async function recordEndTime(');
+const recordEnd = source.indexOf('\n    /**\n     * 清除当前计时记录中的任务块', recordStart);
+const recordBlock = source.slice(recordStart, recordEnd);
+assert.match(recordBlock, /useValidatedV2Association[\s\S]*associationAtEnd\?\.taskBlockId/, 'v2 history and accounting must use the session-validated association snapshot');
+assert.match(recordBlock, /effectId: `count:\$\{recordData\.focusSessionId\}`[\s\S]*kind: 'count'[\s\S]*durationMs: 0/, 'completed focus sessions must use a separate idempotent count effect');
+assert.match(recordBlock, /TransitionExecutor\.execute\([\s\S]*accountingDrafts: queuedAccountingDrafts/, 'duration and count effects must be replayed through one ordered accounting queue');
 
 const reminderResolverStart = source.indexOf('async function resolveReminderBlockAttrContext');
 const reminderResolverEnd = source.indexOf('\n    globalThis.__tomatoTimer', reminderResolverStart);

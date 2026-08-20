@@ -26,6 +26,34 @@ assert.ok(context.compare(
 assert.match(source, /Math\.max\(Date\.now\(\), highestKnownModifiedTime \+ 1\)/, 'local writes must advance a monotonic logical timestamp');
 assert.match(source, /this\.onStateChange\(cloneSyncState\(this\.localState\)\)/, 'sync callbacks must not share the manager state object');
 assert.match(source, /getState\(\)\s*\{\s*return cloneSyncState\(this\.localState\);/, 'sync state reads must not expose the manager state object');
+assert.match(source, /const confirmationDelaysMs = \[0, 80, 180, 400, 800\];[\s\S]*lastConfirmed = await this\.loadFromCloud\(\);/, 'cloud confirmation must retry transiently stale reads');
+assert.match(source, /versionMatches && semanticMatches/, 'cloud commits must verify both transport and semantic state');
+assert.match(source, /putFile code 0 is the durable local-write acknowledgement[\s\S]*return true;/, 'an accepted local file write must not be rolled back by a stale confirmation read');
+assert.match(source, /if \(!saved\) \{[\s\S]*this\.localState = previousState;[\s\S]*throw new Error\('SYNC_COMMIT_FAILED'\);/, 'a failed cloud commit must roll local state back and reject');
+assert.match(source, /startTimer: 同步到云端失败[\s\S]*throw e;/, 'start must not swallow a failed canonical commit');
+assert.match(source, /const transition = await TransitionExecutor\.execute\(\{ transitionId: createTomatoUuid\('stop'\)/, 'stop must await its canonical commit');
+
+const journalStart = source.indexOf('    const TimerJournal = {');
+const journalEnd = source.indexOf('    const TimerStateMachine = {', journalStart);
+const journalBlock = source.slice(journalStart, journalEnd);
+assert.match(journalBlock, /isSyncEnabled\(\)\) return fileSaved;/, 'sync mode must require the shared journal write');
+assert.match(journalBlock, /__tomatoFileTextCache\.delete\(TIMER_JOURNAL_FILE_PATH\)/, 'journal recovery must read the latest shared file');
+assert.match(journalBlock, /if \(requireSharedJournal\) return null;[\s\S]*localStorage\.getItem/, 'sync mode must not treat a local-only journal as shared durability');
+
+const accountingStart = source.indexOf('    const AccountingRepository = {');
+const accountingEnd = source.indexOf('    const TransitionExecutor = {', accountingStart);
+const accountingBlock = source.slice(accountingStart, accountingEnd);
+assert.match(accountingBlock, /if \(!fileSaved && \(requiresSharedLedger \|\| !localSaved\)\) return null;/, 'sync mode must require the shared accounting ledger write');
+assert.match(accountingBlock, /__tomatoFileTextCache\.delete\(ACCOUNTING_LEDGER_FILE_PATH\)/, 'accounting must read the latest shared ledger before an ordered write');
+assert.match(accountingBlock, /return \{ applied: entry\.status === 'applied', durable: true, entry \};/, 'a durable pending effect must remain retryable without blocking the timer');
+assert.match(accountingBlock, /if \(entry\?\.status === 'pending'\) \{[\s\S]*durable: true/, 'queue-level Task Horizon failures must preserve a durable pending effect');
+
+const executorStart = source.indexOf('    const TransitionExecutor = {');
+const executorEnd = source.indexOf('    // Compatibility boundary for legacy UI paths', executorStart);
+const executorBlock = source.slice(executorStart, executorEnd);
+assert.match(executorBlock, /journal\.status === 'committed' && !recovered/, 'journal recovery must remain blocking until committed status is durably readable');
+assert.match(executorBlock, /const accountingComplete = .*\['applied', 'skipped'\]/, 'accounting completion must remain separate from durable pending ledger state');
+assert.match(source, /async ensureNormal\(record\)[\s\S]*Object\.assign\(item, draft, \{ disposition: 'normal' \}\)/, 'journal recovery must idempotently repair a missing or pending history record');
 
 const applyStart = source.indexOf('        async applyRemote(remoteState)');
 const applyEnd = source.indexOf('        startPolling()', applyStart);

@@ -69,6 +69,7 @@ async function testCompletionSurvivesDisplayFailure() {
         showToastDialog: () => { state.toastCalls++; },
         showMiniToast: () => {},
         waitForTimerPersistence: async (promise) => promise,
+        requireTimerPersistence: async (promise) => promise,
         withTimerFinalizationLock: async (_name, action) => {
             await action();
             return true;
@@ -135,6 +136,7 @@ async function testStopwatchCompletionIsSilent(timerMode) {
         showToastDialog: () => { state.dialogCalls++; },
         showMiniToast: () => { state.toastCalls++; },
         waitForTimerPersistence: async (promise) => promise,
+        requireTimerPersistence: async (promise) => promise,
         withTimerFinalizationLock: async (_name, action) => {
             await action();
             return true;
@@ -195,6 +197,7 @@ async function testStopSurvivesCleanupFailure() {
         cancelTrackedTimerNotification: async () => { throw new Error('notification cleanup failed'); },
         isSyncEnabled: () => false,
         waitForTimerPersistence: () => {},
+        requireTimerPersistence: async (promise) => promise,
     });
     vm.runInContext(`${stopBlock}\nthis.stop = stopTimer;`, context);
 
@@ -248,6 +251,7 @@ function createPauseContext(startTime, now, finalizeResult = true) {
         currentDistractionCount: 0,
         Logger: { info: () => {} },
         waitForTimerPersistence: async (promise) => promise,
+        requireTimerPersistence: async (promise) => promise,
     });
     vm.runInContext(`${pauseBlock}\nthis.pause = pauseTimer;`, context);
     return { context, getFinalizeCalls: () => finalizeCalls };
