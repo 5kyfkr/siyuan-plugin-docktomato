@@ -10506,6 +10506,8 @@
     let routineButtonTransitionTail = Promise.resolve();
     let routineButtonTransitionToken = 0;
     let routineButtonTransitionPending = false;
+    let pendingRoutineButtonIndex = null;
+    let pendingRoutineButtonBlockId = null;
 
     const __routineIconObjectUrlCache = new Map();
 
@@ -10645,8 +10647,12 @@
         const { running: effectiveRunning, paused: effectivePaused } = getEffectiveTimerActivity();
         const running = !!(effectiveRunning || effectivePaused);
         const taskId = String(currentTaskBlockId || '').trim();
+        const pendingIndex = routineButtonTransitionPending ? pendingRoutineButtonIndex : null;
+        const pendingId = routineButtonTransitionPending ? String(pendingRoutineButtonBlockId || '').trim() : '';
+        const displayIndex = pendingIndex ?? activeRoutineButtonIndex;
         const activeId = String(activeRoutineButtonBlockId || '').trim();
-        const key = `${running ? 1 : 0}|${timerMode}|${activeRoutineButtonIndex ?? ''}|${activeId || taskId}`;
+        const displayId = pendingId || activeId;
+        const key = `${running ? 1 : 0}|${timerMode}|${displayIndex ?? ''}|${displayId || taskId}`;
         if (!force && key === lastRoutineButtonHighlightKey) return;
         lastRoutineButtonHighlightKey = key;
 
@@ -10656,8 +10662,8 @@
 
         if (!running && !routineButtonTransitionPending) return;
 
-        let targetIndex = activeRoutineButtonIndex;
-        let blockIdToMatch = activeId || taskId;
+        let targetIndex = displayIndex;
+        let blockIdToMatch = displayId || taskId;
         if ((targetIndex == null || targetIndex === '') && blockIdToMatch) {
             const list = Array.isArray(userSettings?.routineButtons) ? userSettings.routineButtons : [];
             const idx = list.findIndex(b => String(b?.blockId || '').trim() === blockIdToMatch);
@@ -12746,9 +12752,8 @@
                 }
 
                 // 使用按钮自己的颜色应用到时间轴高亮
-                routineButtonHighlightColor = config?.color || null;
-                activeRoutineButtonIndex = String(index ?? '');
-                activeRoutineButtonBlockId = blockId;
+                pendingRoutineButtonIndex = String(index ?? '');
+                pendingRoutineButtonBlockId = blockId;
                 routineButtonTransitionPending = true;
                 updateRoutineButtonRunningHighlight(true);
 
@@ -12758,8 +12763,11 @@
                         const resolvedTaskName = String(await taskNamePromise || taskName || '').trim();
                         if (!resolvedTaskName || resolvedTaskName === '未命名任务') {
                             if (transitionToken === routineButtonTransitionToken) {
-                                routineButtonTransitionPending = false;
                                 clearRoutineButtonRunningHighlight(true);
+                                routineButtonTransitionPending = false;
+                                pendingRoutineButtonIndex = null;
+                                pendingRoutineButtonBlockId = null;
+                                updateRoutineButtonRunningHighlight(true);
                                 showToast('请先设置按钮名称', 2000);
                             }
                             return;
@@ -12777,17 +12785,20 @@
                         // queued operation start its selected routine instead.
                         if (transitionToken !== routineButtonTransitionToken) return;
 
-                        routineButtonHighlightColor = config?.color || null;
-                        activeRoutineButtonIndex = String(index ?? '');
-                        activeRoutineButtonBlockId = blockId;
-                        routineButtonTransitionPending = true;
-                        updateRoutineButtonRunningHighlight(true);
                         clearTaskBlockHighlight();
                         stopHighlightKeepAlive();
                         await setTaskAssociation(blockId, resolvedTaskName, null, {
                             persist: false,
                             resolveContext: false,
                         });
+                        // Clearing a task association also clears the task-owned
+                        // routine selection. Restore the clicked button here so
+                        // routines without a block ID keep their UI identity and
+                        // are written to sync/history metadata.
+                        routineButtonHighlightColor = config?.color || null;
+                        activeRoutineButtonIndex = String(index ?? '');
+                        activeRoutineButtonBlockId = blockId;
+                        updateRoutineButtonRunningHighlight(true);
 
                         if (config.useBreakMode === true) {
                             if (config.timerType === 'pomodoro') {
@@ -12820,13 +12831,18 @@
                         }
                         if (transitionToken === routineButtonTransitionToken) {
                             routineButtonTransitionPending = false;
+                            pendingRoutineButtonIndex = null;
+                            pendingRoutineButtonBlockId = null;
                             updateRoutineButtonRunningHighlight(true);
                         }
                     } catch (error) {
                         Logger.error('routineToolbarClickHandler: timer transition failed', error);
                         if (transitionToken === routineButtonTransitionToken) {
                             routineButtonTransitionPending = false;
+                            pendingRoutineButtonIndex = null;
+                            pendingRoutineButtonBlockId = null;
                             clearRoutineButtonRunningHighlight(true);
+                            updateRoutineButtonRunningHighlight(true);
                             showMiniToast('计时切换失败，请重试');
                         }
                     }

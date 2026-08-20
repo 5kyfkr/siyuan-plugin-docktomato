@@ -35,6 +35,10 @@ context.applyRoutineState({ status: 'RUNNING', routineButtonId: 'routine-focus' 
 assert.equal(context.activeRoutineButtonIndex, '0', 'synced stable ID must restore the active routine button');
 assert.equal(context.routineButtonHighlightColor, '#1976d2', 'synced routine must restore its highlight color');
 
+context.applyRoutineState({ status: 'RUNNING', routineButtonId: 'name:专注', routineButtonName: '专注' });
+assert.equal(context.activeRoutineButtonIndex, '0', 'routines without block IDs must restore by their stable name identity');
+assert.equal(context.routineButtonHighlightColor, '#1976d2', 'name-identified routines must restore their highlight color');
+
 context.applyRoutineState({ status: 'PAUSED', taskBlockId: 'block-read' });
 assert.equal(context.activeRoutineButtonIndex, '1', 'older synced states must still fall back to the task block ID');
 
@@ -71,5 +75,9 @@ assert.match(routineHandlerBlock, /routineButtonTransitionPending = true;[\s\S]*
 assert.match(routineHandlerBlock, /const queuedTransition = routineButtonTransitionTail\.then\(runRoutineTransition, runRoutineTransition\)/, 'routine transitions must run through one ordered async queue');
 assert.match(routineHandlerBlock, /Promise\.resolve\(\)\.then\(\(\) => getBlockContent\(blockId\)\)/, 'routine task-name lookup must be deferred off the click stack');
 assert.match(routineHandlerBlock, /const resolvedTaskName = String\(await taskNamePromise/, 'routine task-name lookup must not block the click handler before visual feedback');
+assert.match(routineHandlerBlock, /await setTaskAssociation\(blockId, resolvedTaskName, null,[\s\S]*?activeRoutineButtonIndex = String\(index \?\? ''\);[\s\S]*?updateRoutineButtonRunningHighlight\(true\)/, 'routine metadata must be restored after clearing a task association without a block ID');
+assert.ok(routineHandlerBlock.indexOf('activeRoutineButtonIndex = String(index ?? \'\');') > routineHandlerBlock.indexOf('await completeCurrentTomato'), 'new routine metadata must not relabel the segment being finalized');
+assert.match(source, /syncState\.routineButtonId = activeRoutineMeta\?\.id \|\| null[\s\S]*syncState\.routineButtonName = activeRoutineMeta\?\.name \|\| null/, 'started routines must persist identity metadata even without a block ID');
+assert.match(source, /routineButtonId: routineMetaAtEnd\?\.id \|\| null[\s\S]*routineButtonName: routineMetaAtEnd\?\.name \|\| null/, 'history records must persist routine identity metadata');
 
 console.log('timer routine sync contract tests passed');
