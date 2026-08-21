@@ -158,6 +158,7 @@
     const ACCOUNTING_RETRY_MAX_DELAY_MS = 300000;
     const TIMER_LOCAL_ASSOCIATION_KEY = 'siyuan-tomato-local-association-v2';
     const TIMER_JOURNAL_LOCAL_KEY = 'siyuan-tomato-journal-v2';
+    const ROUTINE_BUTTON_HISTORY_RECOVERY_VERSION = 1;
     const TOMATO_STATE_SCHEMA_VERSION = 2;
     const TOMATO_HISTORY_SCHEMA_VERSION = 2;
     const TOMATO_HARD_LIMIT_SEC = 86400;
@@ -357,7 +358,10 @@
             if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
             const keys = Object.keys(obj);
             if (keys.length === 0) return false;
-            const likelyTomatoSettings = ('main' in obj) || ('appearance' in obj) || ('sync' in obj) || ('audioSettings' in obj);
+            const hasRoutineSettings = (Array.isArray(obj.routineButtons) && obj.routineButtons.length > 0)
+                || (Array.isArray(obj.routineGroups) && obj.routineGroups.length > 0);
+            const likelyTomatoSettings = ('main' in obj) || ('appearance' in obj) || ('sync' in obj) || ('audioSettings' in obj)
+                || hasRoutineSettings;
             return likelyTomatoSettings;
         };
 
@@ -10552,6 +10556,156 @@
         };
     }
 
+    function buildRoutineButtonRecoveryCandidates(records) {
+        const candidates = new Map();
+        const addField = (entry, field, value) => {
+            const text = String(value || '').trim();
+            if (!text) return;
+            entry.fields[field] ||= new Map();
+            entry.fields[field].set(text, (entry.fields[field].get(text) || 0) + 1);
+        };
+        for (const record of Array.isArray(records) ? records : []) {
+            if (!record || typeof record !== 'object' || String(record.disposition || 'normal') !== 'normal') continue;
+            const id = String(record.routineButtonId || '').trim();
+            const blockId = String(record.routineButtonBlockId || '').trim();
+            const name = String(record.routineButtonName || '').trim();
+            if (!id && !blockId && !name) continue;
+            const key = id ? `id:${id}` : (blockId ? `block:${blockId}` : `name:${name}`);
+            let entry = candidates.get(key);
+            if (!entry) {
+                entry = { id: id || null, blockId: blockId || null, name: name || '', count: 0, fields: {} };
+                candidates.set(key, entry);
+            }
+            entry.count += 1;
+            entry.id ||= id || null;
+            entry.blockId ||= blockId || null;
+            if (name && !entry.name) entry.name = name;
+            addField(entry, 'name', name);
+            addField(entry, 'blockId', blockId);
+            addField(entry, 'icon', record.routineButtonIcon);
+            addField(entry, 'groupId', record.routineButtonGroupId);
+            addField(entry, 'color', record.routineButtonColor);
+            addField(entry, 'timerType', record.mode === 'stopwatch' || record.mode === 'stopwatch-break' ? 'stopwatch' : 'pomodoro');
+            addField(entry, 'phaseKind', record.mode === 'break' || record.mode === 'stopwatch-break' ? 'break' : 'focus');
+            if ((record.mode === 'countdown' || record.mode === 'break')
+                && Number.isFinite(Number(record.plannedDuration)) && Number(record.plannedDuration) > 0) {
+                addField(entry, 'tomatoDuration', Math.round(Number(record.plannedDuration)));
+            }
+        }
+        const pick = (entry, field, fallback = '') => {
+            const values = entry.fields[field];
+            if (!values || values.size === 0) return fallback;
+            return Array.from(values.entries()).sort((a, b) => b[1] - a[1])[0][0];
+        };
+        return Array.from(candidates.values()).map((entry, index) => ({
+            id: entry.id || (entry.blockId ? `bid:${entry.blockId}` : `name:${entry.name || index + 1}`),
+            hasExplicitId: !!entry.id,
+            blockId: pick(entry, 'blockId', entry.blockId || ''),
+            name: pick(entry, 'name', entry.name || `恢复日常 ${index + 1}`),
+            icon: pick(entry, 'icon'),
+            groupId: pick(entry, 'groupId'),
+            color: pick(entry, 'color', '#1E88E5'),
+            useBreakMode: pick(entry, 'phaseKind', 'focus') === 'break',
+            timerType: pick(entry, 'timerType', 'pomodoro'),
+            tomatoDuration: pick(entry, 'timerType', 'pomodoro') === 'pomodoro'
+                ? (Number(pick(entry, 'tomatoDuration', 0)) || 30)
+                : null,
+            count: entry.count,
+        }));
+    }
+
+    function restoreRoutineButtonsFromHistoryRecords(records, settings) {
+        if (!settings || typeof settings !== 'object') return 0;
+        if (!Array.isArray(settings.routineButtons)) settings.routineButtons = [];
+        const candidates = buildRoutineButtonRecoveryCandidates(records);
+        if (!candidates.length) return 0;
+        if (!Array.isArray(settings.routineGroups)) settings.routineGroups = [];
+        const buttons = settings.routineButtons;
+        const groups = settings.routineGroups;
+        const findExisting = (candidate) => {
+            const byId = candidate.id
+                ? buttons.find(button => String(button?.id || '').trim() === candidate.id)
+                : null;
+            if (byId || candidate.hasExplicitId) return byId || null;
+            if (candidate.blockId) {
+                const byBlockId = buttons.find(button => String(button?.blockId || '').trim() === candidate.blockId);
+                if (byBlockId) return byBlockId;
+            }
+            return candidate.name
+                ? buttons.find(button => String(button?.name || '').trim() === candidate.name) || null
+                : null;
+        };
+        let changed = 0;
+        candidates.forEach((candidate) => {
+            let button = findExisting(candidate);
+            if (!button) {
+                button = {
+                    id: candidate.id || createRoutineButtonId(),
+                    blockId: candidate.blockId,
+                    name: candidate.name,
+                    icon: candidate.icon,
+                    color: candidate.color,
+                    width: 80,
+                    showName: true,
+                    useBreakMode: candidate.useBreakMode,
+                    groupId: candidate.groupId || null,
+                    timerType: candidate.timerType,
+                    tomatoDuration: candidate.tomatoDuration,
+                };
+                buttons.push(button);
+                changed += 1;
+            } else {
+                const fields = {
+                    id: candidate.id,
+                    blockId: candidate.blockId,
+                    name: candidate.name,
+                    icon: candidate.icon,
+                    color: candidate.color,
+                    groupId: candidate.groupId || null,
+                    timerType: candidate.timerType,
+                    tomatoDuration: candidate.tomatoDuration,
+                };
+                Object.entries(fields).forEach(([field, value]) => {
+                    if ((String(button[field] || '').trim() === '') && String(value || '').trim() !== '') {
+                        button[field] = value;
+                        changed += 1;
+                    }
+                });
+                if (typeof button.useBreakMode !== 'boolean') {
+                    button.useBreakMode = candidate.useBreakMode;
+                    changed += 1;
+                }
+                if (!Number.isFinite(Number(button.width)) || Number(button.width) <= 0) button.width = 80;
+                if (typeof button.showName !== 'boolean') button.showName = true;
+            }
+            const groupId = String(button.groupId || candidate.groupId || '').trim();
+            if (groupId && !groups.some(group => String(group?.id || '').trim() === groupId)) {
+                groups.push({ id: groupId, name: `恢复分组 ${groups.length + 1}` });
+                changed += 1;
+            }
+        });
+        return changed;
+    }
+
+    async function recoverRoutineButtonsFromHistory() {
+        if (Number(userSettings?.routineButtonsHistoryRecoveryVersion) >= ROUTINE_BUTTON_HISTORY_RECOVERY_VERSION) return 0;
+        let records;
+        try {
+            records = await loadHistoryRecords({ force: true });
+        } catch (error) {
+            Logger.warn('日常按钮历史恢复暂不可用:', error);
+            return 0;
+        }
+        const changed = restoreRoutineButtonsFromHistoryRecords(records, userSettings);
+        userSettings.routineButtonsHistoryRecoveryVersion = ROUTINE_BUTTON_HISTORY_RECOVERY_VERSION;
+        await saveUserSettings();
+        if (changed) {
+            try { renderRoutineButtons(document.getElementById('tomato-routine-toolbar')); } catch (e) {}
+        }
+        Logger.info(`日常按钮历史恢复完成：新增或补全 ${changed} 项`);
+        return changed;
+    }
+
     function applyRoutineButtonMetaToRecord(record, meta) {
         if (!record || typeof record !== 'object') return;
         record.routineButtonId = meta?.id || null;
@@ -12878,11 +13032,12 @@
         timelineVisual.style.cssText = `
             position: absolute; bottom: 0; left: 0; width: 100%;
             height: ${collapsedHeightPx}px;
-            background: ${visualBg};
-            opacity: ${collapsedOpacity};
-            box-shadow: 0 -1px 3px rgba(0,0,0,0.12);
+            background: transparent;
+            opacity: 1;
+            box-shadow: none;
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
             overflow: hidden;
+            isolation: isolate;
         `;
         if (isNeonMode && themeConfig) {
             timelineVisual.classList.add('neon-mode');
@@ -12902,6 +13057,9 @@
         timelineViewport.className = 'timeline-viewport';
         timelineViewport.style.cssText = `
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: ${visualBg};
+            opacity: ${collapsedOpacity};
+            transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
             overflow-x: hidden; overflow-y: hidden;
             scroll-snap-type: x mandatory;
             -webkit-overflow-scrolling: touch;
@@ -13104,7 +13262,8 @@
             }
             timelineBar.style.height = `${expanded ? expandedH : hotArea}px`;
             timelineVisual.style.height = `${expanded ? expandedH : collapsedH}px`;
-            timelineVisual.style.opacity = String(expanded ? expandedOp : collapsedOp);
+            if (timelineViewport) timelineViewport.style.opacity = String(expanded ? expandedOp : collapsedOp);
+            else timelineVisual.style.opacity = String(expanded ? expandedOp : collapsedOp);
             // 恢复 hidden，避免破坏整体布局
             timelineVisual.style.overflow = 'hidden';
             if (timelineViewport) {
@@ -14237,6 +14396,9 @@
         if (timelineVisual) {
             timelineVisual.classList.remove('breathing', 'shimmering');
         }
+        if (timelineViewport) {
+            timelineViewport.classList.remove('breathing', 'shimmering', 'neon-mode');
+        }
         if (timelineBar) timelineBar.style.display = 'none';
     }
 
@@ -14298,7 +14460,8 @@
                 lastTimelineLayoutKey = layoutKey;
                 timelineBar.style.height = `${isTimelineExpanded ? expandedH : hotArea}px`;
                 timelineVisual.style.height = `${isTimelineExpanded ? expandedH : collapsedH}px`;
-                timelineVisual.style.opacity = String(isTimelineExpanded ? expandedOp : collapsedOp);
+                if (timelineViewport) timelineViewport.style.opacity = String(isTimelineExpanded ? expandedOp : collapsedOp);
+                else timelineVisual.style.opacity = String(isTimelineExpanded ? expandedOp : collapsedOp);
                 // 恢复 hidden，避免破坏整体布局
                 timelineVisual.style.overflow = 'hidden';
                 if (timelineViewport) {
@@ -14388,7 +14551,9 @@
             if (force || lastTimelineVisualKey !== visualKey) {
                 lastTimelineVisualKey = visualKey;
                 if (isNeonMode && themeConfig) {
-                    timelineVisual.style.background = `linear-gradient(90deg, ${themeConfig.gradientStart}, ${themeConfig.gradientEnd})`;
+                    const visualBackground = `linear-gradient(90deg, ${themeConfig.gradientStart}, ${themeConfig.gradientEnd})`;
+                    if (timelineViewport) timelineViewport.style.background = visualBackground;
+                    else timelineVisual.style.background = visualBackground;
                     timelineVisual.classList.add('neon-mode');
                     timelineVisual.style.setProperty('--neon-glow', themeConfig.glowColor);
                     timelineVisual.style.setProperty('--neon-start', themeConfig.gradientStart);
@@ -14410,7 +14575,9 @@
                         }
                     }
                 } else if (hasTimelineCustomColors && timelineCustomConfig) {
-                    timelineVisual.style.background = `linear-gradient(90deg, ${timelineCustomConfig.gradientStart}, ${timelineCustomConfig.gradientEnd})`;
+                    const visualBackground = `linear-gradient(90deg, ${timelineCustomConfig.gradientStart}, ${timelineCustomConfig.gradientEnd})`;
+                    if (timelineViewport) timelineViewport.style.background = visualBackground;
+                    else timelineVisual.style.background = visualBackground;
                     timelineVisual.classList.add('neon-mode');
                     timelineVisual.style.setProperty('--neon-glow', timelineCustomConfig.glowColor);
                     timelineVisual.style.setProperty('--neon-start', timelineCustomConfig.gradientStart);
@@ -14432,9 +14599,10 @@
                         }
                     }
                 } else {
-                    timelineVisual.style.background = baseColor;
+                    if (timelineViewport) timelineViewport.style.background = baseColor;
+                    else timelineVisual.style.background = baseColor;
                     timelineVisual.classList.remove('neon-mode');
-                    timelineVisual.style.boxShadow = '0 -1px 3px rgba(0,0,0,0.12)';
+                    timelineVisual.style.boxShadow = 'none';
                     if (timelineNowLine) {
                         timelineNowLine.classList.remove('neon-mode');
                         const indicatorColor = getTimelineIndicatorColor(null, null);
@@ -14461,6 +14629,11 @@
             const shouldShimmer = shouldBreathe && userSettings.timeline.enableShimmerFlow !== false;
             timelineVisual.classList.toggle('breathing', shouldBreathe);
             timelineVisual.classList.toggle('shimmering', shouldShimmer);
+            if (timelineViewport) {
+                timelineViewport.classList.toggle('breathing', shouldBreathe);
+                timelineViewport.classList.toggle('shimmering', shouldShimmer);
+                timelineViewport.classList.toggle('neon-mode', isNeonMode || hasTimelineCustomColors);
+            }
             if (shouldShimmer) {
                 const shimmerDuration = Math.max(5, Math.min(20, Number(userSettings.timeline.shimmerDuration) || 8));
                 const shimmerWidth = Math.max(1, Math.min(50, Number(userSettings.timeline.shimmerWidth) || 5));
@@ -27539,12 +27712,8 @@ window.__setTomatoFloatState = function (payload) {
                 will-change: opacity;
             }
 
-            #tomato-timeline-bar .timeline-visual.breathing {
-                animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
-                will-change: opacity;
-            }
-
-            #tomato-timeline-bar .timeline-visual.neon-mode.breathing {
+            #tomato-timeline-bar .timeline-visual.breathing > .timeline-viewport,
+            #tomato-timeline-bar .timeline-visual.neon-mode.breathing > .timeline-viewport {
                 animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
                 will-change: opacity;
             }
@@ -27781,8 +27950,8 @@ window.__setTomatoFloatState = function (payload) {
                 to { transform: translate3d(100%, 0, 0); }
             }
 
-            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.breathing.shimmering::after,
-            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering::after {
+            #tomato-timeline-bar[data-expanded="0"] .timeline-viewport.breathing.shimmering::after,
+            #tomato-timeline-bar[data-expanded="0"] .timeline-viewport.neon-mode.breathing.shimmering::after {
                 content: '';
                 position: absolute;
                 top: 0;
@@ -27798,15 +27967,12 @@ window.__setTomatoFloatState = function (payload) {
                     transparent 100%
                 );
                 background-size: 100% 100%;
-                animation: shimmerFlow var(--shimmer-duration, 8s) steps(var(--shimmer-frames, 240), end) infinite;
-                will-change: transform;
+                animation:
+                    shimmerFlow var(--shimmer-duration, 8s) steps(var(--shimmer-frames, 240), end) infinite,
+                    tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
+                will-change: transform, opacity;
                 z-index: 2;
                 pointer-events: none;
-            }
-
-            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.breathing.shimmering,
-            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering {
-                animation: tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
             }
 
             #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering {
@@ -27817,9 +27983,9 @@ window.__setTomatoFloatState = function (payload) {
             html.tomato-animations-paused .tomato-progress-indicator.breathing,
             html.tomato-animations-paused .tomato-preview--breathing,
             html.tomato-animations-paused .tomato-preview-indicator.breathing,
-            html.tomato-animations-paused #tomato-timeline-bar .timeline-visual.breathing,
+            html.tomato-animations-paused #tomato-timeline-bar .timeline-visual.breathing > .timeline-viewport,
             html.tomato-animations-paused #tomato-timeline-bar .timeline-segment.breathing,
-            html.tomato-animations-paused #tomato-timeline-bar .timeline-visual.shimmering::after {
+            html.tomato-animations-paused #tomato-timeline-bar .timeline-viewport.shimmering::after {
                 animation-play-state: paused !important;
             }
 
@@ -36662,7 +36828,10 @@ window.__setTomatoFloatState = function (payload) {
             }
         } catch (e) {}
         __tomatoInitBootstrapping = false;
-        
+        void recoverRoutineButtonsFromHistory().catch(error => {
+            Logger.warn('日常按钮历史恢复失败:', error);
+        });
+
             // 🔧 修复：刷新UI显示，确保使用用户设置的默认番茄时间
             if (timeDisplay) {
                 updateDisplay();

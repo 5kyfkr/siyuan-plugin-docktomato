@@ -18,6 +18,11 @@ const settingsStart = source.indexOf('    async function loadUserSettings()');
 const settingsEnd = source.indexOf('    // ========== 历史记录管理 ==========', settingsStart);
 assert.ok(settingsStart >= 0 && settingsEnd > settingsStart, 'settings read/write block must remain extractable');
 const settingsBlock = source.slice(settingsStart, settingsEnd);
+const pathSelectionStart = source.indexOf('    async function __tomatoSelectStoragePaths()');
+const pathSelectionEnd = source.indexOf('    async function __tomatoPutFileText(', pathSelectionStart);
+assert.ok(pathSelectionStart >= 0 && pathSelectionEnd > pathSelectionStart, 'storage path selection must remain extractable');
+const pathSelectionBlock = source.slice(pathSelectionStart, pathSelectionEnd);
+assert.match(pathSelectionBlock, /Array\.isArray\(obj\.routineButtons\)[\s\S]*obj\.routineButtons\.length > 0/, 'settings path selection must preserve legacy files that only contain routine buttons');
 assert.match(settingsBlock, /if \(!sharedLoaded\)[\s\S]*localStorage\.getItem\('tomato-user-settings'\)/,
     'settings must use localStorage when shared settings are unavailable');
 assert.match(settingsBlock, /if \(!sharedLoaded\)[\s\S]*localStorage\.getItem\('focus-time-settings'\)/,

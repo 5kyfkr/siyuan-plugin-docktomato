@@ -7,6 +7,28 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'tomato.js'), 'utf8');
 
+const recoveryStart = source.indexOf('    function buildRoutineButtonRecoveryCandidates(');
+const recoveryEnd = source.indexOf('    function applyRoutineButtonMetaToRecord(', recoveryStart);
+assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart, 'routine history recovery helpers must remain extractable');
+const recoveryContext = vm.createContext({ Array, Map, Math, Number, Object, String });
+vm.runInContext(`${source.slice(recoveryStart, recoveryEnd)}\nthis.restore = restoreRoutineButtonsFromHistoryRecords;`, recoveryContext);
+const recoveredSettings = { routineButtons: [], routineGroups: [] };
+const recoveredCount = recoveryContext.restore([{
+    disposition: 'normal',
+    routineButtonId: 'routine-old',
+    routineButtonName: '阅读',
+    routineButtonIcon: '📖',
+    routineButtonGroupId: 'group-old',
+    routineButtonColor: '#123456',
+    mode: 'countdown',
+    plannedDuration: 25,
+}], recoveredSettings);
+assert.equal(recoveredCount, 2, 'history metadata must restore a button and its missing group');
+assert.equal(recoveredSettings.routineButtons[0].id, 'routine-old');
+assert.equal(recoveredSettings.routineButtons[0].name, '阅读');
+assert.equal(recoveredSettings.routineButtons[0].color, '#123456');
+assert.equal(recoveredSettings.routineButtons[0].groupId, 'group-old');
+
 const identityStart = source.indexOf('    function getRoutineButtonIdentity(');
 const resolverStart = source.indexOf('    function syncActiveRoutineButtonFromState(');
 const resolverEnd = source.indexOf('    function updateRoutineButtonRunningHighlight(', resolverStart);
