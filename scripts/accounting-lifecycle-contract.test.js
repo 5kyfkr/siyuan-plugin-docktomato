@@ -27,7 +27,7 @@ assert.match(source, /delayMs !== null && delayMs !== undefined/,
 assert.match(source, /clearPendingSiyuanSync\(\)\s*\{[\s\S]*?_pendingSiyuanSyncTimer/,
     'SyncManager must own cleanup of its delayed sync timer');
 
-const recoveryStart = source.indexOf('        async recoverJournal()');
+const recoveryStart = source.indexOf('        async recoverJournal(');
 const recoveryEnd = source.indexOf('        async execute(command, builder)', recoveryStart);
 assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart, 'journal recovery must remain extractable');
 const recoveryBlock = source.slice(recoveryStart, recoveryEnd);

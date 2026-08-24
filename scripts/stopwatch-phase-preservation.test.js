@@ -20,7 +20,7 @@ const resetSource = source.slice(resetStart, resetEnd);
 assert.match(resetSource, /if \(!isStopwatchBreak && preBreakState\?\.mode === 'countdown'\)/, 'normal pomodoro breaks may retain their existing return behavior');
 assert.match(resetSource, /else if \(isStopwatchBreak\)[\s\S]*timerMode = 'stopwatch-break';/, 'completing stopwatch rest must preserve stopwatch rest mode');
 
-const dialogStart = source.indexOf('        const acknowledgeAndCloseEndDialog = async () =>');
+const dialogStart = source.indexOf('        const acknowledgeAndCloseEndDialog = () =>');
 const dialogEnd = source.indexOf('        backdrop.onclick =', dialogStart);
 const dialogSource = source.slice(dialogStart, dialogEnd);
 assert.match(dialogSource, /const isStopwatchBreakEnd = timerMode === 'stopwatch-break' \|\| preBreakState\?\.mode === 'stopwatch';[\s\S]*if \(isStopwatchBreakEnd\) \{[\s\S]*preBreakState = null;/, 'closing a completed stopwatch rest must keep the current rest phase');

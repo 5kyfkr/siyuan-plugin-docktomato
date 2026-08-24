@@ -32,7 +32,7 @@ assert.match(settingsBlock, /__tomatoQueueFileWrite\(SETTINGS_FILE_PATH/,
 assert.match(settingsBlock, /__tomatoQueueFileWrite\(FOCUS_TIME_SETTINGS_PATH/,
     'focus settings writes must be serialized per file');
 
-const journalStart = source.indexOf('        async recoverJournal()');
+const journalStart = source.indexOf('        async recoverJournal(');
 const journalEnd = source.indexOf('        async execute(command, builder)', journalStart);
 assert.match(source.slice(journalStart, journalEnd), /journal\?\.unavailable[\s\S]*blocking: true/,
     'journal read failures must block recovery in sync mode');

@@ -22,6 +22,8 @@ const switchStart = source.indexOf('    async function switchToCountdownAndStart
 const switchEnd = source.indexOf('    async function startBreakMode(', switchStart);
 const switchBlock = source.slice(switchStart, switchEnd);
 assert.match(switchBlock, /const pendingRecordSave = finalizeCurrentSegmentBeforeTransition\(\);[\s\S]*await requireTimerPersistence\(pendingRecordSave,[\s\S]*await startTimer\([^)]*\)/, 'mode switches must finish the shared record journal before starting the next canonical timer');
+assert.ok(switchBlock.indexOf('updateDisplay();') < switchBlock.indexOf('await requireTimerPersistence(pendingRecordSave'), 'mode switches must render the selected mode before waiting for persistence');
+assert.ok(switchBlock.indexOf('await requireTimerPersistence(pendingRecordSave') < switchBlock.indexOf('await startTimer('), 'mode switches must not start the next timer before persistence succeeds');
 
 const stopStart = source.indexOf('    async function stopTimer(');
 const stopEnd = source.indexOf('    let currentStartTimestamp', stopStart);
@@ -79,6 +81,8 @@ assert.match(contextMenuBlock, /tomato-duration-slider:hover::\-webkit-slider-th
 assert.match(contextMenuBlock, /durationSlider\.classList\.add\('is-pressed'\)[\s\S]*durationSlider\.classList\.remove\('is-pressed'\)/, 'pressing the duration slider must provide thumb feedback');
 assert.match(contextMenuBlock, /durationSlider\.addEventListener\('pointermove'[\s\S]*durationSliderDragged = true[\s\S]*durationSlider\.addEventListener\('click'[\s\S]*if \(durationSliderDragged\) return;[\s\S]*startDurationFromControl/, 'duration slider taps must start a timer while drag gestures only adjust duration');
 assert.match(contextMenuBlock, /hasActiveDuration && durationSliderInteraction === 'tap'[\s\S]*return;/, 'a running timer tap must not race an active-duration adjustment');
+assert.match(contextMenuBlock, /const activeMenu = document\.getElementById\('tomy-tomato-context-menu'\);[\s\S]*if \(activeMenu\) activeMenu\.remove\(\);[\s\S]*await switchToCountdownAndStart\(duration\)/, 'duration slider taps must close the menu before waiting for a transition');
+assert.match(contextMenuBlock, /stopwatchItem\.onclick = async[\s\S]*?menu\.remove\(\);[\s\S]*?await startStopwatchForCurrentPhase\(\)/, 'stopwatch menu clicks must close the menu before waiting for a transition');
 
 const floatMenuStart = source.indexOf('    function buildDesktopFloatWindowMenuTemplate(');
 const floatMenuEnd = source.indexOf('    function showDesktopFloatWindowContextMenu(', floatMenuStart);
