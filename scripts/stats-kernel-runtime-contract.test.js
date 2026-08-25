@@ -11,7 +11,7 @@ let stallHistoryDirectoryBody = false;
 let historyIndexContractVersion = 2;
 let historyIndexReadCount = 0;
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'plugin.json'), 'utf8'));
-assert.equal(manifest.version, '2.1.9');
+assert.equal(manifest.version, '2.2.0');
 assert.equal(manifest.kernels?.includes('all'), true, 'plugin.json must enable the Kernel entry point');
 assert.equal(manifest.minAppVersion, '3.8.1', 'the plugin must require the SiYuan Kernel-plugin baseline');
 assert.equal(manifest.disabledInPublish, true, 'the plugin must stay disabled in SiYuan publish-service pages');
