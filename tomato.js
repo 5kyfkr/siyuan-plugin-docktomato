@@ -14546,10 +14546,10 @@
         if (!force && lastTimelineUpdateSecond === nowSecond) return;
         lastTimelineUpdateSecond = nowSecond;
 
-        // 🔧 修复：强制刷新时先清除所有层的残留，防止切换模式时产生残影
-        if (force) {
-            clearTimelineActiveLayers();
-        }
+        // Active segments are reconciled by key in renderTimelineActiveSegments.
+        // Clearing the whole layer here creates a visible gap during the
+        // several forced refreshes that can follow a remote sync, exposing a
+        // history/default event before the current timer is drawn again.
 
         if (!timelineBar || !timelineBar.parentNode) {
             createTimelineBar();
@@ -15158,9 +15158,36 @@
         const activeRenderState = beginTimelineActiveRender(layerEl);
         layerEl.style.pointerEvents = 'none';
         try {
-        const syncActive = !!(syncState && syncState.status && syncState.status !== 'IDLE' && syncState.startTime);
-        const effectiveRunning = !!(isRunning || (syncActive && syncState.status === 'RUNNING'));
-        const effectivePaused = !!(isTimerPaused || (syncActive && syncState.status === 'PAUSED'));
+        // A remote timer can become visible before the legacy UI fields have
+        // finished being projected from the sync snapshot.  Do not mix those
+        // two sources while drawing; otherwise one render can use the default
+        // timer and the next one the remote timer, which makes the active
+        // timeline event flash between both ranges.
+        const activeTimerSnapshot = syncState?.activeTimer && typeof syncState.activeTimer === 'object'
+            ? syncState.activeTimer
+            : null;
+        const syncActive = !!(syncState
+            && syncState.status
+            && syncState.status !== 'IDLE'
+            && (syncState.startTime
+                || syncState.stopwatchStartTimeMs
+                || activeTimerSnapshot?.segmentStartMs
+                || activeTimerSnapshot?.startedAtMs));
+        const effectiveRunning = !!(syncActive ? syncState.status === 'RUNNING' : isRunning);
+        const effectivePaused = !!(syncActive ? syncState.status === 'PAUSED' : isTimerPaused);
+        const activeMode = syncActive ? (syncState.mode || timerMode) : timerMode;
+        const syncedDurationSec = syncActive
+            ? Number(activeTimerSnapshot?.plannedDurationSec ?? syncState.duration)
+            : NaN;
+        const timelineDurationMin = Number.isFinite(syncedDurationSec) && syncedDurationSec > 0
+            ? Math.max(1, Math.round(syncedDurationSec / 60))
+            : Number(currentDuration);
+        const timelineStartValue = syncActive
+            ? (syncState.startTime || activeTimerSnapshot?.segmentStartMs || activeTimerSnapshot?.startedAtMs || 0)
+            : (currentStartTimeMs || currentStartTimestamp || startTime || 0);
+        const syncedRemainingSeconds = syncActive && effectivePaused
+            ? StateCalculator.calculateRemaining(syncState)
+            : null;
         if (!effectiveRunning && !effectivePaused) return;
         const dayRange = (() => {
             const dk = dateKey || formatDateKey(new Date());
@@ -15236,18 +15263,21 @@
             }, layerEl, true);
         };
 
-        if (timerMode === 'countdown') {
-            let durationMin = Number(currentDuration);
+        if (activeMode === 'countdown') {
+            let durationMin = timelineDurationMin;
             if (!Number.isFinite(durationMin) || durationMin <= 0) {
                 const fromSync = Number(syncState?.duration);
                 if (Number.isFinite(fromSync) && fromSync > 0) durationMin = Math.max(1, Math.round(fromSync / 60));
             }
             if (!Number.isFinite(durationMin) || durationMin <= 0) return;
-            const startTs = toMs(currentStartTimeMs || currentStartTimestamp || syncState?.startTime || startTime || 0);
+            const startTs = toMs(timelineStartValue);
             if (!startTs) return;
             const endTs = startTs + (durationMin * 60 * 1000);
-            let currentTs = nowTs;
-            if (effectivePaused && pausedRemainingSeconds != null) {
+            let currentTs = Math.max(nowTs, startTs);
+            if (effectivePaused && Number.isFinite(syncedRemainingSeconds)) {
+                const elapsedSeconds = durationMin * 60 - syncedRemainingSeconds;
+                currentTs = startTs + Math.max(0, elapsedSeconds) * 1000;
+            } else if (effectivePaused && pausedRemainingSeconds != null) {
                 const elapsedSeconds = durationMin * 60 - pausedRemainingSeconds;
                 currentTs = startTs + Math.max(0, elapsedSeconds) * 1000;
             } else if (effectivePaused && typeof remainingSeconds === 'number' && Number.isFinite(remainingSeconds)) {
@@ -15274,11 +15304,13 @@
             return;
         }
 
-        if (timerMode === 'stopwatch') {
+        if (activeMode === 'stopwatch') {
             if (effectivePaused) return;
-            const startTs = toMs(syncState?.stopwatchStartTimeMs || syncState?.startTime || stopwatchStartTimeMs || startTime || 0);
+            const startTs = toMs(syncActive
+                ? (syncState?.stopwatchStartTimeMs || syncState?.startTime || activeTimerSnapshot?.startedAtMs || 0)
+                : (stopwatchStartTimeMs || startTime || 0));
             if (!startTs) return;
-            drawActiveRange(startTs, nowTs, stopwatchColor, 0.8, '⏱️ 专注正计时', {
+            drawActiveRange(startTs, Math.max(nowTs, startTs), stopwatchColor, 0.8, '⏱️ 专注正计时', {
                 taskBlockId: currentTaskBlockId,
                 taskBlockName: currentTaskBlockName,
                 databaseBlockId: currentDatabaseBlockId,
@@ -15290,18 +15322,21 @@
             return;
         }
 
-        if (timerMode === 'break') {
-            let durationMin = Number(currentDuration);
+        if (activeMode === 'break') {
+            let durationMin = timelineDurationMin;
             if (!Number.isFinite(durationMin) || durationMin <= 0) {
                 const fromSync = Number(syncState?.duration);
                 if (Number.isFinite(fromSync) && fromSync > 0) durationMin = Math.max(1, Math.round(fromSync / 60));
             }
             if (!Number.isFinite(durationMin) || durationMin <= 0) return;
-            const startTs = toMs(currentStartTimeMs || currentStartTimestamp || syncState?.startTime || startTime || 0);
+            const startTs = toMs(timelineStartValue);
             if (!startTs) return;
             const endTs = startTs + (durationMin * 60 * 1000);
-            let currentTs = nowTs;
-            if (effectivePaused && pausedRemainingSeconds != null) {
+            let currentTs = Math.max(nowTs, startTs);
+            if (effectivePaused && Number.isFinite(syncedRemainingSeconds)) {
+                const elapsedSeconds = durationMin * 60 - syncedRemainingSeconds;
+                currentTs = startTs + Math.max(0, elapsedSeconds) * 1000;
+            } else if (effectivePaused && pausedRemainingSeconds != null) {
                 const elapsedSeconds = durationMin * 60 - pausedRemainingSeconds;
                 currentTs = startTs + Math.max(0, elapsedSeconds) * 1000;
             } else if (effectivePaused && typeof remainingSeconds === 'number' && Number.isFinite(remainingSeconds)) {
@@ -15317,17 +15352,19 @@
                 taskBlockId: syncState?.taskBlockId || currentTaskBlockId,
                 taskBlockName: syncState?.taskBlockName || currentTaskBlockName,
                 databaseBlockId: syncState?.databaseBlockId || currentDatabaseBlockId,
-                mode: timerMode,
+                mode: activeMode,
                 isCurrent: false,
                 timelineActiveKey: 'break-current'
             });
             return;
         }
 
-        if (timerMode === 'stopwatch-break') {
-            const startTs = toMs(syncState?.stopwatchStartTimeMs || syncState?.startTime || stopwatchStartTimeMs || startTime || currentStartTimeMs || 0);
+        if (activeMode === 'stopwatch-break') {
+            const startTs = toMs(syncActive
+                ? (syncState?.stopwatchStartTimeMs || syncState?.startTime || activeTimerSnapshot?.startedAtMs || 0)
+                : (stopwatchStartTimeMs || startTime || currentStartTimeMs || 0));
             if (!startTs) return;
-            let currentTs = nowTs;
+            let currentTs = Math.max(nowTs, startTs);
             if (effectivePaused && pausedRemainingSeconds != null) {
                 currentTs = startTs + Math.max(0, pausedRemainingSeconds) * 1000;
             }
@@ -16361,6 +16398,8 @@
     // 🔧 新增：统一的本地计时器循环
     function startLocalTimerLoop() {
         if (timerId !== null) clearInterval(timerId);
+
+        ensureDesktopTimerBackgroundThrottlingDisabled('start-local-timer-loop');
 
         // 立即执行一次 tick
         runTimerTickSafely();
@@ -25164,6 +25203,8 @@ function calculateWeeklyStats(dailyStatsArray) {
     let desktopFloatWindowMonitoredWindow = null;
     let desktopFloatWindowThemeObserver = null;
     let desktopFloatWindowLastResolvedColorMode = '';
+    let desktopTimerBackgroundThrottlingWindow = null;
+    let desktopTimerBackgroundThrottlingDisabled = false;
     const DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT = DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH;
     const DESKTOP_FLOAT_WINDOW_WIDTH_EXPANDED = DESKTOP_FLOAT_WINDOW_WIDTH_COMPACT + 25;
     const DESKTOP_FLOAT_WINDOW_HEIGHT_COLLAPSED = 44;
@@ -25503,6 +25544,28 @@ function calculateWeeklyStats(dailyStatsArray) {
             Menu,
             screen
         };
+    }
+
+    // Electron throttles timers in a background renderer. The timer's end
+    // effects (sound and notification) must run while the main Siyuan window
+    // is minimized or unfocused, even though the detached float window stays visible.
+    function ensureDesktopTimerBackgroundThrottlingDisabled(reason = '') {
+        if (isMobileDevice()) return false;
+        const support = getDesktopFloatWindowElectronSupport();
+        const currentWindow = support.currentWindow;
+        const webContents = currentWindow?.webContents;
+        if (!webContents || typeof webContents.setBackgroundThrottling !== 'function') return false;
+        if (desktopTimerBackgroundThrottlingWindow === currentWindow && desktopTimerBackgroundThrottlingDisabled) return true;
+        try {
+            webContents.setBackgroundThrottling(false);
+            desktopTimerBackgroundThrottlingWindow = currentWindow;
+            desktopTimerBackgroundThrottlingDisabled = true;
+            Logger.info('🍅 已关闭桌面渲染进程后台计时节流', { reason: String(reason || '').trim() || 'unknown' });
+            return true;
+        } catch (e) {
+            Logger.warn('🍅 关闭桌面渲染进程后台计时节流失败:', e);
+            return false;
+        }
     }
 
     function canDesktopFloatWindowRecordDistraction() {
@@ -26642,7 +26705,8 @@ window.__setTomatoFloatState = function (payload) {
                 hasShadow: !isDesktopFloatWindowCircularTimerStyleEnabled(),
                 webPreferences: {
                     nodeIntegration: true,
-                    contextIsolation: false
+                    contextIsolation: false,
+                    backgroundThrottling: false
                 }
             });
             desktopFloatWindow = win;
@@ -36264,7 +36328,7 @@ window.__setTomatoFloatState = function (payload) {
         __tomatoInitPromise = (async () => {
             __tomatoInitBootstrapping = true;
             Logger.info('🍅 番茄钟 v9.1 初始化...');
-            
+
             // v8.6 修复：使用 syncState 替代 localStorage 状态恢复
             let stateRestored = false;
             await ensureTomatoStorageMigration();

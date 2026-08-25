@@ -69,5 +69,11 @@ assert.equal((iconBlock.match(/applyDatabaseFocusMode\(false\)/g) || []).length,
     'task icon cleanup must exit database focus mode once');
 assert.match(tomatoSource, /function updateDisplay\(animateProgress = true\)[\s\S]*updateProgressBar\(animateProgress\);/,
     'display rendering must own the progress update animation mode');
+assert.match(tomatoSource, /function ensureDesktopTimerBackgroundThrottlingDisabled\(reason = ''\)[\s\S]*webContents\.setBackgroundThrottling\(false\)/,
+    'desktop timer renderer must disable Electron background timer throttling');
+assert.match(tomatoSource, /function startLocalTimerLoop\(\)[\s\S]*ensureDesktopTimerBackgroundThrottlingDisabled\('start-local-timer-loop'\)/,
+    'every local timer loop must restore the background timer guarantee');
+assert.match(tomatoSource, /contextIsolation: false,\s*backgroundThrottling: false/,
+    'detached timer window must not be background-throttled');
 
 console.log('tomato performance lifecycle contract tests passed');
