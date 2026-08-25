@@ -239,6 +239,7 @@ const fetchText = async (url, data, options = {}) => {
 const installTomatoHistoryWriter = (plugin) => {
     let currentRun = null;
     let disposed = false;
+    const hasLeaseRpc = () => typeof plugin?.kernel?.rpc?.call?.dockTomatoHistoryWriteLease === "function";
     const writerError = (message, code) => {
         const error = new Error(message);
         error.code = code;
@@ -328,6 +329,24 @@ const installTomatoHistoryWriter = (plugin) => {
             if (typeof operation !== "function") throw new TypeError("history write operation must be a function");
             if (disposed) throw writerError("番茄历史写入已停止", "HISTORY_WRITER_DISPOSED");
             if (currentRun) throw writerError("番茄历史写入已在进行", "HISTORY_WRITER_BUSY");
+            const runLocally = async () => {
+                const state = {
+                    controller: new AbortController(),
+                    lease: null,
+                    heartbeat: null,
+                    error: null,
+                };
+                currentRun = state;
+                try {
+                    return await operation(state.controller.signal);
+                } finally {
+                    if (currentRun === state) currentRun = null;
+                }
+            };
+            // A renderer running on an older Siyuan (or during kernel startup)
+            // still has a safe per-renderer mutation queue in tomato.js, so do
+            // not turn an otherwise valid local write into "保存失败".
+            if (!hasLeaseRpc()) return runLocally();
             const state = {
                 controller: new AbortController(),
                 lease: null,
@@ -337,7 +356,13 @@ const installTomatoHistoryWriter = (plugin) => {
             currentRun = state;
             let heartbeat = null;
             try {
-                state.lease = await acquire(state.controller.signal);
+                try {
+                    state.lease = await acquire(state.controller.signal);
+                } catch (error) {
+                    if (error?.code !== "HISTORY_WRITER_UNAVAILABLE") throw error;
+                    if (currentRun === state) currentRun = null;
+                    return await runLocally();
+                }
                 heartbeat = setInterval(() => {
                     void renew(state).catch((error) => {
                         state.error = error;
@@ -356,6 +381,7 @@ const installTomatoHistoryWriter = (plugin) => {
             }
         },
         assert() {
+            if (!hasLeaseRpc()) return true;
             return renew(currentRun);
         },
         dispose() {

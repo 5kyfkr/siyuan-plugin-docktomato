@@ -4462,6 +4462,15 @@
             || error?.code === 'HISTORY_WRITER_BUSY';
     }
 
+    function getHistoryMutationErrorMessage(error) {
+        const code = String(error?.code || '');
+        if (code === 'HISTORY_REVISION_CHANGED') return '历史记录已被其他窗口更新，请刷新后重试';
+        if (code === 'HISTORY_WRITER_BUSY') return '历史记录正在被其他窗口保存，请稍后重试';
+        if (code === 'HISTORY_WRITER_TIMEOUT') return '历史记录写入协调超时，请稍后重试';
+        if (code === 'HISTORY_SOURCE_UNAVAILABLE') return '历史文件暂时不可用，请检查思源状态后重试';
+        return String(error?.message || '保存失败');
+    }
+
     async function withHistoryIoTimeout(path, operation) {
         assertHistoryWriteActive();
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -4641,6 +4650,26 @@
             }
         });
         return list;
+    }
+
+    function updateHistoryRecordTimeFields(record, startValue, endValue) {
+        if (!record) return false;
+        const start = toDateSafe(startValue);
+        const end = toDateSafe(endValue);
+        const startMs = start?.getTime?.();
+        const endMs = end?.getTime?.();
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return false;
+        const durationMs = endMs - startMs;
+        record.start = start.toISOString();
+        record.end = end.toISOString();
+        record.durationMs = durationMs;
+        record.durationSec = durationMs / 1000;
+        record.durationMin = durationMs / 60000;
+        record.timestamp = endMs;
+        record.date = formatDateKey(end);
+        record.dateTime = end.toLocaleString('zh-CN');
+        record.timePeriod = getTimePeriod(end.getHours());
+        return true;
     }
 
     function getHistoryRecordDurationMs(record) {
@@ -5103,6 +5132,7 @@
     }
 
     async function writeHistoryShardSet(records) {
+        normalizeHistoryRecords(records);
         assertHistoryRecordCount(records?.length);
         if (!await ensureHistoryStorageDir()) throw new Error('创建历史目录失败');
         const historyIndexFilePath = `${HISTORY_STORAGE_DIR}/history-index.json`;
@@ -5160,6 +5190,7 @@
         if (!/^(?:\d{4}|unknown)$/.test(year) || !currentIndex?.shards) {
             throw new Error('年度历史写入参数无效');
         }
+        normalizeHistoryRecords(records);
         assertHistoryRecordCount(records?.length);
         const shards = { ...currentIndex.shards };
         const previousRevision = Math.max(0, Number(currentIndex.revision) || 0);
@@ -5586,28 +5617,23 @@
 
     function __tomatoFindHistoryRecordIndex(records, recordKey) {
         const list = Array.isArray(records) ? records : [];
+        const recordId = String(recordKey?.recordId || '').trim();
+        if (recordId) {
+            const idIndex = list.findIndex(r => String(r?.recordId || '').trim() === recordId);
+            if (idIndex >= 0) return idIndex;
+        }
         const start = recordKey?.start;
         const end = recordKey?.end;
         const mode = recordKey?.mode;
         const ts = recordKey?.timestamp;
+        if (start == null && end == null && mode == null && ts == null) return -1;
         const idx = list.findIndex(r => r && r.start === start && r.end === end && r.mode === mode && r.timestamp === ts);
         if (idx >= 0) return idx;
         return list.findIndex(r => r && r.start === start && r.end === end && r.mode === mode);
     }
 
     function __tomatoNormalizeHistoryRecordFields(record) {
-        if (!record) return;
-        const start = toDateSafe(record.start);
-        const end = toDateSafe(record.end);
-        if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end.getTime() <= start.getTime()) return;
-        const durationMs = Math.max(0, end.getTime() - start.getTime());
-        record.durationMs = durationMs;
-        record.durationSec = durationMs / 1000;
-        record.durationMin = durationMs / 60000;
-        record.timestamp = end.getTime();
-        record.date = formatDateKey(end);
-        record.dateTime = end.toLocaleString('zh-CN');
-        record.timePeriod = getTimePeriod(end.getHours());
+        updateHistoryRecordTimeFields(record, record?.start, record?.end);
     }
 
     async function __tomatoHistoryLoadAll() {
@@ -5851,13 +5877,10 @@
                 return false;
             }
         }
-        
+
         try {
             const success = await mutateHistoryRecords(records => {
-                const index = records.findIndex(r =>
-                    r.start === record.start && r.end === record.end &&
-                    r.durationMin === record.durationMin && r.mode === record.mode
-                );
+                const index = __tomatoFindHistoryRecordIndex(records, record);
                 if (index < 0) return false;
                 records.splice(index, 1);
                 return true;
@@ -22302,10 +22325,16 @@ function calculateWeeklyStats(dailyStatsArray) {
         };
         const findRecordIndex = (records, record) => {
             const list = Array.isArray(records) ? records : [];
+            const recordId = String(record?.recordId || '').trim();
+            if (recordId) {
+                const idIndex = list.findIndex(r => String(r?.recordId || '').trim() === recordId);
+                if (idIndex >= 0) return idIndex;
+            }
             const start = record?.start;
             const end = record?.end;
             const mode = record?.mode;
             const ts = record?.timestamp;
+            if (start == null && end == null && mode == null && ts == null) return -1;
             const idx = list.findIndex(r => r && r.start === start && r.end === end && r.mode === mode && r.timestamp === ts);
             if (idx >= 0) return idx;
             return list.findIndex(r => r && r.start === start && r.end === end && r.mode === mode);
@@ -22342,6 +22371,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 ? historyState.editorDate
                 : (dateList.includes(today) ? today : (dateList[0] || today)));
         historyState.editorDate = selectedDate;
+        const records = getAllRecords();
 
         const header = document.createElement('div');
         header.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom: 12px; flex-wrap: wrap;';
@@ -22688,15 +22718,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                             const idx = findRecordIndex(yearRecords, record);
                             if (idx < 0) return false;
                             recordFound = true;
-                            const ms = endMs - startMs;
-                            yearRecords[idx].start = ns.toISOString();
-                            yearRecords[idx].end = ne.toISOString();
-                            yearRecords[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
-                            yearRecords[idx].durationMin = Math.max(0, Math.round(ms / 60000));
-                            yearRecords[idx].timestamp = Math.round(endMs);
-                            yearRecords[idx].date = formatDateKey(ne);
-                            yearRecords[idx].dateTime = ne.toLocaleString('zh-CN');
-                            yearRecords[idx].timePeriod = getTimePeriod(ne.getHours());
+                            updateHistoryRecordTimeFields(yearRecords[idx], ns, ne);
                             committedRecord = { ...yearRecords[idx] };
                             return true;
                         }, { record });
@@ -22716,7 +22738,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                             showToastDialog('提示', '保存失败', 'error');
                         }
                     } catch (err) {
-                        showToastDialog('提示', '保存失败', 'error');
+                        Logger.warn('历史记录时间保存失败:', err);
+                        showToastDialog('提示', getHistoryMutationErrorMessage(err), 'error');
                     }
                 };
 
@@ -22810,22 +22833,9 @@ function calculateWeeklyStats(dailyStatsArray) {
                             const recB = { ...original };
                             const aEndD = new Date(splitMs);
                             const bEndD = new Date(origEndMs);
-                            recA.start = new Date(origStartMs).toISOString();
-                            recA.end = aEndD.toISOString();
-                            recA.durationSec = Math.max(0, Math.floor((splitMs - origStartMs) / 1000));
-                            recA.durationMin = Math.max(0, Math.round((splitMs - origStartMs) / 60000));
-                            recA.timestamp = Math.round(splitMs);
-                            recA.date = formatDateKey(aEndD);
-                            recA.dateTime = aEndD.toLocaleString('zh-CN');
-                            recA.timePeriod = getTimePeriod(aEndD.getHours());
-                            recB.start = new Date(splitMs).toISOString();
-                            recB.end = bEndD.toISOString();
-                            recB.durationSec = Math.max(0, Math.floor((origEndMs - splitMs) / 1000));
-                            recB.durationMin = Math.max(0, Math.round((origEndMs - splitMs) / 60000));
-                            recB.timestamp = Math.round(origEndMs);
-                            recB.date = formatDateKey(bEndD);
-                            recB.dateTime = bEndD.toLocaleString('zh-CN');
-                            recB.timePeriod = getTimePeriod(bEndD.getHours());
+                            updateHistoryRecordTimeFields(recA, new Date(origStartMs), aEndD);
+                            updateHistoryRecordTimeFields(recB, new Date(splitMs), bEndD);
+                            recB.recordId = `${String(original.recordId || 'record')}:split`;
                             if (recA.mode === 'countdown') {
                                 if (recA.plannedDuration != null) recB.plannedDuration = 0;
                                 if (recA.distractionCount != null) recA.distractionCount = 0;
@@ -22851,7 +22861,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                             showToastDialog('提示', '保存失败', 'error');
                         }
                     } catch (err) {
-                        showToastDialog('提示', '拆分失败', 'error');
+                        Logger.warn('历史记录拆分失败:', err);
+                        showToastDialog('提示', getHistoryMutationErrorMessage(err), 'error');
                     }
                 };
 
@@ -23051,6 +23062,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 category: mode === 'idle' ? 'idle' : 'manual'
             };
             applyRoutineButtonMetaToRecord(newRecord, routineMeta);
+            normalizeHistoryRecords([newRecord]);
 
             const success = await mutateHistoryRecords(yearRecords => {
                 yearRecords.push(newRecord);
@@ -23100,15 +23112,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             const success = await mutateHistoryRecords(yearRecords => {
                 const idx = findRecordIndex(yearRecords, record);
                 if (idx < 0) return false;
-                const ms = endMs - startMs;
-                yearRecords[idx].start = ns.toISOString();
-                yearRecords[idx].end = ne.toISOString();
-                yearRecords[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
-                yearRecords[idx].durationMin = Math.max(0, Math.round(ms / 60000));
-                yearRecords[idx].timestamp = Math.round(endMs);
-                yearRecords[idx].date = formatDateKey(ne);
-                yearRecords[idx].dateTime = ne.toLocaleString('zh-CN');
-                yearRecords[idx].timePeriod = getTimePeriod(ne.getHours());
+                updateHistoryRecordTimeFields(yearRecords[idx], ns, ne);
                 committedRecord = { ...yearRecords[idx] };
                 return true;
             }, { record });
@@ -23562,7 +23566,6 @@ function calculateWeeklyStats(dailyStatsArray) {
                             return;
                         }
 
-                        const ms = newEndMs - newStartMs;
                         const newStart = new Date(newStartMs);
                         const newEnd = new Date(newEndMs);
                         let recordFound = false;
@@ -23570,14 +23573,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                             const idx = findRecordIndex(yearRecords, record);
                             if (idx < 0) return false;
                             recordFound = true;
-                            yearRecords[idx].start = newStart.toISOString();
-                            yearRecords[idx].end = newEnd.toISOString();
-                            yearRecords[idx].durationSec = Math.max(0, Math.floor(ms / 1000));
-                            yearRecords[idx].durationMin = Math.max(0, Math.round(ms / 60000));
-                            yearRecords[idx].timestamp = Math.round(newEndMs);
-                            yearRecords[idx].date = formatDateKey(newEnd);
-                            yearRecords[idx].dateTime = newEnd.toLocaleString('zh-CN');
-                            yearRecords[idx].timePeriod = getTimePeriod(newEnd.getHours());
+                            updateHistoryRecordTimeFields(yearRecords[idx], newStart, newEnd);
                             return true;
                         }, { record });
                         if (!recordFound) {
@@ -23593,8 +23589,9 @@ function calculateWeeklyStats(dailyStatsArray) {
                         record.start = newStart.toISOString();
                         record.end = newEnd.toISOString();
                         record.timestamp = Math.round(newEndMs);
-                        record.durationSec = Math.max(0, Math.floor((newEndMs - newStartMs) / 1000));
-                        record.durationMin = Math.max(0, Math.round((newEndMs - newStartMs) / 60000));
+                        record.durationMs = Math.max(0, newEndMs - newStartMs);
+                        record.durationSec = record.durationMs / 1000;
+                        record.durationMin = record.durationMs / 60000;
                         record.date = formatDateKey(newEnd);
                         record.dateTime = newEnd.toLocaleString('zh-CN');
                         record.timePeriod = getTimePeriod(newEnd.getHours());
@@ -23624,7 +23621,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                         try { renderEditorTimelineWithDrag(); } catch (e) {}
                         try { updatePageButtons(); } catch (e) {}
                     } catch (e) {
-                        showToast('保存失败', 2000);
+                        Logger.warn('历史记录菜单时间保存失败:', e);
+                        showToast(getHistoryMutationErrorMessage(e), 2400);
                     } finally {
                         saveTimeBtn.disabled = false;
                     }
@@ -23850,14 +23848,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 if (endMs > startMs) {
                     const ns = new Date(startMs);
                     const ne = new Date(endMs);
-                    record.start = ns.toISOString();
-                    record.end = ne.toISOString();
-                    record.timestamp = Math.round(endMs);
-                    record.durationSec = Math.max(0, Math.floor((endMs - startMs) / 1000));
-                    record.durationMin = Math.max(0, Math.round((endMs - startMs) / 60000));
-                    record.date = formatDateKey(ne);
-                    record.dateTime = ne.toLocaleString('zh-CN');
-                    record.timePeriod = getTimePeriod(ne.getHours());
+                    updateHistoryRecordTimeFields(record, ns, ne);
                 }
                 historyState.editorUndo = {
                     dateKey: selectedDate,
@@ -24040,8 +24031,14 @@ function calculateWeeklyStats(dailyStatsArray) {
             try {
                 if (e.target?.closest?.('[data-record-start]')) return;
                 const minute = getMinuteFromPointer(e.clientY);
-                createEditorRecordAtMinute(minute);
-            } catch (err) {}
+                void createEditorRecordAtMinute(minute).catch((err) => {
+                    Logger.warn('历史记录空白处补录失败:', err);
+                    showToastDialog('提示', getHistoryMutationErrorMessage(err), 'error');
+                });
+            } catch (err) {
+                Logger.warn('历史记录空白处点击失败:', err);
+                showToastDialog('提示', getHistoryMutationErrorMessage(err), 'error');
+            }
         }, {}, 'history-editor-timeline');
 
         try {

@@ -399,6 +399,27 @@ vm.runInContext(`${source.slice(historyStart, historyEnd)}\nthis.store = { migra
         'an inferred single-year append must not read unrelated history shards');
     assert.equal((await historyContext.store.loadHistoryRecords({ force: true })).length, 6);
 
+    const movedRecord = (await historyContext.store.loadHistoryRecords({ force: true }))
+        .find(record => String(record?.date || '').startsWith('2025-'));
+    assert.ok(movedRecord, 'cross-year edit fixture must exist');
+    assert.equal(await historyContext.store.mutateHistoryRecords(yearRecords => {
+        const index = yearRecords.findIndex(record => String(record?.recordId || '') === String(movedRecord.recordId || ''));
+        if (index < 0) return false;
+        const target = yearRecords[index];
+        target.start = '2026-02-01T01:00:00.000Z';
+        target.end = '2026-02-01T01:25:00.000Z';
+        target.date = '2026-02-01';
+        target.timestamp = Date.parse(target.end);
+        target.durationMs = 25 * 60 * 1000;
+        target.durationSec = 1500;
+        target.durationMin = 25;
+        return true;
+    }, { record: movedRecord }), true, 'editing a record into another year must commit');
+    const movedRecords = await historyContext.store.loadHistoryRecords({ force: true });
+    assert.equal(movedRecords.some(record => String(record?.recordId || '') === String(movedRecord.recordId || '')
+        && String(record?.date || '').startsWith('2026-')), true,
+        'cross-year edit must move the record into the target year shard');
+
     const committedIndexText = files.get(`${historyDir}/history-index.json`);
     const committedIndex = JSON.parse(committedIndexText);
     failIndexWrites = true;
