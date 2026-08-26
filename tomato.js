@@ -676,7 +676,16 @@
             const timerMode = normalizeTomatoTimerMode(timer.mode || st.mode, phase);
             st.mode = projectLegacyMode(phase, timerMode);
             st.status = timer.status || st.status || 'IDLE';
-            st.startTime = timer.segmentStartMs || timer.startedAtMs || null;
+            // 🔧 修复：恢复计时后 segmentStartMs 是“恢复时刻”，直接投影为 legacy startTime
+            // 会丢失恢复前的累计进度（accumulatedMs），导致按 startTime 计算的剩余时间重置为总时长。
+            // 运行时把累计时长折算回有效开始时间：startTime = segmentStartMs - accumulatedMs，
+            // 与本地 startTimer 恢复时回拨的 startTime 保持一致。
+            if (timer.status === 'RUNNING' && Number(timer.segmentStartMs) > 0) {
+                const accumulatedMs = Math.max(0, Number(timer.accumulatedMs) || 0);
+                st.startTime = Number(timer.segmentStartMs) - accumulatedMs;
+            } else {
+                st.startTime = timer.segmentStartMs || timer.startedAtMs || null;
+            }
             st.stopwatchStartTimeMs = timer.timerMode === 'stopwatch' ? (timer.startedAtMs || st.startTime) : null;
             st.currentPauseStart = timer.pausedAtMs || null;
             st.pausedElapsedSeconds = timer.timerMode === 'stopwatch'
@@ -4169,14 +4178,20 @@
 
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             try {
-                syncState.distractionCount = currentDistractionCount || 0;
-                if (timerMode === 'countdown') {
-                    syncState.duration = currentDuration * 60;
-                    if (syncState.activeTimer && typeof syncState.activeTimer === 'object') {
-                        syncState.activeTimer.plannedDurationSec = currentDuration * 60;
+                const distractionCount = currentDistractionCount || 0;
+                const extendMode = timerMode === 'countdown';
+                const extendDurationSec = currentDuration * 60;
+                await commitTimerState((state) => {
+                    const next = cloneSyncState(state);
+                    next.distractionCount = distractionCount;
+                    if (extendMode) {
+                        next.duration = extendDurationSec;
+                        if (next.activeTimer && typeof next.activeTimer === 'object') {
+                            next.activeTimer.plannedDurationSec = extendDurationSec;
+                        }
                     }
-                }
-                await commitTimerState(syncState, 'distraction');
+                    return next;
+                }, 'distraction');
             } catch (e) {}
         }
 
@@ -9376,7 +9391,17 @@
         }
         persistNotificationScheduleState._running = true;
         try {
-            await commitTimerState(syncState, 'notification');
+            const notificationSchedulesSnapshot = cloneSyncState({
+                legacy: syncState?.notificationSchedules || {},
+                envelope: syncState?.integrationEnvelope?.notificationSchedules || {},
+            });
+            await commitTimerState((state) => {
+                const next = cloneSyncState(state);
+                next.notificationSchedules = cloneSyncState(notificationSchedulesSnapshot.legacy);
+                if (!next.integrationEnvelope || typeof next.integrationEnvelope !== 'object') next.integrationEnvelope = {};
+                next.integrationEnvelope.notificationSchedules = cloneSyncState(notificationSchedulesSnapshot.envelope);
+                return next;
+            }, 'notification');
         } catch (e) {
         } finally {
             persistNotificationScheduleState._running = false;
@@ -9678,17 +9703,26 @@
         updateDisplay();
 
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
-            syncState.mode = 'break';
-            syncState.duration = safeMin * 60;
-            syncState.status = 'IDLE';
-            syncState.startTime = null;
-            syncState.stopwatchStartTimeMs = null;
-            syncState.pausedIntervals = [];
-            syncState.currentPauseStart = null;
-            syncState.pausedElapsedSeconds = null;
-            syncState.distractionCount = 0;
-            syncState.distractionSavedCount = 0;
-            await commitTimerState(syncState, 'break-reset');
+            const breakResetDurationSec = safeMin * 60;
+            await commitTimerState((state) => {
+                const next = cloneSyncState(state);
+                next.mode = 'break';
+                next.duration = breakResetDurationSec;
+                next.status = 'IDLE';
+                next.startTime = null;
+                next.stopwatchStartTimeMs = null;
+                next.pausedIntervals = [];
+                next.currentPauseStart = null;
+                next.pausedElapsedSeconds = null;
+                next.distractionCount = 0;
+                next.distractionSavedCount = 0;
+                if (Number(next.stateSchemaVersion || 0) >= TOMATO_STATE_SCHEMA_VERSION) {
+                    next.activeTimer = null;
+                    next.openRecordId = null;
+                    next.writerLease = null;
+                }
+                return next;
+            }, 'break-reset');
         }
     }
 
@@ -9840,26 +9874,31 @@
                     
                     // 🔧 v9.0 修复：休息完成后恢复状态时同步到云端，防止轮询覆盖
                     if (isSyncEnabled() && SyncManager.updateLocal) {
-                        syncState.mode = timerMode;
-                        syncState.status = 'IDLE';
-                        syncState.startTime = null;
-                        syncState.pausedIntervals = [];
-                        syncState.currentPauseStart = null;
-                        syncState.pausedElapsedSeconds = null;
-                        syncState.distractionCount = 0;
-                        syncState.distractionSavedCount = 0;
+                        const closingEndDialogId = endDialogId;
+                        const closingEndDialogType = type;
                         preBreakState = null;
-                        if (endDialogId) {
-                            syncState.endDialog = {
-                                ...(syncState.endDialog || { id: endDialogId, type }),
-                                id: endDialogId,
-                                type,
-                                closed: true,
-                                closedAtMs: Date.now(),
-                                closedByDevice: SYNC_DEVICE_ID,
-                            };
-                        }
-                        await commitTimerState(syncState, 'break-resume');
+                        await commitTimerState((state) => {
+                            const next = cloneSyncState(state);
+                            next.mode = timerMode;
+                            next.status = 'IDLE';
+                            next.startTime = null;
+                            next.pausedIntervals = [];
+                            next.currentPauseStart = null;
+                            next.pausedElapsedSeconds = null;
+                            next.distractionCount = 0;
+                            next.distractionSavedCount = 0;
+                            if (closingEndDialogId) {
+                                next.endDialog = {
+                                    ...(next.endDialog || { id: closingEndDialogId, type: closingEndDialogType }),
+                                    id: closingEndDialogId,
+                                    type: closingEndDialogType,
+                                    closed: true,
+                                    closedAtMs: Date.now(),
+                                    closedByDevice: SYNC_DEVICE_ID,
+                                };
+                            }
+                            return next;
+                        }, 'break-resume');
                         Logger.info('🔄 休息完成后状态已同步到云端');
                     }
                 } else {
@@ -12848,20 +12887,31 @@
         
         // 同步状态
         if (isSyncEnabled()) {
-            syncState.status = 'RUNNING';
-            syncState.mode = 'stopwatch';
-            syncState.startTime = stopwatchStartTimeMs;
-            syncState.stopwatchStartTimeMs = stopwatchStartTimeMs;
-            syncState.stopwatchDisplayOffset = 0;
-            syncState.duration = 0;
-            syncState.taskBlockId = currentTaskBlockId;
-            syncState.taskBlockName = taskName;
-            syncState.databaseBlockId = currentDatabaseBlockId;
-            syncState.pausedIntervals = [];
-            syncState.pausedElapsedSeconds = null;
-            syncState.currentPauseStart = null;
-            // 第三个参数 true 表示 forceSync，确保开始状态能立即同步到其他设备
-            await commitTimerState(syncState, 'stopwatch-start');
+            const stopwatchStartAtMs = stopwatchStartTimeMs;
+            const stopwatchTaskName = taskName;
+            const stopwatchTaskBlockId = currentTaskBlockId;
+            const stopwatchDatabaseBlockId = currentDatabaseBlockId;
+            await commitTimerState((state) => {
+                const next = cloneSyncState(state);
+                next.status = 'RUNNING';
+                next.mode = 'stopwatch';
+                next.startTime = stopwatchStartAtMs;
+                next.stopwatchStartTimeMs = stopwatchStartAtMs;
+                next.stopwatchDisplayOffset = 0;
+                next.duration = 0;
+                next.taskBlockId = stopwatchTaskBlockId;
+                next.taskBlockName = stopwatchTaskName;
+                next.databaseBlockId = stopwatchDatabaseBlockId;
+                next.pausedIntervals = [];
+                next.pausedElapsedSeconds = null;
+                next.currentPauseStart = null;
+                if (Number(next.stateSchemaVersion || 0) >= TOMATO_STATE_SCHEMA_VERSION) {
+                    next.activeTimer = null;
+                    next.openRecordId = null;
+                    next.writerLease = null;
+                }
+                return next;
+            }, 'stopwatch-start');
         }
 
         Logger.info('🍅 开始正计时:', taskName);
@@ -16217,6 +16267,14 @@
         const prefix = getDisplayPrefixForTimer(timerMode);
         const { running: effectiveRunning, paused: effectivePaused } = getEffectiveTimerActivity();
         const effectiveActive = !!(effectiveRunning || effectivePaused);
+        // 🔧 修复：本地运行时以本地 startTime 为权威重新计算剩余时间，
+        // 与桌面悬浮窗（基于 startTime 的实时倒计时）保持一致，
+        // 避免恢复计时后 remainingSeconds 被同步状态重置为总时长导致底栏显示 40:00。
+        if (isRunning && startTime > 0 && (timerMode === 'countdown' || timerMode === 'break')) {
+            const totalMs = currentDuration * 60 * 1000;
+            const elapsedMs = Math.max(0, Date.now() - startTime);
+            remainingSeconds = Math.ceil(Math.max(0, totalMs - elapsedMs) / 1000);
+        }
         if (timerMode === 'countdown') {
             const displaySeconds = (effectiveActive || remainingSeconds > 0) ? remainingSeconds : currentDuration * 60;
             setDisplayText(prefix, formatTime(displaySeconds));
@@ -16500,8 +16558,13 @@
 
             let newRemainingSeconds;
             
-            // 优先使用 syncState 计算
-            if (syncState && syncState.startTime && syncState.status === 'RUNNING') {
+            // 🔧 修复：本地运行时优先使用本地 startTime 计算（与桌面悬浮窗一致），
+            // 避免同步状态投影的 startTime 为“恢复时刻”时把剩余时间重置为总时长。
+            if (isRunning && startTime > 0) {
+                const totalMs = currentDuration * 60 * 1000;
+                const elapsedMs = now - startTime;
+                newRemainingSeconds = Math.ceil(Math.max(0, totalMs - elapsedMs) / 1000);
+            } else if (syncState && syncState.startTime && syncState.status === 'RUNNING') {
                  newRemainingSeconds = StateCalculator.calculateRemaining(syncState);
             } else {
                  // 回退到本地计算
@@ -16748,7 +16811,7 @@
                 });
                 if (wasPausedAtStart && syncState.activeTimer) {
                     syncState = TimerStateMachine.resume(syncState, Date.now(), SYNC_DEVICE_ID);
-                } else {
+                } else if (!wasPausedAtStart) {
                     const phase = timerMode === 'break' || timerMode === 'stopwatch-break' ? 'break' : 'focus';
                     syncState = TimerStateMachine.createFocusState({
                         phase,
@@ -16925,12 +16988,40 @@
             syncState = TimerStateMachine.pause(syncState, now);
         }
         
-        // 🔧 修复：同步暂停状态到云端
+        // 🔧 修复：同步暂停状态到云端。
+        // 基于最新状态构建暂停快照并接管租约（allowLeaseTransfer），保证“最新操作优先”：
+        // 即使当前计时租约在其他设备，本地的暂停操作也能提交，不会被旧租约拦截。
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
-            syncState.distractionCount = currentDistractionCount || 0;
+            const pauseAt = now;
+            const pauseMode = timerMode;
+            const pauseDistractionCount = currentDistractionCount || 0;
             Logger.info('🔄 pauseTimer: 同步暂停状态到云端');
-            // 第三个参数 true 表示 forceSync，确保暂停状态能立即同步到其他设备
-            const transition = await TransitionExecutor.execute({ transitionId: createTomatoUuid('pause'), deferNetwork: true }, () => syncState);
+            const transition = await TransitionExecutor.execute(
+                { transitionId: createTomatoUuid('pause'), deferNetwork: true, allowLeaseTransfer: true },
+                (latestState) => {
+                    let next = cloneSyncState(latestState || syncState || {});
+                    next.distractionCount = pauseDistractionCount;
+                    if (Number(next.stateSchemaVersion || 0) >= (typeof TOMATO_STATE_SCHEMA_VERSION === 'number' ? TOMATO_STATE_SCHEMA_VERSION : 2) && next.activeTimer) {
+                        next = TimerStateMachine.pause(next, pauseAt);
+                        if (next.activeTimer) next.activeTimer.ownerDeviceId = SYNC_DEVICE_ID;
+                        if (next.writerLease && typeof next.writerLease === 'object') {
+                            next.writerLease = { ...next.writerLease, ownerDeviceId: SYNC_DEVICE_ID };
+                        }
+                        return next;
+                    }
+                    next.mode = pauseMode;
+                    next.status = 'PAUSED';
+                    next.currentPauseStart = pauseAt;
+                    if (pauseMode === 'countdown' || pauseMode === 'break') {
+                        next.startTime = startTime;
+                        next.duration = currentDuration * 60;
+                    } else {
+                        next.pausedElapsedSeconds = elapsedSeconds;
+                        next.stopwatchDisplayOffset = Math.max(0, Math.floor(Number(stopwatchDisplayOffset) || 0));
+                    }
+                    return next;
+                },
+            );
             if (transition?.state) syncState = transition.state;
             if (!transition?.ok) throw new Error(transition?.blocked ? 'PAUSE_TRANSITION_BLOCKED' : 'PAUSE_TRANSITION_FAILED');
         }
@@ -17007,8 +17098,32 @@
         }
 
         // 本地停止状态先提交；思源状态文件由延迟同步队列在后台发送。
+        // 🔧 修复：基于最新状态构建停止快照并接管租约（allowLeaseTransfer），
+        // 保证“最新操作优先”：其他设备持有时停止操作也能提交，避免本地与云端状态不一致。
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
-            const transition = await TransitionExecutor.execute({ transitionId: createTomatoUuid('stop'), deferNetwork: true }, () => syncState);
+            const stopMode = timerMode;
+            const transition = await TransitionExecutor.execute(
+                { transitionId: createTomatoUuid('stop'), deferNetwork: true, allowLeaseTransfer: true },
+                (latestState) => {
+                    const next = cloneSyncState(latestState || syncState || {});
+                    if (stopMode === 'countdown' || stopMode === 'break') next.mode = stopMode;
+                    next.status = 'IDLE';
+                    next.startTime = null;
+                    next.stopwatchStartTimeMs = null;
+                    next.stopwatchDisplayOffset = 0;
+                    next.pausedIntervals = [];
+                    next.currentPauseStart = null;
+                    next.pausedElapsedSeconds = null;
+                    next.distractionCount = 0;
+                    next.distractionSavedCount = 0;
+                    if (Number(next.stateSchemaVersion || 0) >= (typeof TOMATO_STATE_SCHEMA_VERSION === 'number' ? TOMATO_STATE_SCHEMA_VERSION : 2)) {
+                        next.activeTimer = null;
+                        next.openRecordId = null;
+                        next.writerLease = null;
+                    }
+                    return next;
+                },
+            );
             if (transition?.state) syncState = transition.state;
             if (!transition?.ok) throw new Error('STOP_SYNC_COMMIT_FAILED');
         }
@@ -17619,6 +17734,7 @@
                     accountingDrafts: queuedAccountingDrafts,
                     allowEffectOnly: isLegacyTimerState,
                     deferNetwork: true,
+                    allowLeaseTransfer: true,
                     confirm: confirmSync,
                 },
                 latest => buildCanonicalDraft(latest),
@@ -17801,15 +17917,18 @@
 
         if (persist && isTaskAssociationSyncEnabled() && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             try {
-                await commitTimerState({
-                    ...syncState,
-                    taskBlockId: currentTaskBlockId,
-                    taskBlockName: currentTaskBlockName,
-                    databaseBlockId: currentDatabaseBlockId,
-                    integrationEnvelope: {
-                        ...(syncState.integrationEnvelope || {}),
-                        taskAssociation: v2Association,
-                    },
+                const associationTaskBlockId = currentTaskBlockId;
+                const associationTaskBlockName = currentTaskBlockName;
+                const associationDatabaseBlockId = currentDatabaseBlockId;
+                const associationValue = v2Association;
+                await commitTimerState((state) => {
+                    const next = cloneSyncState(state);
+                    next.taskBlockId = associationTaskBlockId;
+                    next.taskBlockName = associationTaskBlockName;
+                    next.databaseBlockId = associationDatabaseBlockId;
+                    if (!next.integrationEnvelope || typeof next.integrationEnvelope !== 'object') next.integrationEnvelope = {};
+                    next.integrationEnvelope.taskAssociation = associationValue;
+                    return next;
                 }, 'association', { confirm });
             } catch (e) {}
         }
@@ -17880,8 +17999,31 @@
             syncState.databaseBlockId = null;
         }
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
+            const rollbackClearAssociation = clearAssociation === true;
             try {
-                await commitTimerState(syncState, 'rollback');
+                await commitTimerState((state) => {
+                    const next = cloneSyncState(state);
+                    next.status = 'IDLE';
+                    next.startTime = null;
+                    next.stopwatchStartTimeMs = null;
+                    next.stopwatchDisplayOffset = 0;
+                    next.pausedIntervals = [];
+                    next.currentPauseStart = null;
+                    next.pausedElapsedSeconds = null;
+                    next.distractionCount = 0;
+                    next.distractionSavedCount = 0;
+                    if (rollbackClearAssociation) {
+                        next.taskBlockId = null;
+                        next.taskBlockName = null;
+                        next.databaseBlockId = null;
+                    }
+                    if (Number(next.stateSchemaVersion || 0) >= TOMATO_STATE_SCHEMA_VERSION) {
+                        next.activeTimer = null;
+                        next.openRecordId = null;
+                        next.writerLease = null;
+                    }
+                    return next;
+                }, 'rollback');
             } catch (e) {}
         }
     }
@@ -18279,9 +18421,29 @@
             distractionSavedCount: 0,
             continuation: focusContinuationAtBreak || syncState.continuation || null,
         });
+        const breakContinuation = focusContinuationAtBreak || syncState.continuation || null;
         if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             // 第三个参数 true 表示 forceSync，确保开始状态能立即同步到其他设备
-            await commitTimerState(syncState, 'stopwatch-break', { confirm });
+            await commitTimerState((state) => {
+                const next = cloneSyncState(state);
+                next.mode = 'stopwatch-break';
+                next.duration = CONFIG.MAX_STOPWATCH_SECONDS;
+                next.status = 'IDLE';
+                next.startTime = null;
+                next.stopwatchStartTimeMs = null;
+                next.pausedElapsedSeconds = null;
+                next.pausedIntervals = [];
+                next.currentPauseStart = null;
+                next.distractionCount = 0;
+                next.distractionSavedCount = 0;
+                next.continuation = breakContinuation;
+                if (Number(next.stateSchemaVersion || 0) >= TOMATO_STATE_SCHEMA_VERSION) {
+                    next.activeTimer = null;
+                    next.openRecordId = null;
+                    next.writerLease = null;
+                }
+                return next;
+            }, 'stopwatch-break', { confirm });
         }
 
         updateDisplay();
@@ -18506,7 +18668,25 @@
                 syncState.distractionSavedCount = 0;
                 await requireTimerPersistence(pendingRecordSave, 'reset-current-mode');
                 if (isSyncEnabled() && SyncManager.updateLocal) {
-                    await commitTimerState(syncState, 'break-reset', { confirm });
+                    await commitTimerState((state) => {
+                        const next = cloneSyncState(state);
+                        next.mode = timerMode;
+                        next.status = 'IDLE';
+                        next.startTime = null;
+                        next.stopwatchStartTimeMs = null;
+                        next.stopwatchDisplayOffset = 0;
+                        next.pausedIntervals = [];
+                        next.currentPauseStart = null;
+                        next.pausedElapsedSeconds = null;
+                        next.distractionCount = 0;
+                        next.distractionSavedCount = 0;
+                        if (Number(next.stateSchemaVersion || 0) >= TOMATO_STATE_SCHEMA_VERSION) {
+                            next.activeTimer = null;
+                            next.openRecordId = null;
+                            next.writerLease = null;
+                        }
+                        return next;
+                    }, 'break-reset', { confirm });
                     Logger.info('🔄 休息模式重置状态已同步到云端');
                 }
                 clearRoutineButtonRunningHighlight(true);
@@ -18626,22 +18806,30 @@
             
             // 🔧 v9.0 修复：重置后同步状态到云端
             if (isSyncEnabled() && SyncManager.updateLocal) {
-                syncState.status = 'IDLE';
-                syncState.startTime = null;
-                syncState.stopwatchStartTimeMs = null;
-                syncState.stopwatchDisplayOffset = 0;
-                syncState.pausedIntervals = [];
-                syncState.currentPauseStart = null;
-                syncState.pausedElapsedSeconds = null;
-                syncState.distractionCount = 0;
-                syncState.distractionSavedCount = 0;
-                syncState.mode = timerMode;
-                if (timerMode === 'countdown' || timerMode === 'break') {
-                    syncState.duration = Math.max(1, Math.round(Number(currentDuration) || 0)) * 60;
-                } else {
-                    syncState.duration = 0;
-                }
-                await commitTimerState(syncState, 'reset', { confirm });
+                const resetMode = timerMode;
+                const resetDurationSec = (timerMode === 'countdown' || timerMode === 'break')
+                    ? Math.max(1, Math.round(Number(currentDuration) || 0)) * 60
+                    : 0;
+                await commitTimerState((state) => {
+                    const next = cloneSyncState(state);
+                    next.status = 'IDLE';
+                    next.startTime = null;
+                    next.stopwatchStartTimeMs = null;
+                    next.stopwatchDisplayOffset = 0;
+                    next.pausedIntervals = [];
+                    next.currentPauseStart = null;
+                    next.pausedElapsedSeconds = null;
+                    next.distractionCount = 0;
+                    next.distractionSavedCount = 0;
+                    next.mode = resetMode;
+                    next.duration = resetDurationSec;
+                    if (Number(next.stateSchemaVersion || 0) >= TOMATO_STATE_SCHEMA_VERSION) {
+                        next.activeTimer = null;
+                        next.openRecordId = null;
+                        next.writerLease = null;
+                    }
+                    return next;
+                }, 'reset', { confirm });
                 Logger.info('🔄 重置状态已同步到云端');
             }
         });
@@ -18684,16 +18872,24 @@
             await requireTimerPersistence(pendingRecordSave, 'complete-current-tomato');
 
             if (isSyncEnabled() && SyncManager.updateLocal) {
-                syncState.status = 'IDLE';
-                syncState.startTime = null;
-                syncState.stopwatchStartTimeMs = null;
-                syncState.stopwatchDisplayOffset = 0;
-                syncState.pausedIntervals = [];
-                syncState.currentPauseStart = null;
-                syncState.pausedElapsedSeconds = null;
-                syncState.distractionCount = 0;
-                syncState.distractionSavedCount = 0;
-                await commitTimerState(syncState, 'complete', { confirm: opts.confirm !== false });
+                await commitTimerState((state) => {
+                    const next = cloneSyncState(state);
+                    next.status = 'IDLE';
+                    next.startTime = null;
+                    next.stopwatchStartTimeMs = null;
+                    next.stopwatchDisplayOffset = 0;
+                    next.pausedIntervals = [];
+                    next.currentPauseStart = null;
+                    next.pausedElapsedSeconds = null;
+                    next.distractionCount = 0;
+                    next.distractionSavedCount = 0;
+                    if (Number(next.stateSchemaVersion || 0) >= TOMATO_STATE_SCHEMA_VERSION) {
+                        next.activeTimer = null;
+                        next.openRecordId = null;
+                        next.writerLease = null;
+                    }
+                    return next;
+                }, 'complete', { confirm: opts.confirm !== false });
             }
             if (opts.suppressToast !== true) showToast('✅ 已完成番茄', 1600);
         });
@@ -30825,14 +31021,21 @@ window.__setTomatoFloatState = function (payload) {
 
     // Compatibility boundary for legacy UI paths. Activity-state writes go
     // through the same ordered executor while callers keep their old API.
-    async function commitTimerState(nextState = syncState, prefix = 'state', options = {}) {
+    async function commitTimerState(nextStateOrMutator = syncState, prefix = 'state', options = {}) {
+        const isMutator = typeof nextStateOrMutator === 'function';
         if (!isSyncEnabled() || !TransitionExecutor?.execute) {
-            return { ok: true, changed: false, state: cloneSyncState(nextState) };
+            return { ok: true, changed: false, state: cloneSyncState(isMutator ? syncState : nextStateOrMutator) };
         }
         const confirm = options?.confirm !== false;
         const result = await TransitionExecutor.execute(
-            { transitionId: createTomatoUuid(prefix), deferNetwork: options?.deferNetwork !== false, confirm },
-            () => cloneSyncState(nextState),
+            { transitionId: createTomatoUuid(prefix), deferNetwork: options?.deferNetwork !== false, allowLeaseTransfer: true, confirm },
+            (latestState) => {
+                if (isMutator) {
+                    const next = nextStateOrMutator(cloneSyncState(latestState || syncState || {}));
+                    return next && typeof next === 'object' ? next : cloneSyncState(latestState || syncState || {});
+                }
+                return cloneSyncState(nextStateOrMutator);
+            },
         );
         if (result?.state) syncState = result.state;
         if (!result?.ok) throw new Error(result?.blocked ? 'TIMER_TRANSITION_BLOCKED' : 'TIMER_TRANSITION_FAILED');
@@ -36063,15 +36266,14 @@ window.__setTomatoFloatState = function (payload) {
                 } catch (err) {}
                 if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
                     try {
-                        await commitTimerState({
-                            ...syncState,
-                            taskBlockId: null,
-                            taskBlockName: null,
-                            databaseBlockId: null,
-                            integrationEnvelope: {
-                                ...(syncState.integrationEnvelope || {}),
-                                taskAssociation: null,
-                            },
+                        await commitTimerState((state) => {
+                            const next = cloneSyncState(state);
+                            next.taskBlockId = null;
+                            next.taskBlockName = null;
+                            next.databaseBlockId = null;
+                            if (!next.integrationEnvelope || typeof next.integrationEnvelope !== 'object') next.integrationEnvelope = {};
+                            next.integrationEnvelope.taskAssociation = null;
+                            return next;
                         }, 'association-setting');
                     } catch (err) {}
                 }
@@ -37398,7 +37600,36 @@ window.__setTomatoFloatState = function (payload) {
                         syncState.currentPauseStart = syncState.currentPauseStart || Date.now();
                     }
                     try {
-                        const p = commitTimerState(syncState, 'before-unload');
+                        const beforeUnloadMode = timerMode;
+                        const beforeUnloadDuration = currentDuration * 60;
+                        const beforeUnloadTaskSync = isTaskAssociationSyncEnabled();
+                        const beforeUnloadTaskBlockId = currentTaskBlockId;
+                        const beforeUnloadTaskBlockName = currentTaskBlockName;
+                        const beforeUnloadDatabaseBlockId = currentDatabaseBlockId;
+                        const beforeUnloadStopwatchStart = stopwatchStartTimeMs;
+                        const beforeUnloadPauseStart = syncState.currentPauseStart || Date.now();
+                        const p = commitTimerState((state) => {
+                            const next = cloneSyncState(state);
+                            next.mode = beforeUnloadMode;
+                            next.duration = beforeUnloadDuration;
+                            if (beforeUnloadTaskSync) {
+                                next.taskBlockId = beforeUnloadTaskBlockId;
+                                next.taskBlockName = beforeUnloadTaskBlockName;
+                                next.databaseBlockId = beforeUnloadDatabaseBlockId;
+                            } else {
+                                next.taskBlockId = null;
+                                next.taskBlockName = null;
+                                next.databaseBlockId = null;
+                            }
+                            if (beforeUnloadMode === 'stopwatch' || beforeUnloadMode === 'stopwatch-break') {
+                                next.stopwatchStartTimeMs = beforeUnloadStopwatchStart;
+                                next.startTime = beforeUnloadStopwatchStart;
+                            }
+                            if (isTimerPaused) {
+                                next.currentPauseStart = next.currentPauseStart || beforeUnloadPauseStart;
+                            }
+                            return next;
+                        }, 'before-unload');
                         if (p && typeof p.then === 'function') {
                             p.then(() => {
                                 Logger.info('💾 状态已同步到云端', {
