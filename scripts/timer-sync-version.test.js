@@ -31,7 +31,7 @@ assert.match(source, /versionMatches && semanticMatches/, 'cloud commits must ve
 assert.match(source, /putFile code 0 is the durable local-write acknowledgement[\s\S]*return true;/, 'an accepted local file write must not be rolled back by a stale confirmation read');
 assert.match(source, /if \(!saved\) \{[\s\S]*this\.localState = previousState;[\s\S]*throw new Error\('SYNC_COMMIT_FAILED'\);/, 'a failed cloud commit must roll local state back and reject');
 assert.match(source, /startTimer: 同步到云端失败[\s\S]*throw e;/, 'start must not swallow a failed canonical commit');
-assert.match(source, /const transition = await TransitionExecutor\.execute\(\{ transitionId: createTomatoUuid\('stop'\)/, 'stop must await its canonical commit');
+assert.match(source, /const transition = await TransitionExecutor\.execute\(\s*\{\s*transitionId: createTomatoUuid\('stop'\),[\s\S]*allowLeaseTransfer:\s*true/, 'stop must await its canonical commit');
 
 const journalStart = source.indexOf('    const TimerJournal = {');
 const journalEnd = source.indexOf('    const TimerStateMachine = {', journalStart);

@@ -38,12 +38,16 @@ const resetBlock = source.slice(resetStart, resetEnd);
 assert.match(resetBlock, /const isStopwatchBreak = timerMode === 'stopwatch-break';/, 'reset must identify stopwatch breaks');
 assert.match(resetBlock, /recordEndTime\(true, isStopwatchBreak(?:, \{ confirm \})?\)/, 'reset must persist stopwatch breaks with stopwatch timestamps');
 assert.match(resetBlock, /cancelTrackedTimerNotification\('finish-break', false\)[\s\S]*finishBreakFromContinuation\(\)/, 'finishing a break must cancel its notification before restoring focus');
-assert.ok(resetBlock.lastIndexOf('await requireTimerPersistence(pendingRecordSave') < resetBlock.indexOf("commitTimerState(syncState, 'reset'"), 'reset must close its record journal before committing IDLE');
+const resetCommitIndex = resetBlock.lastIndexOf("await commitTimerState(");
+assert.ok(resetCommitIndex >= 0, 'reset must commit its canonical IDLE state');
+assert.ok(resetBlock.lastIndexOf('await requireTimerPersistence(pendingRecordSave') < resetCommitIndex, 'reset must close its record journal before committing IDLE');
 
 const completeStart = source.indexOf('    async function completeCurrentTomato(');
 const completeEnd = source.indexOf('    function isCurrentTaskAssociation(', completeStart);
 const completeBlock = source.slice(completeStart, completeEnd);
-assert.ok(completeBlock.indexOf('await requireTimerPersistence(pendingRecordSave') < completeBlock.indexOf("commitTimerState(syncState, 'complete'"), 'completion must close its record journal before committing IDLE');
+const completeCommitIndex = completeBlock.lastIndexOf("await commitTimerState(");
+assert.ok(completeCommitIndex >= 0, 'completion must commit its canonical IDLE state');
+assert.ok(completeBlock.indexOf('await requireTimerPersistence(pendingRecordSave') < completeCommitIndex, 'completion must close its record journal before committing IDLE');
 
 const contextMenuStart = source.indexOf('    async function showContextMenu(');
 const contextMenuEnd = source.indexOf('\n \tfunction getWeekStartDate(', contextMenuStart);

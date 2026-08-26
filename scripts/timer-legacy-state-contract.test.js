@@ -76,7 +76,7 @@ assert.deepEqual(notificationState.integrationEnvelope.notificationSchedules, no
 const distractionStart = source.indexOf('    async function recordDistraction()');
 const distractionEnd = source.indexOf('\n    // 为历史记录添加分心', distractionStart);
 assert.match(source.slice(distractionStart, distractionEnd),
-    /activeTimer\.plannedDurationSec\s*=\s*currentDuration\s*\*\s*60/,
+    /const extendDurationSec = currentDuration\s*\*\s*60[\s\S]*next\.activeTimer\.plannedDurationSec\s*=\s*extendDurationSec/,
     'distraction extension must update the canonical planned duration');
 
 const executorStart = source.indexOf('    const TransitionExecutor = {');
