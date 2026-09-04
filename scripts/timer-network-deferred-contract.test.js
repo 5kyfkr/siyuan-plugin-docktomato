@@ -6,6 +6,13 @@ const path = require('node:path');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'tomato.js'), 'utf8');
 
+const journalStart = source.indexOf('    const TimerJournal = {');
+const journalEnd = source.indexOf('    const TimerStateMachine = {', journalStart);
+assert.ok(journalStart >= 0 && journalEnd > journalStart, 'timer journal must remain extractable');
+const journal = source.slice(journalStart, journalEnd);
+assert.match(journal, /deferNetwork: journal\?\.deferNetwork === true/,
+    'the durable journal must preserve deferred-network mode for the next recovery');
+
 const executorStart = source.indexOf('    const TransitionExecutor = {');
 const executorEnd = source.indexOf('    // Compatibility boundary for legacy UI paths.', executorStart);
 assert.ok(executorStart >= 0 && executorEnd > executorStart, 'transition executor must remain extractable');

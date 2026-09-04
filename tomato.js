@@ -1447,6 +1447,7 @@
                 nextState: cloneSyncState(journal?.nextState || null),
                 historyDrafts: Array.isArray(journal?.historyDrafts) ? cloneSyncState(journal.historyDrafts) : [],
                 accountingDrafts: Array.isArray(journal?.accountingDrafts) ? cloneSyncState(journal.accountingDrafts) : [],
+                deferNetwork: journal?.deferNetwork === true,
                 // Legacy recordEndTime callers persist history/accounting drafts
                 // themselves. Their canonical state is committed by the caller's
                 // surrounding transition, so recovery must not wait for a
@@ -2867,6 +2868,7 @@
             enableMobileSupport: DEFAULT_ENABLE_MOBILE_SUPPORT,
             showMobileBreadcrumbButton: true,
             enableMobileFloatBarAutoShow: true,
+            showDesktopStatusBarTimer: true,
             enableDesktopMinimizedFloatWindow: true,
             enableDesktopFloatWindowAlwaysVisible: false,
             desktopFloatWindowDisplayMode: 'minimized',
@@ -3045,6 +3047,7 @@
         userSettings.main.enableMobileSupport = userSettings.main.enableMobileSupport !== false;
         if (typeof userSettings.main.showMobileBreadcrumbButton !== 'boolean') userSettings.main.showMobileBreadcrumbButton = true;
         if (typeof userSettings.main.enableMobileFloatBarAutoShow !== 'boolean') userSettings.main.enableMobileFloatBarAutoShow = true;
+        if (typeof userSettings.main.showDesktopStatusBarTimer !== 'boolean') userSettings.main.showDesktopStatusBarTimer = true;
         if (typeof userSettings.main.desktopFloatWindowDisplayMode !== 'string') userSettings.main.desktopFloatWindowDisplayMode = getDesktopFloatWindowDisplayMode();
         userSettings.main.desktopFloatWindowDisplayMode = applyDesktopFloatWindowDisplayMode(userSettings.main.desktopFloatWindowDisplayMode);
         if (typeof userSettings.main.enableDesktopMinimizedFloatWindow !== 'boolean') userSettings.main.enableDesktopMinimizedFloatWindow = true;
@@ -5497,6 +5500,34 @@
                 item.tombstoneId = String(correctionId || createTomatoUuid('tombstone'));
                 return true;
             }, { record: { recordId: id } });
+        },
+        async discardFocusSession(focusSessionId, correctionId = null) {
+            const id = String(focusSessionId || '').trim();
+            if (!id) return { changed: false, count: 0 };
+            const tombstoneId = String(correctionId || createTomatoUuid('tombstone'));
+            let changedCount = 0;
+            const changed = await mutateHistoryRecords(records => {
+                let count = 0;
+                for (const record of records) {
+                    const phase = String(record?.phase || '').trim()
+                        || (record?.mode === 'break' || record?.mode === 'stopwatch-break' ? 'break' : 'focus');
+                    const recordFocusSessionId = String(record?.focusSessionId || (phase === 'break' ? '' : record?.sessionId) || '').trim();
+                    if (phase === 'break' || recordFocusSessionId !== id || record?.disposition === 'discarded') continue;
+                    record.disposition = 'discarded';
+                    record.tombstoneId = tombstoneId;
+                    record.discardedAtMs = Date.now();
+                    record.endReason = 'abandoned';
+                    count += 1;
+                }
+                changedCount = count;
+                return count > 0;
+            });
+            if (!changed) return { changed: false, count: 0 };
+            try { markTimelineHistoryDirty(); } catch (e) {}
+            try { updateTimelineBar(true); } catch (e) {}
+            try { refreshHistoryDialogIfOpen(); } catch (e) {}
+            try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'abandon', focusSessionId: id } })); } catch (e) {}
+            return { changed: true, count: changedCount };
         },
         async loadStatistics(options = {}) {
             return this.statisticsView(await loadHistoryRecords(options));
@@ -16166,6 +16197,21 @@
         }
     }
 
+    function isDesktopStatusBarTimerEnabled() {
+        return userSettings?.main?.showDesktopStatusBarTimer !== false;
+    }
+
+    function applyDesktopStatusBarTimerVisibility() {
+        const statusBar = findDesktopTomatoStatusBar();
+        const widget = statusBar?.querySelector?.('#siyuan-tomato-timer') || null;
+        if (!widget) return false;
+        const visible = isDesktopStatusBarTimerEnabled();
+        widget.hidden = !visible;
+        widget.style.display = visible ? 'flex' : 'none';
+        widget.setAttribute('aria-hidden', visible ? 'false' : 'true');
+        return true;
+    }
+
     function isLiveTomatoNode(node) {
         try { return !!(node && node.isConnected && document.contains(node)); } catch (e) { return false; }
     }
@@ -18585,6 +18631,105 @@
         return true;
     }
 
+    async function abandonCurrentTomato(options = {}) {
+        const confirm = options?.confirm !== false;
+        return withTimerFinalizationLock('abandon-current-tomato', async () => {
+            if (timerMode !== 'countdown') return false;
+            const activeTimer = syncState?.activeTimer && typeof syncState.activeTimer === 'object'
+                ? syncState.activeTimer
+                : null;
+            const focusSessionId = String(
+                currentSessionId
+                || activeTimer?.focusSessionId
+                || activeTimer?.parentSessionId
+                || syncState?.continuation?.focusSessionId
+                || '',
+            ).trim();
+            const correctionId = createTomatoUuid('abandon');
+
+            if (timerId !== null) clearInterval(timerId);
+            timerId = null;
+            isRunning = false;
+            isTimerPaused = false;
+            stopBackgroundAudio();
+            try { await cancelTrackedTimerNotification('abandon-timer', false); } catch (e) {}
+
+            if (focusSessionId) {
+                const historyResult = await HistoryRepository.discardFocusSession(focusSessionId, correctionId);
+                if (historyResult?.changed === false && historyResult?.count > 0) {
+                    throw new Error('HISTORY_DISCARD_FAILED');
+                }
+                const accountingResult = await AccountingRepository.discardFocusSession(focusSessionId, correctionId);
+                if (accountingResult?.changed && accountingResult?.reprojected === false) {
+                    throw new Error('ACCOUNTING_DISCARD_FAILED');
+                }
+            }
+
+            startTime = 0;
+            lastTickTime = 0;
+            currentPauseStart = null;
+            currentStartTimestamp = null;
+            currentStartTimeMs = 0;
+            remainingSeconds = currentDuration * 60;
+            pausedRemainingSeconds = null;
+            preBreakState = null;
+            isFreshTomatoStart = true;
+            currentSessionId = null;
+            pendingBreakSessionId = null;
+            pendingFocusCountdownDuration = null;
+            segmentTaskBlockId = null;
+            segmentTaskBlockName = null;
+            segmentDatabaseBlockId = null;
+            routineButtonHighlightColor = null;
+            try { window.__tomatoPausedColor = null; } catch (e) {}
+            if (controlButton) controlButton.innerHTML = '▶️';
+            try { hideProgressBar(); } catch (e) {}
+            updateDisplay();
+            clearRoutineButtonRunningHighlight(true);
+            endTimerFocus('abandon-current-tomato');
+
+            syncState.mode = 'countdown';
+            syncState.status = 'IDLE';
+            syncState.startTime = null;
+            syncState.stopwatchStartTimeMs = null;
+            syncState.stopwatchDisplayOffset = 0;
+            syncState.pausedIntervals = [];
+            syncState.currentPauseStart = null;
+            syncState.pausedElapsedSeconds = null;
+            syncState.distractionCount = 0;
+            syncState.distractionSavedCount = 0;
+            syncState.continuation = null;
+            syncState.activeTimer = null;
+            syncState.openRecordId = null;
+            syncState.writerLease = null;
+            if (isSyncEnabled() && SyncManager.updateLocal) {
+                await commitTimerState((state) => {
+                    const next = cloneSyncState(state);
+                    next.mode = 'countdown';
+                    next.status = 'IDLE';
+                    next.duration = Math.max(1, Math.round(Number(currentDuration) || 0)) * 60;
+                    next.startTime = null;
+                    next.stopwatchStartTimeMs = null;
+                    next.stopwatchDisplayOffset = 0;
+                    next.pausedIntervals = [];
+                    next.currentPauseStart = null;
+                    next.pausedElapsedSeconds = null;
+                    next.distractionCount = 0;
+                    next.distractionSavedCount = 0;
+                    next.continuation = null;
+                    if (Number(next.stateSchemaVersion || 0) >= TOMATO_STATE_SCHEMA_VERSION) {
+                        next.activeTimer = null;
+                        next.openRecordId = null;
+                        next.writerLease = null;
+                    }
+                    return next;
+                }, 'abandon', { confirm });
+            }
+            showToast('已放弃番茄钟', 1600);
+            return true;
+        });
+    }
+
     async function resetCurrentMode(options = {}) {
         const confirm = options?.confirm !== false;
         return withTimerFinalizationLock('reset-current-mode', async () => {
@@ -19510,7 +19655,7 @@
         const resetItem = document.createElement('div');
         resetItem.textContent = (timerMode === 'break' || timerMode === 'stopwatch-break')
             ? '结束休息'
-            : ((timerMode === 'stopwatch') ? '✅ 完成专注正计时' : '重置当前');
+            : ((timerMode === 'stopwatch') ? '✅ 完成专注正计时' : '放弃番茄钟');
         resetItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
         resetItem.onmouseenter = () => resetItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
         resetItem.onmouseleave = () => resetItem.style.backgroundColor = '';
@@ -19519,10 +19664,11 @@
             menu.remove();
             isContextMenuOpen = false;
             try {
-                await resetCurrentMode();
+                if (timerMode === 'countdown') await abandonCurrentTomato();
+                else await resetCurrentMode();
             } catch (error) {
-                Logger.error('重置计时失败:', error);
-                showMiniToast('计时保存失败，请稍后重试');
+                Logger.error(timerMode === 'countdown' ? '放弃番茄钟失败:' : '重置计时失败:', error);
+                showMiniToast(timerMode === 'countdown' ? '放弃番茄钟失败，请稍后重试' : '计时保存失败，请稍后重试');
             }
         };
         menu.appendChild(resetItem);
@@ -25876,10 +26022,12 @@ function calculateWeeklyStats(dailyStatsArray) {
         }, {
             label: (timerMode === 'break' || timerMode === 'stopwatch-break')
                 ? '结束休息'
-                : ((timerMode === 'stopwatch') ? '✅ 完成专注正计时' : '重置当前'),
+                : ((timerMode === 'stopwatch') ? '✅ 完成专注正计时' : '放弃番茄钟'),
             click: () => runAction(async () => {
                 if (timerMode === 'break' || timerMode === 'stopwatch-break') {
                     await resetCurrentMode();
+                } else if (timerMode === 'countdown') {
+                    await abandonCurrentTomato();
                 } else {
                     await resetCurrentMode();
                 }
@@ -28500,8 +28648,10 @@ window.__setTomatoFloatState = function (payload) {
         container = document.createElement('div');
         container.id = 'siyuan-tomato-timer';
         container.setAttribute('data-tomato-role', 'widget');
+        container.hidden = !isDesktopStatusBarTimerEnabled();
+        container.setAttribute('aria-hidden', container.hidden ? 'true' : 'false');
         container.style.cssText = `
-            display: flex;
+            display: ${isDesktopStatusBarTimerEnabled() ? 'flex' : 'none'};
             align-items: center;
             gap: 6px;
             margin-left: 12px;
@@ -28724,6 +28874,7 @@ window.__setTomatoFloatState = function (payload) {
         container.appendChild(timeDisplay);
         container.appendChild(controlButton);
         statusBar.appendChild(container);
+        applyDesktopStatusBarTimerVisibility();
         updateDisplay();
     }
 
@@ -30263,6 +30414,15 @@ window.__setTomatoFloatState = function (payload) {
         });
     }
 
+    function subtractAccountingTotals(target, deltas) {
+        if (!target || !deltas || typeof deltas !== 'object') return;
+        Object.entries(deltas).forEach(([key, value]) => {
+            const attrKey = String(key || '').trim();
+            if (!attrKey) return;
+            target[attrKey] = Math.max(0, (Number(target[attrKey]) || 0) - (Number(value) || 0));
+        });
+    }
+
     function indexAccountingEntry(ledger, entry) {
         if (!isAccountingCompletedEntry(entry) || entry.accountingIndexedAtMs) return false;
         const taskBlockId = String(entry.taskBlockId || '').trim();
@@ -30610,9 +30770,52 @@ window.__setTomatoFloatState = function (payload) {
             const stillPending = results.some(result => result?.entry?.status === 'pending' || result?.durable === false);
             return { pending: stillPending, results };
         },
-        async reprojectPolicy(policy = getTomatoAccountingPolicy()) {
+        async discardFocusSession(focusSessionId, correctionId = null) {
+            const id = String(focusSessionId || '').trim();
+            if (!id) return { changed: false, count: 0 };
+            const tombstoneId = String(correctionId || createTomatoUuid('accounting-tombstone'));
+            return this._enqueue(async () => {
+                const ledger = await this.readLedger();
+                const affected = [];
+                for (const entry of Object.values(ledger.entries || {})) {
+                    if (String(entry?.focusSessionId || '').trim() !== id) continue;
+                    if (!['pending', 'applied', 'skipped'].includes(String(entry?.status || ''))) continue;
+                    const wasCompleted = isAccountingCompletedEntry(entry);
+                    if (wasCompleted) {
+                        const baselineKey = getAccountingBaselineKey(entry.taskBlockId, entry.attrHostId);
+                        const aggregate = ledger.aggregates[baselineKey];
+                        if (aggregate && typeof aggregate === 'object') {
+                            aggregate.durationMs = Math.max(0, (Number(aggregate.durationMs) || 0) - Math.max(0, Number(entry.durationMs) || 0));
+                            aggregate.countDelta = Math.max(0, (Number(aggregate.countDelta) || 0) - (Number(entry.countDelta) || 0));
+                            aggregate.updatedAtMs = Date.now();
+                        }
+                        const totals = ledger.totals[baselineKey];
+                        if (totals && typeof totals === 'object') {
+                            subtractAccountingTotals(totals, getAccountingProjectionDeltas(
+                                entry.policy || getTomatoAccountingPolicy(),
+                                Number(entry.durationMs) || 0,
+                                Number(entry.countDelta) || 0,
+                            ));
+                        }
+                    }
+                    entry.status = 'discarded';
+                    entry.discardedAtMs = Date.now();
+                    entry.tombstoneId = tombstoneId;
+                    affected.push(entry);
+                }
+                if (affected.length === 0) return { changed: false, count: 0 };
+                if (!await this.writeLedger(ledger)) throw new Error('ACCOUNTING_DISCARD_PERSIST_FAILED');
+                return { changed: true, count: affected.length };
+            }).then(async result => {
+                if (!result?.changed) return result;
+                const reprojection = await this.reprojectPolicy(getTomatoAccountingPolicy(), { includeZero: true });
+                return { ...result, reprojected: reprojection?.durable !== false };
+            });
+        },
+        async reprojectPolicy(policy = getTomatoAccountingPolicy(), options = {}) {
             const nextPolicy = policy && typeof policy === 'object' ? cloneSyncState(policy) : getTomatoAccountingPolicy();
             const policyHash = hashAccountingPolicy(nextPolicy);
+            const includeZero = options?.includeZero === true;
             return this._enqueue(async () => {
                 if (nextPolicy.enabled === false) return { changed: false, skipped: true };
                 const ledger = await this.readLedger();
@@ -30651,6 +30854,14 @@ window.__setTomatoFloatState = function (payload) {
                         : { taskBlockId: group.taskBlockId, attrHostId: group.attrHostId, values: {}, lastProjectedValues: {} };
                     if (!baseline.values || typeof baseline.values !== 'object') baseline.values = {};
                     if (!baseline.lastProjectedValues || typeof baseline.lastProjectedValues !== 'object') baseline.lastProjectedValues = {};
+                    const previousIndexedTotals = ledger.totals[baselineKey] && typeof ledger.totals[baselineKey] === 'object'
+                        ? ledger.totals[baselineKey]
+                        : {};
+                    if (includeZero) {
+                        Object.keys(previousIndexedTotals).forEach(key => {
+                            if (!(key in projectedTotals)) projectedTotals[key] = 0;
+                        });
+                    }
                     const countKey = String(nextPolicy.tomatoCountAttrKey || 'custom-tomato-count');
                     const patch = {};
                     Object.entries(projectedTotals).forEach(([key, total]) => {
@@ -30675,9 +30886,6 @@ window.__setTomatoFloatState = function (payload) {
                     });
                     baseline.updatedAtMs = Date.now();
                     ledger.baselines[baselineKey] = baseline;
-                    const previousIndexedTotals = ledger.totals[baselineKey] && typeof ledger.totals[baselineKey] === 'object'
-                        ? ledger.totals[baselineKey]
-                        : {};
                     if (JSON.stringify(canonicalizeForSignature(previousIndexedTotals)) !== JSON.stringify(canonicalizeForSignature(projectedTotals))) {
                         changed = true;
                     }
@@ -33871,6 +34079,18 @@ window.__setTomatoFloatState = function (payload) {
             await saveUserSettings();
         });
 
+        mkToggleRow('显示桌面底栏番茄钟', isDesktopStatusBarTimerEnabled(), async (e) => {
+            userSettings.main.showDesktopStatusBarTimer = e.target.checked;
+            applyDesktopStatusBarTimerVisibility();
+            await saveUserSettings();
+        });
+        {
+            const hint = document.createElement('div');
+            hint.textContent = '关闭后仅隐藏底栏组件，计时、时间轴和悬浮窗不受影响';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
+            togglesSection.appendChild(hint);
+        }
+
         mkToggleRow('启用移动端支持', isMobileSupportEnabled(), async (e) => {
             userSettings.main.enableMobileSupport = e.target.checked;
             await saveUserSettings();
@@ -36532,6 +36752,7 @@ window.__setTomatoFloatState = function (payload) {
             let stateRestored = false;
             await ensureTomatoStorageMigration();
             await loadUserSettings();
+            if (!isMobileDevice()) applyDesktopStatusBarTimerVisibility();
             installMobileKeyboardBottomEffectsMonitor();
             // 确保 audioSettings 对象存在（兼容旧配置）
             ensureAudioSettingsDefaults();
