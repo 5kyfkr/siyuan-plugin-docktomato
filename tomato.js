@@ -2228,6 +2228,9 @@
     let backgroundAudioPreview = null;
     let backgroundAudioPreviewObjectUrl = null;
     let backgroundAudioPreviewTimer = null;
+    let backgroundAudioPreviewGeneration = 0;
+    let backgroundAudioPlaybackGeneration = 0;
+    let backgroundAudioInitGeneration = 0;
     
     // ========== 统一日志输出系统 ==========
     // 支持日志级别控制，提供结构化日志输出
@@ -5458,16 +5461,19 @@
             }, { record: draft, ...(options || {}) });
             return result ? draft : null;
         },
-        async commitPending(recordId) {
-            const id = String(recordId || '').trim();
+        async commitPending(recordOrId) {
+            const recordHint = recordOrId && typeof recordOrId === 'object' ? recordOrId : null;
+            const id = String(recordHint?.recordId || recordOrId || '').trim();
             if (!id) return false;
             const result = await mutateHistoryRecords(records => {
                 const item = records.find(record => String(record?.recordId || '') === id);
                 if (!item) return false;
-                if (item.disposition === 'normal') return false;
+                if (item.disposition === 'normal') return true;
                 item.disposition = 'normal';
                 return true;
-            }, { record: { recordId: id } });
+            }, recordHint
+                ? { record: recordHint, fallbackOnMiss: true }
+                : { fallbackOnMiss: true });
             return result;
         },
         async ensureNormal(record) {
@@ -25102,8 +25108,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         Logger.info('⚠️ 块不在当前活动文档中，尝试打开文档并滚动定位...');
         
         try {
-            const docId = await findDocumentIdByBlockId(blockId);
-            if (await __openBlockByOfficialApi(docId || blockId)) {
+            if (await __openBlockByOfficialApi(blockId)) {
                 setTimeout(() => {
                     try { window.siyuan?.block?.scrollToBlock?.(blockId); } catch (e) {}
                     checkAndScrollToBlock(blockId);
@@ -25580,6 +25585,12 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (activity.paused) return false;
         const mode = String((activity.syncActive && syncState?.mode) ? syncState.mode : timerMode || '').trim();
         return mode !== 'break' && mode !== 'stopwatch-break';
+    }
+
+    function shouldShowDesktopFloatWindow(displayMode, isMinimized, hasUnfinishedTimer, showForTimerState) {
+        if (displayMode === 'always') return !hasUnfinishedTimer || !!showForTimerState;
+        if (displayMode !== 'minimized') return false;
+        return !!isMinimized && !!showForTimerState;
     }
 
     function getDesktopFloatWindowCompactWidth() {
@@ -26133,7 +26144,9 @@ function calculateWeeklyStats(dailyStatsArray) {
             running: !!running,
             paused: !!paused,
             alwaysOnTop: desktopFloatWindowState.alwaysOnTop !== false,
-            canToggleRun: hasUnfinishedTimerState(),
+            // The float window can start a fresh default timer while idle;
+            // only the context-menu actions need an unfinished timer guard.
+            canToggleRun: true,
             liveTimerKind,
             liveTargetTimeMs,
             liveStartTimeMs,
@@ -27302,8 +27315,13 @@ window.__setTomatoFloatState = function (payload) {
             return;
         }
         const displayMode = getDesktopFloatWindowDisplayMode();
-        const shouldShowForWindowState = displayMode === 'always' || (displayMode === 'minimized' && desktopFloatWindowState.isMinimized);
-        if (!shouldShowForWindowState || !shouldShowDesktopMinimizedFloatWindowForTimerState()) {
+        const shouldShow = shouldShowDesktopFloatWindow(
+            displayMode,
+            desktopFloatWindowState.isMinimized,
+            hasUnfinishedTimerState(),
+            shouldShowDesktopMinimizedFloatWindowForTimerState()
+        );
+        if (!shouldShow) {
             closeDesktopMinimizedFloatWindow();
             return;
         }
@@ -31192,7 +31210,12 @@ window.__setTomatoFloatState = function (payload) {
                 journal.nextState = committedState;
                 journal.status = 'state-committed';
                 await persistJournal();
-                for (const draft of journal.historyDrafts) await HistoryRepository.commitPending(draft.recordId);
+                for (const draft of journal.historyDrafts) {
+                    const committed = await HistoryRepository.commitPending(draft);
+                    if (!committed) {
+                        throw new Error('history draft commit failed');
+                    }
+                }
                 let accountingResults = [];
                 if (deferNetwork) {
                     // Task attribute projection and shared-ledger writes are
@@ -33166,6 +33189,7 @@ window.__setTomatoFloatState = function (payload) {
     }
 
     function stopBackgroundAudioPreview() {
+        backgroundAudioPreviewGeneration += 1;
         if (backgroundAudioPreviewTimer) {
             try { clearTimeout(backgroundAudioPreviewTimer); } catch (e) {}
             backgroundAudioPreviewTimer = null;
@@ -33176,7 +33200,12 @@ window.__setTomatoFloatState = function (payload) {
     }
 
     function cleanupBackgroundAudioResources() {
+        backgroundAudioInitGeneration += 1;
+        backgroundAudioPlaybackGeneration += 1;
         stopBackgroundAudioPreview();
+        if (currentBackgroundAudio && currentBackgroundAudio !== workBackgroundAudio && currentBackgroundAudio !== breakBackgroundAudio) {
+            releaseAudio(currentBackgroundAudio, null);
+        }
         releaseAudio(workBackgroundAudio, workBackgroundAudioObjectUrl);
         releaseAudio(breakBackgroundAudio, breakBackgroundAudioObjectUrl);
         workBackgroundAudio = null;
@@ -33259,9 +33288,9 @@ window.__setTomatoFloatState = function (payload) {
     async function setBackgroundAudioMuted(muted) {
         audioSettings = ensureAudioSettingsDefaults();
         audioSettings.backgroundMuted = muted === true;
-        await saveAudioSettings();
         updateBackgroundAudioVolume();
         syncBackgroundAudioWithTimerState();
+        await saveAudioSettings();
     }
 
     function isBreakAudioMode(mode = timerMode) {
@@ -33278,10 +33307,12 @@ window.__setTomatoFloatState = function (payload) {
         if (workBackgroundAudio) workBackgroundAudio.volume = volume;
         if (breakBackgroundAudio) breakBackgroundAudio.volume = volume;
         if (currentBackgroundAudio) currentBackgroundAudio.volume = volume;
+        if (backgroundAudioPreview) backgroundAudioPreview.volume = volume;
     }
 
     function pauseBackgroundAudio(reset = false) {
-        for (const audio of [workBackgroundAudio, breakBackgroundAudio]) {
+        backgroundAudioPlaybackGeneration += 1;
+        for (const audio of new Set([workBackgroundAudio, breakBackgroundAudio, currentBackgroundAudio])) {
             if (!audio) continue;
             try { audio.pause(); } catch (e) {}
             if (reset) {
@@ -33292,6 +33323,8 @@ window.__setTomatoFloatState = function (payload) {
     }
 
     function stopBackgroundAudio() {
+        backgroundAudioInitGeneration += 1;
+        stopBackgroundAudioPreview();
         pauseBackgroundAudio(true);
     }
 
@@ -33316,10 +33349,20 @@ window.__setTomatoFloatState = function (payload) {
         currentBackgroundAudio = audio;
         audio.loop = true;
         audio.volume = clampAudioVolume(audioSettings.backgroundVolume, 0.35);
+        const playbackGeneration = backgroundAudioPlaybackGeneration;
 
         try {
             const playPromise = audio.play();
             if (playPromise !== undefined) await playPromise;
+            audioSettings = ensureAudioSettingsDefaults();
+            if (playbackGeneration !== backgroundAudioPlaybackGeneration
+                || currentBackgroundAudio !== audio
+                || !audioSettings.backgroundEnabled
+                || audioSettings.backgroundMuted
+                || !isRunning
+                || isTimerPaused) {
+                try { audio.pause(); } catch (e) {}
+            }
         } catch (e) {
             Logger.warn('⚠️ 播放背景音失败:', e?.name || e, e?.message || '');
         }
@@ -33341,26 +33384,39 @@ window.__setTomatoFloatState = function (payload) {
         const breakBackgroundPath = audioSettings.breakBackgroundSound;
 
         cleanupBackgroundAudioResources();
+        const initGeneration = backgroundAudioInitGeneration;
+        let loadedWork = { audio: null, objectUrl: null };
+        let loadedBreak = { audio: null, objectUrl: null };
 
         if (workBackgroundPath) {
-            const loaded = await loadAudioFromStorage(workBackgroundPath, '工作背景音', {
+            loadedWork = await loadAudioFromStorage(workBackgroundPath, '工作背景音', {
                 loop: true,
                 volume: audioSettings.backgroundVolume
             });
-            workBackgroundAudio = loaded.audio;
-            workBackgroundAudioObjectUrl = loaded.objectUrl;
-            if (workBackgroundAudio) Logger.info('🍅 工作背景音已加载:', workBackgroundPath);
+            if (initGeneration !== backgroundAudioInitGeneration) {
+                releaseAudio(loadedWork.audio, loadedWork.objectUrl);
+                return;
+            }
         }
 
         if (breakBackgroundPath) {
-            const loaded = await loadAudioFromStorage(breakBackgroundPath, '休息背景音', {
+            loadedBreak = await loadAudioFromStorage(breakBackgroundPath, '休息背景音', {
                 loop: true,
                 volume: audioSettings.backgroundVolume
             });
-            breakBackgroundAudio = loaded.audio;
-            breakBackgroundAudioObjectUrl = loaded.objectUrl;
-            if (breakBackgroundAudio) Logger.info('🍅 休息背景音已加载:', breakBackgroundPath);
+            if (initGeneration !== backgroundAudioInitGeneration) {
+                releaseAudio(loadedWork.audio, loadedWork.objectUrl);
+                releaseAudio(loadedBreak.audio, loadedBreak.objectUrl);
+                return;
+            }
         }
+
+        workBackgroundAudio = loadedWork.audio;
+        workBackgroundAudioObjectUrl = loadedWork.objectUrl;
+        breakBackgroundAudio = loadedBreak.audio;
+        breakBackgroundAudioObjectUrl = loadedBreak.objectUrl;
+        if (workBackgroundAudio) Logger.info('🍅 工作背景音已加载:', workBackgroundPath);
+        if (breakBackgroundAudio) Logger.info('🍅 休息背景音已加载:', breakBackgroundPath);
 
         updateBackgroundAudioVolume();
         syncBackgroundAudioWithTimerState();
@@ -33379,6 +33435,7 @@ window.__setTomatoFloatState = function (payload) {
         }
 
         stopBackgroundAudioPreview();
+        const previewGeneration = backgroundAudioPreviewGeneration;
 
         let previewSrc = existingAudio?.src || '';
         if (!previewSrc) {
@@ -33387,10 +33444,16 @@ window.__setTomatoFloatState = function (payload) {
                 volume: audioSettings.backgroundVolume
             });
             previewSrc = loaded.audio?.src || '';
-            backgroundAudioPreviewObjectUrl = loaded.objectUrl;
             if (loaded.audio) {
                 try { loaded.audio.src = ''; } catch (e) {}
             }
+            if (previewGeneration !== backgroundAudioPreviewGeneration) {
+                if (loaded.objectUrl) {
+                    try { URL.revokeObjectURL(loaded.objectUrl); } catch (e) {}
+                }
+                return;
+            }
+            backgroundAudioPreviewObjectUrl = loaded.objectUrl;
         } else {
             backgroundAudioPreviewObjectUrl = existingObjectUrl ? null : '';
         }
@@ -33416,8 +33479,11 @@ window.__setTomatoFloatState = function (payload) {
         try {
             const playPromise = preview.play();
             if (playPromise !== undefined) await playPromise;
+            if (previewGeneration !== backgroundAudioPreviewGeneration || backgroundAudioPreview !== preview) {
+                releaseAudio(preview, null);
+            }
         } catch (e) {
-            stopBackgroundAudioPreview();
+            if (backgroundAudioPreview === preview) stopBackgroundAudioPreview();
             Logger.warn('⚠️ 背景音预览失败:', e?.name || e, e?.message || '');
             showMiniToast('背景音预览失败');
         }

@@ -199,6 +199,7 @@ const historyContext = vm.createContext({
     __tomatoHistoryMutationQueue: Promise.resolve(),
     __tomatoHistoryWriteSignal: null,
     assertHistoryWriteActive: () => {},
+    cloneSyncState: (value) => JSON.parse(JSON.stringify(value)),
     isHistoryWriteCoordinationError: (error) => error?.code === 'HISTORY_REVISION_CHANGED'
         || String(error?.code || '').startsWith('HISTORY_WRITER_')
         || error?.code === 'HISTORY_WRITE_LEASE_LOST',
@@ -274,7 +275,7 @@ const historyContext = vm.createContext({
     toDateSafe: (value) => new Date(value),
     window: { dispatchEvent: () => {} },
 });
-vm.runInContext(`${source.slice(historyStart, historyEnd)}\nthis.store = { migrateLegacyHistoryToYearShards, loadHistoryRecords, loadHistoryRangeRecords, getHistoryStoreSummary, mutateHistoryRecords, retainHistoryShard, prepareHistoryShardRead, historyShardCacheRecordCount, historyShardCacheByteCount, invalidateHistoryStoreCache, cleanupHistoryShardFiles };`, historyContext);
+vm.runInContext(`${source.slice(historyStart, historyEnd)}\nthis.store = { HistoryRepository, migrateLegacyHistoryToYearShards, loadHistoryRecords, loadHistoryRangeRecords, getHistoryStoreSummary, mutateHistoryRecords, retainHistoryShard, prepareHistoryShardRead, historyShardCacheRecordCount, historyShardCacheByteCount, invalidateHistoryStoreCache, cleanupHistoryShardFiles };`, historyContext);
 
 (async () => {
     const stalledAt = Date.now();
@@ -362,6 +363,30 @@ vm.runInContext(`${source.slice(historyStart, historyEnd)}\nthis.store = { migra
     const concurrentIndex = JSON.parse(files.get(`${historyDir}/history-index.json`));
     assert.equal(JSON.parse(files.get(`${historyDir}/${concurrentIndex.shards['2023'].file}`)).length, 1,
         'writing a new year must preserve older files');
+
+    const pendingDraft = {
+        recordId: 'pending-2026-record',
+        transitionId: 'pending-2026-transition',
+        date: '2026-03-01',
+        start: '2026-03-01T01:00:00.000Z',
+        end: '2026-03-01T01:10:00.000Z',
+        mode: 'countdown',
+        disposition: 'pending',
+    };
+    assert.ok(await historyContext.store.HistoryRepository.appendPending(pendingDraft),
+        'a pending timer record must be written to its dated year shard');
+    assert.equal(await historyContext.store.HistoryRepository.commitPending(pendingDraft), true,
+        'committing a pending timer record must use the draft year instead of the unknown shard');
+    const committedPendingRecord = (await historyContext.store.loadHistoryRecords({ force: true }))
+        .find(record => record.recordId === pendingDraft.recordId);
+    assert.equal(committedPendingRecord?.disposition, 'normal',
+        'a committed timer record must become visible to history and statistics');
+    assert.equal(await historyContext.store.mutateHistoryRecords(records => {
+        const index = records.findIndex(record => record.recordId === pendingDraft.recordId);
+        if (index < 0) return false;
+        records.splice(index, 1);
+        return true;
+    }, { record: pendingDraft }), true, 'the pending-record fixture must not affect later count assertions');
 
     files.set(legacyPath, JSON.stringify([{ date: '2027-05-01', start: '2027-05-01T01:00:00.000Z', end: '2027-05-01T01:25:00.000Z', mode: 'countdown' }]));
     failShardWrites = true;
