@@ -84,6 +84,7 @@
     const __openTab = globalThis.__tomatoOpenTab || __siyuanSdk?.openTab;
     const __openMobileFileById = globalThis.__tomatoOpenMobileFileById || __siyuanSdk?.openMobileFileById;
     const __getPluginApp = () => globalThis.__tomatoPluginApp || null;
+    const __tomatoAppId = String(__getPluginApp()?.appId || '');
     const __getPluginInstance = () => globalThis.__tomatoPluginInstance || null;
     const __canUseOfficialOpenBlock = () => !!__getPluginApp() && (typeof __openTab === 'function' || typeof __openMobileFileById === 'function');
 
@@ -402,6 +403,7 @@
     async function __tomatoPutFileText(path, text, contentType = 'application/json', options = {}) {
         const formData = new FormData();
         formData.append('path', path);
+        formData.append('app', __tomatoAppId);
         formData.append('isDir', 'false');
         formData.append('file', new Blob([text ?? ''], { type: contentType }));
         const response = await fetch('/api/file/putFile', {
@@ -426,6 +428,7 @@
         try {
             const formData = new FormData();
             formData.append('path', path);
+            formData.append('app', __tomatoAppId);
             if (isDir === true) formData.append('isDir', 'true');
             if (isDir === false) formData.append('isDir', 'false');
             const response = await fetch('/api/file/removeFile', {
@@ -442,7 +445,7 @@
                 return true;
             }
             
-            const fallback = await postJSON('/api/file/removeFile', { path }, options);
+            const fallback = await postJSON('/api/file/removeFile', { path, app: __tomatoAppId }, options);
             if (fallback?.data?.code === 0) {
                 if (typeof __tomatoFileTextCache !== 'undefined' && __tomatoFileTextCache instanceof Map) {
                     __tomatoFileTextCache.delete(String(path || ''));
@@ -941,6 +944,7 @@
                 try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
                 const formData = new FormData();
                 formData.append('path', SYNC_FILE_PATH);
+                formData.append('app', __tomatoAppId);
                 formData.append('isDir', 'false');
                 formData.append('file', new Blob([JSON.stringify(targetState, null, 2)], { type: 'application/json' }));
 
@@ -4431,6 +4435,7 @@
     let __tomatoHistoryLoadPromise = null;
     let __tomatoHistoryMutationQueue = Promise.resolve();
     let __tomatoHistoryWriteSignal = null;
+    let __tomatoHistoryWriteWriter = null;
     const HISTORY_LOCAL_STORAGE_KEY = 'siyuan-tomato-history';
     const HISTORY_LOCAL_FALLBACK_META_KEY = 'siyuan-tomato-history-fallback-meta';
     function historyRecordLimitError() {
@@ -4471,7 +4476,7 @@
     }
 
     function assertHistoryWriteActive() {
-        if (__tomatoHistoryWriteSignal?.aborted) throw historyWriterDisposedError();
+        if (__tomatoDestroyed || __tomatoHistoryWriteSignal?.aborted) throw historyWriterDisposedError();
     }
 
     function isHistoryWriteCoordinationError(error) {
@@ -4775,7 +4780,7 @@
 
     async function assertHistoryIndexCommitAllowed(expectedIndex) {
         assertHistoryWriteActive();
-        const writer = globalThis.__dockTomatoHistoryWriter;
+        const writer = __tomatoHistoryWriteWriter;
         if (writer && typeof writer.assert === 'function') await writer.assert();
         const currentIndex = await readHistoryIndex();
         assertHistoryWriteActive();
@@ -5263,18 +5268,25 @@
     }
 
     function queueHistoryOperation(operation) {
-        const runOperation = async (signal = null) => {
+        const runOperation = async (signal = null, writer = null) => {
             __tomatoHistoryWriteSignal = signal;
+            __tomatoHistoryWriteWriter = writer;
             try {
                 assertHistoryWriteActive();
                 return await operation();
             } finally {
-                if (__tomatoHistoryWriteSignal === signal) __tomatoHistoryWriteSignal = null;
+                if (__tomatoHistoryWriteSignal === signal) {
+                    __tomatoHistoryWriteSignal = null;
+                    __tomatoHistoryWriteWriter = null;
+                }
             }
         };
         const execute = () => {
+            assertHistoryWriteActive();
             const writer = globalThis.__dockTomatoHistoryWriter;
-            return writer && typeof writer.run === 'function' ? writer.run(runOperation) : runOperation();
+            return writer && typeof writer.run === 'function'
+                ? writer.run(signal => runOperation(signal, writer))
+                : runOperation();
         };
         const queued = __tomatoHistoryMutationQueue.then(execute, execute);
         __tomatoHistoryMutationQueue = queued.catch(() => {});
@@ -33259,6 +33271,7 @@ window.__setTomatoFloatState = function (payload) {
 
         const formData = new FormData();
         formData.append('path', AUDIO_STORAGE_PATH + filename);
+        formData.append('app', __tomatoAppId);
         formData.append('isDir', 'false');
         formData.append('file', file);
 
@@ -34939,6 +34952,7 @@ window.__setTomatoFloatState = function (payload) {
 
                 const formData = new FormData();
                 formData.append('path', AUDIO_STORAGE_PATH + filename);
+                formData.append('app', __tomatoAppId);
                 formData.append('isDir', 'false');
                 formData.append('file', file);
 
@@ -35132,6 +35146,7 @@ window.__setTomatoFloatState = function (payload) {
 
                 const formData = new FormData();
                 formData.append('path', AUDIO_STORAGE_PATH + filename);
+                formData.append('app', __tomatoAppId);
                 formData.append('isDir', 'false');
                 formData.append('file', file);
 
@@ -40137,6 +40152,7 @@ window.__setTomatoFloatState = function (payload) {
             await __tomatoEnsureDir(PLUGIN_STORAGE_DIR);
             const formData = new FormData();
             formData.append('path', REMINDER_SETTINGS_PATH);
+            formData.append('app', __tomatoAppId);
             formData.append('isDir', 'false');
             formData.append('file', new Blob([JSON.stringify(reminderSettings, null, 2)], { type: 'application/json' }));
             const response = await fetch('/api/file/putFile', { method: 'POST', body: formData });

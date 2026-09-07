@@ -1,5 +1,6 @@
 const { Plugin, Setting, openTab, openMobileFileById, platformUtils } = require("siyuan");
 let tomatoStatsCore = null;
+let tomatoAppId = "";
 
 const PLUGIN_ID = "siyuan-plugin-docktomato";
 const TOMATO_SCRIPT_PATH = `/data/plugins/${PLUGIN_ID}/tomato.js`;
@@ -311,9 +312,10 @@ const installTomatoHistoryWriter = (plugin) => {
     };
     const renew = async (state) => {
         if (state?.error) throw state.error;
-        if (!state?.lease?.token || disposed || state.controller.signal.aborted || currentRun !== state) {
+        if ((!state?.localOnly && !state?.lease?.token) || disposed || state.controller.signal.aborted || currentRun !== state) {
             throw writerError("番茄历史写入权限已失效", "HISTORY_WRITE_LEASE_LOST");
         }
+        if (state.localOnly) return true;
         const result = await callLease("renew", {
             token: state.lease.token,
             leaseMs: HISTORY_WRITE_LEASE_MS,
@@ -332,6 +334,7 @@ const installTomatoHistoryWriter = (plugin) => {
             const runLocally = async () => {
                 const state = {
                     controller: new AbortController(),
+                    localOnly: true,
                     lease: null,
                     heartbeat: null,
                     error: null,
@@ -381,7 +384,6 @@ const installTomatoHistoryWriter = (plugin) => {
             }
         },
         assert() {
-            if (!hasLeaseRpc()) return true;
             return renew(currentRun);
         },
         dispose() {
@@ -872,6 +874,7 @@ const saveMainSettings = async (settings) => {
         const normalizedSettings = sanitizeMainSettings(settings);
         const formData = new FormData();
         formData.append("path", MAIN_SETTINGS_PATH);
+        formData.append("app", tomatoAppId);
         formData.append("isDir", "false");
         formData.append("file", new Blob([JSON.stringify(normalizedSettings, null, 2)], { type: "application/json" }));
         const res = await fetch("/api/file/putFile", { method: "POST", body: formData });
@@ -889,7 +892,7 @@ const removeFile = async (path, isDir) => {
             normalizedPath = normalizedPath + "/";
         }
 
-        const payload = { path: normalizedPath };
+        const payload = { path: normalizedPath, app: tomatoAppId };
         if (isDir === true) payload.isDir = true;
         if (isDir === false) payload.isDir = false;
         const res = await fetch("/api/file/removeFile", {
@@ -1182,6 +1185,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
 
     async onload() {
         this._isUnloaded = false;
+        tomatoAppId = String(this.app?.appId || "");
         const runtimeMobile = isRuntimeMobileClient();
         const runtimeNativeMobile = isNativeMobileRuntimeClient();
         globalThis.__tomatoPluginApp = this.app;

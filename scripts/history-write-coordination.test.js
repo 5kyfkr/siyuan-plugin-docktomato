@@ -53,6 +53,79 @@ context.globalThis = context;
 vm.runInContext(`${source.slice(start, end)}\nthis.installTomatoHistoryWriter = installTomatoHistoryWriter;`, context);
 
 (async () => {
+    let kernelReady = false;
+    const fallbackActions = [];
+    const fallbackWriter = context.installTomatoHistoryWriter({ kernel: { rpc: { call: {
+        dockTomatoHistoryWriteLease: async (payload) => {
+            fallbackActions.push(payload.action);
+            if (!kernelReady) return { ok: false, error: { code: 'HISTORY_WRITER_UNAVAILABLE' } };
+            return leaseRpc(payload);
+        },
+    } } } });
+    try {
+        assert.equal(await fallbackWriter.run(async () => {
+            await fallbackWriter.assert();
+            return true;
+        }), true, 'a local fallback commit must not try to renew a lease it never acquired');
+        assert.deepEqual(fallbackActions, ['acquire']);
+        kernelReady = true;
+        await fallbackWriter.run(() => fallbackWriter.assert());
+        assert.deepEqual(fallbackActions, ['acquire', 'acquire', 'renew', 'release'],
+            'the next write must use Kernel coordination after it becomes available');
+    } finally {
+        fallbackWriter.dispose();
+    }
+
+    const startingPlugin = {};
+    const startupActions = [];
+    const startupWriter = context.installTomatoHistoryWriter(startingPlugin);
+    try {
+        await startupWriter.run(async () => {
+            await startupWriter.assert();
+            startingPlugin.kernel = { rpc: { call: {
+                dockTomatoHistoryWriteLease: async (payload) => {
+                    startupActions.push(payload.action);
+                    return leaseRpc(payload);
+                },
+            } } };
+            await startupWriter.assert();
+        });
+        assert.deepEqual(startupActions, [], 'Kernel startup must not change an in-flight local write into a leased write');
+        await startupWriter.run(() => startupWriter.assert());
+        assert.deepEqual(startupActions, ['acquire', 'renew', 'release']);
+    } finally {
+        startupWriter.dispose();
+    }
+
+    const disappearingPlugin = { kernel: plugin.kernel };
+    const disappearingWriter = context.installTomatoHistoryWriter(disappearingPlugin);
+    try {
+        await disappearingWriter.run(async () => {
+            disappearingPlugin.kernel = null;
+            try {
+                await assert.rejects(Promise.resolve().then(() => disappearingWriter.assert()),
+                    (error) => error?.code === 'HISTORY_WRITER_UNAVAILABLE',
+                    'an acquired lease must not silently downgrade when Kernel RPC disappears');
+            } finally {
+                disappearingPlugin.kernel = plugin.kernel;
+            }
+        });
+    } finally {
+        disappearingWriter.dispose();
+    }
+
+    const localWriter = context.installTomatoHistoryWriter({});
+    await assert.rejects(Promise.resolve().then(() => localWriter.assert()),
+        (error) => error?.code === 'HISTORY_WRITE_LEASE_LOST', 'assertions outside a write must fail even without Kernel RPC');
+    await localWriter.run(async (signal) => {
+        await localWriter.assert();
+        localWriter.dispose();
+        assert.equal(signal.aborted, true);
+        await assert.rejects(Promise.resolve().then(() => localWriter.assert()),
+            (error) => error?.code === 'HISTORY_WRITE_LEASE_LOST', 'disposed local writes must not commit');
+    });
+    await assert.rejects(localWriter.run(() => true), (error) => error?.code === 'HISTORY_WRITER_DISPOSED');
+
     const firstWriter = context.installTomatoHistoryWriter(plugin);
     const secondWriter = context.installTomatoHistoryWriter(plugin);
     const order = [];

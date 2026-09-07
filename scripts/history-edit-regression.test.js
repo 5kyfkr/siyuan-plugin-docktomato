@@ -87,13 +87,15 @@ this.install = installTomatoHistoryWriter;`, writerContext);
 (async () => {
     const writer = writerContext.install({ kernel: { rpc: { call: {} } } });
     let signalSeen = false;
-    const result = await writer.run((signal) => {
+    const result = await writer.run(async (signal) => {
         signalSeen = !!signal && signal.aborted === false;
+        assert.equal(await writer.assert(), true);
         return 'local-fallback-ok';
     });
     assert.equal(result, 'local-fallback-ok', 'missing Kernel lease RPC must use local serialized writer');
     assert.equal(signalSeen, true);
-    assert.equal(writer.assert(), true);
+    await assert.rejects(writer.assert(), (error) => error?.code === 'HISTORY_WRITE_LEASE_LOST',
+        'a completed local write must not retain commit permission');
     writer.dispose();
 
     assert.match(tomatoSource, /async function writeHistoryYearRecords\(year, records, currentIndex\) \{[\s\S]*?normalizeHistoryRecords\(records\)/,

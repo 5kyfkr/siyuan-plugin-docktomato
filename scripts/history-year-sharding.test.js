@@ -120,6 +120,7 @@ const timeoutContext = vm.createContext({
     HISTORY_IO_TIMEOUT_MS: 20,
     HISTORY_STORAGE_DIR: '/history',
     HISTORY_TEXT_MEMORY_LIMIT: 32 * 1024 * 1024,
+    __tomatoDestroyed: false,
     __tomatoHistoryWriteSignal: null,
     __tomatoEnsureDir: () => new Promise(() => {}),
     __tomatoPutFileText: () => new Promise(() => {}),
@@ -198,6 +199,7 @@ const historyContext = vm.createContext({
     __tomatoHistoryLoadPromise: null,
     __tomatoHistoryMutationQueue: Promise.resolve(),
     __tomatoHistoryWriteSignal: null,
+    __tomatoHistoryWriteWriter: null,
     assertHistoryWriteActive: () => {},
     cloneSyncState: (value) => JSON.parse(JSON.stringify(value)),
     isHistoryWriteCoordinationError: (error) => error?.code === 'HISTORY_REVISION_CHANGED'
