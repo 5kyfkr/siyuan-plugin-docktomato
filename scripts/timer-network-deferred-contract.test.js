@@ -10,8 +10,8 @@ const journalStart = source.indexOf('    const TimerJournal = {');
 const journalEnd = source.indexOf('    const TimerStateMachine = {', journalStart);
 assert.ok(journalStart >= 0 && journalEnd > journalStart, 'timer journal must remain extractable');
 const journal = source.slice(journalStart, journalEnd);
-assert.match(journal, /deferNetwork: journal\?\.deferNetwork === true/,
-    'the durable journal must preserve deferred-network mode for the next recovery');
+assert.match(journal, /schemaVersion: 3/,
+    'the durable journal must persist its queue schema');
 
 const executorStart = source.indexOf('    const TransitionExecutor = {');
 const executorEnd = source.indexOf('    // Compatibility boundary for legacy UI paths.', executorStart);
@@ -19,10 +19,12 @@ assert.ok(executorStart >= 0 && executorEnd > executorStart, 'transition executo
 const executor = source.slice(executorStart, executorEnd);
 assert.match(executor, /const deferNetwork = command\?\.deferNetwork === true;/, 'timer transitions must have an explicit deferred-network mode');
 assert.match(executor, /const latest = deferNetwork[\s\S]*SyncManager\.getState\(\)/, 'deferred transitions must use local canonical state instead of reading cloud state');
-assert.match(executor, /committedState = await SyncManager\.updateLocal\(candidate, false, false/, 'deferred transitions must commit local state without a network write');
+assert.match(executor, /await SyncManager\.updateLocal\(candidate, false, false, \{ prepareOnly: true \}\)/, 'transitions must prepare state without publishing it before durability');
 assert.match(executor, /SyncManager\.enqueueDeferredSync\(committedState\)/, 'deferred transitions must enqueue the latest state for background sync');
-assert.match(executor, /if \(deferNetwork\) \{[\s\S]*AccountingRepository\.applyQueue\(journal\.accountingDrafts\)[\s\S]*\.catch\(/, 'deferred transitions must keep task attribute projection out of the timer click path');
-assert.match(executor, /if \(deferNetwork && journal\.deferNetwork === true && journal\.status === 'committed'\)/, 'completed deferred journals must not trigger another cloud read before the next click');
+const executeOnly = executor.slice(executor.indexOf('        async execute('), executor.indexOf('        async transferLease('));
+assert.doesNotMatch(executeOnly, /HistoryRepository\.|AccountingRepository\./, 'historical IO must stay outside the click path');
+assert.match(executor, /async projectOperation\(operation\)[\s\S]*AccountingRepository\.applyQueue\(\(operation\.accountingDrafts/, 'background projection must hand accounting drafts to the existing retryable repository');
+assert.match(executeOnly, /if \(!deferNetwork && isSyncEnabled\(\)\)/, 'deferred clicks must not await remote synchronization');
 
 const syncManagerStart = source.indexOf('    const SyncManager = {');
 const syncManagerEnd = source.indexOf('    // ========== 状态计算器', syncManagerStart);

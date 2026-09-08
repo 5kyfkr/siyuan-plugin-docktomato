@@ -36,9 +36,9 @@ assert.match(source, /const transition = await TransitionExecutor\.execute\(\s*\
 const journalStart = source.indexOf('    const TimerJournal = {');
 const journalEnd = source.indexOf('    const TimerStateMachine = {', journalStart);
 const journalBlock = source.slice(journalStart, journalEnd);
-assert.match(journalBlock, /isSyncEnabled\(\)\) return fileSaved;/, 'sync mode must require the shared journal write');
+assert.match(journalBlock, /requireSharedJournal \? fileSaved : \(fileSaved \|\| localSaved\)/, 'sync mode must require the shared journal write');
 assert.match(journalBlock, /__tomatoFileTextCache\.delete\(TIMER_JOURNAL_FILE_PATH\)/, 'journal recovery must read the latest shared file');
-assert.match(journalBlock, /if \(requireSharedJournal\) return null;[\s\S]*localStorage\.getItem/, 'sync mode must not treat a local-only journal as shared durability');
+assert.match(journalBlock, /if \(!requireSharedJournal\) \{[\s\S]*localStorage\.getItem/, 'sync mode must not treat a local-only journal as shared durability');
 
 const accountingStart = source.indexOf('    const AccountingRepository = {');
 const accountingEnd = source.indexOf('    const TransitionExecutor = {', accountingStart);
@@ -51,8 +51,8 @@ assert.match(accountingBlock, /if \(entry\?\.status === 'pending'\) \{[\s\S]*dur
 const executorStart = source.indexOf('    const TransitionExecutor = {');
 const executorEnd = source.indexOf('    // Compatibility boundary for legacy UI paths', executorStart);
 const executorBlock = source.slice(executorStart, executorEnd);
-assert.match(executorBlock, /journal\.status === 'committed' && !recovered/, 'journal recovery must remain blocking until committed status is durably readable');
-assert.match(executorBlock, /const accountingComplete = .*\['applied', 'skipped'\]/, 'accounting completion must remain separate from durable pending ledger state');
+assert.match(executorBlock, /if \(journal\?\.unavailable\) return \{ journal, blocking: true/, 'unreadable journals must block state transitions');
+assert.match(executorBlock, /result\?\.durable === true/, 'durable pending accounting must not block timer commits');
 assert.match(source, /async ensureNormal\(record\)[\s\S]*Object\.assign\(item, draft, \{ disposition: 'normal' \}\)/, 'journal recovery must idempotently repair a missing or pending history record');
 
 const applyStart = source.indexOf('        async applyRemote(remoteState)');

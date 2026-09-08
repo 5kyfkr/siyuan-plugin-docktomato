@@ -34,7 +34,7 @@
             'dockTomatoHistoryWriteLease',
         ];
         const text = (value) => String(value == null ? '' : value).trim();
-        let historyWriteLease = null;
+        const writeLeases = new Map();
         const activeStatsQueries = new Map();
         const cancelledStatsQueries = new Map();
 
@@ -48,8 +48,11 @@
         function handleHistoryWriteLease(payload) {
             const source = payload && typeof payload === 'object' ? payload : {};
             const action = text(source.action);
+            const scope = ['timer', 'accounting'].includes(source.scope) ? source.scope : 'history';
             const now = Date.now();
+            let historyWriteLease = writeLeases.get(scope) || null;
             if (historyWriteLease && historyWriteLease.leaseUntil <= now) historyWriteLease = null;
+            if (!historyWriteLease) writeLeases.delete(scope);
             if (action === 'acquire') {
                 if (historyWriteLease) {
                     return {
@@ -61,6 +64,7 @@
                 const requestedMs = Math.max(0, Number(source.leaseMs) || 0);
                 const leaseMs = Math.max(HISTORY_WRITE_LEASE_MIN_MS, Math.min(HISTORY_WRITE_LEASE_MAX_MS, requestedMs || 15000));
                 historyWriteLease = { token: createLeaseToken(), leaseUntil: now + leaseMs };
+                writeLeases.set(scope, historyWriteLease);
                 return { acquired: true, ...historyWriteLease };
             }
             const token = text(source.token);
@@ -75,6 +79,7 @@
             }
             if (action === 'release') {
                 historyWriteLease = null;
+                writeLeases.delete(scope);
                 return { acquired: false, released: true, leaseUntil: 0 };
             }
             return { acquired: true, ...historyWriteLease };
@@ -444,7 +449,7 @@
             for (const name of RPC_NAMES) {
                 try { await siyuanApi.rpc.unbind(name); } catch (e) {}
             }
-            historyWriteLease = null;
+            writeLeases.clear();
             activeStatsQueries.forEach((controller) => {
                 try { controller?.abort?.(); } catch (e) {}
             });

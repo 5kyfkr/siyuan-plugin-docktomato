@@ -8,8 +8,8 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'tomato.js'), 'utf8');
 assert.doesNotMatch(source, /TOMATO_PERSISTENCE_LOG_PREFIX|__tomatoPersistenceTrace/,
     'temporary persistence diagnostics must not remain in the production timer code');
-assert.match(source, /HistoryRepository\.commitPending\(draft\)[\s\S]*if \(!committed\)[\s\S]*throw new Error\('history draft commit failed'\)/,
-    'a failed pending-to-normal history commit must keep the timer transaction from reporting success');
+assert.match(source, /const persisted = await HistoryRepository\.ensureNormal\(draft\);[\s\S]*if \(!persisted\) throw new Error\('HISTORY_PROJECTION_FAILED'\)/,
+    'failed history projection must retain the journal operation for replay');
 const pauseStart = source.indexOf('    async function pauseTimer()');
 const pauseEnd = source.indexOf('    async function stopTimer(', pauseStart);
 const transitionStart = source.indexOf('    function finalizeCurrentSegmentBeforeTransition()');

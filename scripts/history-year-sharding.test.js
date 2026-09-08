@@ -154,6 +154,7 @@ let failShardWrites = false;
 let failIndexWrites = false;
 let failCleanup = false;
 const historyContext = vm.createContext({
+    TimerJournal: { queuedHistory: () => [] },
     Array,
     CustomEvent: class CustomEvent {},
     Date,
@@ -377,6 +378,28 @@ vm.runInContext(`${source.slice(historyStart, historyEnd)}\nthis.store = { Histo
     };
     assert.ok(await historyContext.store.HistoryRepository.appendPending(pendingDraft),
         'a pending timer record must be written to its dated year shard');
+    historyContext.isSyncEnabled = () => true;
+    failIndexWrites = true;
+    await assert.rejects(historyContext.store.HistoryRepository.ensureNormal(pendingDraft), /保存历史索引失败/,
+        'a failed index commit must not acknowledge a pending record');
+    const pendingFallback = await historyContext.store.loadHistoryRecords({ force: true });
+    assert.equal(pendingFallback
+        .find(record => record.recordId === pendingDraft.recordId)?.disposition, 'pending',
+        'failed index writes must leave the committed history snapshot pending');
+    storage.set('history', JSON.stringify(pendingFallback));
+    storage.set('history-meta', JSON.stringify({ updatedAt: Date.now(), recordCount: pendingFallback.length }));
+    assert.equal(await historyContext.store.HistoryRepository.ensureNormal(pendingDraft), false,
+        'a pending local fallback must not acknowledge a failed shared history commit');
+    pendingFallback.find(record => record.recordId === pendingDraft.recordId).disposition = 'normal';
+    storage.set('history', JSON.stringify(pendingFallback));
+    assert.equal(await historyContext.store.HistoryRepository.ensureNormal(pendingDraft), false,
+        'an existing normal local fallback must not count as a shared history commit');
+    failIndexWrites = false;
+    assert.ok(await historyContext.store.HistoryRepository.ensureNormal(pendingDraft),
+        'retry must persist the fallback record before acknowledging it');
+    assert.equal(storage.has('history-meta'), false,
+        'successful retry must complete fallback migration');
+    delete historyContext.isSyncEnabled;
     assert.equal(await historyContext.store.HistoryRepository.commitPending(pendingDraft), true,
         'committing a pending timer record must use the draft year instead of the unknown shard');
     const committedPendingRecord = (await historyContext.store.loadHistoryRecords({ force: true }))

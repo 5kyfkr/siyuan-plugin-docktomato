@@ -33,8 +33,10 @@ assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart, 'journal recovery m
 const recoveryBlock = source.slice(recoveryStart, recoveryEnd);
 assert.doesNotMatch(recoveryBlock, /journal\.status === 'committed' && \(!historyReady \|\| !accountingComplete\)/,
     'pending accounting must not downgrade a committed journal on every transition');
-assert.match(recoveryBlock, /journal\.status === 'committed' && !accountingComplete\) scheduleAccountingRetry\(\)/,
-    'committed pending accounting must be handed to the background retry queue');
+assert.match(recoveryBlock, /this\.scheduleProjections\(\)/,
+    'recovery must hand queued drafts to the background projection worker');
+assert.match(recoveryBlock, /ACCOUNTING_PROJECTION_NOT_DURABLE/,
+    'failed accounting handoff must retain the durable operation');
 
 const cleanupStart = source.indexOf('    const cleanupTomato = () => {');
 const cleanupEnd = source.indexOf('    globalThis.__TomatoTimerCleanup', cleanupStart);

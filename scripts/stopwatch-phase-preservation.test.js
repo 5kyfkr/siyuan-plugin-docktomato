@@ -29,6 +29,7 @@ assert.doesNotMatch(dialogSource, /timerMode = 'stopwatch'/, 'closing a complete
 async function getStartedMode(timerMode) {
     const calls = [];
     const context = vm.createContext({
+        assertTimerReady: () => {},
         timerMode,
         startStopwatchBreakMode: async () => { calls.push('stopwatch-break'); },
         switchToStopwatchAndStart: async () => { calls.push('stopwatch'); },

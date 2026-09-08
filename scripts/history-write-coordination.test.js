@@ -6,7 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'index.js'), 'utf8');
-const start = source.indexOf('const installTomatoHistoryWriter = (plugin) => {');
+const start = source.indexOf('const installTomatoHistoryWriter = (');
 const end = source.indexOf('\n\nconst loadTomatoStatsCore', start);
 assert.ok(start >= 0 && end > start, 'history writer bridge must remain extractable');
 

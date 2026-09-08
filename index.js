@@ -237,7 +237,7 @@ const fetchText = async (url, data, options = {}) => {
     return await res.text();
 };
 
-const installTomatoHistoryWriter = (plugin) => {
+const installTomatoHistoryWriter = (plugin, scope = "history") => {
     let currentRun = null;
     let disposed = false;
     const hasLeaseRpc = () => typeof plugin?.kernel?.rpc?.call?.dockTomatoHistoryWriteLease === "function";
@@ -273,7 +273,7 @@ const installTomatoHistoryWriter = (plugin) => {
         let result;
         try {
             result = await Promise.race([
-                Promise.resolve().then(() => fn({ action, ...payload })),
+                Promise.resolve().then(() => fn({ action, scope, ...payload })),
                 new Promise((resolve, reject) => {
                     timer = setTimeout(() => {
                         const error = new Error("番茄历史写入协调超时");
@@ -397,7 +397,9 @@ const installTomatoHistoryWriter = (plugin) => {
             return !!token;
         },
     };
-    globalThis.__dockTomatoHistoryWriter = bridge;
+    if (scope === "timer") globalThis.__dockTomatoTimerWriter = bridge;
+    else if (scope === "accounting") globalThis.__dockTomatoAccountingWriter = bridge;
+    else globalThis.__dockTomatoHistoryWriter = bridge;
     return bridge;
 };
 
@@ -1215,6 +1217,8 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             try { return this._registerReminderDock(reason, { force: !!force }); } catch (e) { return false; }
         };
         this._historyWriter = installTomatoHistoryWriter(this);
+        this._timerWriter = installTomatoHistoryWriter(this, "timer");
+        this._accountingWriter = installTomatoHistoryWriter(this, "accounting");
         globalThis.__dockTomatoMainSettings = await loadMainSettings();
         await loadTomatoScript();
         dispatchTomatoStatsAvailability(false);
@@ -1332,6 +1336,12 @@ module.exports = class TomatoTimerPlugin extends Plugin {
             this._historyWriter?.dispose?.();
             this._historyWriter = null;
             delete globalThis.__dockTomatoHistoryWriter;
+            this._timerWriter?.dispose?.();
+            this._timerWriter = null;
+            delete globalThis.__dockTomatoTimerWriter;
+            this._accountingWriter?.dispose?.();
+            this._accountingWriter = null;
+            delete globalThis.__dockTomatoAccountingWriter;
         } catch (e) {}
         try {
             const facade = globalThis.__dockTomatoStatsFacade;

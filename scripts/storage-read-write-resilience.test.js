@@ -6,7 +6,7 @@ const path = require('node:path');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'tomato.js'), 'utf8');
 
-const readStart = source.indexOf('    async function __tomatoGetFileText(path)');
+const readStart = source.indexOf('    async function __tomatoGetFileText(');
 const readEnd = source.indexOf('    async function __tomatoSelectStoragePaths()', readStart);
 assert.ok(readStart >= 0 && readEnd > readStart, 'shared file reader must remain extractable');
 const readBlock = source.slice(readStart, readEnd);

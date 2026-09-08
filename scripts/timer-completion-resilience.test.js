@@ -30,6 +30,7 @@ const stopBlock = extract(
 async function testCompletionSurvivesDisplayFailure() {
     const state = { endDialogCalls: 0, soundCalls: 0, stopCalls: 0, toastCalls: 0, recordOptions: null };
     const context = vm.createContext({
+        assertTimerReady: () => {},
         Date,
         Math,
         Promise,
@@ -97,6 +98,7 @@ async function testStopwatchCompletionIsSilent(timerMode) {
         toastCalls: 0,
     };
     const context = vm.createContext({
+        assertTimerReady: () => {},
         Date,
         Math,
         Promise,
@@ -158,6 +160,7 @@ async function testStopwatchCompletionIsSilent(timerMode) {
 
 async function testStopSurvivesCleanupFailure() {
     const context = vm.createContext({
+        assertTimerReady: () => {},
         Promise,
         timerMode: 'countdown',
         timerId: 1,
@@ -214,6 +217,7 @@ async function testStopSurvivesCleanupFailure() {
 function createPauseContext(startTime, now, finalizeResult = true) {
     let finalizeCalls = 0;
     const context = vm.createContext({
+        assertTimerReady: () => {},
         Date: { now: () => now },
         Math,
         Array,

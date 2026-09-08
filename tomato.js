@@ -10,6 +10,7 @@
     globalThis.__TomatoTimerLoaded = true;
     let __tomatoDestroyed = false;
     let __tomatoInitPromise = null;
+    let __tomatoTimerReady = false;
 
     const __tomatoTrackedIntervals = new Set();
     const __tomatoTrackedTimeouts = new Set();
@@ -315,7 +316,7 @@
         return next;
     }
 
-    async function __tomatoGetFileText(path) {
+    async function __tomatoGetFileText(path, options = {}) {
         const key = String(path ?? '');
         if (__tomatoFileTextCache.has(key)) {
             return __tomatoFileTextCache.get(key);
@@ -325,6 +326,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: key }),
+                ...(options.signal ? { signal: options.signal } : {}),
             });
             if (!response.ok) {
                 return { exists: false, available: response.status === 404, missing: response.status === 404, text: '' };
@@ -689,7 +691,7 @@
             } else {
                 st.startTime = timer.segmentStartMs || timer.startedAtMs || null;
             }
-            st.stopwatchStartTimeMs = timer.timerMode === 'stopwatch' ? (timer.startedAtMs || st.startTime) : null;
+            st.stopwatchStartTimeMs = timer.timerMode === 'stopwatch' ? st.startTime : null;
             st.currentPauseStart = timer.pausedAtMs || null;
             st.pausedElapsedSeconds = timer.timerMode === 'stopwatch'
                 ? Math.floor(calculateActiveMs(timer) / 1000)
@@ -1142,6 +1144,16 @@
                 return cloneSyncState(this.localState);
             }
 
+            if (options?.prepareOnly === true) {
+                const sequenceId = Number(this.localState.sequenceId || 0) + 1;
+                return {
+                    ...candidateState,
+                    sequenceId,
+                    stateVersion: sequenceId,
+                    lastModifiedDevice: SYNC_DEVICE_ID,
+                    lastModifiedTime: Math.max(Date.now(), Number(this.localState.lastModifiedTime || 0) + 1, Number(candidateState.lastModifiedTime || 0) + 1),
+                };
+            }
             const previousState = cloneSyncState(this.localState);
             const oldSequenceId = Number(this.localState.sequenceId || 0);
             const highestKnownModifiedTime = Math.max(
@@ -1420,69 +1432,108 @@
     // The journal is intentionally small and single-writer. It is persisted
     // in the synced plugin directory, with localStorage as an offline fallback.
     const TimerJournal = {
-        async read() {
-            const requireSharedJournal = typeof isSyncEnabled === 'function' && isSyncEnabled();
-            try {
-                if (requireSharedJournal) {
-                    __tomatoFileTextCache.delete(TIMER_JOURNAL_FILE_PATH);
-                }
-                const file = await __tomatoGetFileText(TIMER_JOURNAL_FILE_PATH);
-                if (requireSharedJournal && file?.available === false) {
-                    return { status: 'unavailable', unavailable: true };
-                }
-                if (file?.exists && String(file.text || '').trim()) {
-                    const parsed = JSON.parse(file.text);
-                    if (parsed && typeof parsed === 'object') return parsed;
-                }
-            } catch (e) {
-                if (requireSharedJournal) return { status: 'unavailable', unavailable: true };
+        snapshot: null,
+        maxOperations: 128,
+        normalize(value) {
+            if (!value || typeof value !== 'object') return { schemaVersion: 3, revision: 0, nextState: null, operations: [] };
+            if (value.schemaVersion === 3) {
+                if (!Array.isArray(value.operations)) throw new Error('JOURNAL_INVALID_QUEUE');
+                if (value.operations.some(operation => !operation?.transitionId
+                    || !['pending', 'state-committed', 'committed', 'aborted'].includes(operation.status)
+                    || !Array.isArray(operation.historyDrafts) || !Array.isArray(operation.accountingDrafts))) throw new Error('JOURNAL_INVALID_OPERATION');
+                return cloneSyncState(value);
             }
-            if (requireSharedJournal) return null;
-            try {
-                const raw = localStorage.getItem(TIMER_JOURNAL_LOCAL_KEY);
-                const parsed = raw ? JSON.parse(raw) : null;
-                return parsed && typeof parsed === 'object' ? parsed : null;
-            } catch (e) { return null; }
+            if (value.schemaVersion != null) throw new Error('JOURNAL_UNSUPPORTED_VERSION');
+            if (!value.transitionId || !['pending', 'state-committed', 'committed', 'aborted'].includes(value.status)) {
+                throw new Error('JOURNAL_INVALID_LEGACY');
+            }
+            return {
+                schemaVersion: 3,
+                revision: 0,
+                nextState: ['state-committed', 'committed'].includes(value.status) ? cloneSyncState(value.nextState) : null,
+                operations: value.status === 'aborted' ? [] : [cloneSyncState(value)],
+            };
         },
-        async persist(journal) {
-            const value = cloneSyncState({
-                transitionId: String(journal?.transitionId || createTomatoUuid('transition')),
-                baseSequenceId: Number(journal?.baseSequenceId || 0),
-                nextState: cloneSyncState(journal?.nextState || null),
-                historyDrafts: Array.isArray(journal?.historyDrafts) ? cloneSyncState(journal.historyDrafts) : [],
-                accountingDrafts: Array.isArray(journal?.accountingDrafts) ? cloneSyncState(journal.accountingDrafts) : [],
-                deferNetwork: journal?.deferNetwork === true,
-                // Legacy recordEndTime callers persist history/accounting drafts
-                // themselves. Their canonical state is committed by the caller's
-                // surrounding transition, so recovery must not wait for a
-                // matching lastCommittedTransitionId that does not exist.
-                stateCommitRequired: journal?.stateCommitRequired !== false,
-                status: ['pending', 'state-committed', 'committed', 'aborted'].includes(journal?.status) ? journal.status : 'pending',
-                updatedAtMs: Date.now(),
-            });
+        async read(options = {}) {
+            const requireSharedJournal = typeof isSyncEnabled === 'function' && isSyncEnabled();
+            let fileValue = null;
+            let fileUnavailable = false;
+            try {
+                __tomatoFileTextCache.delete(TIMER_JOURNAL_FILE_PATH);
+                const file = await __tomatoGetFileText(TIMER_JOURNAL_FILE_PATH, options);
+                if (file?.available === false) throw new Error('JOURNAL_SOURCE_UNAVAILABLE');
+                if (file?.exists && String(file.text || '').trim()) fileValue = this.normalize(JSON.parse(file.text));
+            } catch (error) {
+                if (requireSharedJournal) return { status: 'unavailable', unavailable: true };
+                fileUnavailable = true;
+                fileValue = null;
+            }
+            if (!requireSharedJournal) {
+                try {
+                    const raw = localStorage.getItem(TIMER_JOURNAL_LOCAL_KEY);
+                    const localValue = raw ? this.normalize(JSON.parse(raw)) : null;
+                    if (localValue && (!fileValue || Number(localValue.revision) > Number(fileValue.revision))) fileValue = localValue;
+                } catch (error) {
+                    if (!fileValue) return { status: 'unavailable', unavailable: true };
+                }
+            }
+            if (!fileValue && fileUnavailable) return { status: 'unavailable', unavailable: true };
+            this.snapshot = fileValue || this.normalize(null);
+            return cloneSyncState(this.snapshot);
+        },
+        async persist(journal, options = {}) {
+            const value = this.normalize(journal);
+            value.revision = Math.max(0, Number(value.revision) || 0) + 1;
+            value.status = value.operations.some(operation => operation.status === 'pending') ? 'pending'
+                : (value.operations.length ? 'state-committed' : 'committed');
+            value.transitionId = value.nextState?.lastCommittedTransitionId || value.operations.at(-1)?.transitionId || null;
+            value.stateCommitRequired = !!value.nextState;
+            value.deferNetwork = true;
+            value.historyDrafts = value.operations.flatMap(operation => operation.historyDrafts || []);
+            value.accountingDrafts = value.operations.flatMap(operation => operation.accountingDrafts || []);
+            const text = JSON.stringify(value);
+            if (text.length > 1024 * 1024 || value.operations.length > this.maxOperations) throw new Error('JOURNAL_QUEUE_FULL');
             let fileSaved = false;
             let localSaved = false;
             try {
-                await __tomatoEnsureDir(PLUGIN_STORAGE_DIR);
-                fileSaved = await __tomatoPutFileText(TIMER_JOURNAL_FILE_PATH, JSON.stringify(value, null, 2)) === true;
-            } catch (e) {}
-            try {
-                localStorage.setItem(TIMER_JOURNAL_LOCAL_KEY, JSON.stringify(value));
-                localSaved = true;
-            } catch (e) {}
-            // When sync is enabled, the shared journal is the hand-off point
-            // for ordered device takeover. A localStorage-only write must not
-            // be reported as durable in that mode.
-            if (typeof isSyncEnabled === 'function' && isSyncEnabled()) return fileSaved;
-            return fileSaved || localSaved;
+                if (!await __tomatoEnsureDir(PLUGIN_STORAGE_DIR, options)) throw new Error('JOURNAL_DIRECTORY_FAILED');
+                if (options.writer) await options.writer.assert();
+                if (options.signal?.aborted || __tomatoDestroyed) throw new Error('TIMER_WRITER_DISPOSED');
+                fileSaved = await __tomatoPutFileText(TIMER_JOURNAL_FILE_PATH, text, 'application/json', options) === true;
+            } catch (error) {
+                Logger.warn('计时事务写入失败:', { stage: 'journal', transitionId: value.transitionId, error: String(error?.message || error) });
+            }
+            const requireSharedJournal = typeof isSyncEnabled === 'function' && isSyncEnabled();
+            if (!fileSaved && !options.signal?.aborted && !__tomatoDestroyed) {
+                __tomatoFileTextCache.delete(TIMER_JOURNAL_FILE_PATH);
+                const confirmed = await __tomatoGetFileText(TIMER_JOURNAL_FILE_PATH, options);
+                fileSaved = confirmed?.exists === true && confirmed.text === text;
+            }
+            if (fileSaved || (!requireSharedJournal && !options.signal?.aborted && !__tomatoDestroyed)) {
+                try { localStorage.setItem(TIMER_JOURNAL_LOCAL_KEY, text); localSaved = true; } catch (error) {}
+            }
+            const saved = requireSharedJournal ? fileSaved : (fileSaved || localSaved);
+            if (saved) this.snapshot = value;
+            return saved;
         },
-        async clear() {
-            try { localStorage.removeItem(TIMER_JOURNAL_LOCAL_KEY); } catch (e) {}
-            try { await __tomatoRemoveFile(TIMER_JOURNAL_FILE_PATH); } catch (e) {}
-            return true;
+        queuedHistory() {
+            return (this.snapshot?.operations || []).filter(operation => operation.status !== 'pending' && operation.status !== 'aborted')
+                .flatMap(operation => operation.historyDrafts || []).map(record => ({ ...cloneSyncState(record), disposition: 'normal' }));
+        },
+        mergeHistory(records, startMs = -Infinity, endMs = Infinity) {
+            const result = Array.isArray(records) ? records.slice() : [];
+            const ids = new Set(result.filter(record => record.disposition !== 'pending').map(record => String(record.recordId || '')));
+            for (const record of this.queuedHistory()) {
+                if (ids.has(String(record.recordId)) || Date.parse(record.start) >= endMs || Date.parse(record.end) <= startMs) continue;
+                const index = result.findIndex(item => String(item.recordId) === String(record.recordId));
+                if (index >= 0) result[index] = record;
+                else result.push(record);
+                ids.add(String(record.recordId));
+            }
+            return result;
         },
         isBlocking(journal) {
-            return !!journal && ['pending', 'state-committed'].includes(String(journal.status || ''));
+            return !!journal?.unavailable || (journal?.operations || []).some(operation => operation.status === 'pending');
         },
     };
 
@@ -2167,6 +2218,20 @@
         updateFromSyncState();
         isRunning = state.status === 'RUNNING';
         isTimerPaused = state.status === 'PAUSED';
+        if (state.status === 'IDLE') {
+            startTime = 0;
+            currentStartTimeMs = 0;
+            currentStartTimestamp = null;
+            stopwatchStartTimeMs = 0;
+            stopwatchStartTimestamp = null;
+            stopwatchSegmentStartTimeMs = 0;
+            stopwatchSegmentStartTimestamp = null;
+            stopwatchSegmentBaseElapsedSeconds = 0;
+            pausedRemainingSeconds = null;
+            currentPauseStart = null;
+            currentSessionId = null;
+            return;
+        }
         const activeTimer = state.activeTimer && typeof state.activeTimer === 'object' ? state.activeTimer : null;
         if (activeTimer) {
             currentSessionId = String(activeTimer.focusSessionId || activeTimer.parentSessionId || activeTimer.sessionId || '') || null;
@@ -2186,8 +2251,9 @@
             if (isStopwatchMode) {
                 stopwatchStartTimeMs = syncedStartTimeMs;
                 stopwatchStartTimestamp = new Date(syncedStartTimeMs).toISOString();
-                stopwatchSegmentStartTimeMs = syncedStartTimeMs;
-                stopwatchSegmentStartTimestamp = stopwatchStartTimestamp;
+                stopwatchSegmentStartTimeMs = Number(activeTimer?.segmentStartMs) || syncedStartTimeMs;
+                stopwatchSegmentStartTimestamp = new Date(stopwatchSegmentStartTimeMs).toISOString();
+                stopwatchSegmentBaseElapsedSeconds = Math.max(0, Number(activeTimer?.accumulatedMs) || 0) / 1000;
                 pausedRemainingSeconds = isTimerPaused ? elapsedSeconds : null;
             } else {
                 currentStartTimeMs = syncedStartTimeMs;
@@ -5428,10 +5494,21 @@
     }
 
     async function mutateHistoryRecords(mutator, options = {}) {
+        const applyMutation = async records => {
+            if (options.includeQueued !== false) {
+                const year = resolveHistoryMutationYear(options);
+                const ids = new Set(records.map(record => String(record?.recordId || '')));
+                for (const draft of TimerJournal.queuedHistory()) {
+                    if (year && getHistoryRecordStorageYear(draft) !== year) continue;
+                    if (!ids.has(draft.recordId)) { records.push(draft); ids.add(draft.recordId); }
+                }
+            }
+            return mutator(records);
+        };
         return queueHistoryOperation(async () => {
             for (let attempt = 0; attempt < 3; attempt += 1) {
                 try {
-                    return await mutateHistoryRecordsOnce(mutator, options);
+                    return await mutateHistoryRecordsOnce(applyMutation, options);
                 } catch (error) {
                     if (error?.code !== 'HISTORY_REVISION_CHANGED' || attempt >= 2) throw error;
                     invalidateHistoryStoreCache();
@@ -5446,7 +5523,8 @@
         isPending(record) { return String(record?.disposition || '') === 'pending'; },
         displayView(records, options = {}) {
             const includeShort = options?.includeShort === true;
-            return normalizeHistoryRecords(records).filter(record => {
+            const visibleRecords = options.includeQueued === false ? records : TimerJournal.mergeHistory(records);
+            return normalizeHistoryRecords(visibleRecords).filter(record => {
                 if (record.disposition !== 'normal') return false;
                 const ordinaryRecord = record.visibility !== 'hidden' && record.recordKind !== 'accounting-only';
                 const restorableShortRecord = includeShort
@@ -5493,20 +5571,23 @@
             const id = String(draft?.recordId || '').trim();
             if (!id) return false;
             draft.disposition = 'normal';
+            let existingRecord = null;
+            let alreadyPersisted = false;
             const result = await mutateHistoryRecords(records => {
                 const item = records.find(entry => String(entry?.recordId || '') === id);
                 if (item) {
-                    if (item.disposition === 'normal') return false;
+                    if (item.disposition === 'normal' || item.disposition === 'discarded') {
+                        existingRecord = cloneSyncState(item);
+                        alreadyPersisted = !localStorage.getItem(HISTORY_LOCAL_FALLBACK_META_KEY);
+                        return !alreadyPersisted;
+                    }
                     Object.assign(item, draft, { disposition: 'normal' });
                     return true;
                 }
                 records.push(draft);
                 return true;
-            }, { record: draft });
-            if (result) return true;
-            const latest = await loadHistoryRecords({ force: true }).catch(() => []);
-            const repaired = latest.some(entry => String(entry?.recordId || '') === id && entry.disposition === 'normal');
-            return repaired;
+            }, { record: draft, includeQueued: false });
+            return result ? (existingRecord || draft) : (alreadyPersisted ? existingRecord : false);
         },
         async markTombstone(recordId, correctionId = null) {
             const id = String(recordId || '').trim();
@@ -5708,7 +5789,9 @@
     async function __tomatoHistoryLoadRange(startISO, endISO) {
         const startMs = toDateSafe(startISO)?.getTime?.() || 0;
         const endMs = toDateSafe(endISO)?.getTime?.() || 0;
-        return HistoryRepository.statisticsView(await loadHistoryRangeRecords(startMs, endMs));
+        return HistoryRepository.statisticsView(await loadHistoryRangeRecords(startMs, endMs)).filter(record => (
+            Date.parse(record.start) < endMs && Date.parse(record.end) > startMs
+        ));
     }
 
     async function __tomatoHistoryUpdateTime(recordKey, patch) {
@@ -12902,6 +12985,7 @@
 
     // 开始正计时
     async function startStopwatch(taskName) {
+        assertTimerReady();
         // 🔧 修复：切换到正计时模式前先清除时间轴残留，防止残影
         clearTimelineActiveLayers();
 
@@ -13118,6 +13202,7 @@
             // 检查点击是否在 routineToolbar 的日常事务按钮上
             const routineBtnEl = topmostElement?.closest?.('.tomato-routine-btn');
             if (routineBtnEl) {
+                if (!__tomatoTimerReady) { showMiniToast('计时状态正在恢复，请稍后再试'); return; }
                 e.preventDefault();
                 e.stopImmediatePropagation();
                 e.stopPropagation();
@@ -16682,8 +16767,33 @@
         }
     }
 
+    function assertTimerReady() {
+        if (__tomatoTimerReady && !__tomatoDestroyed) return;
+        try { showMiniToast('计时状态正在恢复，请稍后再试'); } catch (error) {}
+        throw new Error('TIMER_NOT_READY');
+    }
+
+    function restoreCommittedTimerRuntime() {
+        const accepted = SyncManager.getState();
+        if (!accepted || !['RUNNING', 'PAUSED'].includes(accepted.status)) return false;
+        applyAcceptedSyncStateToTimer(accepted);
+        try { if (isRunning && !timerId) startLocalTimerLoop(); } catch (error) {}
+        try { updateDisplay(true); } catch (error) {}
+        return true;
+    }
+
     async function startTimer(options = {}) {
+        assertTimerReady();
         if (isRunning) return;
+        if (syncState?.status === 'IDLE' && !syncState?.activeTimer) {
+            isTimerPaused = false;
+            pausedRemainingSeconds = null;
+            remainingSeconds = currentDuration * 60;
+            elapsedSeconds = 0;
+            currentStartTimestamp = null;
+            currentStartTimeMs = 0;
+            startTime = 0;
+        }
         const wasPausedAtStart = !!isTimerPaused || syncState?.status === 'PAUSED';
         const confirmSync = options?.confirm !== false;
 
@@ -16698,12 +16808,13 @@
                 Logger.warn('🍅 startTimer: 音频初始化失败（忽略）', e);
             }
             Logger.info('🍅 startTimer: 音频初始化完成, workEndAudio:', !!workEndAudio, 'breakEndAudio:', !!breakEndAudio);
+            if (isRunning) return;
 
             if (timerMode !== 'stopwatch' && timerMode !== 'stopwatch-break') {
                 if (currentStartTimestamp) {
                     const hasValidStart = !!(currentStartTimeMs && currentStartTimeMs > 0) || !!(startTime && startTime > 0) || !!isTimerPaused;
                     if (hasValidStart) {
-                        try { await recordEndTime(); } catch (e) {}
+                        await requireTimerPersistence(recordEndTime(), 'start-close-segment');
                     } else {
                         currentStartTimestamp = null;
                         currentStartTimeMs = 0;
@@ -16806,7 +16917,7 @@
 
             startLocalTimerLoop();
 
-            if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
+            if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
                 const activeRoutineMeta = getActiveRoutineButtonRecordMeta();
                 syncState.routineButtonId = activeRoutineMeta?.id || null;
                 syncState.routineButtonBlockId = activeRoutineMeta?.blockId || null;
@@ -16924,8 +17035,8 @@
                 }
             }
 
-            if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
-                Logger.info('🔄 startTimer: 同步状态到云端', {
+            if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
+                Logger.info('🔄 startTimer: 提交计时状态', {
                     status: syncState.status,
                     mode: syncState.mode,
                     startTime: syncState.startTime,
@@ -16954,6 +17065,7 @@
     }
 
     async function pauseTimer() {
+        assertTimerReady();
         if (!isRunning) return;
 
         const now = Date.now();
@@ -17055,7 +17167,7 @@
         // 🔧 修复：同步暂停状态到云端。
         // 基于最新状态构建暂停快照并接管租约（allowLeaseTransfer），保证“最新操作优先”：
         // 即使当前计时租约在其他设备，本地的暂停操作也能提交，不会被旧租约拦截。
-        if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
+        if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             const pauseAt = now;
             const pauseMode = timerMode;
             const pauseDistractionCount = currentDistractionCount || 0;
@@ -17093,6 +17205,7 @@
     }
 
     async function stopTimer(options = {}) {
+        if (options?.skipEndRecord !== true) assertTimerReady();
         const opts = (options && typeof options === 'object') ? options : {};
         const skipEndRecord = opts.skipEndRecord === true;
         const isStopwatchMode = timerMode === 'stopwatch' || timerMode === 'stopwatch-break';
@@ -17164,7 +17277,7 @@
         // 本地停止状态先提交；思源状态文件由延迟同步队列在后台发送。
         // 🔧 修复：基于最新状态构建停止快照并接管租约（allowLeaseTransfer），
         // 保证“最新操作优先”：其他设备持有时停止操作也能提交，避免本地与云端状态不一致。
-        if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
+        if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             const stopMode = timerMode;
             const transition = await TransitionExecutor.execute(
                 { transitionId: createTomatoUuid('stop'), deferNetwork: true, allowLeaseTransfer: true },
@@ -17223,28 +17336,23 @@
 
     function waitForTimerPersistence(promise, label = 'timer-persist', timeoutMs = 8000) {
         if (!promise || typeof promise.then !== 'function') return Promise.resolve(promise);
-        let timer = null;
-        const guarded = Promise.resolve(promise)
-            .catch((e) => {
-                try { Logger.warn(`${label} 保存失败:`, e); } catch (e2) {}
-                return false;
-            })
-            .finally(() => {
-                try { if (timer != null) clearTimeout(timer); } catch (e) {}
-            });
-        const timeout = new Promise((resolve) => {
-            timer = setTimeout(() => {
-                try { Logger.warn(`${label} 保存超时，已先恢复计时器 UI`); } catch (e) {}
-                resolve(false);
-            }, Math.max(1000, Number(timeoutMs) || 8000));
-        });
-        return Promise.race([guarded, timeout]);
+        const timer = setTimeout(() => {
+            try {
+                Logger.warn(`${label} 仍在保存，等待同一事务完成`);
+                showMiniToast('计时正在保存，请稍候');
+            } catch (error) {}
+        }, Math.max(1000, Number(timeoutMs) || 8000));
+        return Promise.resolve(promise).catch(error => {
+            try { Logger.warn(`${label} 保存失败:`, error); } catch (loggingError) {}
+            return false;
+        }).finally(() => clearTimeout(timer));
     }
 
     async function requireTimerPersistence(promise, label = 'timer-persist') {
         if (!promise) return true;
         const saved = await waitForTimerPersistence(promise, label);
         if (saved !== true) {
+            restoreCommittedTimerRuntime();
             throw new Error(`${label.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_FAILED`);
         }
         return true;
@@ -17417,7 +17525,7 @@
         const routineButtonHighlightColorAtEnd = routineButtonHighlightColor;
         const hideShortRecordsAtEnd = userSettings?.hideShortRecords !== false;
         const initialRemainingSecondsAtEnd = getInitialRemainingAtStart();
-        let syncStateAtEnd = syncState && typeof syncState === 'object' ? { ...syncState } : null;
+        let syncStateAtEnd = syncState && typeof syncState === 'object' ? cloneSyncState(syncState) : null;
         let v2TimerSnapshot = syncStateAtEnd?.activeTimer && typeof syncStateAtEnd.activeTimer === 'object'
             ? syncStateAtEnd.activeTimer : null;
         let isLegacyTimerState = isLegacyTimerStateSnapshot(syncStateAtEnd);
@@ -17475,9 +17583,13 @@
         }
 
         Logger.info('🔍 recordEndTime: startTimestamp =', startTimestamp, ', startTimeMs =', startTimeMs);
+        if (Number(v2TimerSnapshot?.segmentStartMs) > 0) {
+            startTimeMs = Number(v2TimerSnapshot.segmentStartMs);
+            startTimestamp = new Date(startTimeMs).toISOString();
+        }
         if (!startTimestamp || startTimeMs === 0) {
             Logger.info('🔍 recordEndTime: 时间戳无效，提前返回');
-            return;
+            return v2TimerSnapshot?.status === 'PAUSED' && !v2TimerSnapshot.openRecordId;
         }
 
         // 🔧 修复：计时结束后保持高亮（只要任务关联存在）
@@ -17494,8 +17606,15 @@
             Logger.info('🔍 recordEndTime: 检测到暂停记录，使用暂停时间作为结束时间:', endTimeMs);
         }
 
+        if (Number(v2TimerSnapshot?.segmentStartMs) > 0) {
+            const limitSec = v2TimerSnapshot.timerMode === 'stopwatch'
+                ? Number(v2TimerSnapshot.hardLimitSec || TOMATO_HARD_LIMIT_SEC)
+                : Number(v2TimerSnapshot.plannedDurationSec || currentDurationAtEnd * 60);
+            const availableMs = Math.max(0, limitSec * 1000 - (Number(v2TimerSnapshot.accumulatedMs) || 0));
+            endTimeMs = Math.min(endTimeMs, Number(v2TimerSnapshot.segmentStartMs) + availableMs);
+        }
         const now = new Date(endTimeMs);
-        
+
         const effectiveStartTimeMs = Number(v2TimerSnapshot?.segmentStartMs) > 0
             ? Number(v2TimerSnapshot.segmentStartMs)
             : startTimeMs;
@@ -17567,11 +17686,12 @@
         }
 
         try {
+            const durationLimitMs = (modeAtEnd === 'countdown' || modeAtEnd === 'break')
+                ? Math.max(1, Number(v2TimerSnapshot?.plannedDurationSec || currentDurationAtEnd * 60) * 1000)
+                : (typeof TOMATO_HARD_LIMIT_SEC === 'number' ? TOMATO_HARD_LIMIT_SEC : 86400) * 1000;
             const durationMsToSave = Math.max(0, Math.min(
                 actualElapsedMs,
-                (modeAtEnd === 'countdown' || modeAtEnd === 'break')
-                    ? Math.max(1, Number(v2TimerSnapshot?.plannedDurationSec || currentDurationAtEnd * 60) * 1000)
-                    : (typeof TOMATO_HARD_LIMIT_SEC === 'number' ? TOMATO_HARD_LIMIT_SEC : 86400) * 1000
+                durationLimitMs - Math.max(0, Number(v2TimerSnapshot?.accumulatedMs) || 0)
             ));
             const durationSecToSave = durationMsToSave / 1000;
             const durationMinToSave = durationMsToSave / 60000;
@@ -17774,6 +17894,8 @@
                 const active = draft.activeTimer && typeof draft.activeTimer === 'object'
                     ? draft.activeTimer : null;
                 if (!active) return draft;
+                if (v2TimerSnapshot?.sessionId && active.sessionId !== v2TimerSnapshot.sessionId) return draft;
+                if (v2TimerSnapshot?.openRecordId && active.openRecordId !== v2TimerSnapshot.openRecordId) return draft;
                 active.accumulatedMs = Math.max(Number(active.accumulatedMs) || 0, Number(active.accumulatedMs || 0) + durationMsToSave);
                 active.segmentStartMs = null;
                 active.openRecordId = null;
@@ -18021,6 +18143,7 @@
     }
 
     async function rollbackFailedTimerStart(clearAssociation = true) {
+        if (restoreCommittedTimerRuntime()) return;
         try { stopHighlightKeepAlive(); } catch (e) {}
         try { clearTaskBlockHighlight(); } catch (e) {}
         if (clearAssociation) {
@@ -18062,7 +18185,7 @@
             syncState.taskBlockName = null;
             syncState.databaseBlockId = null;
         }
-        if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
+        if (typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
             const rollbackClearAssociation = clearAssociation === true;
             try {
                 await commitTimerState((state) => {
@@ -18102,6 +18225,7 @@
     }
 
     async function switchToCountdownAndStart(duration, options = {}) {
+        assertTimerReady();
         const confirm = options?.confirm !== false;
         setFocusRestoreSource(resolveCurrentAssociationFocusSource());
         // 🔧 修复：切换到番茄钟模式前先清除时间轴残留，防止残影
@@ -18135,6 +18259,7 @@
 
     // 带任务块关联的番茄钟切换
     async function switchToCountdownAndStartWithTask(duration, taskBlockId, taskBlockName, options = null) {
+        assertTimerReady();
         const associationAlreadySet = options?.associationAlreadySet === true;
         const confirm = options?.confirm !== false;
         setFocusRestoreSource(options);
@@ -18189,6 +18314,7 @@
     }
 
     async function switchToStopwatchAndStart(options = {}) {
+        assertTimerReady();
         const confirm = options?.confirm !== false;
         setFocusRestoreSource(resolveCurrentAssociationFocusSource());
         // 🔧 修复：切换到正计时模式前先清除时间轴残留，防止残影
@@ -18231,6 +18357,7 @@
 
     // 带任务块关联的正计时切换
     async function switchToStopwatchAndStartWithTask(taskBlockId, taskBlockName, options = null) {
+        assertTimerReady();
         const associationAlreadySet = options?.associationAlreadySet === true;
         const confirm = options?.confirm !== false;
         setFocusRestoreSource(options);
@@ -18295,6 +18422,7 @@
     }
 
     async function startBreakMode(duration, options = {}) {
+        assertTimerReady();
         const confirm = options?.confirm !== false;
         const focusContinuationAtBreak = TimerStateMachine.captureFocusContinuation(syncState, Date.now());
         if (timerMode === 'countdown') {
@@ -18400,6 +18528,7 @@
     }
 
     async function startStopwatchBreakMode(options = {}) {
+        assertTimerReady();
         const confirm = options?.confirm !== false;
         const focusContinuationAtBreak = TimerStateMachine.captureFocusContinuation(syncState, Date.now());
         if (timerMode === 'countdown') {
@@ -18521,6 +18650,7 @@
     }
 
     async function startStopwatchForCurrentPhase() {
+        assertTimerReady();
         if (timerMode === 'break' || timerMode === 'stopwatch-break') {
             await startStopwatchBreakMode();
             return;
@@ -18720,7 +18850,7 @@
             syncState.activeTimer = null;
             syncState.openRecordId = null;
             syncState.writerLease = null;
-            if (isSyncEnabled() && SyncManager.updateLocal) {
+            if (SyncManager.updateLocal) {
                 await commitTimerState((state) => {
                     const next = cloneSyncState(state);
                     next.mode = 'countdown';
@@ -18749,6 +18879,7 @@
     }
 
     async function resetCurrentMode(options = {}) {
+        assertTimerReady();
         const confirm = options?.confirm !== false;
         return withTimerFinalizationLock('reset-current-mode', async () => {
             const wasPaused = !!isTimerPaused;
@@ -18830,7 +18961,7 @@
                 syncState.distractionCount = 0;
                 syncState.distractionSavedCount = 0;
                 await requireTimerPersistence(pendingRecordSave, 'reset-current-mode');
-                if (isSyncEnabled() && SyncManager.updateLocal) {
+                if (SyncManager.updateLocal) {
                     await commitTimerState((state) => {
                         const next = cloneSyncState(state);
                         next.mode = timerMode;
@@ -18966,9 +19097,9 @@
                 try { await cancelTrackedTimerNotification('reset-timer', false); } catch (e) {}
             }
             await requireTimerPersistence(pendingRecordSave, 'reset-current-mode');
-            
+
             // 🔧 v9.0 修复：重置后同步状态到云端
-            if (isSyncEnabled() && SyncManager.updateLocal) {
+            if (SyncManager.updateLocal) {
                 const resetMode = timerMode;
                 const resetDurationSec = (timerMode === 'countdown' || timerMode === 'break')
                     ? Math.max(1, Math.round(Number(currentDuration) || 0)) * 60
@@ -18999,6 +19130,7 @@
     }
 
     async function completeCurrentTomato(options = {}) {
+        assertTimerReady();
         const opts = (options && typeof options === 'object') ? options : {};
         return withTimerFinalizationLock('complete-current-tomato', async () => {
             if (timerMode !== 'countdown') return;
@@ -19034,7 +19166,7 @@
 
             await requireTimerPersistence(pendingRecordSave, 'complete-current-tomato');
 
-            if (isSyncEnabled() && SyncManager.updateLocal) {
+            if (SyncManager.updateLocal) {
                 await commitTimerState((state) => {
                     const next = cloneSyncState(state);
                     next.status = 'IDLE';
@@ -30544,8 +30676,19 @@ window.__setTomatoFloatState = function (payload) {
     const AccountingRepository = {
         _tail: Promise.resolve(),
         _ledgerCache: null,
+        _writeOptions: null,
         _enqueue(action) {
-            const run = this._tail.then(action, action);
+            const execute = () => {
+                if (__tomatoDestroyed) throw new Error('ACCOUNTING_WRITER_DISPOSED');
+                this._ledgerCache = null;
+                const writer = globalThis.__dockTomatoAccountingWriter;
+                const run = async (signal = null) => {
+                    this._writeOptions = { signal, writer };
+                    try { return await action(); } finally { this._writeOptions = null; }
+                };
+                return writer?.run ? writer.run(run) : run();
+            };
+            const run = this._tail.then(execute, execute);
             this._tail = run.catch(() => {});
             return run;
         },
@@ -30578,6 +30721,8 @@ window.__setTomatoFloatState = function (payload) {
             return cloneSyncState(this._ledgerCache);
         },
         async writeLedger(ledger) {
+            if (__tomatoDestroyed || this._writeOptions?.signal?.aborted) return null;
+            if (this._writeOptions?.writer) await this._writeOptions.writer.assert();
             const normalized = normalizeAccountingLedger(ledger || {});
             compactAccountingLedger(normalized);
             const next = { ...normalized, schemaVersion: ACCOUNTING_LEDGER_SCHEMA_VERSION, updatedAtMs: Date.now() };
@@ -30588,8 +30733,8 @@ window.__setTomatoFloatState = function (payload) {
                 localSaved = true;
             } catch (e) {}
             try {
-                await __tomatoEnsureDir(PLUGIN_STORAGE_DIR);
-                fileSaved = await __tomatoPutFileText(ACCOUNTING_LEDGER_FILE_PATH, JSON.stringify(next, null, 2)) === true;
+                await __tomatoEnsureDir(PLUGIN_STORAGE_DIR, this._writeOptions || {});
+                fileSaved = await __tomatoPutFileText(ACCOUNTING_LEDGER_FILE_PATH, JSON.stringify(next, null, 2), 'application/json', this._writeOptions || {}) === true;
             } catch (e) {}
             const requiresSharedLedger = typeof isSyncEnabled === 'function' && isSyncEnabled();
             if (!fileSaved && (requiresSharedLedger || !localSaved)) return null;
@@ -30602,7 +30747,7 @@ window.__setTomatoFloatState = function (payload) {
             return this._enqueue(async () => {
                 const ledger = await this.readLedger();
                 const existing = ledger.entries[draft.effectId];
-                if (existing?.status === 'applied') return { applied: false, duplicate: true, entry: existing };
+                if (existing?.status === 'applied' || existing?.status === 'skipped') return { applied: false, duplicate: true, entry: existing };
                 const policy = draft.policy || getTomatoAccountingPolicy();
                 const policyHash = String(draft.policyHash || hashAccountingPolicy(policy));
                 const entry = {
@@ -30995,12 +31140,34 @@ window.__setTomatoFloatState = function (payload) {
 
     const TransitionExecutor = {
         _tail: Promise.resolve(),
+        _projections: new Map(),
+        _projectionTimer: null,
+        _writeOptions: null,
         _enqueue(action) {
-            const run = this._tail.then(action, action);
-            this._tail = run.catch(() => {});
-            return run;
+            const execute = async () => {
+                if (__tomatoDestroyed) throw new Error('TIMER_WRITER_DISPOSED');
+                const writer = globalThis.__dockTomatoTimerWriter;
+                const run = async (signal = null) => {
+                    const controller = new AbortController();
+                    const abort = () => controller.abort();
+                    signal?.addEventListener('abort', abort, { once: true });
+                    if (signal?.aborted) abort();
+                    const timeout = setTimeout(abort, 5000);
+                    this._writeOptions = { signal: controller.signal, writer };
+                    try { return await action(); } finally {
+                        clearTimeout(timeout);
+                        signal?.removeEventListener('abort', abort);
+                        this._writeOptions = null;
+                    }
+                };
+                return writer?.run ? writer.run(run) : run();
+            };
+            const result = this._tail.then(execute, execute);
+            this._tail = result.catch(() => {});
+            return result;
         },
         async readLatestState() {
+            if (!isSyncEnabled()) return SyncManager.getState() || prepareCanonicalStateForSync(syncState);
             try {
                 const remote = await SyncManager.loadFromCloud();
                 if (remote && shouldAcceptRemoteSyncState(remote, SyncManager.getState())) {
@@ -31009,150 +31176,114 @@ window.__setTomatoFloatState = function (payload) {
             } catch (e) {}
             return SyncManager.getState() || prepareCanonicalStateForSync(syncState);
         },
+        acceptCommittedState(state) {
+            if (!state) return SyncManager.getState() || syncState;
+            const current = SyncManager.getState();
+            if (!current || compareSyncStateVersions(state, current) > 0) {
+                SyncManager.localState = prepareCanonicalStateForSync(state);
+                syncState = SyncManager.getState();
+                try { SyncManager.onStateChange?.(cloneSyncState(syncState)); } catch (error) { Logger.warn('计时界面刷新失败:', error); }
+            }
+            return SyncManager.getState() || syncState;
+        },
         async recoverJournal(options = {}) {
-            const deferNetwork = options?.deferNetwork === true;
-            const journal = await TimerJournal.read();
-            if (journal?.unavailable) {
-                return { journal, recovered: false, blocking: true, unavailable: true };
-            }
-            if (!journal) {
-                return { journal: null, recovered: false, blocking: false };
-            }
-            const latest = (deferNetwork || journal.deferNetwork === true)
-                ? (SyncManager.getState() || syncState)
-                : await this.readLatestState();
-            if (deferNetwork && journal.deferNetwork === true && journal.status === 'committed') {
-                SyncManager.enqueueDeferredSync(journal.nextState || latest);
-                if ((journal.accountingDrafts || []).length > 0) scheduleAccountingRetry();
-                return { journal, recovered: true, blocking: false, ids: new Set() };
-            }
-            const stateCommitRequired = journal.stateCommitRequired !== false;
-            if (journal.deferNetwork === true && journal.status === 'pending' && stateCommitRequired && journal.nextState) {
-                try {
-                    const localState = SyncManager.getState() || syncState;
-                    const alreadyApplied = String(localState?.lastCommittedTransitionId || '') === String(journal.transitionId || '');
-                    const restored = alreadyApplied
-                        ? localState
-                        : await SyncManager.updateLocal(journal.nextState, false, false, { confirm: false });
-                    journal.nextState = restored || journal.nextState;
-                    SyncManager.enqueueDeferredSync(journal.nextState);
-                    journal.status = 'state-committed';
-                    await TimerJournal.persist(journal);
-                } catch (e) {
-                    // Keep the durable journal pending; the next local
-                    // transition will retry restoring and queueing it.
+            return this._enqueue(() => this.recoverQueue(options));
+        },
+        async recoverQueue(options = {}) {
+            const journal = await TimerJournal.read(this._writeOptions);
+            if (journal?.unavailable) return { journal, blocking: true, unavailable: true };
+            let latest = options.deferNetwork === true ? (SyncManager.getState() || syncState) : await this.readLatestState();
+            latest = this.acceptCommittedState(journal.nextState) || latest;
+            let changed = false;
+            for (const operation of journal.operations) {
+                if (operation.status !== 'pending') continue;
+                if (operation.stateCommitRequired === false) {
+                    operation.status = 'state-committed';
+                } else if (latest?.lastCommittedTransitionId === operation.transitionId) {
+                    operation.nextState = cloneSyncState(latest);
+                    operation.status = 'state-committed';
+                } else if (Number(latest?.sequenceId || 0) === Number(operation.baseSequenceId || 0)
+                    && compareSyncStateVersions(latest, operation.nextState) <= 0) {
+                    operation.nextState = await SyncManager.updateLocal(operation.nextState, false, false, { prepareOnly: true });
+                    operation.status = 'state-committed';
+                } else {
+                    Logger.warn('旧计时事务与当前状态冲突，保留待恢复:', { transitionId: operation.transitionId, sequenceId: latest?.sequenceId });
+                    return { journal, blocking: true, stale: true };
                 }
-            }
-            if (journal.status === 'pending'
-                && String(latest?.lastCommittedTransitionId || '') === String(journal.transitionId || '')) {
-                journal.status = 'state-committed';
-                await TimerJournal.persist(journal);
-            }
-            if (journal.deferNetwork !== true && journal.status === 'pending' && stateCommitRequired
-                && String(latest?.lastCommittedTransitionId || '') !== String(journal.transitionId || '')
-                && journal.nextState) {
-                try {
-                    const retriedState = await SyncManager.commitCanonicalState(journal.nextState, { forcePush: true, forceSync: true });
-                    if (String(retriedState?.lastCommittedTransitionId || '') === String(journal.transitionId || '')) {
-                        journal.nextState = retriedState;
-                        journal.status = 'state-committed';
-                        await TimerJournal.persist(journal);
-                    }
-                } catch (e) {
-                    // Keep pending. A later ordered refresh can retry the same
-                    // transition without exposing its drafts as committed.
+                if (operation.nextState && (!journal.nextState || compareSyncStateVersions(operation.nextState, journal.nextState) > 0)) {
+                    journal.nextState = cloneSyncState(operation.nextState);
                 }
+                changed = true;
             }
-            const historyRecords = await loadHistoryRecords({ force: true }).catch(() => []);
-            const ids = new Set(historyRecords.map(record => String(record?.recordId || '')));
-            const historyReady = (journal.historyDrafts || []).every(draft => {
-                const record = historyRecords.find(item => String(item?.recordId || '') === String(draft?.recordId || ''));
-                return !!record && record.disposition === 'normal';
+            if (changed && !await TimerJournal.persist(journal, this._writeOptions)) return { journal, blocking: true };
+            this.acceptCommittedState(journal.nextState);
+            if (journal.nextState) SyncManager.enqueueDeferredSync(journal.nextState);
+            this.scheduleProjections();
+            return { journal, recovered: true, blocking: false };
+        },
+        scheduleProjections(delayMs = 20) {
+            if (__tomatoDestroyed || this._projectionTimer || !TimerJournal.snapshot?.operations?.length) return;
+            this._projectionTimer = __tomatoTrackTimeout(() => {
+                this._projectionTimer = null;
+                void this.flushProjections();
+            }, delayMs);
+        },
+        async flushProjections() {
+            if (__tomatoDestroyed) return;
+            const operations = cloneSyncState(TimerJournal.snapshot?.operations || []);
+            const tasks = [];
+            for (const operation of operations) {
+                if (this._projections.size >= 4) break;
+                if (operation.status === 'pending' || operation.status === 'aborted' || this._projections.has(operation.transitionId)) continue;
+                const task = this.projectOperation(operation).catch(error => {
+                    Logger.warn('计时已保存，后台投影待重试:', {
+                        transitionId: operation.transitionId,
+                        recordIds: (operation.historyDrafts || []).map(record => record.recordId),
+                        error: String(error?.message || error),
+                    });
+                }).finally(() => {
+                    this._projections.delete(operation.transitionId);
+                    this.scheduleProjections(3000);
+                });
+                this._projections.set(operation.transitionId, task);
+                tasks.push(task);
+            }
+            await Promise.all(tasks);
+        },
+        async projectOperation(operation) {
+            const discardedRecordIds = new Set();
+            for (const draft of operation.historyDrafts || []) {
+                const persisted = await HistoryRepository.ensureNormal(draft);
+                if (!persisted) throw new Error('HISTORY_PROJECTION_FAILED');
+                if (persisted.disposition === 'discarded') discardedRecordIds.add(draft.recordId);
+            }
+            const accountingResults = await AccountingRepository.applyQueue((operation.accountingDrafts || []).filter(effect => !discardedRecordIds.has(effect.recordId)));
+            if (!accountingResults.every(result => result?.durable === true || result?.duplicate === true
+                || (result?.skipped === true && result?.entry?.status === 'skipped'))) {
+                throw new Error('ACCOUNTING_PROJECTION_NOT_DURABLE');
+            }
+            await this._enqueue(async () => {
+                const journal = await TimerJournal.read(this._writeOptions);
+                if (journal?.unavailable) throw new Error('JOURNAL_SOURCE_UNAVAILABLE');
+                if (!journal.operations.some(item => item.transitionId === operation.transitionId)) return;
+                journal.operations = journal.operations.filter(item => item.transitionId !== operation.transitionId);
+                if (!await TimerJournal.persist(journal, this._writeOptions)) throw new Error('JOURNAL_ACK_FAILED');
             });
-            const ledger = await AccountingRepository.readLedger();
-            // A pending entry is already durable and is handed to the
-            // background retry queue. Only an absent ledger entry blocks
-            // recovery; a failed external attribute projection must not
-            // freeze the timer after its ledger draft was persisted.
-            const accountingComplete = (journal.accountingDrafts || []).every(effect => ['applied', 'skipped'].includes(ledger.entries?.[effect.effectId]?.status));
-
-            // A legacy recordEndTime journal has no canonical transition ID to
-            // observe. Once its durable history/effects are complete it can be
-            // closed immediately; otherwise it is replayed from its drafts.
-            if (journal.status === 'pending' && !stateCommitRequired) {
-                journal.status = 'state-committed';
-                await TimerJournal.persist(journal);
-            }
-
-            // History is part of the transition hand-off and must be normal
-            // before another transition starts. Accounting can remain pending
-            // and is retried in the background without blocking the timer.
-            if (journal.status === 'committed' && !historyReady) {
-                journal.status = 'state-committed';
-                await TimerJournal.persist(journal);
-            }
-
-            if (journal.status === 'committed' && !accountingComplete) scheduleAccountingRetry();
-
-            if (journal.status === 'state-committed') {
-                for (const draft of journal.historyDrafts || []) {
-                    try {
-                        await HistoryRepository.ensureNormal(draft);
-                    } catch (error) {
-                    }
-                }
-                await AccountingRepository.applyQueue(journal.accountingDrafts || []);
-                const nextHistory = await loadHistoryRecords({ force: true }).catch(() => []);
-                const nextLedger = await AccountingRepository.readLedger();
-                const finalizedHistory = (journal.historyDrafts || []).every(draft => nextHistory.some(record => (
-                    String(record?.recordId || '') === String(draft?.recordId || '') && record.disposition === 'normal'
-                )));
-                const finalizedAccountingDurable = (journal.accountingDrafts || []).every(effect => (
-                    ['pending', 'applied', 'skipped'].includes(nextLedger.entries?.[effect.effectId]?.status)
-                ));
-                if (finalizedHistory && finalizedAccountingDurable) {
-                    journal.status = 'committed';
-                    await TimerJournal.persist(journal);
-                }
-            } else if (journal.status === 'pending' && !stateCommitRequired && historyReady && accountingComplete) {
-                // The legacy path may have completed all side effects before a
-                // process exit, even though it never wrote a canonical marker.
-                journal.status = 'committed';
-                await TimerJournal.persist(journal);
-            }
-            let recovered = false;
-            let durableJournal = null;
-            if (journal.status === 'committed') {
-                durableJournal = await TimerJournal.read();
-                recovered = durableJournal?.status === 'committed'
-                    && String(durableJournal?.transitionId || '') === String(journal.transitionId || '');
-            }
-            const blocking = TimerJournal.isBlocking(journal)
-                || (journal.status === 'committed' && !recovered);
-            return { journal, recovered, blocking, ids };
+            try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'projection', transitionId: operation.transitionId } })); } catch (error) {}
         },
         async execute(command, builder) {
             return this._enqueue(async () => {
                 const deferNetwork = command?.deferNetwork === true;
-                const recovery = await this.recoverJournal({ deferNetwork });
-                if (recovery.blocking) {
-                    return { ok: false, blocked: true, journal: recovery.journal };
-                }
-                const latest = deferNetwork
-                    ? (SyncManager.getState() || syncState)
-                    : await this.readLatestState();
+                const recovery = await this.recoverQueue({ deferNetwork });
+                if (recovery.blocking) return { ok: false, blocked: true, journal: recovery.journal };
+                const latest = deferNetwork ? (SyncManager.getState() || syncState) : await this.readLatestState();
                 const leaseOwner = String(latest?.writerLease?.ownerDeviceId || latest?.activeTimer?.ownerDeviceId || '').trim();
                 const requiresLease = ['RUNNING', 'PAUSED'].includes(String(latest?.status || ''));
                 if (requiresLease && leaseOwner && leaseOwner !== SYNC_DEVICE_ID && command?.allowLeaseTransfer !== true && command?.allowForeignLease !== true) {
                     return { ok: false, blocked: true, notOwner: true, state: latest };
                 }
                 const next = typeof builder === 'function' ? await builder(cloneSyncState(latest)) : cloneSyncState(command?.nextState || latest);
-                // A legacy UI callback may have captured a state before the
-                // executor refreshed from cloud. Reject it rather than merge a
-                // stale full snapshot over the accepted ordered state.
-                const nextSequenceId = Number(next?.sequenceId || 0);
-                const latestSequenceId = Number(latest?.sequenceId || 0);
-                if (nextSequenceId !== latestSequenceId) {
+                if (Number(next?.sequenceId || 0) !== Number(latest?.sequenceId || 0)) {
                     return { ok: false, blocked: true, stale: true, state: latest };
                 }
                 const candidate = prepareCanonicalStateForSync(next);
@@ -31160,92 +31291,41 @@ window.__setTomatoFloatState = function (payload) {
                 const historyDrafts = Array.isArray(command?.historyDrafts) ? cloneSyncState(command.historyDrafts) : [];
                 const accountingDrafts = Array.isArray(command?.accountingDrafts) ? cloneSyncState(command.accountingDrafts) : [];
                 const hasDrafts = historyDrafts.length > 0 || accountingDrafts.length > 0;
-                // A terminal state may already have been committed by the
-                // caller before the finalization draft reaches the executor
-                // (task-manager completion is one such path).  History drafts
-                // are still durable work and must not be dropped just because
-                // the canonical state is now a semantic no-op.  Keep the
-                // explicit legacy flag for effect-only accounting transitions,
-                // while allowing any history draft to take the same path.
                 const effectOnly = !stateChanged && hasDrafts
                     && (command?.allowEffectOnly === true || historyDrafts.length > 0);
-                if (!stateChanged && !effectOnly) {
-                    return { ok: true, changed: false, state: latest };
-                }
+                if (!stateChanged && !effectOnly) return { ok: true, changed: false, state: latest };
                 const transitionId = String(command?.transitionId || createTomatoUuid('transition'));
                 if (stateChanged) candidate.lastCommittedTransitionId = transitionId;
-                const journal = {
-                    transitionId,
-                    baseSequenceId: Number(latest?.sequenceId || 0),
-                    nextState: stateChanged ? candidate : latest,
-                    historyDrafts,
-                    accountingDrafts,
-                    stateCommitRequired: stateChanged,
-                    deferNetwork,
-                    status: 'pending',
-                };
-                const persistJournal = async () => {
-                    if (!await TimerJournal.persist(journal)) throw new Error('JOURNAL_PERSIST_FAILED');
-                };
-                try {
-                    await persistJournal();
-                } catch (error) {
-                    throw error;
+                const committedState = stateChanged
+                    ? await SyncManager.updateLocal(candidate, false, false, { prepareOnly: true })
+                    : cloneSyncState(latest);
+                const journal = recovery.journal;
+                if (journal.operations.some(operation => operation.transitionId === transitionId)) {
+                    return { ok: true, duplicate: true, state: latest };
                 }
-                for (const draft of journal.historyDrafts) {
-                    const record = await HistoryRepository.appendPending(draft);
-                    if (!record && !(await loadHistoryRecords()).some(item => String(item?.recordId || '') === String(draft?.recordId || ''))) {
-                        throw new Error('history draft persist failed');
-                    }
-                }
-                let committedState = latest;
-                if (stateChanged) {
-                    if (deferNetwork) {
-                        committedState = await SyncManager.updateLocal(candidate, false, false, { confirm: false });
-                        SyncManager.enqueueDeferredSync(committedState);
-                    } else {
-                        try {
-                            committedState = await SyncManager.commitCanonicalState(candidate, {
-                                forcePush: true,
-                                forceSync: true,
-                                confirm: command?.confirm !== false,
-                            });
-                        } catch (error) {
-                            // Keep the durable journal pending. The put response may
-                            // have been lost after the server accepted the write; the
-                            // next recovery pass will re-read or retry the same transition.
-                            try { await persistJournal(); } catch (e) {}
-                            throw error;
-                        }
-                    }
+                if (hasDrafts) {
+                    journal.operations.push({
+                        transitionId,
+                        baseSequenceId: Number(latest?.sequenceId || 0),
+                        historyDrafts,
+                        accountingDrafts,
+                        stateCommitRequired: stateChanged,
+                        deferNetwork,
+                        status: 'state-committed',
+                    });
                 }
                 journal.nextState = committedState;
-                journal.status = 'state-committed';
-                await persistJournal();
-                for (const draft of journal.historyDrafts) {
-                    const committed = await HistoryRepository.commitPending(draft);
-                    if (!committed) {
-                        throw new Error('history draft commit failed');
-                    }
+                if (!await TimerJournal.persist(journal, this._writeOptions)) throw new Error('JOURNAL_PERSIST_FAILED');
+                const accepted = this.acceptCommittedState(committedState);
+                if (!deferNetwork && isSyncEnabled()) {
+                    await SyncManager.saveToCloud(committedState, true, { confirm: command?.confirm !== false });
                 }
-                let accountingResults = [];
-                if (deferNetwork) {
-                    // Task attribute projection and shared-ledger writes are
-                    // network-facing side effects. Keep them out of the timer
-                    // click path; the durable journal and retry worker retain
-                    // the drafts if this background attempt fails.
-                    Promise.resolve()
-                        .then(() => AccountingRepository.applyQueue(journal.accountingDrafts))
-                        .catch(error => Logger.debug('🔄 延迟记账投影失败:', error));
-                } else {
-                    accountingResults = await AccountingRepository.applyQueue(journal.accountingDrafts);
-                    const accountingReady = accountingResults.every(result => result?.applied || result?.duplicate || result?.skipped || result?.durable === true);
-                    if (!accountingReady) return { ok: false, stateCommitted: true, state: committedState, journal };
+                SyncManager.enqueueDeferredSync(committedState);
+                this.scheduleProjections();
+                if (hasDrafts) {
+                    try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'journal', transitionId } })); } catch (error) {}
                 }
-                journal.status = 'committed';
-                await persistJournal();
-                try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'transition', transitionId } })); } catch (e) {}
-                return { ok: true, changed: stateChanged, effectsCommitted: hasDrafts, state: committedState, journal, accountingResults };
+                return { ok: true, durable: true, changed: stateChanged, effectsPending: hasDrafts, state: accepted, journal };
             });
         },
         async transferLease(deviceId = SYNC_DEVICE_ID) {
@@ -31266,7 +31346,7 @@ window.__setTomatoFloatState = function (payload) {
     // through the same ordered executor while callers keep their old API.
     async function commitTimerState(nextStateOrMutator = syncState, prefix = 'state', options = {}) {
         const isMutator = typeof nextStateOrMutator === 'function';
-        if (!isSyncEnabled() || !TransitionExecutor?.execute) {
+        if (!TransitionExecutor?.execute) {
             return { ok: true, changed: false, state: cloneSyncState(isMutator ? syncState : nextStateOrMutator) };
         }
         const confirm = options?.confirm !== false;
@@ -31576,6 +31656,7 @@ window.__setTomatoFloatState = function (payload) {
     // ✅ 修复版本：从任务块开始计时 - 增强单个父任务的支持
     // 🔧 扩展：支持文档标题块、任务列表项、标题块、段落块等多种块类型
     async function startTimerFromTaskBlock(block, duration, mode = 'countdown', options = null) {
+        assertTimerReady();
         Logger.info('='.repeat(50));
         Logger.info('🔍 startTimerFromTaskBlock 被调用');
         Logger.info('🔍 传入的block类型:', block?.className);
@@ -32933,6 +33014,7 @@ window.__setTomatoFloatState = function (payload) {
      * 使用传入的 taskName 或从 API 获取任务名称
      */
     async function startTimerFromDatabaseBlock(databaseBlockId, duration, mode = 'countdown', taskName = null, options = null) {
+        assertTimerReady();
         Logger.info('='.repeat(50));
         Logger.info('🔍 startTimerFromDatabaseBlock 被调用');
         Logger.info('🔍 databaseBlockId:', databaseBlockId);
@@ -36865,6 +36947,7 @@ window.__setTomatoFloatState = function (payload) {
                 let lastSyncedRemainingSeconds = null;
 
                 const handleStateChange = async (newState) => {
+                    if (!__tomatoTimerReady) { syncState = newState; return; }
                     const now = Date.now();
 
                     const MIN_STATE_UPDATE_INTERVAL = 500;
@@ -37234,12 +37317,14 @@ window.__setTomatoFloatState = function (payload) {
                 sequenceId: initResult.state.sequenceId
             });
             try {
-                const recovery = await TransitionExecutor.recoverJournal();
+                const recovery = await TransitionExecutor.recoverJournal({ deferNetwork: true });
                 if (recovery.blocking) {
                     Logger.warn('🍅 计时事务仍在恢复，新的状态切换将暂时被阻止', { status: recovery.journal?.status });
+                    throw new Error('TIMER_RECOVERY_BLOCKED');
                 }
             } catch (e) {
                 Logger.warn('🍅 计时事务恢复失败，将在下一次操作前重试', e);
+                throw e;
             }
             // Pending task-accounting effects are retried outside the button
             // transition path so a temporary Task Horizon failure cannot make
@@ -37290,6 +37375,15 @@ window.__setTomatoFloatState = function (payload) {
             };
             Logger.info('🔄 SyncManager: 已初始化，设备ID:', SYNC_DEVICE_ID);
         }
+        if (!isSyncEnabled()) {
+            SyncManager.localState = prepareCanonicalStateForSync(syncState);
+            const recovery = await TransitionExecutor.recoverJournal({ deferNetwork: true });
+            if (recovery.blocking) throw new Error('TIMER_RECOVERY_BLOCKED');
+            applyAcceptedSyncStateToTimer(SyncManager.getState());
+            await finalizeExpiredTimerIfNeeded('local-init-expired', syncState);
+            if (isRunning && !timerId) startLocalTimerLoop();
+        }
+        __tomatoTimerReady = true;
         
         // 暴露音频配置函数到全局（方便用户在控制台配置）
         window.tomatoAudio = {

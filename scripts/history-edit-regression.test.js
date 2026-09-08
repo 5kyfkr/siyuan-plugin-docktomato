@@ -71,7 +71,7 @@ assert.match(editorBlock, /void createEditorRecordAtMinute\(minute\)\.catch/,
     'blank-space append failures must not be silently swallowed');
 
 const writerSource = fs.readFileSync(path.join(pluginDir, 'index.js'), 'utf8');
-const writerStart = writerSource.indexOf('const installTomatoHistoryWriter = (plugin) => {');
+const writerStart = writerSource.indexOf('const installTomatoHistoryWriter = (');
 const writerEnd = writerSource.indexOf('\n\nconst loadTomatoStatsCore', writerStart);
 assert.ok(writerStart >= 0 && writerEnd > writerStart, 'history writer bridge must remain extractable');
 const writerContext = vm.createContext({
