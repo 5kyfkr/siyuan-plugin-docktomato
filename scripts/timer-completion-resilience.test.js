@@ -18,6 +18,10 @@ const finishBlock = extract(
     '    async function handleTimerEndFromSyncOrLocal(',
     '    function runTimerTickSafely()'
 );
+const stopwatchLimitBlock = extract(
+    '    function normalizeStopwatchMaxDurationHours(',
+    '    function buildTaskAssociationSnapshot('
+);
 const pauseBlock = extract(
     '    async function pauseTimer()',
     '    async function stopTimer('
@@ -76,7 +80,7 @@ async function testCompletionSurvivesDisplayFailure() {
             return true;
         },
     });
-    vm.runInContext(`${finishBlock}\nthis.finish = handleTimerEndFromSyncOrLocal;`, context);
+    vm.runInContext(`${stopwatchLimitBlock}\n${finishBlock}\nthis.finish = handleTimerEndFromSyncOrLocal;`, context);
 
     await context.finish({ endTimeMs: 61_000, source: 'test' });
 
@@ -124,7 +128,10 @@ async function testStopwatchCompletionIsSilent(timerMode) {
             style: { width: '100%', setProperty: () => { state.animationCalls++; } },
             classList: { add: () => { state.animationCalls++; }, remove: () => { state.animationCalls++; } },
         },
-        userSettings: { appearance: { enableNeonEffect: true, theme: 'neon' } },
+        userSettings: {
+            main: { stopwatchMaxDurationHours: 24 },
+            appearance: { enableNeonEffect: true, theme: 'neon' },
+        },
         clearInterval: () => {},
         setTimeout,
         recordEndTime: () => {
@@ -144,7 +151,7 @@ async function testStopwatchCompletionIsSilent(timerMode) {
             return true;
         },
     });
-    vm.runInContext(`${finishBlock}\nthis.finish = handleTimerEndFromSyncOrLocal;`, context);
+    vm.runInContext(`${stopwatchLimitBlock}\n${finishBlock}\nthis.finish = handleTimerEndFromSyncOrLocal;`, context);
 
     await context.finish({ endTimeMs: 24 * 3600 * 1000 + 1_000, source: `test-${timerMode}` });
 

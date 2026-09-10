@@ -6,6 +6,9 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'tomato.js'), 'utf8');
+const limitStart = source.indexOf('    function normalizeStopwatchMaxDurationHours(');
+const limitEnd = source.indexOf('    function buildTaskAssociationSnapshot(', limitStart);
+assert.ok(limitStart >= 0 && limitEnd > limitStart, 'stopwatch limit helper must remain extractable');
 const snapshotStart = source.indexOf('    function getExpiredTimerSnapshot(');
 const snapshotEnd = source.indexOf('    let lastKnownHistoryMaxEndMinute', snapshotStart);
 assert.ok(snapshotStart >= 0 && snapshotEnd > snapshotStart, 'timer expiry snapshot must remain extractable');
@@ -16,17 +19,23 @@ const context = vm.createContext({
     Date,
     Number,
     String,
-    CONFIG: { MAX_STOPWATCH_SECONDS: maxSeconds },
+    CONFIG: { MAX_STOPWATCH_SECONDS: 0 },
+    userSettings: { main: { stopwatchMaxDurationHours: 0 } },
     StateCalculator: { calculateTotalPausedTime: () => 0 },
 });
-vm.runInContext(`${source.slice(snapshotStart, snapshotEnd)}\nthis.snapshot = getExpiredTimerSnapshot;`, context);
+vm.runInContext(`${source.slice(limitStart, limitEnd)}\n${source.slice(snapshotStart, snapshotEnd)}\nthis.limit = getStopwatchLimitSeconds;\nthis.snapshot = getExpiredTimerSnapshot;`, context);
 
 assert.equal(context.snapshot({ mode: 'countdown', status: 'RUNNING', startTime: now - 60_000, duration: 60 }, now).mode, 'countdown');
 assert.equal(context.snapshot({ mode: 'break', status: 'RUNNING', startTime: now - 60_000, duration: 60 }, now).mode, 'break');
-assert.equal(context.snapshot({ mode: 'stopwatch', status: 'RUNNING', startTime: now - maxSeconds * 1000 }, now).isStopwatchMode, true);
-assert.equal(context.snapshot({ mode: 'stopwatch-break', status: 'RUNNING', stopwatchStartTimeMs: now - maxSeconds * 1000 }, now).mode, 'stopwatch-break');
-assert.equal(context.snapshot({ mode: 'stopwatch', status: 'RUNNING', startTime: now - (maxSeconds - 1) * 1000 }, now), null);
-assert.match(source, /MAX_STOPWATCH_SECONDS: 24 \* 3600/, 'stopwatch hard cap must be 24 hours');
+context.userSettings.main.stopwatchMaxDurationHours = 2;
+assert.equal(context.limit(), 2 * 3600);
+context.userSettings.main.stopwatchMaxDurationHours = 0;
+assert.equal(context.snapshot({ mode: 'stopwatch', status: 'RUNNING', hardLimitSec: maxSeconds, startTime: now - maxSeconds * 1000 }, now).isStopwatchMode, true);
+assert.equal(context.snapshot({ mode: 'stopwatch-break', status: 'RUNNING', hardLimitSec: maxSeconds, stopwatchStartTimeMs: now - maxSeconds * 1000 }, now).mode, 'stopwatch-break');
+assert.equal(context.snapshot({ mode: 'stopwatch', status: 'RUNNING', startTime: now - (maxSeconds + 1) * 1000 }, now), null);
+assert.equal(context.snapshot({ mode: 'stopwatch', status: 'RUNNING', startTime: now - (maxSeconds + 1) * 1000, duration: 0 }, now), null);
+assert.match(source, /DEFAULT_STOPWATCH_MAX_DURATION_HOURS = 0/, 'stopwatch max duration must default to unlimited');
+assert.match(source, /stopwatchMaxDurationHours/, 'stopwatch max duration must be configurable');
 
 const finishStart = source.indexOf('    async function handleTimerEndFromSyncOrLocal(');
 const finishEnd = source.indexOf('    // 🔧 新增：统一的本地计时器循环', finishStart);

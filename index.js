@@ -1194,14 +1194,14 @@ module.exports = class TomatoTimerPlugin extends Plugin {
         globalThis.__tomatoPluginInstance = this;
         globalThis.__tomatoPlatformUtils = platformUtils || null;
         globalThis.__tomatoLegacyNotificationBridge = (!runtimeMobile && platformUtils && typeof platformUtils === "object") ? {
-            sendNotification: (channel, title, body, delayInSeconds) => {
+            sendNotification: (channel, title, body, delayInSeconds, options = {}) => {
                 if (typeof platformUtils.sendNotification !== "function") return -1;
                 return platformUtils.sendNotification({
                     channel: String(channel || ""),
                     title: String(title || ""),
                     body: String(body || ""),
                     delayInSeconds: Math.max(0, Math.round(Number(delayInSeconds) || 0)),
-                    timeoutType: "never",
+                    timeoutType: String(options?.timeoutType || "never"),
                 });
             },
             cancelNotification: (id) => {

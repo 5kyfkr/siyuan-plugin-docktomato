@@ -123,6 +123,10 @@ assert.ok(deleteBlock.indexOf('__clearFollowTaskReminderDraft(') < deleteBlock.i
     let taskSyncCount = 0;
     const context = vm.createContext({
         Date,
+        REMINDER_REPEAT_MODE_MANUAL: 'manual',
+        __withReminderOccurrenceMutation: (_blockId, run) => run(),
+        __getReminderRepeatMode: (value) => value.repeatMode || 'manual',
+        __normalizeReminderTaskRepeatState: (value) => ({ occurrenceCount: value?.occurrenceCount || 1 }),
         __reminderOccurrenceKey: (dateKey, timeKey) => `${dateKey} ${timeKey}`,
         getBlockReminder: async () => reminder,
         __getReminderCompletedSet: (value) => new Set((value.completedOccurrences || []).map((item) => `${item.date} ${item.time}`)),

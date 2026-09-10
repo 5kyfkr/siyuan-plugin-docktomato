@@ -32,7 +32,10 @@ function createRuntime(storage = { file: null, local: new Map(), history: new Ma
         __tomatoDestroyed: false,
         __tomatoFileTextCache: new Map(),
         __tomatoTrackTimeout: () => ++controls.scheduled,
-        userSettings: { sync: { syncTaskAssociation: true } },
+        userSettings: {
+            main: { stopwatchMaxDurationHours: 0 },
+            sync: { syncTaskAssociation: true },
+        },
         isSyncEnabled: () => options.sync !== false,
         Logger: { info() {}, warn() {}, debug() {} },
         window: { dispatchEvent() {} }, CustomEvent: class {},
@@ -285,6 +288,7 @@ function attachEndRecorder(runtime, mode, elapsedMs, accumulatedMs = 0) {
     assert.equal(Date.parse(countdownRecord.end) - Date.parse(countdownRecord.start), countdownRecord.durationMs, 'timeline bounds must agree with persisted duration');
 
     const hardLimit = createRuntime();
+    hardLimit.context.userSettings.main.stopwatchMaxDurationHours = 24;
     const hardEndMs = attachEndRecorder(hardLimit, 'stopwatch', 26 * 3600000);
     await hardLimit.context.endRecord(true, true, { endTimeMs: hardEndMs });
     const cappedRecord = hardLimit.api.journal.queuedHistory()[0];

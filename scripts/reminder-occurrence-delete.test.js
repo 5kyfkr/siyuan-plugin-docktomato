@@ -27,7 +27,7 @@ assert.equal(suppressionContext.__test.__isReminderOccurrenceSuppressed(reminder
 assert.equal(suppressionContext.__test.__isReminderOccurrenceSuppressed(reminder, '2026-07-18', '09:00'), true);
 assert.equal(suppressionContext.__test.__isReminderOccurrenceSuppressed(reminder, '2026-07-19', '09:00'), false);
 
-const deleteStart = source.indexOf('const __deleteReminderOccurrence = async');
+const deleteStart = source.indexOf('const __deleteReminderOccurrence =');
 const deleteEnd = source.indexOf('\n    const __recordFollowTaskReminderCompletionOwner', deleteStart);
 assert.ok(deleteStart >= 0 && deleteEnd > deleteStart, 'single-occurrence deletion must remain extractable');
 const deleteBlock = source.slice(deleteStart, deleteEnd);
@@ -37,6 +37,8 @@ let saveCount = 0;
 let cancelCount = 0;
 const deleteContext = vm.createContext({
     Date,
+    __withReminderOccurrenceMutation: (_blockId, run) => run(),
+    __advanceReminderCompletionCycle: () => {},
     __reminderOccurrenceKey: (dateKey, timeKey) => `${dateKey} ${timeKey}`,
     __getReminderExcludedSet: suppressionContext.__test.__getReminderExcludedSet,
     getBlockReminder: async () => storedReminder,

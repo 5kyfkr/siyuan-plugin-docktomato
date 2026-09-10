@@ -12,6 +12,161 @@
     let __tomatoInitPromise = null;
     let __tomatoTimerReady = false;
 
+    function __createMonthRepeatCore() {
+        const normalizeDays = (value) => Array.from(new Set((Array.isArray(value) ? value : [])
+            .map(Number).filter((day) => Number.isInteger(day) && (day === -1 || (day >= 1 && day <= 31)))))
+            .sort((left, right) => (left === -1 ? 32 : left) - (right === -1 ? 32 : right));
+        const monthLength = (year, month) => month === 2
+            ? (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28)
+            : ([4, 6, 9, 11].includes(month) ? 30 : 31);
+        const dateKey = (year, month, day) => [String(year).padStart(4, '0'), String(month).padStart(2, '0'), String(day).padStart(2, '0')].join('-');
+        const parseKey = (value) => {
+            const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
+            if (!match) return null;
+            const [year, month, day] = match.slice(1).map(Number);
+            if (year < 1 || month < 1 || month > 12 || day < 1 || day > monthLength(year, month)) return null;
+            return { year, month, day, index: year * 12 + month - 1, key: dateKey(year, month, day) };
+        };
+        const weekdayRule = (value, anchorKey = '') => {
+            const anchor = parseKey(anchorKey);
+            const date = anchor ? new Date(anchor.key + 'T12:00:00') : new Date();
+            const ordinal = Number(value?.ordinal);
+            const weekday = Number(value?.weekday);
+            return {
+                ordinal: Number.isInteger(ordinal) && (ordinal === -1 || (ordinal >= 1 && ordinal <= 5)) ? ordinal : Math.ceil(date.getDate() / 7),
+                weekday: Number.isInteger(weekday) && weekday >= 0 && weekday <= 6 ? weekday : date.getDay(),
+            };
+        };
+        const isExplicit = (rule) => rule?.type === 'monthly' && rule.enabled !== false && rule.trigger !== 'complete' && rule.calendarMode !== 'lunar'
+            && (rule.monthlyMode === 'weekday' ? !!rule.monthWeek && typeof rule.monthWeek === 'object' : Array.isArray(rule.monthDays));
+        const interval = (rule) => Math.max(1, Math.min(3650, Math.trunc(Number(rule?.every) || 1)));
+        const candidates = (rule, monthIndex) => {
+            const anchor = parseKey(rule?.anchorDate);
+            if (!isExplicit(rule) || !anchor || monthIndex < anchor.index || (monthIndex - anchor.index) % interval(rule) !== 0) return [];
+            const year = Math.floor(monthIndex / 12);
+            const month = monthIndex % 12 + 1;
+            if (year < 1 || year > 9999) return [];
+            const last = monthLength(year, month);
+            if (rule.monthlyMode === 'weekday') {
+                const pattern = weekdayRule(rule.monthWeek, anchor.key);
+                const firstWeekday = new Date(dateKey(year, month, 1) + 'T12:00:00').getDay();
+                const lastWeekday = (firstWeekday + last - 1) % 7;
+                const day = pattern.ordinal === -1 ? last - (lastWeekday - pattern.weekday + 7) % 7
+                    : 1 + (pattern.weekday - firstWeekday + 7) % 7 + (pattern.ordinal - 1) * 7;
+                const key = dateKey(year, month, day);
+                return day <= last && key >= anchor.key && (!rule.until || key <= rule.until) ? [key] : [];
+            }
+            return Array.from(new Set(normalizeDays(rule.monthDays).map((day) => day === -1 ? last : day)
+                .filter((day) => day <= last))).sort((left, right) => left - right)
+                .map((day) => dateKey(year, month, day))
+                .filter((key) => key >= anchor.key && (!rule.until || key <= rule.until));
+        };
+        const seek = (rule, cursorKey, direction, inclusive = false) => {
+            const anchor = parseKey(rule?.anchorDate);
+            let cursor = parseKey(cursorKey);
+            if (!isExplicit(rule) || !anchor || !cursor || (rule.monthlyMode !== 'weekday' && normalizeDays(rule.monthDays).length === 0)) return '';
+            if (direction > 0 && cursor.key < anchor.key) { cursor = anchor; inclusive = true; }
+            if (direction < 0 && rule.until && cursor.key > rule.until) { cursor = parseKey(rule.until); inclusive = true; }
+            if (!cursor || (direction > 0 && rule.until && cursor.key > rule.until) || (direction < 0 && cursor.key < anchor.key)) return '';
+            const every = interval(rule);
+            const delta = (cursor.index - anchor.index) / every;
+            let monthIndex = anchor.index + (direction > 0 ? Math.ceil(delta) : Math.floor(delta)) * every;
+            for (let guard = 0; guard <= 4800; guard += 1, monthIndex += direction * every) {
+                if (monthIndex < anchor.index || monthIndex > 119999) return '';
+                if (direction > 0 && rule.until && monthIndex > (parseKey(rule.until)?.index ?? 119999)) return '';
+                const keys = candidates(rule, monthIndex);
+                if (direction < 0) keys.reverse();
+                const found = keys.find((key) => direction > 0
+                    ? (inclusive ? key >= cursor.key : key > cursor.key)
+                    : (inclusive ? key <= cursor.key : key < cursor.key));
+                if (found) return found;
+            }
+            return '';
+        };
+        const nextDateKey = (rule, cursor, inclusive = false) => seek(rule, cursor, 1, inclusive);
+        const previousDateKey = (rule, cursor, inclusive = false) => seek(rule, cursor, -1, inclusive);
+        const ordinal = (rule, key) => {
+            const target = parseKey(key);
+            const anchor = parseKey(rule?.anchorDate);
+            if (!target || !anchor || !candidates(rule, target.index).includes(key)) return 0;
+            let count = 0;
+            for (let monthIndex = anchor.index; monthIndex <= target.index; monthIndex += interval(rule)) {
+                count += candidates(rule, monthIndex).filter((candidate) => candidate <= key).length;
+            }
+            return count;
+        };
+        const iterate = (rule, options = {}) => {
+            const from = String(options.fromDateKey || rule?.anchorDate || '');
+            const to = String(options.toDateKey || from);
+            if (!parseKey(from) || !parseKey(to) || to < from) return [];
+            const limit = Math.max(1, Math.min(2400, Math.trunc(Number(options.limit) || 2400)));
+            let current = nextDateKey(rule, from, true);
+            let number = current ? ordinal(rule, current) : 0;
+            const result = [];
+            while (current && current <= to && result.length < limit && (!rule.maxOccurrences || number <= rule.maxOccurrences)) {
+                result.push({ dateKey: current, ordinal: number });
+                current = nextDateKey(rule, current);
+                number += 1;
+            }
+            return result;
+        };
+        const afterCompletion = (rule, completedKey) => {
+            const completed = parseKey(completedKey);
+            if (!completed || rule?.enabled === false) return '';
+            const every = interval(rule);
+            let nextKey = '';
+            if (rule.type === 'monthly' || rule.type === 'yearly') {
+                const monthIndex = completed.index + every * (rule.type === 'yearly' ? 12 : 1);
+                const year = Math.floor(monthIndex / 12);
+                const month = monthIndex % 12 + 1;
+                if (year > 9999) return '';
+                nextKey = dateKey(year, month, Math.min(completed.day, monthLength(year, month)));
+            } else if (['daily', 'weekly', 'workday'].includes(rule.type)) {
+                const next = new Date(completed.key + 'T12:00:00');
+                if (rule.type === 'workday') {
+                    let remaining = every;
+                    while (remaining > 0) {
+                        next.setDate(next.getDate() + 1);
+                        if (next.getDay() !== 0 && next.getDay() !== 6) remaining -= 1;
+                    }
+                } else {
+                    next.setDate(next.getDate() + every * (rule.type === 'weekly' ? 7 : 1));
+                }
+                nextKey = dateKey(next.getFullYear(), next.getMonth() + 1, next.getDate());
+            }
+            return parseKey(nextKey) && nextKey > completed.key && (!rule.until || nextKey <= rule.until) ? nextKey : '';
+        };
+        const label = (value) => {
+            const days = normalizeDays(value);
+            const dates = days.filter((day) => day > 0);
+            return [dates.length ? dates.join('、') + '日' : '', days.includes(-1) ? '最后一天' : ''].filter(Boolean).join('、');
+        };
+        const weekdayLabel = (value, anchorKey = '') => {
+            const pattern = weekdayRule(value, anchorKey);
+            return (pattern.ordinal === -1 ? '最后一个' : ['第一个', '第二个', '第三个', '第四个', '第五个'][pattern.ordinal - 1])
+                + ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][pattern.weekday];
+        };
+        const weekdayPickerHTML = (value, anchorKey = '') => {
+            const pattern = weekdayRule(value, anchorKey);
+            const ordinals = [[1, '第一个'], [2, '第二个'], [3, '第三个'], [4, '第四个'], [5, '第五个'], [-1, '最后一个']];
+            const weekdays = [[0, '周日'], [1, '周一'], [2, '周二'], [3, '周三'], [4, '周四'], [5, '周五'], [6, '周六']];
+            const select = (field, label, values, selected) => '<select data-tm-month-week="' + field + '" aria-label="' + label + '" style="flex:1;min-width:0;height:36px;padding:0 10px;border:1px solid var(--tm-border-color,var(--b3-theme-surface-light));border-radius:6px;background:var(--tm-bg-color,var(--b3-theme-background));color:var(--tm-text-color,var(--b3-theme-on-background));font:inherit;">'
+                + values.map(([key, text]) => '<option value="' + key + '"' + (key === selected ? ' selected' : '') + '>' + text + '</option>').join('') + '</select>';
+            return '<div style="display:flex;gap:8px;width:100%;min-width:0;">' + select('ordinal', '每月第几个星期', ordinals, pattern.ordinal) + select('weekday', '星期几', weekdays, pattern.weekday) + '</div>';
+        };
+        const pickerHTML = (value, anchorKey = '') => {
+            const days = value === undefined ? [parseKey(anchorKey)?.day || 1] : normalizeDays(value);
+            const buttons = Array.from({ length: 32 }, (_, index) => index < 31 ? index + 1 : -1).map((day) => {
+                const selected = days.includes(day);
+                const title = day === -1 ? '最后一天' : String(day);
+                return '<button type="button" class="tm-repeat-month-day' + (selected ? ' is-selected' : '') + '" data-tm-month-day="' + day + '" aria-pressed="' + selected + '" aria-label="每月' + (day === -1 ? title : title + '日') + '">' + title + '</button>';
+            }).join('');
+            return '<style>.tm-repeat-month-days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;width:100%;min-width:0}.tm-repeat-month-day{position:relative;z-index:0;min-width:0;height:36px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--tm-text-color,var(--b3-theme-on-background));font:inherit;font-size:12px;font-weight:750;cursor:pointer}.tm-repeat-month-day::after{content:"";position:absolute;z-index:-1;pointer-events:none;width:28px;height:28px;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:999px}.tm-repeat-month-day:hover::after{background:var(--tm-hover-bg,var(--b3-theme-surface-light))}.tm-repeat-month-day.is-selected{color:var(--tm-primary-color,var(--b3-theme-primary))}.tm-repeat-month-day.is-selected::after{background:color-mix(in srgb,var(--tm-primary-color,var(--b3-theme-primary)) 20%,var(--tm-card-bg,var(--b3-theme-background)) 80%)}.tm-repeat-month-day:focus-visible{outline:2px solid var(--tm-primary-color,var(--b3-theme-primary));outline-offset:1px}.tm-repeat-month-day[data-tm-month-day="-1"]{grid-column:span 2;font-weight:500}.tm-repeat-month-day[data-tm-month-day="-1"]::after{width:calc(100% - 8px);border-radius:6px}.tm-repeat-month-days-note{margin:6px 0 0;color:var(--tm-secondary-text,var(--b3-theme-on-surface-light));font-size:12px;line-height:1.5}@media(pointer:coarse){.tm-repeat-month-day{height:44px}.tm-repeat-month-day::after{width:32px;height:32px}}</style><div class="tm-repeat-month-days" role="group" aria-label="每月日期，可多选">' + buttons + '</div><p class="tm-repeat-month-days-note">' + (value === undefined ? '可多选；未修改时保留原有月末规则。' : '当月不存在的日期跳过；最后一天随月份变化。') + '</p>';
+        };
+        return Object.freeze({ version: 1, normalizeDays, weekdayRule, weekdayLabel, weekdayPickerHTML, isExplicit, candidates, nextDateKey, previousDateKey, ordinal, iterate, afterCompletion, label, pickerHTML });
+    }
+    const __monthRepeatCore = __createMonthRepeatCore();
+
     const __tomatoTrackedIntervals = new Set();
     const __tomatoTrackedTimeouts = new Set();
     const __tomatoTrackInterval = (handler, ms) => {
@@ -121,6 +276,7 @@
     const DEFAULT_TOMATO_DURATIONS = [5, 15, 25, 30, 45, 60, 90, 120];
     const DEFAULT_BREAK_DURATIONS = [5, 10, 15, 30];
     const DEFAULT_TOMATO_TIME = 30; // 默认番茄时间（分钟）
+    const DEFAULT_STOPWATCH_MAX_DURATION_HOURS = 0;
     const DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH = 95;
     const MIN_DESKTOP_FLOAT_WINDOW_WIDTH = 80;
     const MAX_DESKTOP_FLOAT_WINDOW_WIDTH = 180;
@@ -137,6 +293,9 @@
     const TIMER_STYLE_VALUES = ['classic', TIMER_STYLE_CIRCULAR];
     const DEVICE_NOTIFICATION_CHANNEL = 'siyuan-plugin-docktomato';
     const TIMER_DEVICE_SCHEDULE_REGISTRY_KEY = 'tomato-timer-device-schedule-registry-v1';
+    const STOPWATCH_HOURLY_REMINDER_STORAGE_KEY = 'tomato-stopwatch-hourly-reminder-v1';
+    const STOPWATCH_HOURLY_TOAST_DURATION_MS = 3000;
+    const STOPWATCH_HOURLY_NOTIFICATION_RETRY_DELAY_MS = 15000;
 
     const PLUGIN_STORAGE_PARENT_DIR = '/data/storage/petal';
     const PLUGIN_STORAGE_DIR = '/data/storage/petal/siyuan-plugin-docktomato';
@@ -163,7 +322,7 @@
     const ROUTINE_BUTTON_HISTORY_RECOVERY_VERSION = 1;
     const TOMATO_STATE_SCHEMA_VERSION = 2;
     const TOMATO_HISTORY_SCHEMA_VERSION = 2;
-    const TOMATO_HARD_LIMIT_SEC = 86400;
+    const TOMATO_HARD_LIMIT_SEC = 0;
     const TOMATO_MINUTE_ATTR_DEFAULT_VERSION = 1;
     const NEW_AUDIO_STORAGE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-audio/`;
     const REMINDER_DOCK_TYPE = '::tomato-reminder';
@@ -199,7 +358,7 @@
     const CONFIG = {
         TIMER_INTERVAL: 500, // 计时器更新频率 (ms)
         SYNC_POLL_INTERVAL_BG: 60000, // 后台轮询频率 (ms)
-        MAX_STOPWATCH_SECONDS: 24 * 3600, // 正计时最大时长 (24小时)
+        MAX_STOPWATCH_SECONDS: TOMATO_HARD_LIMIT_SEC,
     };
     const TOMATO_ANIMATION_FPS = 30;
     const TOMATO_BREATHING_FRAME_COUNTS = { slow: 120, normal: 90, fast: 60 };
@@ -633,6 +792,32 @@
         return accumulated + (segmentStart > 0 ? Math.max(0, Number(nowMs) - segmentStart) : 0);
     }
 
+    function normalizeStopwatchMaxDurationHours(value) {
+        const hours = Math.floor(Number(value));
+        return hours > 0 && Number.isSafeInteger(hours * 3600000) ? hours : 0;
+    }
+
+    function getStopwatchLimitSeconds(source = null) {
+        const value = source && typeof source === 'object' ? source : null;
+        if (value && Object.prototype.hasOwnProperty.call(value, 'hardLimitSec')) {
+            const limit = Number(value.hardLimitSec);
+            return Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
+        }
+        if (value?.activeTimer && Object.prototype.hasOwnProperty.call(value.activeTimer, 'hardLimitSec')) {
+            const limit = Number(value.activeTimer.hardLimitSec);
+            return Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
+        }
+        if (value && (value.mode === 'stopwatch' || value.mode === 'stopwatch-break')) {
+            const limit = Number(value.duration);
+            if (Number.isFinite(limit)) return limit > 0 ? Math.floor(limit) : 0;
+        }
+        try {
+            return normalizeStopwatchMaxDurationHours(userSettings?.main?.stopwatchMaxDurationHours) * 3600;
+        } catch (e) {
+            return Number(CONFIG?.MAX_STOPWATCH_SECONDS) > 0 ? Math.floor(Number(CONFIG.MAX_STOPWATCH_SECONDS)) : 0;
+        }
+    }
+
     function buildTaskAssociationSnapshot(source = {}) {
         const value = source && typeof source === 'object' ? source : {};
         const taskBlockId = String(value.taskBlockId || '').trim() || null;
@@ -697,7 +882,7 @@
                 ? Math.floor(calculateActiveMs(timer) / 1000)
                 : null;
             st.duration = timer.timerMode === 'stopwatch'
-                ? TOMATO_HARD_LIMIT_SEC
+                ? getStopwatchLimitSeconds(timer)
                 : Math.max(1, Number(timer.plannedDurationSec) || Number(st.duration) || 1);
             st.openRecordId = timer.openRecordId || null;
         }
@@ -1320,7 +1505,13 @@
             if (!state || state.status === 'IDLE' || state.status === 'COMPLETED') {
                 return state?.duration || 0;
             }
-            
+
+            if (state.mode === 'stopwatch' || state.mode === 'stopwatch-break') {
+                const limitSec = getStopwatchLimitSeconds(state);
+                if (limitSec <= 0) return Number.POSITIVE_INFINITY;
+                return Math.max(0, limitSec - this.calculateElapsed(state));
+            }
+
             if (state.status === 'PAUSED') {
                 const totalPausedBefore = this.calculateTotalPausedTime(state.pausedIntervals || []);
                 const pausedSoFar = (state.currentPauseStart - state.startTime) - totalPausedBefore;
@@ -1354,23 +1545,25 @@
                 : null;
             if (activeTimer) {
                 const elapsed = Math.max(0, Math.floor(calculateActiveMs(activeTimer) / 1000));
-                return activeTimer.timerMode === 'stopwatch'
-                    ? Math.min(elapsed, Number(activeTimer.hardLimitSec || CONFIG.MAX_STOPWATCH_SECONDS))
-                    : elapsed;
+                if (activeTimer.timerMode !== 'stopwatch') return elapsed;
+                const limitSec = getStopwatchLimitSeconds(activeTimer);
+                return limitSec > 0 ? Math.min(elapsed, limitSec) : elapsed;
             }
 
             if (state.mode === 'stopwatch' || state.mode === 'stopwatch-break') {
                 const now = Date.now();
                 const totalPausedTime = this.calculateTotalPausedTime(state.pausedIntervals || []);
                 
+                const limitSec = getStopwatchLimitSeconds(state);
                 if (state.status === 'PAUSED') {
                     if (state.pausedElapsedSeconds !== null && state.pausedElapsedSeconds !== undefined) {
-                        return Math.min(state.pausedElapsedSeconds, CONFIG.MAX_STOPWATCH_SECONDS);
+                        return limitSec > 0 ? Math.min(state.pausedElapsedSeconds, limitSec) : state.pausedElapsedSeconds;
                     }
                     if (state.startTime && state.startTime > 0) {
                         const elapsedMs = (state.currentPauseStart - state.startTime) - totalPausedTime;
                         const elapsed = Math.floor(elapsedMs / 1000);
-                        return Math.min(Math.max(0, elapsed), CONFIG.MAX_STOPWATCH_SECONDS);
+                        const safeElapsed = Math.max(0, elapsed);
+                        return limitSec > 0 ? Math.min(safeElapsed, limitSec) : safeElapsed;
                     }
                     return 0;
                 }
@@ -1378,11 +1571,11 @@
                 if (state.startTime && state.startTime > 0) {
                     const elapsedMs = (now - state.startTime) - totalPausedTime;
                     const elapsed = Math.floor(elapsedMs / 1000);
-                    return Math.min(elapsed, CONFIG.MAX_STOPWATCH_SECONDS);
+                    return limitSec > 0 ? Math.min(elapsed, limitSec) : elapsed;
                 }
 
                 if (state.pausedElapsedSeconds !== null && state.pausedElapsedSeconds !== undefined) {
-                    return Math.min(state.pausedElapsedSeconds, CONFIG.MAX_STOPWATCH_SECONDS);
+                    return limitSec > 0 ? Math.min(state.pausedElapsedSeconds, limitSec) : state.pausedElapsedSeconds;
                 }
 
                 return 0;
@@ -1561,7 +1754,7 @@
                 pausedAtMs: null,
                 openRecordId: createTomatoUuid('record'),
                 plannedDurationSec: timerMode === 'stopwatch' ? null : Math.max(1, Number(opts.plannedDurationSec || 0)),
-                hardLimitSec: TOMATO_HARD_LIMIT_SEC,
+                hardLimitSec: timerMode === 'stopwatch' ? getStopwatchLimitSeconds() : TOMATO_HARD_LIMIT_SEC,
                 ownerDeviceId: String(opts.ownerDeviceId || SYNC_DEVICE_ID || ''),
             };
             const next = {
@@ -1602,7 +1795,7 @@
                 segmentStartMs: null,
                 pausedAtMs: at,
                 openRecordId: null,
-                hardLimitSec: Number(timer.hardLimitSec || TOMATO_HARD_LIMIT_SEC),
+                hardLimitSec: getStopwatchLimitSeconds(timer),
             };
             return {
                 focusSessionId: String(timer.focusSessionId || timer.sessionId || ''),
@@ -1631,7 +1824,7 @@
                 segmentStartMs: null,
                 openRecordId: null,
                 ownerDeviceId: String(ownerDeviceId || SYNC_DEVICE_ID || ''),
-                hardLimitSec: Number(snapshot.hardLimitSec || TOMATO_HARD_LIMIT_SEC),
+                hardLimitSec: getStopwatchLimitSeconds(snapshot),
             };
             next.activeTimer = timer;
             next.openRecordId = null;
@@ -1736,7 +1929,7 @@
         if (status !== 'RUNNING' && status !== 'COMPLETED') return null;
 
         const startTimeMs = Number(isStopwatchMode ? (state.stopwatchStartTimeMs || state.startTime) : state.startTime);
-        const durationSec = isStopwatchMode ? CONFIG.MAX_STOPWATCH_SECONDS : Number(state.duration);
+        const durationSec = isStopwatchMode ? getStopwatchLimitSeconds(state) : Number(state.duration);
         const currentTimeMs = Number(nowMs);
         if (!Number.isFinite(startTimeMs) || startTimeMs <= 0) return null;
         if (!Number.isFinite(durationSec) || durationSec <= 0) return null;
@@ -2134,7 +2327,8 @@
 
             elapsedSeconds = StateCalculator.calculateElapsed(syncState);
             if (syncState.status === 'PAUSED' && syncState.pausedElapsedSeconds !== null && syncState.pausedElapsedSeconds !== undefined) {
-                elapsedSeconds = Math.min(syncState.pausedElapsedSeconds, CONFIG.MAX_STOPWATCH_SECONDS);
+                const limitSec = getStopwatchLimitSeconds(syncState);
+                elapsedSeconds = limitSec > 0 ? Math.min(syncState.pausedElapsedSeconds, limitSec) : syncState.pausedElapsedSeconds;
             }
 
             if (syncState.currentPauseStart) {
@@ -2954,8 +3148,11 @@
             focusModeDimOpacity: 0.5,
             extendTomatoOnDistraction: true,
             defaultTomatoTime: DEFAULT_TOMATO_TIME, // 默认番茄时间（分钟）
+            stopwatchMaxDurationHours: DEFAULT_STOPWATCH_MAX_DURATION_HOURS,
+            stopwatchHourlyReminderEnabled: false,
             showHoursInTimerFormat: false, // 超过60分钟时显示"X小时Y分Z秒"格式，默认关闭
-            enableSystemDialogRepeatReminder: true
+            enableSystemDialogRepeatReminder: true,
+            enableNativePluginMenu: false
         },
         showBreakRecords: true,
         showIdleRecords: false,
@@ -3137,8 +3334,11 @@
             else userSettings.main.focusModeDimOpacity = Math.max(0, Math.min(1, v));
         }
         userSettings.main.extendTomatoOnDistraction = userSettings.main.extendTomatoOnDistraction !== false;
+        userSettings.main.stopwatchMaxDurationHours = normalizeStopwatchMaxDurationHours(userSettings.main.stopwatchMaxDurationHours);
+        userSettings.main.stopwatchHourlyReminderEnabled = userSettings.main.stopwatchHourlyReminderEnabled === true;
         if (typeof userSettings.main.distractionToastText !== 'string') userSettings.main.distractionToastText = '已记录一次分心（{count} 次）';
         if (typeof userSettings.main.enableSystemDialogRepeatReminder !== 'boolean') userSettings.main.enableSystemDialogRepeatReminder = true;
+        if (typeof userSettings.main.enableNativePluginMenu !== 'boolean') userSettings.main.enableNativePluginMenu = false;
         if (typeof userSettings.showIdleRecords !== 'boolean') userSettings.showIdleRecords = false;
         if (!userSettings.historyEditor || typeof userSettings.historyEditor !== 'object') userSettings.historyEditor = {};
         if (typeof userSettings.historyEditor.enabled !== 'boolean') userSettings.historyEditor.enabled = false;
@@ -3295,6 +3495,9 @@
     };
     const isDesktopMinimizedFloatWindowPausedOrBreakEnabled = () => {
         try { return userSettings?.main?.enableDesktopMinimizedFloatWindowPausedOrBreak === true; } catch (e) { return false; }
+    };
+    const isStopwatchHourlyReminderEnabled = () => {
+        try { return userSettings?.main?.stopwatchHourlyReminderEnabled === true; } catch (e) { return false; }
     };
     const isSyncEnabled = () => {
         try { return userSettings?.sync?.enabled !== false; } catch (e) { return DEFAULT_SYNC_ENABLED; }
@@ -4200,7 +4403,7 @@
         return { ok: true, text: '轻语 / 清风记录' };
     }
 
-    function showMiniToast(text) {
+    function showMiniToast(text, durationMs = 1400) {
         try {
             const existing = document.getElementById('tomy-mini-toast');
             if (existing) existing.remove();
@@ -4223,8 +4426,94 @@
                 text-align: center;
             `;
             document.body.appendChild(el);
-            setTimeout(() => { try { el.remove(); } catch (e) {} }, 1400);
+            const safeDurationMs = Math.max(500, Math.round(Number(durationMs) || 1400));
+            setTimeout(() => { try { el.remove(); } catch (e) {} }, safeDurationMs);
         } catch (e) {}
+    }
+
+    let stopwatchHourlyReminderSessionKey = '';
+    let stopwatchHourlyReminderLastHour = 0;
+
+    function getStopwatchHourlyReminderSessionKey(state = syncState) {
+        const timer = state?.activeTimer && typeof state.activeTimer === 'object' ? state.activeTimer : null;
+        const sessionId = String(timer?.sessionId || state?.sessionId || currentSessionId || '').trim();
+        const startMs = Number(timer?.startedAtMs || state?.stopwatchStartTimeMs || state?.startTime || stopwatchStartTimeMs || 0);
+        if (sessionId) return timer?.startedAtMs ? `${sessionId}:${timer.startedAtMs}` : sessionId;
+        return Number.isFinite(startMs) && startMs > 0 ? String(startMs) : '';
+    }
+
+    function loadStopwatchHourlyReminderState(sessionKey) {
+        const key = String(sessionKey || '').trim();
+        if (!key) return 0;
+        if (stopwatchHourlyReminderSessionKey === key) return stopwatchHourlyReminderLastHour;
+        let restoredHour = 0;
+        try {
+            const raw = localStorage.getItem(STOPWATCH_HOURLY_REMINDER_STORAGE_KEY);
+            const saved = raw ? JSON.parse(raw) : null;
+            if (saved?.sessionKey === key && Number.isSafeInteger(saved.lastHour) && saved.lastHour >= 0) {
+                restoredHour = saved.lastHour;
+            }
+        } catch (e) {}
+        stopwatchHourlyReminderSessionKey = key;
+        stopwatchHourlyReminderLastHour = restoredHour;
+        return restoredHour;
+    }
+
+    function saveStopwatchHourlyReminderState(sessionKey, hour) {
+        try {
+            localStorage.setItem(STOPWATCH_HOURLY_REMINDER_STORAGE_KEY, JSON.stringify({ sessionKey, lastHour: hour }));
+        } catch (e) {}
+    }
+
+    function sendStopwatchHourlyDesktopNotification(body, retriesRemaining = 1) {
+        if (__tomatoDestroyed || !isStopwatchHourlyReminderEnabled()) return;
+        const retry = () => {
+            if (retriesRemaining <= 0 || __tomatoDestroyed || !isStopwatchHourlyReminderEnabled()) return;
+            try {
+                __tomatoTrackTimeout(() => {
+                    sendStopwatchHourlyDesktopNotification(body, retriesRemaining - 1);
+                }, STOPWATCH_HOURLY_NOTIFICATION_RETRY_DELAY_MS);
+            } catch (e) {}
+        };
+        try {
+            const notificationPayload = {
+                channel: DEVICE_NOTIFICATION_CHANNEL,
+                title: '⏱️ 正计时提醒',
+                body,
+                delayInSeconds: 0,
+                timeoutType: 'default',
+            };
+            const platformUtils = getPlatformUtilsCompat();
+            const sendResult = platformUtils && typeof platformUtils.sendNotification === 'function'
+                ? platformUtils.sendNotification(notificationPayload)
+                : sendDeviceNotificationCompat(notificationPayload.title, body, {
+                    channel: notificationPayload.channel,
+                    delayInSeconds: notificationPayload.delayInSeconds,
+                    timeoutType: notificationPayload.timeoutType,
+                    requireInteraction: false,
+                    stopAfterFirstBridgeCall: true,
+                });
+            Promise.resolve(sendResult).then((notificationId) => {
+                const normalizedId = Number(notificationId);
+                if (!Number.isFinite(normalizedId) || normalizedId < 0) retry();
+            }).catch(retry);
+        } catch (e) {
+            retry();
+        }
+    }
+
+    function notifyStopwatchHourlyProgress(elapsedSeconds, state = syncState) {
+        if (!isStopwatchHourlyReminderEnabled() || __tomatoDestroyed || timerMode !== 'stopwatch' || !isRunning || isTimerPaused || isMobileDevice()) return;
+        if (state?.status !== 'RUNNING' || (state.activeTimer && state.activeTimer.status !== 'RUNNING')) return;
+        const hour = Math.floor(Math.max(0, Number(elapsedSeconds) || 0) / 3600);
+        if (!Number.isSafeInteger(hour) || hour < 1) return;
+        const sessionKey = getStopwatchHourlyReminderSessionKey(state);
+        if (!sessionKey || hour <= loadStopwatchHourlyReminderState(sessionKey)) return;
+        stopwatchHourlyReminderLastHour = hour;
+        saveStopwatchHourlyReminderState(sessionKey, hour);
+        const body = `正计时已进行 ${hour} 小时`;
+        try { if (!document.hidden) showMiniToast(body, STOPWATCH_HOURLY_TOAST_DURATION_MS); } catch (e) {}
+        sendStopwatchHourlyDesktopNotification(body);
     }
 
     function getDistractionToastText(count) {
@@ -6693,6 +6982,7 @@
                     completeBtn.setAttribute('aria-busy', 'true');
                     const ok = await __markReminderOccurrenceCompleted(entry.blockId, entry.dateKey, entry.timeKey, {
                         source: 'docktomato-expired-notification',
+                        occurrenceNumber: entry.reminder?.trigger === 'complete' ? __normalizeReminderTaskRepeatState(entry.reminder.repeatState).occurrenceCount : null,
                     });
                     if (!ok) {
                         completeBtn.disabled = false;
@@ -9558,7 +9848,9 @@
         sendDeviceNotificationCompat._lastFailureReason = '';
         if (!isOfficialMobileNotificationRuntime()) {
             for (const candidate of getNotificationBridgeCandidates()) {
-                const result = await invokeNotificationBridge(candidate.owner, candidate.send, [safeChannel, safeTitle, safeBody, delayInSeconds]);
+                const args = [safeChannel, safeTitle, safeBody, delayInSeconds];
+                if (candidate.owner === globalThis.__tomatoLegacyNotificationBridge) args.push({ timeoutType });
+                const result = await invokeNotificationBridge(candidate.owner, candidate.send, args);
                 if (!result.called) continue;
                 const id = extractNotificationIdFromUnknownPayload(result.value);
                 if (id !== null) {
@@ -9921,7 +10213,7 @@
         document.head.appendChild(style);
     }
 
-    function showToastDialog(title, message, type = 'info', taskBlockId = null, taskBlockName = null, reminderDateKey = null, reminderTimeKey = null) {
+    function showToastDialog(title, message, type = 'info', taskBlockId = null, taskBlockName = null, reminderDateKey = null, reminderTimeKey = null, reminderOccurrenceNumber = null) {
         ensureTomatoDialogActionStyles();
         if (type === 'tomato-end' || type === 'break-end') {
             // 桌面端改为真正结束时实时通知；移动端仍沿用开始时预约的系统通知。
@@ -10113,7 +10405,7 @@
                     closeDialog();
                     return;
                 }
-                const ok = await __markReminderOccurrenceCompleted(blockId, dateKey, timeKey);
+                const ok = await __markReminderOccurrenceCompleted(blockId, dateKey, timeKey, { occurrenceNumber: reminderOccurrenceNumber });
                 showMiniToast(ok ? '已标记完成' : '标记失败');
                 closeDialog();
             };
@@ -16550,8 +16842,10 @@
             }
             isRunning = false;
             isTimerPaused = false;
-            if (isStopwatchMode) elapsedSeconds = CONFIG.MAX_STOPWATCH_SECONDS;
-            else remainingSeconds = 0;
+            if (isStopwatchMode) {
+                const limitSec = getStopwatchLimitSeconds(syncState);
+                if (limitSec > 0) elapsedSeconds = limitSec;
+            } else remainingSeconds = 0;
             try {
                 if (controlButton) controlButton.innerHTML = '▶️';
                 updateDisplay();
@@ -16736,16 +17030,8 @@
                 }
             }
         } else if (timerMode === 'stopwatch' || timerMode === 'stopwatch-break') {
-             const localExpiryState = {
-                 mode: timerMode,
-                 status: 'RUNNING',
-                 startTime: stopwatchStartTimeMs || startTime,
-                 stopwatchStartTimeMs: stopwatchStartTimeMs || startTime,
-                 pausedIntervals: [],
-             };
-             if (await finalizeExpiredTimerIfNeeded('timer-tick', localExpiryState)) return;
              let newElapsedSeconds;
-             
+
              if (syncState && syncState.stopwatchStartTimeMs && syncState.status === 'RUNNING') {
                  newElapsedSeconds = StateCalculator.calculateElapsed(syncState);
              } else {
@@ -16755,10 +17041,22 @@
                     newElapsedSeconds = Math.floor((now - startTime) / 1000);
                 }
              }
-             
+
+             const stopwatchLimitSec = getStopwatchLimitSeconds(syncState);
+             if (stopwatchLimitSec > 0) newElapsedSeconds = Math.min(newElapsedSeconds, stopwatchLimitSec);
+             notifyStopwatchHourlyProgress(newElapsedSeconds, syncState);
+             const localExpiryState = {
+                 mode: timerMode,
+                 status: 'RUNNING',
+                 startTime: stopwatchStartTimeMs || startTime,
+                 stopwatchStartTimeMs: stopwatchStartTimeMs || startTime,
+                 hardLimitSec: stopwatchLimitSec,
+                 pausedIntervals: [],
+             };
+             if (await finalizeExpiredTimerIfNeeded('timer-tick', localExpiryState)) return;
              if (newElapsedSeconds !== elapsedSeconds) {
-                elapsedSeconds = newElapsedSeconds;
-                updateDisplay(false);
+                 elapsedSeconds = newElapsedSeconds;
+                 updateDisplay(false);
                 if (!isLiveTomatoNode(timeDisplay)) {
                     updateProgressBar(false);
                     updateRoutineButtonRunningHighlight();
@@ -16795,6 +17093,7 @@
             startTime = 0;
         }
         const wasPausedAtStart = !!isTimerPaused || syncState?.status === 'PAUSED';
+        const stopwatchLimitAtStart = getStopwatchLimitSeconds(wasPausedAtStart ? syncState : null);
         const confirmSync = options?.confirm !== false;
 
         try {
@@ -16938,7 +17237,7 @@
                     : startTime;
                 syncState.mode = timerMode;
                 syncState.duration = timerMode === 'stopwatch' || timerMode === 'stopwatch-break'
-                    ? CONFIG.MAX_STOPWATCH_SECONDS
+                    ? stopwatchLimitAtStart
                     : currentDuration * 60;
                 if (isTaskAssociationSyncEnabled()) {
                     syncState.taskBlockId = currentTaskBlockId;
@@ -16963,7 +17262,7 @@
                     : startTime;
                 syncState.mode = timerMode;
                 syncState.duration = timerMode === 'stopwatch' || timerMode === 'stopwatch-break'
-                    ? CONFIG.MAX_STOPWATCH_SECONDS
+                    ? stopwatchLimitAtStart
                     : currentDuration * 60;
                 syncState.currentPauseStart = null;
                 syncState.pausedElapsedSeconds = null;
@@ -17608,10 +17907,12 @@
 
         if (Number(v2TimerSnapshot?.segmentStartMs) > 0) {
             const limitSec = v2TimerSnapshot.timerMode === 'stopwatch'
-                ? Number(v2TimerSnapshot.hardLimitSec || TOMATO_HARD_LIMIT_SEC)
+                ? getStopwatchLimitSeconds(v2TimerSnapshot)
                 : Number(v2TimerSnapshot.plannedDurationSec || currentDurationAtEnd * 60);
-            const availableMs = Math.max(0, limitSec * 1000 - (Number(v2TimerSnapshot.accumulatedMs) || 0));
-            endTimeMs = Math.min(endTimeMs, Number(v2TimerSnapshot.segmentStartMs) + availableMs);
+            if (limitSec > 0) {
+                const availableMs = Math.max(0, limitSec * 1000 - (Number(v2TimerSnapshot.accumulatedMs) || 0));
+                endTimeMs = Math.min(endTimeMs, Number(v2TimerSnapshot.segmentStartMs) + availableMs);
+            }
         }
         const now = new Date(endTimeMs);
 
@@ -17686,9 +17987,10 @@
         }
 
         try {
+            const stopwatchLimitSec = getStopwatchLimitSeconds(v2TimerSnapshot || syncStateAtEnd);
             const durationLimitMs = (modeAtEnd === 'countdown' || modeAtEnd === 'break')
                 ? Math.max(1, Number(v2TimerSnapshot?.plannedDurationSec || currentDurationAtEnd * 60) * 1000)
-                : (typeof TOMATO_HARD_LIMIT_SEC === 'number' ? TOMATO_HARD_LIMIT_SEC : 86400) * 1000;
+                : (stopwatchLimitSec > 0 ? stopwatchLimitSec * 1000 : Number.POSITIVE_INFINITY);
             const durationMsToSave = Math.max(0, Math.min(
                 actualElapsedMs,
                 durationLimitMs - Math.max(0, Number(v2TimerSnapshot?.accumulatedMs) || 0)
@@ -18603,7 +18905,7 @@
         // 🔧 修复：同步休息模式到云端，避免被同步轮询覆盖
         Object.assign(syncState, {
             mode: 'stopwatch-break',
-            duration: CONFIG.MAX_STOPWATCH_SECONDS,
+            duration: getStopwatchLimitSeconds(),
             status: 'IDLE',
             startTime: null,
             stopwatchStartTimeMs: null,
@@ -18620,7 +18922,7 @@
             await commitTimerState((state) => {
                 const next = cloneSyncState(state);
                 next.mode = 'stopwatch-break';
-                next.duration = CONFIG.MAX_STOPWATCH_SECONDS;
+                next.duration = getStopwatchLimitSeconds();
                 next.status = 'IDLE';
                 next.startTime = null;
                 next.stopwatchStartTimeMs = null;
@@ -32409,6 +32711,151 @@ window.__setTomatoFloatState = function (payload) {
         }, { capture: true }, 'task-block-menu-capture');
     }
 
+    const isNativePluginMenuEnabled = () => userSettings?.main?.enableNativePluginMenu === true;
+
+    function resolveNativeBlockElement(value) {
+        if (!value) return null;
+        try {
+            if (value.dataset?.nodeId) return value;
+            return value.closest?.('[data-node-id]') || null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function resolveNativeMenuBlock(detail, preferDetail = true) {
+        const candidates = [];
+        if (preferDetail) candidates.push(detail?.element, detail?.blockElement);
+        try { candidates.push(...(Array.isArray(detail?.blockElements) ? detail.blockElements : [])); } catch (e) {}
+        if (!preferDetail) candidates.push(detail?.element, detail?.blockElement);
+        for (const candidate of candidates) {
+            const block = resolveNativeBlockElement(candidate);
+            if (block?.dataset?.nodeId) return block;
+        }
+        try {
+            return getSelectedBlocks(false).find(block => block?.dataset?.nodeId) || null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function createNativeTomatoMenuItems(block) {
+        const blockInfo = getBlockInfoFromElement(block);
+        if (!blockInfo?.id) return [];
+        const start = (duration, mode) => async () => {
+            window.siyuan?.menus?.menu?.remove();
+            await startTimerFromTaskBlock(block, duration, mode, { source: 'plugin-menu' });
+        };
+        const items = getTomatoDurations().map((minutes) => ({
+            id: `tomatoTimer${minutes}`,
+            icon: 'iconClock',
+            label: `🍅 ${minutes}分钟`,
+            click: start(minutes, 'countdown'),
+        }));
+        items.push({
+            id: 'tomatoTimerStopwatch',
+            icon: 'iconClock',
+            label: '⏱️ 专注正计时',
+            click: start(null, 'stopwatch'),
+        });
+        items.push({type: 'separator'});
+        items.push({
+            id: 'tomatoTimerReminder',
+            icon: 'iconClock',
+            label: '⏰ 添加提醒',
+            click: () => {
+                window.siyuan?.menus?.menu?.remove();
+                globalThis.__tomatoReminder?.showDialog?.(blockInfo.id, blockInfo.name);
+            },
+        });
+        return items;
+    }
+
+    let nativePluginMenuEventBus = null;
+    let nativeContentMenuHandler = null;
+    let nativeBlockIconMenuHandler = null;
+    let nativeTitleMenuHandler = null;
+    let nativeDocTreeMenuHandler = null;
+
+    function removeNativePluginMenuFeature() {
+        if (!nativePluginMenuEventBus) return;
+        try {
+            nativePluginMenuEventBus.off?.('open-menu-content', nativeContentMenuHandler);
+            nativePluginMenuEventBus.off?.('click-blockicon', nativeBlockIconMenuHandler);
+            nativePluginMenuEventBus.off?.('click-editortitleicon', nativeTitleMenuHandler);
+            nativePluginMenuEventBus.off?.('open-menu-doctree', nativeDocTreeMenuHandler);
+        } catch (e) {}
+        nativePluginMenuEventBus = null;
+        nativeContentMenuHandler = null;
+        nativeBlockIconMenuHandler = null;
+        nativeTitleMenuHandler = null;
+        nativeDocTreeMenuHandler = null;
+    }
+
+    function addNativePluginMenuItems(event, block) {
+        if (!isNativePluginMenuEnabled()) return;
+        const menu = event?.detail?.menu;
+        if (!menu || typeof menu.addItem !== 'function') return;
+        const items = createNativeTomatoMenuItems(block);
+        if (!items.length) return;
+        menu.addItem({
+            id: 'tomatoTimer',
+            icon: 'iconClock',
+            label: '🍅 番茄钟',
+            type: 'submenu',
+            submenu: items,
+        });
+    }
+
+    function addNativePluginMenuFeature() {
+        removeNativePluginMenuFeature();
+        if (!isNativePluginMenuEnabled()) return false;
+        const eventBus = __getPluginInstance()?.eventBus;
+        if (!eventBus || typeof eventBus.on !== 'function') return false;
+
+        nativeContentMenuHandler = (event) => {
+            const detail = event?.detail || {};
+            addNativePluginMenuItems(event, resolveNativeMenuBlock(detail));
+        };
+        nativeBlockIconMenuHandler = (event) => {
+            const detail = event?.detail || {};
+            addNativePluginMenuItems(event, resolveNativeMenuBlock(detail));
+        };
+        nativeTitleMenuHandler = (event) => {
+            if (!isNativePluginMenuEnabled()) return;
+            const detail = event?.detail || {};
+            const docId = String(detail?.data?.id || detail?.protyle?.block?.rootID || '').trim();
+            const menu = detail.menu;
+            if (!docId || !menu || typeof menu.addItem !== 'function') return;
+            const block = {
+                dataset: {nodeId: docId},
+                textContent: String(detail?.data?.name || '未命名文档'),
+            };
+            addNativePluginMenuItems(event, block);
+        };
+        nativeDocTreeMenuHandler = (event) => {
+            if (!isNativePluginMenuEnabled()) return;
+            const detail = event?.detail || {};
+            if (String(detail?.type || '').trim() !== 'doc') return;
+            const item = Array.isArray(detail?.items) ? detail.items[0] : null;
+            const element = Array.isArray(detail?.elements) ? detail.elements[0] : null;
+            const docId = String(item?.id || element?.getAttribute?.('data-node-id') || '').trim();
+            const menu = detail.menu;
+            if (!docId || !menu || typeof menu.addItem !== 'function') return;
+            const block = {
+                dataset: {nodeId: docId},
+                textContent: String(item?.name || element?.querySelector?.('.b3-list-item__text')?.textContent || '未命名文档'),
+            };
+            addNativePluginMenuItems(event, block);
+        };
+        nativePluginMenuEventBus = eventBus;
+        eventBus.on('open-menu-content', nativeContentMenuHandler);
+        eventBus.on('click-blockicon', nativeBlockIconMenuHandler);
+        eventBus.on('click-editortitleicon', nativeTitleMenuHandler);
+        eventBus.on('open-menu-doctree', nativeDocTreeMenuHandler);
+        return true;
+    }
+
     // 添加任务块菜单功能（带二级菜单，可选择时长）
     // ========== 监听块菜单 ==========
     // 使用新的 ObserverManager 优化
@@ -34252,6 +34699,17 @@ window.__setTomatoFloatState = function (payload) {
             togglesSection.appendChild(hint);
         }
 
+        mkToggleRow('将块/文档菜单放入思源“插件”菜单', isNativePluginMenuEnabled(), async (e) => {
+            userSettings.main.enableNativePluginMenu = e.target.checked;
+            await saveUserSettings();
+        });
+        {
+            const hint = document.createElement('div');
+            hint.textContent = '开启后，块菜单和文档标题菜单中的番茄钟选项会显示在思源“插件”二级菜单内，重载插件后生效';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
+            togglesSection.appendChild(hint);
+        }
+
         mkToggleRow('启用移动端支持', isMobileSupportEnabled(), async (e) => {
             userSettings.main.enableMobileSupport = e.target.checked;
             await saveUserSettings();
@@ -34664,6 +35122,53 @@ window.__setTomatoFloatState = function (payload) {
                 updateDisplay();
             }
         });
+
+        const stopwatchLimitContainer = document.createElement('div');
+        stopwatchLimitContainer.style.cssText = 'padding: 10px 0;';
+        const stopwatchLimitLabel = document.createElement('label');
+        stopwatchLimitLabel.htmlFor = 'tomato-stopwatch-max-duration-hours';
+        stopwatchLimitLabel.textContent = '正计时最长时长（小时）';
+        stopwatchLimitLabel.style.cssText = 'display: block; font-size: 13px; margin-bottom: 6px;';
+        const stopwatchLimitInput = document.createElement('input');
+        stopwatchLimitInput.id = stopwatchLimitLabel.htmlFor;
+        stopwatchLimitInput.type = 'number';
+        stopwatchLimitInput.min = '0';
+        stopwatchLimitInput.step = '1';
+        stopwatchLimitInput.value = String(userSettings?.main?.stopwatchMaxDurationHours ?? DEFAULT_STOPWATCH_MAX_DURATION_HOURS);
+        stopwatchLimitInput.style.cssText = `
+            width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px;
+            border: 1px solid var(--b3-border-color); font-size: 13px;
+            background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
+        `;
+        stopwatchLimitInput.onchange = async (e) => {
+            const value = normalizeStopwatchMaxDurationHours(e.target.value);
+            userSettings.main.stopwatchMaxDurationHours = value;
+            e.target.value = String(value);
+            await saveUserSettings();
+        };
+        stopwatchLimitContainer.appendChild(stopwatchLimitLabel);
+        stopwatchLimitContainer.appendChild(stopwatchLimitInput);
+        const stopwatchLimitHint = document.createElement('div');
+        stopwatchLimitHint.id = 'tomato-stopwatch-max-duration-hint';
+        stopwatchLimitHint.textContent = '0 表示不限制；输入整小时，适用于专注和休息正计时。达到上限后自动结束并保存记录。修改对新计时生效，暂停后继续保留原上限。';
+        stopwatchLimitHint.style.cssText = 'font-size: 12px; color: var(--b3-theme-on-surface-light); margin-top: 6px; line-height: 1.4;';
+        stopwatchLimitInput.setAttribute('aria-describedby', stopwatchLimitHint.id);
+        stopwatchLimitContainer.appendChild(stopwatchLimitHint);
+        togglesSection.appendChild(stopwatchLimitContainer);
+
+        const stopwatchHourlyReminderToggle = mkToggleRow('正计时每小时提醒', isStopwatchHourlyReminderEnabled(), async (event) => {
+            userSettings.main.stopwatchHourlyReminderEnabled = event.target.checked;
+            await saveUserSettings();
+        });
+        stopwatchHourlyReminderToggle.setAttribute('aria-label', '正计时每小时提醒');
+        {
+            const hint = document.createElement('div');
+            hint.id = 'tomato-stopwatch-hourly-reminder-hint';
+            hint.textContent = '仅桌面端专注正计时。每累计满1小时发送桌面通知和思源内轻提示，自动消失，无需确认；暂停不计时，重启后最多补一次提醒。';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
+            stopwatchHourlyReminderToggle.setAttribute('aria-describedby', hint.id);
+            togglesSection.appendChild(hint);
+        }
 
         // 导出 ICS 文件区域
         const exportSection = makeSection('数据导出');
@@ -37180,7 +37685,9 @@ window.__setTomatoFloatState = function (payload) {
                             pausedRemainingSeconds = elapsedSeconds;
                         } else {
                             const elapsedMs = now - stopwatchStartTimeMs;
-                            elapsedSeconds = Math.min(Math.floor(elapsedMs / 1000), CONFIG.MAX_STOPWATCH_SECONDS);
+                            const limitSec = getStopwatchLimitSeconds(syncState);
+                            const elapsed = Math.floor(elapsedMs / 1000);
+                            elapsedSeconds = limitSec > 0 ? Math.min(elapsed, limitSec) : elapsed;
                             pausedRemainingSeconds = elapsedSeconds;
                         }
                     } else {
@@ -37595,8 +38102,11 @@ window.__setTomatoFloatState = function (payload) {
             updateTimelineBar();
         }
 
-        // 添加任务块菜单功能
-        await addTaskBlockMenuFeature();
+        if (isNativePluginMenuEnabled()) {
+            addNativePluginMenuFeature();
+        } else {
+            await addTaskBlockMenuFeature();
+        }
 
         // 添加数据库块菜单功能
         await addDatabaseBlockMenuFeature();
@@ -37897,6 +38407,7 @@ window.__setTomatoFloatState = function (payload) {
         try { document.getElementById('tomy-tomato-context-menu')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-task-submenu')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-db-submenu')?.remove(); } catch (e) {}
+        try { removeNativePluginMenuFeature(); } catch (e) {}
         try { document.getElementById('siyuan-tomato-timer')?.remove(); } catch (e) {}
         try { document.getElementById('siyuan-tomato-float-bar')?.remove(); } catch (e) {}
         try { removeById('tomy-tomato-toast', 'tomy-tomato-backdrop'); } catch (e) {}
@@ -38177,7 +38688,7 @@ window.__setTomatoFloatState = function (payload) {
         const interval = __normalizeReminderInterval(source.interval || 'once');
         const maxOccurrences = interval === 'once' ? 0 : __normalizeReminderMaxOccurrences(maxOccurrencesInput);
         const startDate = __normalizeReminderDateKey(source.startDate || '');
-        if (!maxOccurrences || !startDate) return '';
+        if (!maxOccurrences || !startDate || source.trigger === 'complete') return '';
         const probe = {
             ...source,
             repeatMode: REMINDER_REPEAT_MODE_MANUAL,
@@ -38437,16 +38948,19 @@ window.__setTomatoFloatState = function (payload) {
             ? Math.max(0, Math.min(200, parseInt(raw.maxOccurrences, 10) || 0))
             : 0;
         const anchorDate = __normalizeReminderDateKey(raw.anchorDate || '');
+        const completionBased = __normalizeReminderTaskRepeatTrigger(raw.trigger || '') === 'complete';
         return {
             enabled: enabled && type !== 'none',
             trigger: __normalizeReminderTaskRepeatTrigger(raw.trigger || ''),
             type,
             every: Math.max(1, Math.min(3650, parseInt(raw.every, 10) || 1)),
-            weekdays: enabled && type === 'weekly'
+            weekdays: enabled && !completionBased && type === 'weekly'
                 ? __normalizeReminderWeekdays(raw.weekdays ?? raw.weekDays ?? raw.weekday, anchorDate)
                 : [],
-            monthlyMode: String(raw.monthlyMode || '').trim().toLowerCase() === 'weekday' ? 'weekday' : 'date',
-            calendarMode: __normalizeReminderCalendarMode(raw.calendarMode || raw.repeatCalendarMode || '', type),
+            monthlyMode: completionBased ? 'date' : String(raw.monthlyMode || '').trim().toLowerCase() === 'weekday' ? 'weekday' : 'date',
+            monthDays: completionBased || raw.monthDays === undefined ? undefined : __monthRepeatCore.normalizeDays(raw.monthDays),
+            monthWeek: !completionBased && raw.monthWeek ? __monthRepeatCore.weekdayRule(raw.monthWeek, raw.anchorDate || raw.startDate) : undefined,
+            calendarMode: completionBased ? 'solar' : __normalizeReminderCalendarMode(raw.calendarMode || raw.repeatCalendarMode || '', type),
             until: maxOccurrences > 0 ? '' : __normalizeReminderDateKey(raw.until || raw.repeatUntil || ''),
             maxOccurrences,
             anchorDate,
@@ -38481,6 +38995,8 @@ window.__setTomatoFloatState = function (payload) {
                 ? __normalizeReminderWeekdays(source.weekdays ?? source.weekDays ?? source.weekday, anchorDate)
                 : [],
             monthlyMode: __normalizeReminderMonthlyMode(source.monthlyMode || ''),
+            monthDays: source.monthDays,
+            monthWeek: source.monthWeek,
             calendarMode: __normalizeReminderCalendarMode(source.calendarMode || source.repeatCalendarMode || '', enabled ? interval : 'none'),
             until: enabled ? __normalizeReminderDateKey(source.until || source.endDate || '') : '',
             maxOccurrences: enabled ? Math.max(0, Math.min(200, parseInt(source.maxOccurrences, 10) || 0)) : 0,
@@ -38508,7 +39024,7 @@ window.__setTomatoFloatState = function (payload) {
         }
         if (!raw || typeof raw !== 'object' || Array.isArray(raw)) raw = {};
         return {
-            occurrenceCount: Math.max(1, Math.min(200, parseInt(raw.occurrenceCount, 10) || 1)),
+            occurrenceCount: Math.max(1, parseInt(raw.occurrenceCount, 10) || 1),
             lastCompletedAt: String(raw.lastCompletedAt || '').trim(),
             lastAdvancedAt: String(raw.lastAdvancedAt || '').trim(),
             lastInstanceStart: __normalizeReminderDateKey(raw.lastInstanceStart || ''),
@@ -38662,10 +39178,14 @@ window.__setTomatoFloatState = function (payload) {
         } else {
             delete draft.completionTime;
             delete draft.repeatRule;
+            delete draft.repeatState;
             delete draft.source;
             reminderRecord = __buildIndependentReminderRecord(draft);
         }
-        const ok = await saveBlockReminder(blockId, reminderRecord, options.saveOptions || {});
+        const persist = () => saveBlockReminder(blockId, reminderRecord, options.saveOptions || {});
+        const ok = repeatMode === REMINDER_REPEAT_MODE_MANUAL
+            ? await __withReminderOccurrenceMutation(blockId, persist)
+            : await persist();
         return {
             ok: ok === true,
             taskChanged: canonicalTask?.changed === true,
@@ -38753,6 +39273,8 @@ window.__setTomatoFloatState = function (payload) {
             if (Array.isArray(arr)) {
                 for (const it of arr) {
                     if (!it) continue;
+                    if (reminder?.trigger === 'complete' && it.occurrenceNumber && it.date === __getReminderCompletionDateKey(reminder)
+                        && Number(it.occurrenceNumber) !== Math.max(1, Number(reminder.repeatState?.occurrenceCount) || 1)) continue;
                     if (typeof it === 'string') {
                         const k = it.trim();
                         if (k) set.add(k);
@@ -38777,6 +39299,8 @@ window.__setTomatoFloatState = function (payload) {
                     if (key) set.add(key);
                     continue;
                 }
+                if (reminder?.trigger === 'complete' && item.occurrenceNumber && item.date === __getReminderCompletionDateKey(reminder)
+                    && Number(item.occurrenceNumber) !== Math.max(1, Number(reminder.repeatState?.occurrenceCount) || 1)) continue;
                 const key = __reminderOccurrenceKey(item.date || item.dateKey, item.time || item.timeKey);
                 if (key) set.add(key);
             }
@@ -38884,6 +39408,10 @@ window.__setTomatoFloatState = function (payload) {
     const __getReminderIntervalLabel = (reminder) => {
         const interval = __normalizeReminderInterval(reminder?.interval || 'daily');
         const every = __getReminderEvery(reminder);
+        if (reminder?.trigger === 'complete' && interval !== 'once') {
+            const unit = { daily: '天', workday: '个工作日', weekly: '周', monthly: '个月', yearly: '年' }[interval];
+            if (unit) return `完成后 ${every} ${unit}`;
+        }
         if (interval === 'daily') return every > 1 ? `每${every}天` : '每天';
         if (interval === 'workday') return every > 1 ? `每${every}个工作日` : '每个工作日';
         if (interval === 'weekly') {
@@ -38895,7 +39423,9 @@ window.__setTomatoFloatState = function (payload) {
             return weekdays ? `${base}（${weekdays}）` : base;
         }
         if (interval === 'monthly') {
-            const suffix = __getReminderMonthlyMode(reminder) === 'weekday' ? '（按星期）' : '';
+            const monthDays = reminder?.monthDays ?? reminder?.taskRepeatRule?.monthDays;
+            const suffix = __getReminderMonthlyMode(reminder) === 'weekday' ? `（${__monthRepeatCore.weekdayLabel(reminder?.monthWeek ?? reminder?.taskRepeatRule?.monthWeek, reminder?.startDate)}）`
+                : Array.isArray(monthDays) ? `（${__monthRepeatCore.label(monthDays)}）` : '';
             return `${every > 1 ? `每${every}月` : '每月'}${suffix}`;
         }
         if (interval === 'yearly') return every > 1 ? `每${every}年` : '每年';
@@ -38971,6 +39501,9 @@ window.__setTomatoFloatState = function (payload) {
             REMINDER_REPEAT_MODE_MANUAL
         );
         const followsTask = repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK;
+        const trigger = __normalizeReminderInterval(raw.interval || raw.repeatType || raw.repeat_type || raw.type || '') === 'once'
+            ? 'due' : __normalizeReminderTaskRepeatTrigger(raw.trigger || 'due');
+        const completionBased = trigger === 'complete';
         const readTaskMeta = (key, fallback) => Object.prototype.hasOwnProperty.call(blockMeta, key)
             ? blockMeta[key]
             : fallback;
@@ -38978,7 +39511,7 @@ window.__setTomatoFloatState = function (payload) {
         const maxOccurrences = repeatMode === REMINDER_REPEAT_MODE_MANUAL && interval !== 'once'
             ? __normalizeReminderMaxOccurrences(raw.maxOccurrences)
             : 0;
-        const derivedEndDate = maxOccurrences > 0
+        const derivedEndDate = maxOccurrences > 0 && !completionBased
             ? __getReminderCountEndDate({ ...raw, interval }, maxOccurrences)
             : '';
         const taskTitle = followsTask ? __getReminderTaskOwnTitle(raw, blockMeta) : '';
@@ -38992,6 +39525,8 @@ window.__setTomatoFloatState = function (payload) {
             blockType: String(blockMeta.blockType || raw.blockType || '').trim(),
             rootId: String(blockMeta.rootId || raw.rootId || '').trim(),
             repeatMode,
+            trigger,
+            repeatState: __normalizeReminderTaskRepeatState(raw.repeatState),
             taskStartDate: followsTask ? __normalizeReminderDateKey(readTaskMeta('taskStartDate', raw.taskStartDate || '')) : '',
             taskCompletionTime: followsTask ? __normalizeReminderDateKey(readTaskMeta('taskCompletionTime', raw.taskCompletionTime || '')) : '',
             taskRepeatRule: followsTask
@@ -39003,13 +39538,15 @@ window.__setTomatoFloatState = function (payload) {
             taskCompletionOwner: followsTask ? __normalizeReminderTaskCompletionOwner(raw.taskCompletionOwner || raw.task_completion_owner || null) : null,
             syncTaskDone: followsTask,
             interval,
-            weekdays: interval === 'weekly'
+            weekdays: !completionBased && interval === 'weekly'
                 ? __normalizeReminderWeekdays(raw.weekdays ?? raw.weekDays ?? raw.weekday, raw.startDate || raw.date || raw.createdAt || '')
                 : [],
             maxOccurrences,
-            endDate: derivedEndDate || __normalizeReminderDateKey(raw.endDate || ''),
-            monthlyMode: __normalizeReminderMonthlyMode(raw.monthlyMode || raw.repeatMonthlyMode || raw.monthly_mode || ''),
-            calendarMode: __normalizeReminderCalendarMode(raw.calendarMode || raw.repeatCalendarMode || raw.repeat_calendar_mode || '', raw.interval || raw.repeatType || raw.repeat_type || raw.type || ''),
+            endDate: completionBased && maxOccurrences > 0 ? '' : derivedEndDate || __normalizeReminderDateKey(raw.endDate || ''),
+            monthlyMode: completionBased ? 'date' : __normalizeReminderMonthlyMode(raw.monthlyMode || raw.repeatMonthlyMode || raw.monthly_mode || ''),
+            monthDays: completionBased || (raw.monthDays ?? raw.repeatMonthDays) === undefined ? undefined : __monthRepeatCore.normalizeDays(raw.monthDays ?? raw.repeatMonthDays),
+            monthWeek: !completionBased && raw.monthWeek ? __monthRepeatCore.weekdayRule(raw.monthWeek, raw.anchorDate || raw.startDate) : undefined,
+            calendarMode: completionBased ? 'solar' : __normalizeReminderCalendarMode(raw.calendarMode || raw.repeatCalendarMode || raw.repeat_calendar_mode || '', raw.interval || raw.repeatType || raw.repeat_type || raw.type || ''),
             notificationSchedules: __sanitizeReminderNotificationSchedules(raw.notificationSchedules),
             completedOccurrences: Array.isArray(raw.completedOccurrences) ? raw.completedOccurrences.filter(it => it && typeof it === 'object') : [],
             excludedOccurrences: Array.isArray(raw.excludedOccurrences) ? raw.excludedOccurrences.filter(it => it && typeof it === 'object') : [],
@@ -39509,6 +40046,7 @@ window.__setTomatoFloatState = function (payload) {
     };
     const __getReminderDevicePlanMutationSignature = (reminder) => JSON.stringify([
         __getReminderScheduleSignature(reminder),
+        reminder?.trigger === 'complete' ? reminder?.repeatState : null,
         reminder?.enabled !== false,
         String(reminder?.blockName || reminder?.blockContent || '').trim(),
         String(reminder?.note || '').trim(),
@@ -39990,48 +40528,100 @@ window.__setTomatoFloatState = function (payload) {
         }
     };
 
-    const __markReminderOccurrenceCompleted = async (blockId, dateKey, timeKey, options = {}) => {
-        const k = __reminderOccurrenceKey(dateKey, timeKey);
-        if (!blockId || !k) return false;
-        try {
-            const existing = await getBlockReminder(blockId);
-            if (!existing) return false;
-            const scheduleRecordSnapshot = existing.notificationSchedules || {};
-            const next = { ...existing };
-            const arr = Array.isArray(next.completedOccurrences) ? next.completedOccurrences.slice() : [];
-            const set = __getReminderCompletedSet(next);
-            const alreadyCompleted = set.has(k);
-            if (alreadyCompleted) return true;
-            arr.unshift({ date: String(dateKey || '').trim(), time: String(timeKey || '').trim(), doneAt: new Date().toISOString() });
-            next.completedOccurrences = arr.slice(0, 30);
-            next.updatedAt = new Date().toISOString();
-            try { await __cancelReminderOccurrenceNotifications(blockId, dateKey, timeKey, next); } catch (e) {}
-            const ok = await saveBlockReminder(blockId, next);
-            if (ok) {
-                try {
-                    await __retainReminderDeviceScheduleRecords(blockId, scheduleRecordSnapshot, 'occurrence-completed', {
-                        occurrenceKeys: [k],
-                        sourcePlanKey: __getReminderDevicePlanMutationSignature(existing),
-                        includeLocalRegistry: false,
-                    });
-                } catch (e) {}
-                try { await __syncReminderDeviceSchedule(blockId, next, { silent: true }); } catch (e) {}
-                try { refreshReminderDockPanel(); } catch (e) {}
-                try { updateReminderBadge(); } catch (e) {}
-                try { await __syncTaskCompletionFromReminder(blockId, existing, next, dateKey, timeKey, options); } catch (e) {}
-            }
-            return ok;
-        } catch (e) {
-            return false;
-        }
+    const __reminderOccurrenceMutations = new Map();
+    const __withReminderOccurrenceMutation = (blockId, run) => {
+        const key = String(blockId || '').trim();
+        const previous = __reminderOccurrenceMutations.get(key) || Promise.resolve();
+        const result = previous.catch(() => {}).then(run);
+        const tail = result.then(() => {}, () => {}).finally(() => {
+            if (__reminderOccurrenceMutations.get(key) === tail) __reminderOccurrenceMutations.delete(key);
+        });
+        __reminderOccurrenceMutations.set(key, tail);
+        return result;
+    };
+    const __advanceReminderCompletionCycle = (reminder, dateKey) => {
+        if (__getReminderRepeatMode(reminder) !== REMINDER_REPEAT_MODE_MANUAL || reminder?.trigger !== 'complete' || reminder.interval === 'once') return;
+        if (__getReminderCompletionDateKey(reminder) !== dateKey) return;
+        const times = Array.from(new Set((reminder.times || []).map((value) => __parseTime(value)?.key).filter(Boolean)));
+        const completed = __getReminderCompletedSet(reminder);
+        const excluded = __getReminderExcludedSet(reminder);
+        if (!times.length || !times.every((time) => completed.has(__reminderOccurrenceKey(dateKey, time)) || excluded.has(__reminderOccurrenceKey(dateKey, time)))) return;
+        const before = __normalizeReminderTaskRepeatState(reminder.repeatState);
+        const entries = reminder.completedOccurrences.filter((entry) => entry.date === dateKey && Number(entry.occurrenceNumber || before.occurrenceCount) === before.occurrenceCount);
+        const last = entries.slice().sort((left, right) => Date.parse(right.doneAt) - Date.parse(left.doneAt))[0];
+        if (!last?.doneAt) return;
+        const completedDate = formatDateKey(new Date(last.doneAt));
+        const nextDate = __monthRepeatCore.afterCompletion({ type: reminder.interval, every: __getReminderEvery(reminder), until: reminder.endDate || '' }, completedDate);
+        last.repeatStateBefore = before;
+        reminder.repeatState = {
+            ...before,
+            occurrenceCount: before.occurrenceCount + 1,
+            lastCompletedAt: last.doneAt,
+            lastAdvancedAt: new Date().toISOString(),
+            lastInstanceStart: dateKey,
+            lastInstanceDue: nextDate,
+        };
     };
 
-    const __deleteReminderOccurrence = async (blockId, dateKey, timeKey) => {
+    const __markReminderOccurrenceCompleted = async (blockId, dateKey, timeKey, options = {}) => {
+        let committed = null;
+        const ok = await __withReminderOccurrenceMutation(blockId, async () => {
+            const k = __reminderOccurrenceKey(dateKey, timeKey);
+            if (!blockId || !k) return false;
+            try {
+                const existing = await getBlockReminder(blockId);
+                if (!existing) return false;
+                const completionBased = __getReminderRepeatMode(existing) === REMINDER_REPEAT_MODE_MANUAL && existing.trigger === 'complete';
+                const occurrenceNumber = __normalizeReminderTaskRepeatState(existing.repeatState).occurrenceCount;
+                if (completionBased && options.occurrenceNumber && Number(options.occurrenceNumber) !== occurrenceNumber) return true;
+                if (completionBased && __getReminderCompletionDateKey(existing) !== dateKey) return __getReminderCompletedSet(existing).has(k);
+                if (completionBased && !(existing.times || []).some((value) => __parseTime(value)?.key === timeKey)) return false;
+                if (completionBased && __getReminderExcludedSet(existing).has(k)) return true;
+                const scheduleRecordSnapshot = existing.notificationSchedules || {};
+                const next = { ...existing };
+                const arr = Array.isArray(next.completedOccurrences) ? next.completedOccurrences.map((entry) => ({ ...entry })) : [];
+                const set = __getReminderCompletedSet(next);
+                const alreadyCompleted = set.has(k);
+                if (alreadyCompleted) return true;
+                arr.unshift({ date: String(dateKey || '').trim(), time: String(timeKey || '').trim(), doneAt: new Date().toISOString(), ...(completionBased ? { occurrenceNumber } : {}) });
+                next.completedOccurrences = arr.slice(0, completionBased ? Math.max(30, (next.times?.length || 1) * 2) : 30);
+                if (completionBased) __advanceReminderCompletionCycle(next, dateKey);
+                next.updatedAt = new Date().toISOString();
+                try { await __cancelReminderOccurrenceNotifications(blockId, dateKey, timeKey, next); } catch (e) {}
+                const ok = await saveBlockReminder(blockId, next);
+                if (ok) {
+                    try {
+                        await __retainReminderDeviceScheduleRecords(blockId, scheduleRecordSnapshot, 'occurrence-completed', {
+                            occurrenceKeys: [k],
+                            sourcePlanKey: __getReminderDevicePlanMutationSignature(existing),
+                            includeLocalRegistry: false,
+                        });
+                    } catch (e) {}
+                    try { await __syncReminderDeviceSchedule(blockId, next, { silent: true }); } catch (e) {}
+                    try { refreshReminderDockPanel(); } catch (e) {}
+                    try { updateReminderBadge(); } catch (e) {}
+                    committed = { existing, next };
+                }
+                return ok;
+            } catch (e) {
+                return false;
+            }
+        });
+        if (ok && committed) {
+            try { await __syncTaskCompletionFromReminder(blockId, committed.existing, committed.next, dateKey, timeKey, options); } catch (e) {}
+        }
+        return ok;
+    };
+
+    const __deleteReminderOccurrence = (blockId, dateKey, timeKey, options = {}) => __withReminderOccurrenceMutation(blockId, async () => {
         const occurrenceKey = __reminderOccurrenceKey(dateKey, timeKey);
         if (!blockId || !occurrenceKey) return false;
         try {
             const existing = await getBlockReminder(blockId);
             if (!existing) return false;
+            const completionBased = existing.trigger === 'complete';
+            const occurrenceNumber = completionBased ? __normalizeReminderTaskRepeatState(existing.repeatState).occurrenceCount : 0;
+            if (completionBased && options.occurrenceNumber && Number(options.occurrenceNumber) !== occurrenceNumber) return true;
             if (__getReminderExcludedSet(existing).has(occurrenceKey)) return true;
             const scheduleRecordSnapshot = existing.notificationSchedules || {};
             const next = {
@@ -40041,11 +40631,13 @@ window.__setTomatoFloatState = function (payload) {
                         date: String(dateKey || '').trim(),
                         time: String(timeKey || '').trim(),
                         excludedAt: new Date().toISOString(),
+                        ...(completionBased ? { occurrenceNumber } : {}),
                     },
                     ...(Array.isArray(existing.excludedOccurrences) ? existing.excludedOccurrences : []),
                 ].slice(0, 200),
                 updatedAt: new Date().toISOString(),
             };
+            __advanceReminderCompletionCycle(next, dateKey);
             try { await __cancelReminderOccurrenceNotifications(blockId, dateKey, timeKey, next); } catch (e) {}
             const ok = await saveBlockReminder(blockId, next, {
                 taskAttrEventExtra: {
@@ -40069,7 +40661,7 @@ window.__setTomatoFloatState = function (payload) {
         } catch (e) {
             return false;
         }
-    };
+    });
 
     const __recordFollowTaskReminderCompletionOwner = async (blockId, dateKey, timeKey, options = {}) => {
         const occurrenceKey = __reminderOccurrenceKey(dateKey, timeKey);
@@ -40123,62 +40715,85 @@ window.__setTomatoFloatState = function (payload) {
         }
     };
 
-    const __unmarkReminderOccurrenceCompleted = async (blockId, dateKey, timeKey) => {
-        const k = __reminderOccurrenceKey(dateKey, timeKey);
-        if (!blockId || !k) return false;
-        try {
-            const existing = await getBlockReminder(blockId);
-            if (!existing) return false;
-            const arr = Array.isArray(existing.completedOccurrences) ? existing.completedOccurrences : [];
-            if (arr.length === 0) return true;
-            const nextArr = arr.filter(it => __reminderOccurrenceKey(it?.date, it?.time) !== k);
-            if (nextArr.length === arr.length) return true;
-            const owner = __normalizeReminderTaskCompletionOwner(existing.taskCompletionOwner);
-            let ownerToRestore = null;
-            let nextOwner = owner;
-            if (owner?.occurrenceKey === k) {
-                const replacement = nextArr.find((it) => String(it?.date || '').trim() === owner.dateKey);
-                if (replacement) {
-                    const replacementDate = String(replacement?.date || '').trim();
-                    const replacementTime = String(replacement?.time || '').trim();
-                    nextOwner = __normalizeReminderTaskCompletionOwner({
-                        ...owner,
-                        occurrenceKey: __reminderOccurrenceKey(replacementDate, replacementTime),
-                        dateKey: replacementDate,
-                        timeKey: replacementTime,
-                    });
-                } else {
-                    ownerToRestore = owner;
-                    nextOwner = null;
-                }
-            }
-            const next = {
-                ...existing,
-                completedOccurrences: nextArr,
-                taskCompletionOwner: nextOwner,
-                updatedAt: new Date().toISOString(),
-            };
-            const ok = await saveBlockReminder(blockId, next, {
-                taskAttrEventExtra: {
-                    action: 'uncomplete',
-                    source: 'tomato-reminder-uncomplete',
-                    occurrenceKey: k,
-                },
-            });
-            if (ok) {
-                if (ownerToRestore) {
-                    try { await __restoreFollowTaskReminderCompletion(blockId, next, ownerToRestore); } catch (e) {}
-                }
-                try { await __syncReminderDeviceSchedule(blockId, next, { silent: true }); } catch (e) {}
-                try { refreshReminderDockPanel(); } catch (e) {}
-                try { updateReminderBadge(); } catch (e) {}
-            }
-            return ok;
-        } catch (e) {
-            return false;
-        }
+    const __canUndoReminderCompletionEntry = (reminder, entry) => {
+        if (__getReminderRepeatMode(reminder) !== REMINDER_REPEAT_MODE_MANUAL || reminder.trigger !== 'complete' || !entry) return true;
+        const currentCount = __normalizeReminderTaskRepeatState(reminder.repeatState).occurrenceCount;
+        const removedCount = Number(entry.occurrenceNumber) || currentCount;
+        return removedCount >= currentCount - 1 && (removedCount >= currentCount
+            || !(reminder.completedOccurrences || []).some((item) => Number(item.occurrenceNumber) >= currentCount));
     };
 
+    const __unmarkReminderOccurrenceCompleted = async (blockId, dateKey, timeKey, options = {}) => {
+        let committedOwner = null;
+        const ok = await __withReminderOccurrenceMutation(blockId, async () => {
+            const k = __reminderOccurrenceKey(dateKey, timeKey);
+            if (!blockId || !k) return false;
+            try {
+                const existing = await getBlockReminder(blockId);
+                if (!existing) return false;
+                const arr = Array.isArray(existing.completedOccurrences) ? existing.completedOccurrences : [];
+                if (arr.length === 0) return true;
+                const completionBased = __getReminderRepeatMode(existing) === REMINDER_REPEAT_MODE_MANUAL && existing.trigger === 'complete';
+                const removed = arr.find((entry) => __reminderOccurrenceKey(entry?.date, entry?.time) === k
+                    && (!completionBased || !options.occurrenceNumber || Number(entry.occurrenceNumber) === Number(options.occurrenceNumber)));
+                if (!__canUndoReminderCompletionEntry(existing, removed)) return false;
+                const nextArr = completionBased ? arr.filter((entry) => entry !== removed) : arr.filter(it => __reminderOccurrenceKey(it?.date, it?.time) !== k);
+                if (nextArr.length === arr.length) return true;
+                const owner = __normalizeReminderTaskCompletionOwner(existing.taskCompletionOwner);
+                let ownerToRestore = null;
+                let nextOwner = owner;
+                if (owner?.occurrenceKey === k) {
+                    const replacement = nextArr.find((it) => String(it?.date || '').trim() === owner.dateKey);
+                    if (replacement) {
+                        const replacementDate = String(replacement?.date || '').trim();
+                        const replacementTime = String(replacement?.time || '').trim();
+                        nextOwner = __normalizeReminderTaskCompletionOwner({
+                            ...owner,
+                            occurrenceKey: __reminderOccurrenceKey(replacementDate, replacementTime),
+                            dateKey: replacementDate,
+                            timeKey: replacementTime,
+                        });
+                    } else {
+                        ownerToRestore = owner;
+                        nextOwner = null;
+                    }
+                }
+                const next = {
+                    ...existing,
+                    completedOccurrences: nextArr,
+                    taskCompletionOwner: nextOwner,
+                    updatedAt: new Date().toISOString(),
+                };
+                if (completionBased && removed && Number(removed.occurrenceNumber) === Number(existing.repeatState?.occurrenceCount) - 1
+                    && String(existing.repeatState?.lastInstanceStart || '') === dateKey) {
+                    const checkpoint = arr.find((entry) => entry.date === dateKey && entry.occurrenceNumber === removed.occurrenceNumber && entry.repeatStateBefore);
+                    if (checkpoint) next.repeatState = { ...__normalizeReminderTaskRepeatState(checkpoint.repeatStateBefore), lastInstanceDue: dateKey };
+                }
+                const ok = await saveBlockReminder(blockId, next, {
+                    taskAttrEventExtra: {
+                        action: 'uncomplete',
+                        source: 'tomato-reminder-uncomplete',
+                        occurrenceKey: k,
+                    },
+                });
+                if (ok) {
+                    if (ownerToRestore) {
+                        committedOwner = { reminder: next, owner: ownerToRestore };
+                    }
+                    try { await __syncReminderDeviceSchedule(blockId, next, { silent: true }); } catch (e) {}
+                    try { refreshReminderDockPanel(); } catch (e) {}
+                    try { updateReminderBadge(); } catch (e) {}
+                }
+                return ok;
+            } catch (e) {
+                return false;
+            }
+        });
+        if (ok && committedOwner) {
+            try { await __restoreFollowTaskReminderCompletion(blockId, committedOwner.reminder, committedOwner.owner); } catch (e) {}
+        }
+        return ok;
+    };
 
     const isRemindersGloballyEnabled = () => {
         try {
@@ -40399,6 +41014,12 @@ window.__setTomatoFloatState = function (payload) {
         let selectedInterval = initialInterval;
         const initialTaskRule = repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK && hasTaskRepeat ? taskContext.taskRepeatRule : null;
         let selectedMonthlyMode = __normalizeReminderMonthlyMode(initialTaskRule?.monthlyMode || existingReminder?.monthlyMode || 'date');
+        let monthDayAnchorKey = initialTaskRule?.anchorDate || existingReminder?.startDate || formatDateKey(new Date());
+        let selectedMonthDays = initialTaskRule?.monthDays ?? existingReminder?.monthDays;
+        let selectedMonthWeek = initialTaskRule?.monthWeek ?? existingReminder?.monthWeek;
+        if (Array.isArray(selectedMonthDays)) selectedMonthDays = selectedMonthDays.slice();
+        const getSelectedMonthDays = () => selectedTaskRepeatTrigger !== 'complete' && selectedInterval === 'monthly' && selectedMonthlyMode === 'date' && selectedCalendarMode !== 'lunar' ? selectedMonthDays : undefined;
+        const getSelectedMonthWeek = () => selectedTaskRepeatTrigger !== 'complete' && selectedInterval === 'monthly' && selectedMonthlyMode === 'weekday' && selectedCalendarMode !== 'lunar' ? selectedMonthWeek : undefined;
         let selectedCalendarMode = __normalizeReminderCalendarMode(initialTaskRule?.calendarMode || existingReminder?.calendarMode || '', selectedInterval);
         let intervalEvery = initialTaskRule ? Math.max(1, Number(initialTaskRule.every) || 1) : (existingReminder ? __getReminderEvery(existingReminder) : (__semanticTitleSuggestion?.every || 1));
         let selectedWeekdays = __normalizeReminderWeekdays(
@@ -40411,7 +41032,7 @@ window.__setTomatoFloatState = function (payload) {
         else if (__normalizeReminderMaxOccurrences(existingReminder?.maxOccurrences) > 0) selectedEndMode = 'count';
         else if (__normalizeReminderDateKey(existingReminder?.endDate || '')) selectedEndMode = 'date';
         let selectedMaxOccurrences = __normalizeReminderMaxOccurrences(initialTaskRule?.maxOccurrences || existingReminder?.maxOccurrences) || 1;
-        let selectedTaskRepeatTrigger = __normalizeReminderTaskRepeatTrigger(initialTaskRule?.trigger || existingReminder?.taskRepeatRule?.trigger || 'due');
+        let selectedTaskRepeatTrigger = __normalizeReminderTaskRepeatTrigger((repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK ? initialTaskRule?.trigger || existingReminder?.taskRepeatRule?.trigger : existingReminder?.trigger) || 'due');
         const syncRepeatModeOptions = () => {
             const followOption = repeatModeSelect.querySelector(`option[value="${REMINDER_REPEAT_MODE_FOLLOW_TASK}"]`);
             if (followOption) {
@@ -40518,7 +41139,7 @@ window.__setTomatoFloatState = function (payload) {
             weeklyWeekdaysGrid.appendChild(btn);
         });
         const syncWeeklyWeekdaysVisibility = () => {
-            weeklyWeekdaysSection.style.display = selectedInterval === 'weekly' ? 'flex' : 'none';
+            weeklyWeekdaysSection.style.display = selectedTaskRepeatTrigger !== 'complete' && selectedInterval === 'weekly' ? 'flex' : 'none';
             syncWeeklyWeekdayButtons();
         };
         weeklyWeekdaysSection.appendChild(weeklyWeekdaysLabel);
@@ -40549,17 +41170,40 @@ window.__setTomatoFloatState = function (payload) {
             btn.style.cssText = 'padding:9px 8px;border:2px solid var(--b3-theme-surface-light);border-radius:8px;background:var(--b3-theme-surface);color:var(--b3-theme-on-surface);cursor:pointer;font-size:13px;transition:all 0.2s;';
             btn.onclick = () => {
                 selectedMonthlyMode = value;
-                syncMonthlyModeButtons();
+                syncMonthlyModeVisibility();
                 try { updateNextInfo(); } catch (e) {}
             };
             monthlyModeGrid.appendChild(btn);
         });
+        const monthDaysSection = document.createElement('div');
         const syncMonthlyModeVisibility = () => {
-            monthlyModeSection.style.display = selectedInterval === 'monthly' && selectedCalendarMode !== 'lunar' ? 'flex' : 'none';
+            monthlyModeSection.style.display = selectedTaskRepeatTrigger !== 'complete' && selectedInterval === 'monthly' && selectedCalendarMode !== 'lunar' ? 'flex' : 'none';
+            monthDaysSection.innerHTML = selectedMonthlyMode === 'weekday'
+                ? __monthRepeatCore.weekdayPickerHTML(selectedMonthWeek, monthDayAnchorKey)
+                : __monthRepeatCore.pickerHTML(selectedMonthDays, monthDayAnchorKey);
             syncMonthlyModeButtons();
         };
         monthlyModeSection.appendChild(monthlyModeLabel);
         monthlyModeSection.appendChild(monthlyModeGrid);
+        monthlyModeSection.appendChild(monthDaysSection);
+        monthDaysSection.addEventListener('change', (event) => {
+            const field = event.target.dataset.tmMonthWeek;
+            if (!['ordinal', 'weekday'].includes(field)) return;
+            selectedMonthWeek = { ...__monthRepeatCore.weekdayRule(selectedMonthWeek, monthDayAnchorKey), [field]: Number(event.target.value) };
+            syncMonthlyModeVisibility();
+            updateNextInfo();
+            monthDaysSection.querySelector('[data-tm-month-week="' + field + '"]')?.focus();
+        });
+        monthDaysSection.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-tm-month-day]');
+            if (!button) return;
+            const day = Number(button.dataset.tmMonthDay);
+            const current = selectedMonthDays ?? [new Date(dateInput.value + 'T12:00:00').getDate()];
+            selectedMonthDays = __monthRepeatCore.normalizeDays(current.includes(day) ? current.filter((value) => value !== day) : [...current, day]);
+            syncMonthlyModeVisibility();
+            updateNextInfo();
+            monthDaysSection.querySelector('[data-tm-month-day="' + day + '"]')?.focus();
+        });
         intervalSection.appendChild(monthlyModeSection);
 
         const calendarModeSection = document.createElement('div');
@@ -40594,7 +41238,7 @@ window.__setTomatoFloatState = function (payload) {
             calendarModeGrid.appendChild(btn);
         });
         const syncCalendarModeVisibility = () => {
-            const show = selectedInterval === 'monthly' || selectedInterval === 'yearly';
+            const show = selectedTaskRepeatTrigger !== 'complete' && (selectedInterval === 'monthly' || selectedInterval === 'yearly');
             calendarModeSection.style.display = show ? 'flex' : 'none';
             if (!show) selectedCalendarMode = 'solar';
             else selectedCalendarMode = __normalizeReminderCalendarMode(selectedCalendarMode, selectedInterval);
@@ -40609,11 +41253,12 @@ window.__setTomatoFloatState = function (payload) {
         const taskRepeatTriggerSection = document.createElement('div');
         taskRepeatTriggerSection.style.cssText = 'margin-top:10px;display:none;flex-direction:column;gap:8px;';
         const taskRepeatTriggerLabel = document.createElement('div');
-        taskRepeatTriggerLabel.textContent = '任务循环触发';
+        taskRepeatTriggerLabel.textContent = '重复方式';
         taskRepeatTriggerLabel.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);';
         const taskRepeatTriggerGrid = document.createElement('div');
         taskRepeatTriggerGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:8px;';
         const syncTaskRepeatTriggerButtons = () => {
+            completionRepeatHint.style.display = selectedTaskRepeatTrigger === 'complete' ? '' : 'none';
             Array.from(taskRepeatTriggerGrid.children).forEach(child => {
                 const sel = child.dataset.value === selectedTaskRepeatTrigger;
                 child.style.borderColor = sel ? 'var(--b3-theme-primary)' : 'var(--b3-theme-surface-light)';
@@ -40631,16 +41276,23 @@ window.__setTomatoFloatState = function (payload) {
             btn.onclick = () => {
                 selectedTaskRepeatTrigger = __normalizeReminderTaskRepeatTrigger(value);
                 syncTaskRepeatTriggerButtons();
+                syncWeeklyWeekdaysVisibility();
+                syncCalendarModeVisibility();
+                updateNextInfo();
             };
             taskRepeatTriggerGrid.appendChild(btn);
         });
         const syncTaskRepeatTriggerVisibility = () => {
-            taskRepeatTriggerSection.style.display = repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK && selectedInterval !== 'once' ? 'flex' : 'none';
+            taskRepeatTriggerSection.style.display = selectedInterval !== 'once' ? 'flex' : 'none';
             syncTaskRepeatTriggerButtons();
         };
         taskRepeatTriggerSection.appendChild(taskRepeatTriggerLabel);
         taskRepeatTriggerSection.appendChild(taskRepeatTriggerGrid);
-        intervalSection.appendChild(taskRepeatTriggerSection);
+        const completionRepeatHint = document.createElement('div');
+        completionRepeatHint.textContent = '从实际完成日期起按间隔安排下一期，不支持指定周几、月内日期或农历。独立提醒须完成本期全部时间后推进。';
+        completionRepeatHint.style.cssText = 'font-size:12px;line-height:1.6;color:var(--b3-theme-on-surface-light);';
+        taskRepeatTriggerSection.appendChild(completionRepeatHint);
+        intervalSection.insertBefore(taskRepeatTriggerSection, intervalSection.firstChild);
 
         content.appendChild(intervalSection);
         syncEveryVisibility();
@@ -40667,6 +41319,8 @@ window.__setTomatoFloatState = function (payload) {
         dateInput.style.cssText = 'width:100%;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
         dateSection.appendChild(dateInput);
         const syncDateLabel = () => {
+            monthDayAnchorKey = dateInput.value;
+            syncMonthlyModeVisibility();
             const lunarText = selectedCalendarMode === 'lunar' ? __formatReminderLunarDateText(dateInput.value) : '';
             const baseLabel = repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK ? '任务截止日' : '开始日期';
             dateLabel.textContent = lunarText ? `${baseLabel}（${lunarText}）` : baseLabel;
@@ -40703,10 +41357,13 @@ window.__setTomatoFloatState = function (payload) {
                 const configuredEndDate = selectedEndMode === 'date'
                     ? __normalizeReminderDateKey(endDateInput.value || '')
                     : (configuredMaxOccurrences > 0 ? __getReminderCountEndDate({
+                        trigger: selectedTaskRepeatTrigger,
                         interval: selectedInterval,
                         every: intervalEvery,
-                        weekdays: selectedWeekdays,
-                        monthlyMode: selectedMonthlyMode,
+                        weekdays: selectedTaskRepeatTrigger === 'complete' ? [] : selectedWeekdays,
+                        monthlyMode: selectedTaskRepeatTrigger === 'complete' ? 'date' : selectedMonthlyMode,
+                        monthDays: getSelectedMonthDays(),
+                        monthWeek: getSelectedMonthWeek(),
                         calendarMode: __normalizeReminderCalendarMode(selectedCalendarMode, selectedInterval),
                         startDate: String(dateInput.value || '').trim(),
                     }, configuredMaxOccurrences) : '');
@@ -40714,8 +41371,10 @@ window.__setTomatoFloatState = function (payload) {
                     ? __buildReminderTaskRepeatRuleFromDraft({
                         interval: selectedInterval,
                         every: intervalEvery,
-                        weekdays: selectedWeekdays,
-                        monthlyMode: selectedMonthlyMode,
+                        weekdays: selectedTaskRepeatTrigger === 'complete' ? [] : selectedWeekdays,
+                        monthlyMode: selectedTaskRepeatTrigger === 'complete' ? 'date' : selectedMonthlyMode,
+                        monthDays: getSelectedMonthDays(),
+                        monthWeek: getSelectedMonthWeek(),
                         calendarMode: __normalizeReminderCalendarMode(selectedCalendarMode, selectedInterval),
                         trigger: selectedTaskRepeatTrigger,
                         startDate: String(dateInput.value || '').trim(),
@@ -40725,11 +41384,17 @@ window.__setTomatoFloatState = function (payload) {
                     : null;
                 const reminderPreview = {
                     blockId: blockId,
+                    trigger: selectedTaskRepeatTrigger,
+                    repeatState: existingReminder?.repeatState,
+                    completedOccurrences: existingReminder?.completedOccurrences,
+                    excludedOccurrences: existingReminder?.excludedOccurrences,
                     repeatMode,
                     interval: selectedInterval,
                     every: selectedInterval === 'once' ? 1 : intervalEvery,
-                    weekdays: selectedInterval === 'weekly' ? selectedWeekdays : [],
-                    monthlyMode: selectedMonthlyMode,
+                    weekdays: selectedTaskRepeatTrigger !== 'complete' && selectedInterval === 'weekly' ? selectedWeekdays : [],
+                    monthlyMode: selectedTaskRepeatTrigger === 'complete' ? 'date' : selectedMonthlyMode,
+                    monthDays: getSelectedMonthDays(),
+                    monthWeek: getSelectedMonthWeek(),
                     calendarMode: __normalizeReminderCalendarMode(selectedCalendarMode, selectedInterval),
                     times: normalizedTimes,
                     startDate: String(dateInput.value || '').trim(),
@@ -40742,12 +41407,15 @@ window.__setTomatoFloatState = function (payload) {
                     createdAt: existingReminder?.createdAt || new Date().toISOString(),
                     enabled: true,
                 };
+                __reconcileReminderCompletionDraft(existingReminder, reminderPreview);
                 const nextAt = getNextReminderDateTime(reminderPreview, new Date());
                 if (nextAt) {
                     const lunarText = selectedCalendarMode === 'lunar' ? __formatReminderLunarDateText(nextAt) : '';
                     nextInfo.textContent = '下次提醒：' + formatDateTimeKey(nextAt) + (lunarText ? `（${lunarText}）` : '');
                 } else {
-                    nextInfo.textContent = '下次提醒：无（可能已过期或未设置时间）';
+                    nextInfo.textContent = selectedTaskRepeatTrigger === 'complete'
+                        ? '下次提醒：本期完成后安排；达到截止日期或次数后停止'
+                        : '下次提醒：无（可能已过期或未设置时间）';
                 }
             } catch (e) {
                 nextInfo.textContent = '下次提醒：—';
@@ -40880,6 +41548,8 @@ window.__setTomatoFloatState = function (payload) {
                 intervalEvery = Math.max(1, Number(rule.every) || 1);
                 selectedWeekdays = __normalizeReminderWeekdays(rule.weekdays, rule.anchorDate || dueDate || dateInput.value);
                 selectedMonthlyMode = __normalizeReminderMonthlyMode(rule.monthlyMode || 'date');
+                selectedMonthDays = Array.isArray(rule.monthDays) ? rule.monthDays.slice() : undefined;
+                selectedMonthWeek = rule.monthWeek ? { ...rule.monthWeek } : undefined;
                 selectedCalendarMode = __normalizeReminderCalendarMode(rule.calendarMode || '', selectedInterval);
                 selectedTaskRepeatTrigger = __normalizeReminderTaskRepeatTrigger(rule.trigger || 'due');
                 selectedEndMode = rule.maxOccurrences > 0 ? 'count' : (rule.until ? 'date' : 'never');
@@ -40967,7 +41637,7 @@ window.__setTomatoFloatState = function (payload) {
                 try { deleteBtn.disabled = true; } catch (e) {}
                 try { saveBtn.disabled = true; } catch (e) {}
                 const success = deleteScope === 'current'
-                    ? await __deleteReminderOccurrence(blockId, occurrenceDateKey, occurrenceTimeKey)
+                    ? await __deleteReminderOccurrence(blockId, occurrenceDateKey, occurrenceTimeKey, { occurrenceNumber: existingReminder?.trigger === 'complete' ? __normalizeReminderTaskRepeatState(existingReminder.repeatState).occurrenceCount : null })
                     : await deleteBlockReminder(blockId);
                 if (success) {
                     showMiniToast(deleteScope === 'current' ? '当前提醒已删除' : '提醒已删除');
@@ -41000,6 +41670,12 @@ window.__setTomatoFloatState = function (payload) {
                 .filter(Boolean)));
             if (normalizedTimes.length === 0) normalizedTimes.push('09:00');
             const startDate = String(dateInput.value || '').trim() || formatDateKey(new Date());
+            const monthRule = { trigger: selectedTaskRepeatTrigger, type: selectedInterval, every: intervalEvery, monthlyMode: selectedTaskRepeatTrigger === 'complete' ? 'date' : selectedMonthlyMode, calendarMode: selectedCalendarMode, monthDays: getSelectedMonthDays(), monthWeek: getSelectedMonthWeek(), anchorDate: startDate };
+            if (__monthRepeatCore.isExplicit(monthRule) && !__monthRepeatCore.nextDateKey(monthRule, startDate, true)) {
+                showMiniToast('请选择至少一个有效的月日期');
+                resetSaveBusy();
+                return;
+            }
             const hasRepeatDraft = selectedInterval !== 'once';
             const maxOccurrences = hasRepeatDraft && selectedEndMode === 'count'
                 ? (__normalizeReminderMaxOccurrences(endCountInput.value) || 1)
@@ -41009,14 +41685,17 @@ window.__setTomatoFloatState = function (payload) {
                 : (selectedEndMode === 'date'
                     ? __normalizeReminderDateKey(endDateInput.value || '')
                     : (repeatMode === REMINDER_REPEAT_MODE_MANUAL ? __getReminderCountEndDate({
+                        trigger: selectedTaskRepeatTrigger,
                         interval: selectedInterval,
                         every: intervalEvery,
-                        weekdays: selectedWeekdays,
-                        monthlyMode: selectedMonthlyMode,
+                        weekdays: selectedTaskRepeatTrigger === 'complete' ? [] : selectedWeekdays,
+                        monthlyMode: selectedTaskRepeatTrigger === 'complete' ? 'date' : selectedMonthlyMode,
+                        monthDays: getSelectedMonthDays(),
+                        monthWeek: getSelectedMonthWeek(),
                         calendarMode: __normalizeReminderCalendarMode(selectedCalendarMode, selectedInterval),
                         startDate,
                     }, maxOccurrences) : ''));
-            if (repeatMode === REMINDER_REPEAT_MODE_MANUAL && maxOccurrences > 0 && !endDate) {
+            if (repeatMode === REMINDER_REPEAT_MODE_MANUAL && selectedTaskRepeatTrigger !== 'complete' && maxOccurrences > 0 && !endDate) {
                 showMiniToast('无法计算结束日期，请检查循环设置');
                 try { endCountInput.focus(); } catch (e) {}
                 resetSaveBusy();
@@ -41032,8 +41711,10 @@ window.__setTomatoFloatState = function (payload) {
             let taskRepeatRuleDraft = __buildReminderTaskRepeatRuleFromDraft({
                 interval: selectedInterval,
                 every: intervalEvery,
-                weekdays: selectedWeekdays,
-                monthlyMode: selectedMonthlyMode,
+                weekdays: selectedTaskRepeatTrigger === 'complete' ? [] : selectedWeekdays,
+                monthlyMode: selectedTaskRepeatTrigger === 'complete' ? 'date' : selectedMonthlyMode,
+                monthDays: getSelectedMonthDays(),
+                monthWeek: getSelectedMonthWeek(),
                 calendarMode: __normalizeReminderCalendarMode(selectedCalendarMode, selectedInterval),
                 trigger: selectedTaskRepeatTrigger,
                 startDate,
@@ -41053,6 +41734,8 @@ window.__setTomatoFloatState = function (payload) {
                     rule.every,
                     rule.weekdays,
                     rule.monthlyMode,
+                    rule.monthDays,
+                    rule.monthWeek,
                     rule.calendarMode,
                 ]);
                 const dueUnchanged = __normalizeReminderDateKey(taskContext.taskCompletionTime || '') === startDate;
@@ -41064,12 +41747,15 @@ window.__setTomatoFloatState = function (payload) {
                 }
             }
             const baseReminderDraft = {
+                trigger: selectedInterval === 'once' ? 'due' : selectedTaskRepeatTrigger,
                 blockId: isDraftMode ? '' : blockId,
                 blockName: customName || blockName,
                 interval: selectedInterval,
                 every: selectedInterval === 'once' ? 1 : intervalEvery,
-                weekdays: selectedInterval === 'weekly' ? selectedWeekdays : [],
-                monthlyMode: selectedMonthlyMode,
+                weekdays: selectedTaskRepeatTrigger !== 'complete' && selectedInterval === 'weekly' ? selectedWeekdays : [],
+                monthlyMode: selectedTaskRepeatTrigger === 'complete' ? 'date' : selectedMonthlyMode,
+                monthDays: getSelectedMonthDays(),
+                monthWeek: getSelectedMonthWeek(),
                 calendarMode: __normalizeReminderCalendarMode(selectedCalendarMode, selectedInterval),
                 times: normalizedTimes,
                 startDate,
@@ -41154,6 +41840,24 @@ window.__setTomatoFloatState = function (payload) {
         if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
         return { hh, mm, key: `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}` };
     };
+    const __getReminderCompletionScheduleIdentity = (reminder) => JSON.stringify([
+        __getReminderRepeatMode(reminder),
+        __normalizeReminderTaskRepeatTrigger(reminder?.trigger || 'due'),
+        __normalizeReminderInterval(reminder?.interval || 'once'),
+        __getReminderEvery(reminder),
+        __normalizeReminderDateKey(reminder?.startDate || ''),
+    ]);
+    const __reconcileReminderCompletionDraft = (previous, next) => {
+        if (!previous || (previous.trigger !== 'complete' && next.trigger !== 'complete')) return;
+        if (__getReminderCompletionScheduleIdentity(previous) === __getReminderCompletionScheduleIdentity(next)) return;
+        next.repeatState = __normalizeReminderTaskRepeatState(null);
+        if (previous.trigger === 'complete' && next.trigger === 'complete'
+            && __normalizeReminderDateKey(previous.startDate) === __normalizeReminderDateKey(next.startDate)) {
+            next.repeatState.lastInstanceDue = __normalizeReminderDateKey(previous.repeatState?.lastInstanceDue || previous.startDate);
+        }
+        next.completedOccurrences = [];
+        next.excludedOccurrences = [];
+    };
     const __getReminderScheduleSignature = (reminder) => {
         try {
             const interval = reminder?.interval || 'daily';
@@ -41164,12 +41868,15 @@ window.__setTomatoFloatState = function (payload) {
                 .map(x => x.key))).sort().join(',');
             return [
                 __getReminderRepeatMode(reminder),
+                __normalizeReminderTaskRepeatTrigger(reminder?.trigger || 'due'),
                 interval,
                 interval === 'once' ? 1 : __getReminderEvery(reminder),
                 JSON.stringify(interval === 'weekly'
                     ? __normalizeReminderWeekdays(reminder?.weekdays, reminder?.startDate || '')
                     : []),
                 __getReminderMonthlyMode(reminder),
+                reminder?.monthDays,
+                JSON.stringify(reminder?.monthWeek || null),
                 calendarMode,
                 __normalizeReminderDateKey(reminder?.startDate || ''),
                 __normalizeReminderDateKey(reminder?.endDate || ''),
@@ -41486,6 +42193,14 @@ window.__setTomatoFloatState = function (payload) {
             return false;
         }
     };
+    const __getReminderCompletionDateKey = (reminder) => {
+        const repeatState = reminder?.repeatState || {};
+        const count = Math.max(1, Number(repeatState.occurrenceCount) || 1);
+        if (Number(reminder?.maxOccurrences) > 0 && count > Number(reminder.maxOccurrences)) return '';
+        if (repeatState.lastCompletedAt && !repeatState.lastInstanceDue) return '';
+        const dateKey = __normalizeReminderDateKey(repeatState.lastInstanceDue || __getStartDateKey(reminder));
+        return reminder.endDate && dateKey > reminder.endDate ? '' : dateKey;
+    };
     const __getReminderScheduleEffectiveAtMs = (reminder) => {
         const raw = String(reminder?.scheduleUpdatedAt || '').trim();
         if (!raw) return 0;
@@ -41501,6 +42216,7 @@ window.__setTomatoFloatState = function (payload) {
         return dt;
     };
     const __isReminderOccurrenceBeforeScheduleEffectiveAt = (reminder, dateKey, timeKey) => {
+        if (reminder?.trigger === 'complete') return false;
         const effectiveAtMs = __getReminderScheduleEffectiveAtMs(reminder);
         if (!effectiveAtMs) return false;
         const dt = __buildReminderOccurrenceDateTime(dateKey, timeKey);
@@ -41541,7 +42257,7 @@ window.__setTomatoFloatState = function (payload) {
         // 获取截止日期
         const endDate = reminder?.endDate ? String(reminder.endDate).trim() : null;
 
-        const isBeforeStartDate = (dateKey) => !followsTaskSchedule && dateKey < startKey;
+        const isBeforeStartDate = (dateKey) => !followsTaskSchedule && reminder?.trigger !== 'complete' && dateKey < startKey;
         const isBeyondEndDate = (dateKey) => {
             if (followsTaskSchedule) return false;
             if (!endDate) return false;
@@ -41584,6 +42300,11 @@ window.__setTomatoFloatState = function (payload) {
             const afterCurrentDay = new Date(`${followKey}T23:59:59.999`);
             const previewFrom = afterCurrentDay.getTime() > from.getTime() ? afterCurrentDay : from;
             return __getNextFollowTaskReminderPreviewDateTime(reminder, previewFrom);
+        }
+
+        if (reminder?.trigger === 'complete' && interval !== 'once') {
+            const currentKey = __getReminderCompletionDateKey(reminder);
+            return currentKey && currentKey >= nowKey ? pickOnDate(currentKey, currentKey === nowKey) : null;
         }
 
         if (interval === 'once') {
@@ -41684,6 +42405,20 @@ window.__setTomatoFloatState = function (payload) {
         }
 
         if (interval === 'monthly') {
+            const monthDays = reminder.monthDays ?? repeatRule?.monthDays;
+            const monthWeek = reminder.monthWeek ?? repeatRule?.monthWeek;
+            const monthlyRule = { type: 'monthly', monthDays, monthWeek, monthlyMode: __getReminderMonthlyMode(reminder), calendarMode, every, anchorDate: startKey, until: endDate };
+            if (__monthRepeatCore.isExplicit(monthlyRule)) {
+                const rule = monthlyRule;
+                let key = __monthRepeatCore.nextDateKey(rule, nowKey, true);
+                const attempts = (reminder.completedOccurrences?.length || 0) + (reminder.excludedOccurrences?.length || 0) + 2;
+                for (let index = 0; key && index < attempts; index += 1) {
+                    const at = pickOnDate(key, key === nowKey);
+                    if (at) return at;
+                    key = __monthRepeatCore.nextDateKey(rule, key);
+                }
+                return null;
+            }
             const anchor = new Date(startKey + 'T00:00:00');
             if (isNaN(anchor.getTime())) return null;
             if (calendarMode === 'lunar') {
@@ -41807,23 +42542,25 @@ window.__setTomatoFloatState = function (payload) {
 
     const __getNextFollowTaskReminderPreviewDateTime = (reminder, fromDate) => {
         const rule = __parseReminderTaskRepeatRule(reminder?.taskRepeatRule);
-        if (__getReminderRepeatMode(reminder) !== REMINDER_REPEAT_MODE_FOLLOW_TASK || !rule?.enabled || rule.type === 'none') return null;
+        if (__getReminderRepeatMode(reminder) !== REMINDER_REPEAT_MODE_FOLLOW_TASK || !rule?.enabled || rule.type === 'none' || rule.trigger === 'complete') return null;
         const repeatState = __normalizeReminderTaskRepeatState(reminder?.taskRepeatState);
         if (rule.maxOccurrences > 0 && repeatState.occurrenceCount >= rule.maxOccurrences) return null;
         const followKey = __getReminderFollowTaskAnchorKey(reminder);
         if (!followKey) return null;
         const monthlyAnchor = rule.type === 'monthly'
             && rule.calendarMode !== 'lunar'
-            && rule.monthlyMode !== 'weekday'
+            && (rule.monthlyMode !== 'weekday' || !!rule.monthWeek)
             ? __normalizeReminderDateKey(rule.anchorDate || '')
             : '';
-        return getNextReminderDateTime({
+        const nextAt = getNextReminderDateTime({
             ...reminder,
             repeatMode: REMINDER_REPEAT_MODE_MANUAL,
             interval: rule.type,
             every: rule.every,
             weekdays: rule.weekdays,
             monthlyMode: rule.monthlyMode,
+            monthDays: rule.monthDays,
+            monthWeek: rule.monthWeek,
             calendarMode: rule.calendarMode,
             startDate: monthlyAnchor || followKey,
             endDate: rule.until || undefined,
@@ -41834,6 +42571,12 @@ window.__setTomatoFloatState = function (payload) {
             excludedOccurrences: Array.isArray(reminder?.excludedOccurrences) ? reminder.excludedOccurrences : [],
             syncTaskDone: false,
         }, fromDate);
+        if (nextAt && rule.maxOccurrences > 0 && __monthRepeatCore.isExplicit(rule)) {
+            const currentOrdinal = __monthRepeatCore.ordinal(rule, followKey);
+            const nextOrdinal = __monthRepeatCore.ordinal(rule, formatDateKey(nextAt));
+            if (repeatState.occurrenceCount + nextOrdinal - currentOrdinal > rule.maxOccurrences) return null;
+        }
+        return nextAt;
     };
 
     const __collectReminderOccurrencesInRange = (reminder, fromExclusive, toInclusive, limit = 32) => {
@@ -42135,6 +42878,11 @@ window.__setTomatoFloatState = function (payload) {
                 return pickLatestOnDate(followKey, followKey === nowKey);
             }
 
+            if (reminder?.trigger === 'complete' && interval !== 'once') {
+                const currentKey = __getReminderCompletionDateKey(reminder);
+                return currentKey && currentKey <= nowKey ? pickLatestOnDate(currentKey, currentKey === nowKey) : null;
+            }
+
             if (interval === 'once') {
                 if (startKey > nowKey) return null;
                 return pickLatestOnDate(startKey, startKey === nowKey);
@@ -42217,6 +42965,20 @@ window.__setTomatoFloatState = function (payload) {
             }
 
             if (interval === 'monthly') {
+                const monthDays = reminder.monthDays ?? repeatRule?.monthDays;
+                const monthWeek = reminder.monthWeek ?? repeatRule?.monthWeek;
+                const monthlyRule = { type: 'monthly', monthDays, monthWeek, monthlyMode: __getReminderMonthlyMode(reminder), calendarMode, every, anchorDate: startKey, until: endKey };
+                if (__monthRepeatCore.isExplicit(monthlyRule)) {
+                    const rule = monthlyRule;
+                    let key = __monthRepeatCore.previousDateKey(rule, nowKey, true);
+                    const attempts = (reminder.completedOccurrences?.length || 0) + (reminder.excludedOccurrences?.length || 0) + 2;
+                    for (let index = 0; key && index < attempts; index += 1) {
+                        const at = pickLatestOnDate(key, key === nowKey);
+                        if (at) return at;
+                        key = __monthRepeatCore.previousDateKey(rule, key);
+                    }
+                    return null;
+                }
                 const anchor = new Date(startKey + 'T00:00:00');
                 if (isNaN(anchor.getTime())) return null;
                 if (calendarMode === 'lunar') {
@@ -42467,7 +43229,7 @@ window.__setTomatoFloatState = function (payload) {
             showMiniToast(title + ': ' + fullMessage, 8000);
             // 同时显示对话框
             setTimeout(() => {
-                showToastDialog(title, fullMessage, 'reminder', reminder.blockId, reminder.blockName, currentDate, time);
+                showToastDialog(title, fullMessage, 'reminder', reminder.blockId, reminder.blockName, currentDate, time, reminder.trigger === 'complete' ? __normalizeReminderTaskRepeatState(reminder.repeatState).occurrenceCount : null);
             }, 100);
         }
         
@@ -42832,10 +43594,10 @@ window.__setTomatoFloatState = function (payload) {
         recordTaskCompletionOwner: __recordFollowTaskReminderCompletionOwner,
         completeOccurrence: __markReminderOccurrenceCompleted,
         uncompleteOccurrence: __unmarkReminderOccurrenceCompleted,
-        setOccurrenceDone: (blockId, dateKey, timeKey, done) => {
+        setOccurrenceDone: (blockId, dateKey, timeKey, done, options = {}) => {
             return done === false
-                ? __unmarkReminderOccurrenceCompleted(blockId, dateKey, timeKey)
-                : __markReminderOccurrenceCompleted(blockId, dateKey, timeKey);
+                ? __unmarkReminderOccurrenceCompleted(blockId, dateKey, timeKey, options)
+                : __markReminderOccurrenceCompleted(blockId, dateKey, timeKey, options);
         },
         taskContextChanged: (taskRef, options = {}) => __refreshReminderAfterTaskContextChanged(taskRef, options),
         initDock: initReminderDock,
@@ -43175,6 +43937,8 @@ window.__setTomatoFloatState = function (payload) {
                     rootId: currentReminder?.rootId,
                     ...taskContext,
                 });
+                __reconcileReminderCompletionDraft(currentReminder, reminderToSave);
+                __advanceReminderCompletionCycle(reminderToSave, __getReminderCompletionDateKey(reminderToSave));
                 if (currentReminder && __getReminderScheduleSignature(currentReminder) !== __getReminderScheduleSignature(reminderToSave)) {
                     reminderToSave.scheduleUpdatedAt = new Date().toISOString();
                 }
@@ -45110,10 +45874,13 @@ window.__setTomatoFloatState = function (payload) {
                 if (followRule.type === 'fsrs') return 'FSRS 间隔重复';
                 return __getReminderIntervalLabel({
                     ...reminder,
+                    trigger: followRule.trigger,
                     interval: followRule.type,
                     every: followRule.every,
                     weekdays: followRule.weekdays,
                     monthlyMode: followRule.monthlyMode,
+                    monthDays: followRule.monthDays,
+                    monthWeek: followRule.monthWeek,
                     calendarMode: followRule.calendarMode,
                 });
             }
@@ -45194,15 +45961,16 @@ window.__setTomatoFloatState = function (payload) {
             const afterMs = (at instanceof Date && !isNaN(at.getTime())) ? at.getTime() + 60000 : nowRef.getTime() + 60000;
             const nextAt = getNextReminderDateTime(reminder, new Date(afterMs))
                 || __getNextFollowTaskReminderPreviewDateTime(reminder, new Date(afterMs));
-            const followState = __normalizeReminderTaskRepeatState(reminder?.taskRepeatState);
-            const followProgress = followsTask && followRule?.maxOccurrences > 0
-                ? ` · 已完成 ${Math.max(0, followState.occurrenceCount - 1)}/${followRule.maxOccurrences}`
+            const progressState = __normalizeReminderTaskRepeatState(followsTask ? reminder?.taskRepeatState : reminder?.repeatState);
+            const progressLimit = followsTask ? followRule?.maxOccurrences : (reminder.trigger === 'complete' ? reminder.maxOccurrences : 0);
+            const followProgress = progressLimit > 0
+                ? ` · 已完成 ${Math.max(0, progressState.occurrenceCount - 1)}/${progressLimit}`
                 : '';
             const nextText = document.createElement('span');
             nextText.className = 'tomato-reminder-next-time';
             nextText.textContent = nextAt
                 ? `下次 ${formatDockNextDateTime(nextAt)}${followProgress}`
-                : (followsTask ? `跟随任务截止时间${followProgress}` : (repeatLabel ? '等待下一次循环' : '单次提醒'));
+                : (followsTask ? `跟随任务截止时间${followProgress}` : (reminder.trigger === 'complete' ? `本期完成后安排下一期${followProgress}` : (repeatLabel ? '等待下一次循环' : '单次提醒')));
             nextText.title = nextText.textContent;
             refs.meta.appendChild(nextText);
 
@@ -45228,7 +45996,7 @@ window.__setTomatoFloatState = function (payload) {
                 refs.mobileBtn.disabled = true;
                 item.style.opacity = '0.55';
                 const success = deleteScope === 'current'
-                    ? await __deleteReminderOccurrence(reminder.blockId, dateKey, timeKey)
+                    ? await __deleteReminderOccurrence(reminder.blockId, dateKey, timeKey, { occurrenceNumber: reminder.trigger === 'complete' ? __normalizeReminderTaskRepeatState(reminder.repeatState).occurrenceCount : null })
                     : await deleteBlockReminder(reminder.blockId);
                 if (success) {
                     showMiniToast(deleteScope === 'current' ? '当前提醒已删除' : '提醒已删除');
@@ -45260,7 +46028,7 @@ window.__setTomatoFloatState = function (payload) {
                 refs.moreBtn.disabled = true;
                 refs.mobileBtn.disabled = true;
                 item.style.opacity = '0.62';
-                const ok = await __markReminderOccurrenceCompleted(reminder.blockId, dateKey, timeKey);
+                const ok = await __markReminderOccurrenceCompleted(reminder.blockId, dateKey, timeKey, { occurrenceNumber: reminder.trigger === 'complete' ? __normalizeReminderTaskRepeatState(reminder.repeatState).occurrenceCount : null });
                 showMiniToast(ok ? '已标记完成' : '标记失败');
                 if (!ok) {
                     refs.doneBtn.disabled = false;
@@ -45330,9 +46098,11 @@ window.__setTomatoFloatState = function (payload) {
                 if (event.target.closest('.reminder-actions')) return;
                 editReminder();
             };
+            refs.undoBtn.disabled = !__canUndoReminderCompletionEntry(reminder, entry);
+            refs.undoBtn.title = refs.undoBtn.disabled ? '后续期次已有完成记录，不能撤销较早期次' : '撤销完成';
             refs.undoBtn.onclick = async (event) => {
                 try { event.preventDefault(); event.stopPropagation(); } catch (e) {}
-                const ok = await __unmarkReminderOccurrenceCompleted(reminder.blockId, entry.dateKey, entry.timeKey);
+                const ok = await __unmarkReminderOccurrenceCompleted(reminder.blockId, entry.dateKey, entry.timeKey, { occurrenceNumber: entry.occurrenceNumber });
                 showMiniToast(ok ? '已撤销' : '撤销失败');
                 __invalidateReminderDockCache();
                 renderReminderDockList('time', false);
@@ -45374,7 +46144,7 @@ window.__setTomatoFloatState = function (payload) {
                     if (!dateKey || !timeKey) continue;
                     const fallbackCompletedAtMs = Date.parse(`${dateKey}T${timeKey}:00`) || 0;
                     const completedAtMs = doneAtMs || fallbackCompletedAtMs;
-                    completedEntries.push({ reminder: r, dateKey, timeKey, doneAtMs, completedAtMs });
+                    completedEntries.push({ reminder: r, dateKey, timeKey, doneAtMs, completedAtMs, occurrenceNumber: it.occurrenceNumber });
                 }
             }
             completedEntries.sort((a, b) => (b.completedAtMs || 0) - (a.completedAtMs || 0));
@@ -45395,7 +46165,7 @@ window.__setTomatoFloatState = function (payload) {
             showList();
             const completedKeyForEntry = (entry) => {
                 const rr = entry.reminder || {};
-                return `c|${String(rr.blockId || '')}|${entry.dateKey}|${entry.timeKey}|${entry.doneAtMs || 0}`;
+                return `c|${String(rr.blockId || '')}|${entry.dateKey}|${entry.timeKey}|${entry.doneAtMs || 0}|${entry.occurrenceNumber || 0}`;
             };
             const keys = showEntries.map(completedKeyForEntry);
             const keySet = new Set(keys);

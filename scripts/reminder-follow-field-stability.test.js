@@ -99,6 +99,7 @@ const sanitizeContext = vm.createContext({
     REMINDER_REPEAT_MODE_MANUAL: 'manual',
     __normalizeReminderRepeatMode: (value, fallback) => String(value || fallback),
     __normalizeReminderInterval: (value) => String(value || 'once'),
+    __normalizeReminderTaskRepeatTrigger: (value) => value === 'complete' ? 'complete' : 'due',
     __normalizeReminderWeekdays: (value) => Array.isArray(value) ? value.slice() : [],
     __normalizeReminderMaxOccurrences: (value) => Number(value) || 0,
     __getReminderCountEndDate: () => '',
