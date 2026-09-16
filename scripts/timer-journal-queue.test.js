@@ -125,7 +125,119 @@ function attachEndRecorder(runtime, mode, elapsedMs, accumulatedMs = 0) {
     return endMs;
 }
 
+function attachFloatTimerControls(runtime, mode, surface) {
+    attachEndRecorder(runtime, mode, 0);
+    const { context, api } = runtime;
+    let now = Date.now();
+    class Clock extends Date {
+        constructor(...args) { super(...(args.length ? args : [now])); }
+        static now() { return now; }
+    }
+    const idle = { stateSchemaVersion: 2, sequenceId: 0, status: 'IDLE', mode, duration: 1800, activeTimer: null };
+    Object.assign(context, {
+        Date: Clock, console, clearInterval,
+        syncState: clone(idle), currentSessionId: null,
+        isRunning: false, isTimerPaused: false, remainingSeconds: 1800, pausedRemainingSeconds: null,
+        startTime: 0, stopwatchDisplayOffset: 0, timerId: null, lastTickTime: 0, reminderIntervalId: null,
+        activeRoutineButtonIndex: null, focusRestoreSource: '', workEndAudio: null, breakEndAudio: null,
+        controlButton: null, document: { hidden: true, getElementById: () => null },
+        assertTimerReady() {}, initAudio: async () => {}, restoreActiveTimerFocus() {},
+        updateDisplay() {}, updateProgressBar() {}, startLocalTimerLoop() {}, pauseBackgroundAudio() {},
+        isTaskAssociationSyncEnabled: () => true,
+        shouldUseScheduledTimerNotificationBackend: () => false,
+        finalizeExpiredTimerIfNeeded: async () => false,
+        cancelTrackedTimerNotification: async () => {},
+        showMiniToast() {},
+        requireTimerPersistence: async promise => {
+            if (promise && await promise !== true) throw new Error('history was not persisted');
+        },
+        rollbackFailedTimerStart: async () => { throw new Error('unexpected start rollback'); },
+        desktopFloatWindowLastPayloadKey: '',
+        refreshDesktopMinimizedFloatWindow: async () => {},
+    });
+    context.Logger.error = (...args) => console.error(...args);
+    api.manager.localState = clone(idle);
+    const controls = extract('    async function startTimer(', '    // 🔧 修复：为正计时添加变量');
+    const recordStart = extract('    function recordStartTime()', '    function normalizeFocusRestoreSource(');
+    const floatToggle = extract("                    if (command === 'toggle-run') {", "                    if (command === 'show-menu') {");
+    const mobileToggle = extract('        ctrlBtn.onclick = async (e) => {', '        floatBar.appendChild(ctrlBtn);');
+    vm.runInContext(`
+        ${extract('    const StateCalculator = {', '    const TimerJournal = {')}
+        ${recordStart}
+        ${controls}
+        this.floatCommand = command => { ${floatToggle} };
+        const ctrlBtn = {};
+        ${mobileToggle}
+        this.mobileToggle = ctrlBtn.onclick;
+        this.stop = stopTimer;
+    `, context);
+    return {
+        advance(ms) { now += ms; },
+        async toggle() {
+            if (surface === 'mobile') return context.mobileToggle({ stopPropagation() {} });
+            const refreshed = deferred();
+            context.refreshDesktopMinimizedFloatWindow = async () => refreshed.resolve();
+            context.floatCommand('toggle-run');
+            await refreshed.promise;
+        },
+    };
+}
+
+async function testFloatTimerHistory() {
+    for (const surface of ['desktop', 'mobile']) {
+        for (const sync of [false, true]) {
+            for (const mode of ['countdown', 'stopwatch', 'break', 'stopwatch-break']) {
+                const runtime = createRuntime(undefined, { sync });
+                const controls = attachFloatTimerControls(runtime, mode, surface);
+                const label = `${surface}, ${mode}, sync=${sync}`;
+                await controls.toggle();
+                const started = runtime.api.manager.getState();
+                assert.equal(started.status, 'RUNNING', `${label}: floating start must commit RUNNING`);
+                assert.ok(started.activeTimer?.openRecordId, `${label}: floating start must open a history segment`);
+                controls.advance(75000);
+                await runtime.context.stop();
+                assert.equal(runtime.api.journal.queuedHistory()[0].durationMs, 75000,
+                    `${label}: a fresh floating timer must save even without a main-window control`);
+                await controls.toggle();
+                const sessionId = runtime.api.manager.getState().activeTimer.sessionId;
+                controls.advance(90000);
+                await controls.toggle();
+                assert.equal(runtime.api.manager.getState().status, 'PAUSED', `${label}: floating pause must commit PAUSED`);
+                let records = runtime.api.journal.queuedHistory();
+                assert.equal(records.length, 2, `${label}: pause must save the first segment of the next timer`);
+                assert.equal(records[1].durationMs, 90000);
+                assert.equal(records[1].visibility, 'visible');
+                assert.equal(records[1].mode, mode);
+                assert.equal(runtime.api.manager.getState().activeTimer?.sessionId, sessionId,
+                    `${label}: pause must retain the active session`);
+                controls.advance(300000);
+                await controls.toggle();
+                assert.ok(runtime.api.manager.getState().activeTimer?.openRecordId,
+                    `${label}: floating resume must open a new history segment`);
+                controls.advance(120000);
+                await controls.toggle();
+                records = runtime.api.journal.queuedHistory();
+                assert.equal(records.length, 3, `${label}: another pause must save the resumed segment`);
+                assert.equal(records[2].durationMs, 120000, `${label}: resumed history must exclude pause time`);
+                controls.advance(300000);
+                await controls.toggle();
+                controls.advance(60000);
+                await runtime.context.stop();
+                records = runtime.api.journal.queuedHistory();
+                assert.equal(records.length, 4, `${label}: stop must save the final resumed segment`);
+                assert.equal(records[3].durationMs, 60000, `${label}: stop after resume must exclude pause time`);
+                assert.equal(new Set(records.map(record => record.recordId)).size, 4);
+                assert.ok(records.every(record => record.visibility === 'visible'));
+                assert.equal(runtime.api.manager.getState().status, 'IDLE');
+                await runtime.api.executor.flushProjections();
+                assert.equal(runtime.storage.history.size, 4, `${label}: all segments must reach history storage`);
+            }
+        }
+    }
+}
+
 (async () => {
+    await testFloatTimerHistory();
     const runtime = createRuntime();
     await runtime.start('start-a');
     const operationDraft = draft('record-a');
@@ -295,5 +407,5 @@ function attachEndRecorder(runtime, mode, elapsedMs, accumulatedMs = 0) {
     assert.equal(cappedRecord.durationMs, 24 * 3600000);
     assert.equal(Date.parse(cappedRecord.end) - Date.parse(cappedRecord.start), cappedRecord.durationMs);
 
-    console.log('timer journal queue tests passed: durability, restart, legacy migration, edit/delete safety, backpressure, one write per transition and independent writer scopes');
+    console.log('timer journal queue tests passed: desktop/mobile floating start, pause/resume history, durability, restart, legacy migration, edit/delete safety, backpressure, one write per transition and independent writer scopes');
 })().catch(error => { process.nextTick(() => { throw error; }); });

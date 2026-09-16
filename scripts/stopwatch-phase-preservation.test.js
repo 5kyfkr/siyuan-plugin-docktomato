@@ -12,7 +12,9 @@ assert.ok(helperStart >= 0 && helperEnd > helperStart, 'stopwatch phase helper m
 
 const helperSource = source.slice(helperStart, helperEnd);
 const menuCalls = source.match(/await startStopwatchForCurrentPhase\(\)/g) || [];
-assert.equal(menuCalls.length, 2, 'both stopwatch context menu implementations must preserve the current phase');
+assert.equal(menuCalls.length, 2, 'both context menus must use the explicit focus stopwatch action');
+assert.match(source, /label: '⏱️ 专注正计时',[\s\S]*?await startStopwatchForCurrentPhase\(\)/,
+    'the desktop float menu must label the focus action consistently even during a break');
 
 const resetStart = source.indexOf('    async function resetCurrentMode(');
 const resetEnd = source.indexOf('    async function completeCurrentTomato(', resetStart);
@@ -43,8 +45,8 @@ async function getStartedMode(timerMode) {
 (async () => {
     assert.equal(await getStartedMode('countdown'), 'stopwatch');
     assert.equal(await getStartedMode('stopwatch'), 'stopwatch');
-    assert.equal(await getStartedMode('break'), 'stopwatch-break');
-    assert.equal(await getStartedMode('stopwatch-break'), 'stopwatch-break');
+    assert.equal(await getStartedMode('break'), 'stopwatch');
+    assert.equal(await getStartedMode('stopwatch-break'), 'stopwatch');
     console.log('stopwatch phase preservation tests passed');
 })().catch((error) => {
     process.nextTick(() => { throw error; });

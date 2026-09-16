@@ -296,6 +296,8 @@
     const STOPWATCH_HOURLY_REMINDER_STORAGE_KEY = 'tomato-stopwatch-hourly-reminder-v1';
     const STOPWATCH_HOURLY_TOAST_DURATION_MS = 3000;
     const STOPWATCH_HOURLY_NOTIFICATION_RETRY_DELAY_MS = 15000;
+    const MOBILE_FLOAT_POSITION_STORAGE_KEY = 'tomato-mobile-float-position-v1';
+    const DESKTOP_FLOAT_BOUNDS_STORAGE_KEY = 'tomato-desktop-float-bounds-v1';
 
     const PLUGIN_STORAGE_PARENT_DIR = '/data/storage/petal';
     const PLUGIN_STORAGE_DIR = '/data/storage/petal/siyuan-plugin-docktomato';
@@ -17170,6 +17172,8 @@
 
             isRunning = true;
             isTimerPaused = false;
+            // A resumed segment must not end at the previous pause timestamp.
+            currentPauseStart = null;
             pausedRemainingSeconds = null;
             // 🔧 修复：恢复运行时清除暂停颜色，并重新获取当前按钮颜色
             // 这确保暂停后恢复时，时间轴能正确使用当前活跃按钮的颜色
@@ -17499,6 +17503,10 @@
             );
             if (transition?.state) syncState = transition.state;
             if (!transition?.ok) throw new Error(transition?.blocked ? 'PAUSE_TRANSITION_BLOCKED' : 'PAUSE_TRANSITION_FAILED');
+            // Publish the paused snapshot after syncState changes to PAUSED.
+            // Otherwise getEffectiveTimerActivity() can still see the old RUNNING
+            // sync state and the desktop float window continues its live ticker.
+            try { updateDisplay(true); } catch (e) {}
         }
         // The segment was persisted before the pause snapshot was committed.
     }
@@ -17602,6 +17610,12 @@
             );
             if (transition?.state) syncState = transition.state;
             if (!transition?.ok) throw new Error('STOP_SYNC_COMMIT_FAILED');
+
+            // The float window renders RUNNING timers locally from its payload's
+            // live timestamps. Refresh it only after the IDLE state has been
+            // committed, otherwise its own renderer keeps counting in the
+            // background after the bottom-bar timer has ended.
+            try { updateDisplay(true); } catch (e) {}
         }
     }
 
@@ -18202,7 +18216,8 @@
                 active.segmentStartMs = null;
                 active.openRecordId = null;
                 draft.openRecordId = null;
-                const terminal = isCompleted || isReset || phaseAtEnd === 'break' || !skipSyncUpdate;
+                // Pausing a break must retain its session just like focus.
+                const terminal = isCompleted || isReset || !skipSyncUpdate;
                 if (terminal) {
                     draft.activeTimer = null;
                     draft.status = 'IDLE';
@@ -18953,10 +18968,10 @@
 
     async function startStopwatchForCurrentPhase() {
         assertTimerReady();
-        if (timerMode === 'break' || timerMode === 'stopwatch-break') {
-            await startStopwatchBreakMode();
-            return;
-        }
+        // This action is the focus-mode command shown as “专注正计时”.
+        // Break mode has its own “计” action for starting a stopwatch break;
+        // routing the focus command through startStopwatchBreakMode() would
+        // leave the user in stopwatch-break instead of starting focus.
         await switchToStopwatchAndStart();
     }
 
@@ -19174,6 +19189,7 @@
                     }
                     return next;
                 }, 'abandon', { confirm });
+                try { updateDisplay(true); } catch (e) {}
             }
             showToast('已放弃番茄钟', 1600);
             return true;
@@ -19284,6 +19300,7 @@
                         return next;
                     }, 'break-reset', { confirm });
                     Logger.info('🔄 休息模式重置状态已同步到云端');
+                    try { updateDisplay(true); } catch (e) {}
                 }
                 clearRoutineButtonRunningHighlight(true);
                 endTimerFocus('reset-current-mode');
@@ -19427,6 +19444,7 @@
                     return next;
                 }, 'reset', { confirm });
                 Logger.info('🔄 重置状态已同步到云端');
+                try { updateDisplay(true); } catch (e) {}
             }
         });
     }
@@ -19487,6 +19505,9 @@
                     }
                     return next;
                 }, 'complete', { confirm: opts.confirm !== false });
+                // The completion path does not call stopTimer(), so explicitly
+                // publish the final IDLE payload to the desktop float window.
+                try { updateDisplay(true); } catch (e) {}
             }
             if (opts.suppressToast !== true) showToast('✅ 已完成番茄', 1600);
         });
@@ -19809,7 +19830,7 @@
         if (currentAudioSettings.backgroundEnabled !== false && hasBackgroundAudio) {
             const muteBackgroundItem = document.createElement('div');
             const isMuted = currentAudioSettings.backgroundMuted === true;
-            muteBackgroundItem.textContent = isMuted ? '🔊 取消静音背景音' : '🔇 静音背景音';
+            muteBackgroundItem.textContent = isMuted ? '🔊 取消静音' : '🔇 静音背景音';
             muteBackgroundItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
             muteBackgroundItem.onmouseenter = () => muteBackgroundItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
             muteBackgroundItem.onmouseleave = () => muteBackgroundItem.style.backgroundColor = '';
@@ -25937,7 +25958,26 @@ function calculateWeeklyStats(dailyStatsArray) {
     let isLongPress = false;
     let isContextMenuOpen = false;  // 跟踪菜单是否打开
     
-    // 🔧 v9.0 修复：保存悬浮窗位置，用于关闭后再打开时恢复
+    function loadMobileFloatBarPosition() {
+        try {
+            const raw = localStorage.getItem(MOBILE_FLOAT_POSITION_STORAGE_KEY);
+            const value = raw ? JSON.parse(raw) : null;
+            if (Number.isFinite(value?.x) && Number.isFinite(value?.y)) {
+                savedFloatBarPosition.x = value.x;
+                savedFloatBarPosition.y = value.y;
+            }
+        } catch (e) {}
+    }
+
+    function saveMobileFloatBarPosition() {
+        try {
+            if (Number.isFinite(savedFloatBarPosition.x) && Number.isFinite(savedFloatBarPosition.y)) {
+                localStorage.setItem(MOBILE_FLOAT_POSITION_STORAGE_KEY, JSON.stringify(savedFloatBarPosition));
+            }
+        } catch (e) {}
+    }
+
+    // 保存悬浮窗位置，用于关闭后再打开时恢复
     let savedFloatBarPosition = {
         x: null,
         y: null
@@ -26006,7 +26046,22 @@ function calculateWeeklyStats(dailyStatsArray) {
     let desktopFloatWindowState = {
         isMinimized: false,
         alwaysOnTop: true,
-        bounds: null,
+        bounds: (() => {
+            try {
+                const raw = localStorage.getItem(DESKTOP_FLOAT_BOUNDS_STORAGE_KEY);
+                const value = raw ? JSON.parse(raw) : null;
+                return Number.isFinite(value?.x) && Number.isFinite(value?.y)
+                    ? {
+                        x: value.x,
+                        y: value.y,
+                        width: Number.isFinite(value.width) && value.width > 0 ? value.width : undefined,
+                        height: Number.isFinite(value.height) && value.height > 0 ? value.height : undefined,
+                    }
+                    : null;
+            } catch (e) {
+                return null;
+            }
+        })(),
         expanded: false,
         circularExpandedLeft: true,
         dismissed: false
@@ -26250,6 +26305,13 @@ function calculateWeeklyStats(dailyStatsArray) {
         }, { store: !isDesktopFloatWindowCircularTimerStyleEnabled() || nextWidth <= compactWidth });
     }
 
+    function saveDesktopFloatWindowBounds() {
+        if (desktopFloatWindowDragState || !desktopFloatWindowState.bounds) return;
+        try {
+            localStorage.setItem(DESKTOP_FLOAT_BOUNDS_STORAGE_KEY, JSON.stringify(desktopFloatWindowState.bounds));
+        } catch (e) {}
+    }
+
     function setDesktopFloatWindowBounds(win, bounds, options = {}) {
         if (!win || win.isDestroyed?.() || !bounds) return false;
         const compactWidth = getDesktopFloatWindowCompactWidth();
@@ -26259,12 +26321,22 @@ function calculateWeeklyStats(dailyStatsArray) {
             width: Math.max(1, Math.round(Number(bounds.width) || compactWidth)),
             height: Math.max(1, Math.round(Number(bounds.height) || getDesktopFloatWindowCurrentHeight()))
         };
+        if (options?.clampToScreen === true) {
+            const screen = getDesktopFloatWindowElectronSupport().screen;
+            const display = screen?.getDisplayMatching?.(targetBounds) || screen?.getPrimaryDisplay?.();
+            const area = display?.workArea;
+            if (area) {
+                targetBounds.x = Math.max(area.x, Math.min(targetBounds.x, area.x + area.width - targetBounds.width));
+                targetBounds.y = Math.max(area.y, Math.min(targetBounds.y, area.y + area.height - targetBounds.height));
+            }
+        }
         desktopFloatWindowIgnoreMoveUntilMs = Date.now() + 180;
         desktopFloatWindowProgrammaticBounds = { ...targetBounds, until: Date.now() + 1200 };
         try {
             win.setBounds(targetBounds, false);
             if (options?.store !== false) {
                 desktopFloatWindowState.bounds = getDesktopFloatWindowStoredBoundsFromDisplayBounds(targetBounds);
+                saveDesktopFloatWindowBounds();
             }
             return true;
         } catch (e) {
@@ -26391,7 +26463,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (currentAudioSettings.backgroundEnabled !== false && hasBackgroundAudio) {
             const isMuted = currentAudioSettings.backgroundMuted === true;
             template.push({
-                label: isMuted ? '🔊 取消静音背景音' : '🔇 静音背景音',
+                label: isMuted ? '🔊 取消静音' : '🔇 静音背景音',
                 click: () => runAction(async () => { await setBackgroundAudioMuted(!isMuted); })
             });
             pushSeparator();
@@ -26467,7 +26539,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         pushSeparator();
 
         template.push({
-            label: (timerMode === 'break' || timerMode === 'stopwatch-break') ? '☕ 正计时休息' : '⏱️ 专注正计时',
+            label: '⏱️ 专注正计时',
             click: () => runAction(async () => { await startStopwatchForCurrentPhase(); })
         }, {
             label: isRunning ? '暂停' : '继续',
@@ -27538,6 +27610,7 @@ window.__setTomatoFloatState = function (payload) {
                             return;
                         }
                         desktopFloatWindowState.bounds = getDesktopFloatWindowStoredBoundsFromDisplayBounds(bounds);
+                        saveDesktopFloatWindowBounds();
                     } catch (e) {}
                 });
             } catch (e) {}
@@ -27650,6 +27723,7 @@ window.__setTomatoFloatState = function (payload) {
                             try { resizeDesktopMinimizedFloatWindow(win, desktopFloatWindowDragState.width); } catch (e) {}
                         }
                         desktopFloatWindowDragState = null;
+                        saveDesktopFloatWindowBounds();
                         return;
                     }
                     if (command === 'dismiss') {
@@ -27694,7 +27768,7 @@ window.__setTomatoFloatState = function (payload) {
                         y: getDesktopFloatWindowDisplayYFromStoredBounds(savedBounds, height),
                         width: expandedWidth,
                         height
-                    });
+                    }, { clampToScreen: true });
                     return;
                 }
                 const savedWidth = Number(savedBounds.width) || compactWidth;
@@ -27706,7 +27780,7 @@ window.__setTomatoFloatState = function (payload) {
                     y: getDesktopFloatWindowDisplayYFromStoredBounds(savedBounds, height),
                     width: normalizedWidth,
                     height
-                });
+                }, { clampToScreen: true });
                 return;
             } catch (e) {}
         }
@@ -27942,6 +28016,7 @@ window.__setTomatoFloatState = function (payload) {
         // 根据屏幕宽度决定悬浮条大小和位置
         const isSmallMobile = screenWidth < 360;
         const floatBarSize = isSmallMobile ? 44 : 52;
+        loadMobileFloatBarPosition();
 
         // 样式
         floatBar.style.cssText = `
@@ -28036,9 +28111,12 @@ window.__setTomatoFloatState = function (payload) {
         let isDragging = false;
         let startX, startY;
         let initialX, initialY;
+        const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
         // 🔧 v9.0 修复：恢复保存的位置，否则使用默认位置
         let currentX = savedFloatBarPosition.x !== null ? savedFloatBarPosition.x : (screenWidth - 76);
         let currentY = savedFloatBarPosition.y !== null ? savedFloatBarPosition.y : (screenHeight - 180);
+        currentX = clamp(currentX, 0, Math.max(0, screenWidth - floatBarSize));
+        currentY = clamp(currentY, 0, Math.max(0, screenHeight - (floatBarSize + 20)));
         
         // 如果有保存的位置，初始化时应用
         if (savedFloatBarPosition.x !== null && savedFloatBarPosition.y !== null) {
@@ -28051,9 +28129,6 @@ window.__setTomatoFloatState = function (payload) {
         // 触摸时间追踪（用于区分长按和点击）
         let touchStartTime = 0;
         let isLongPressTriggered = false;
-
-        // 边界检测
-        const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
         // 吸附边缘（支持全屏幕位置）- 使用动态屏幕尺寸
         const snapToEdge = (x, y) => {
@@ -28184,6 +28259,7 @@ window.__setTomatoFloatState = function (payload) {
                 // 🔧 v9.0 修复：保存位置，用于关闭后再打开时恢复
                 savedFloatBarPosition.x = currentX;
                 savedFloatBarPosition.y = currentY;
+                saveMobileFloatBarPosition();
             }
 
             floatBar.style.zIndex = '9999';
@@ -28366,6 +28442,7 @@ window.__setTomatoFloatState = function (payload) {
                 // 🔧 v9.0 修复：保存位置，用于关闭后再打开时恢复
                 savedFloatBarPosition.x = currentX;
                 savedFloatBarPosition.y = currentY;
+                saveMobileFloatBarPosition();
             }
 
             isDragging = false;
@@ -28398,15 +28475,14 @@ window.__setTomatoFloatState = function (payload) {
             const newScreenWidth = window.innerWidth;
             const newScreenHeight = window.innerHeight;
 
-            currentX = clamp(currentX, 0, newScreenWidth - floatBarSize);
-            currentY = clamp(currentY, 0, newScreenHeight - (floatBarSize + 20));
+            currentX = clamp(savedFloatBarPosition.x ?? currentX, 0, Math.max(0, newScreenWidth - floatBarSize));
+            currentY = clamp(savedFloatBarPosition.y ?? currentY, 0, Math.max(0, newScreenHeight - (floatBarSize + 20)));
 
             floatBar.style.left = currentX + 'px';
             floatBar.style.top = currentY + 'px';
-            
-            // 保存调整后的位置
-            savedFloatBarPosition.x = currentX;
-            savedFloatBarPosition.y = currentY;
+            floatBar.style.right = 'auto';
+            floatBar.style.bottom = 'auto';
+            // 键盘弹出等临时视口变化不覆盖最后一次拖动的位置。
         };
         
         floatBarEventHandlers.resize = onResize;
