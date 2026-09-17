@@ -272,6 +272,198 @@
         stats: globalThis.__dockTomatoStatsFacade || null,
     };
 
+    // Public, versioned focus bridge for optional peer plugins. This facade is
+    // deliberately thin: it delegates to Dock Tomato's existing state machine
+    // and never exposes mutable timer internals or storage paths.
+    const DOCK_TOMATO_FOCUS_API_VERSION = 1;
+    const DOCK_TOMATO_EXTERNAL_CONTEXT_MAX_BYTES = 4096;
+    const DOCK_TOMATO_FOCUS_CAPABILITIES = Object.freeze([
+        'status',
+        'start',
+        'pause',
+        'completion-event',
+        'history-context',
+    ]);
+    let dockTomatoExternalFocusContext = null;
+
+    function createDockTomatoFocusError(code, message = code) {
+        const error = new Error(String(message || code));
+        error.code = String(code || 'DOCK_TOMATO_FOCUS_ERROR');
+        return error;
+    }
+
+    function normalizeDockTomatoExternalContext(value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+        const safe = {};
+        try {
+            const prototype = Object.getPrototypeOf(value);
+            if (prototype !== Object.prototype && prototype !== null) return null;
+            const descriptors = Object.getOwnPropertyDescriptors(value);
+            for (const [key, descriptor] of Object.entries(descriptors).slice(0, 24)) {
+                if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(key) || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) continue;
+                const entry = descriptor.value;
+                if (typeof entry === 'string') safe[key] = entry.slice(0, 512);
+                else if (typeof entry === 'number' && Number.isFinite(entry)) safe[key] = entry;
+                else if (typeof entry === 'boolean' || entry === null) safe[key] = entry;
+            }
+            const json = JSON.stringify(safe);
+            const byteLength = typeof TextEncoder === 'function'
+                ? new TextEncoder().encode(json).byteLength
+                : unescape(encodeURIComponent(json)).length;
+            if (byteLength > DOCK_TOMATO_EXTERNAL_CONTEXT_MAX_BYTES) return null;
+        } catch (e) { return null; }
+        return Object.keys(safe).length ? Object.freeze(safe) : null;
+    }
+
+    function getDockTomatoFocusStatus() {
+        const stateStatus = String(syncState?.status || '').trim();
+        const active = !!isRunning || !!isTimerPaused || stateStatus === 'RUNNING' || stateStatus === 'PAUSED';
+        const sessionId = String(syncState?.activeTimer?.focusSessionId || syncState?.activeTimer?.sessionId || currentSessionId || '').trim();
+        const externalSessionId = String(syncState?.integrationEnvelope?.externalFocusSessionId || '').trim();
+        return Object.freeze({
+            ready: !!__tomatoTimerReady && !__tomatoDestroyed,
+            active,
+            running: !!isRunning || stateStatus === 'RUNNING',
+            paused: !!isTimerPaused || stateStatus === 'PAUSED',
+            mode: String(timerMode || syncState?.mode || ''),
+            sessionId,
+            durationMinutes: Number(currentDuration) || __getDefaultTomatoTimeMinutes(),
+            context: externalSessionId && externalSessionId === sessionId
+                ? normalizeDockTomatoExternalContext(syncState?.integrationEnvelope?.externalFocus || dockTomatoExternalFocusContext)
+                : null,
+        });
+    }
+
+    function emitDockTomatoFocusEvent(name, detail = {}) {
+        const payload = Object.freeze({apiVersion: DOCK_TOMATO_FOCUS_API_VERSION, ...detail});
+        try { window.dispatchEvent(new CustomEvent(name, {detail: payload})); } catch (e) {}
+        return payload;
+    }
+
+    async function startDockTomatoExternalFocus(input = {}) {
+        if (!__tomatoTimerReady || __tomatoDestroyed) throw createDockTomatoFocusError('DOCK_TOMATO_NOT_READY');
+        const status = getDockTomatoFocusStatus();
+        if (status.active) {
+            throw createDockTomatoFocusError('DOCK_TOMATO_TIMER_BUSY');
+        }
+        const request = input && typeof input === 'object' ? input : {};
+        const context = normalizeDockTomatoExternalContext(request.context);
+        if (Object.prototype.hasOwnProperty.call(request, 'context') && request.context != null && !context) {
+            throw createDockTomatoFocusError('DOCK_TOMATO_INVALID_CONTEXT');
+        }
+        const requestedMinutes = request.durationMinutes == null
+            ? __getDefaultTomatoTimeMinutes()
+            : request.durationMinutes;
+        const previous = {
+            timerMode,
+            currentDuration,
+            remainingSeconds,
+            pausedRemainingSeconds,
+            currentTaskBlockId,
+            currentTaskBlockName,
+            currentDatabaseBlockId,
+            segmentTaskBlockId,
+            segmentTaskBlockName,
+            segmentDatabaseBlockId,
+            focusRestoreSource,
+            lastCompletedAssociationFocusSnapshot,
+            taskAssociationCleared,
+            currentSessionId,
+            taskBlockId: syncState?.taskBlockId,
+            taskBlockName: syncState?.taskBlockName,
+            databaseBlockId: syncState?.databaseBlockId,
+            envelopeHadTaskAssociation: Object.prototype.hasOwnProperty.call(syncState?.integrationEnvelope || {}, 'taskAssociation'),
+            envelopeTaskAssociation: syncState?.integrationEnvelope?.taskAssociation,
+            envelopeHadExternalFocus: Object.prototype.hasOwnProperty.call(syncState?.integrationEnvelope || {}, 'externalFocus'),
+            envelopeExternalFocus: syncState?.integrationEnvelope?.externalFocus,
+            envelopeHadExternalFocusSessionId: Object.prototype.hasOwnProperty.call(syncState?.integrationEnvelope || {}, 'externalFocusSessionId'),
+            envelopeExternalFocusSessionId: syncState?.integrationEnvelope?.externalFocusSessionId,
+        };
+        timerMode = 'countdown';
+        setPendingCountdownDuration(requestedMinutes);
+        // Do not accidentally inherit a previously selected SiYuan block.
+        currentTaskBlockId = null;
+        currentTaskBlockName = null;
+        currentDatabaseBlockId = null;
+        segmentTaskBlockId = null;
+        segmentTaskBlockName = null;
+        segmentDatabaseBlockId = null;
+        focusRestoreSource = '';
+        lastCompletedAssociationFocusSnapshot = null;
+        taskAssociationCleared = true;
+        currentSessionId = createTomatoUuid('focus');
+        dockTomatoExternalFocusContext = context;
+        if (!syncState.integrationEnvelope || typeof syncState.integrationEnvelope !== 'object') syncState.integrationEnvelope = {};
+        syncState.integrationEnvelope.taskAssociation = null;
+        syncState.taskBlockId = null;
+        syncState.taskBlockName = null;
+        syncState.databaseBlockId = null;
+        syncState.integrationEnvelope.externalFocus = context;
+        syncState.integrationEnvelope.externalFocusSessionId = currentSessionId;
+        try {
+            await startTimer({confirm: request.confirm !== false});
+            const next = getDockTomatoFocusStatus();
+            emitDockTomatoFocusEvent('tomato:focus-session-started', next);
+            return next;
+        } catch (error) {
+            dockTomatoExternalFocusContext = null;
+            timerMode = previous.timerMode;
+            currentDuration = previous.currentDuration;
+            remainingSeconds = previous.remainingSeconds;
+            pausedRemainingSeconds = previous.pausedRemainingSeconds;
+            currentTaskBlockId = previous.currentTaskBlockId;
+            currentTaskBlockName = previous.currentTaskBlockName;
+            currentDatabaseBlockId = previous.currentDatabaseBlockId;
+            segmentTaskBlockId = previous.segmentTaskBlockId;
+            segmentTaskBlockName = previous.segmentTaskBlockName;
+            segmentDatabaseBlockId = previous.segmentDatabaseBlockId;
+            focusRestoreSource = previous.focusRestoreSource;
+            lastCompletedAssociationFocusSnapshot = previous.lastCompletedAssociationFocusSnapshot;
+            taskAssociationCleared = previous.taskAssociationCleared;
+            currentSessionId = previous.currentSessionId;
+            syncState.taskBlockId = previous.taskBlockId;
+            syncState.taskBlockName = previous.taskBlockName;
+            syncState.databaseBlockId = previous.databaseBlockId;
+            if (syncState?.integrationEnvelope) {
+                if (previous.envelopeHadTaskAssociation) syncState.integrationEnvelope.taskAssociation = previous.envelopeTaskAssociation;
+                else delete syncState.integrationEnvelope.taskAssociation;
+                if (previous.envelopeHadExternalFocus) syncState.integrationEnvelope.externalFocus = previous.envelopeExternalFocus;
+                else delete syncState.integrationEnvelope.externalFocus;
+                if (previous.envelopeHadExternalFocusSessionId) syncState.integrationEnvelope.externalFocusSessionId = previous.envelopeExternalFocusSessionId;
+                else delete syncState.integrationEnvelope.externalFocusSessionId;
+            }
+            try { updateTaskBlockIcon(); } catch (e) {}
+            try { updateTaskBlockTooltip(); } catch (e) {}
+            try { updateDisplay(true); } catch (e) {}
+            throw error;
+        }
+    }
+
+    async function pauseDockTomatoExternalFocus() {
+        if (!__tomatoTimerReady || __tomatoDestroyed) throw createDockTomatoFocusError('DOCK_TOMATO_NOT_READY');
+        const before = getDockTomatoFocusStatus();
+        if (!before.active) return before;
+        // Adapter stop is intentionally non-destructive: preserve elapsed time
+        // and let the user resume or abandon it from Dock Tomato.
+        if (before.running) await pauseTimer();
+        const next = getDockTomatoFocusStatus();
+        emitDockTomatoFocusEvent('tomato:focus-session-paused', next);
+        return next;
+    }
+
+    globalThis.__dockTomato.focus = Object.freeze({
+        version: DOCK_TOMATO_FOCUS_API_VERSION,
+        capabilities: DOCK_TOMATO_FOCUS_CAPABILITIES,
+        getStatus: () => getDockTomatoFocusStatus(),
+        start: (input) => startDockTomatoExternalFocus(input),
+        pause: () => pauseDockTomatoExternalFocus(),
+    });
+    emitDockTomatoFocusEvent('tomato:focus-api-availability-changed', {
+        available: true,
+        ready: false,
+        capabilities: DOCK_TOMATO_FOCUS_CAPABILITIES,
+    });
+
     // ========== 配置项 ==========
     const DEFAULT_TOMATO_DURATIONS = [5, 15, 25, 30, 45, 60, 90, 120];
     const DEFAULT_BREAK_DURATIONS = [5, 10, 15, 30];
@@ -745,6 +937,10 @@
                 routineButton,
                 distraction,
                 notificationSchedules: envelope.notificationSchedules || st.notificationSchedules || {},
+                externalFocus: typeof normalizeDockTomatoExternalContext === 'function'
+                    ? normalizeDockTomatoExternalContext(envelope.externalFocus)
+                    : (envelope.externalFocus || null),
+                externalFocusSessionId: String(envelope.externalFocusSessionId || ''),
             },
             writerLease: st.writerLease || null,
             endDialog: st.endDialog || null,
@@ -18103,6 +18299,12 @@
                 focusSessionId: focusSessionIdAtEnd,
                 endReason: isCompleted ? 'completed' : (isReset ? 'aborted' : (phaseAtEnd === 'break' ? 'finish-break' : 'manual-end')),
                 recordKind: phaseAtEnd === 'break' ? 'break' : 'focus',
+                integrationContext: String(syncStateAtEnd?.integrationEnvelope?.externalFocusSessionId || '') === String(focusSessionIdAtEnd || '')
+                    && typeof normalizeDockTomatoExternalContext === 'function'
+                        ? normalizeDockTomatoExternalContext(
+                            syncStateAtEnd?.integrationEnvelope?.externalFocus || (typeof dockTomatoExternalFocusContext !== 'undefined' ? dockTomatoExternalFocusContext : null)
+                        )
+                        : null,
                 // 🔧 新增：按钮颜色，用于时间轴高亮显示
                 routineButtonId: routineMetaAtEnd?.id || null,
                 routineButtonName: routineMetaAtEnd?.name || null,
@@ -18259,6 +18461,22 @@
             Logger.info('✅ 记录已通过事务执行器保存');
             markTimelineHistoryDirty();
             try { if (userSettings?.timeline?.enabled) updateTimelineBar(true); } catch (e) {}
+
+            if (recordData.phase === 'focus' && recordData.isCompleted && recordData.integrationContext) {
+                emitDockTomatoFocusEvent('tomato:focus-session-completed', {
+                    sessionId: String(recordData.focusSessionId || recordData.sessionId || recordData.recordId || ''),
+                    recordId: String(recordData.recordId || ''),
+                    completedAt: recordData.end,
+                    durationMinutes: Number(recordData.durationMin) || 0,
+                    plannedDurationMinutes: Number(recordData.plannedDuration) || 0,
+                    context: recordData.integrationContext,
+                });
+                dockTomatoExternalFocusContext = null;
+                if (syncState?.integrationEnvelope) {
+                    delete syncState.integrationEnvelope.externalFocus;
+                    delete syncState.integrationEnvelope.externalFocusSessionId;
+                }
+            }
         } catch (e) {
             // 错误日志保留用于调试
             console.error('保存记录时出错:', e);
@@ -37967,6 +38185,11 @@ window.__setTomatoFloatState = function (payload) {
             if (isRunning && !timerId) startLocalTimerLoop();
         }
         __tomatoTimerReady = true;
+        emitDockTomatoFocusEvent('tomato:focus-api-availability-changed', {
+            available: true,
+            ready: true,
+            capabilities: DOCK_TOMATO_FOCUS_CAPABILITIES,
+        });
         
         // 暴露音频配置函数到全局（方便用户在控制台配置）
         window.tomatoAudio = {
@@ -38517,6 +38740,8 @@ window.__setTomatoFloatState = function (payload) {
         try { delete window.tomatoSync; } catch (e) {}
         try { delete window.tomatoAudio; } catch (e) {}
         try { delete window.tomatoBreadcrumbObserver; } catch (e) {}
+        try { emitDockTomatoFocusEvent('tomato:focus-api-availability-changed', {available: false}); } catch (e) {}
+        try { dockTomatoExternalFocusContext = null; } catch (e) {}
         try { delete globalThis.__dockTomato; } catch (e) {}
         try { delete globalThis.__dockTomatoReminderDock; } catch (e) {}
         try { delete globalThis.__tomatoReminder; } catch (e) {}
