@@ -13,6 +13,24 @@
 - **优化：悬浮窗操作文案与入口**
   - “取消静音背景音”统一简化为“取消静音”；悬浮窗菜单统一显示“专注正计时”，避免休息阶段入口名称和实际操作不一致
 
+## 第三方插件专注接口
+
+底栏番茄钟通过 `window.__dockTomato.focus` 提供可选、版本化的专注接口。调用方应检查 `version === 1`，在存在时校验只读 `capabilities`，监听 `tomato:focus-api-availability-changed` 兼容任意插件加载顺序，并在卸载时移除监听器。当前能力包括 `status`、`start`、`pause`、`completion-event` 和 `history-context`。计时状态尚未恢复时会抛出 `DOCK_TOMATO_NOT_READY`；已有运行或暂停会话时会抛出 `DOCK_TOMATO_TIMER_BUSY`，均不会覆盖当前会话。
+
+```js
+const focus = window.__dockTomato?.focus;
+if (focus?.version === 1 && !focus.getStatus().active) {
+    await focus.start({
+        // 省略时使用底栏番茄钟中配置的默认番茄时长
+        context: {consumer: "my-plugin", taskId: "stable-task-id"},
+    });
+}
+```
+
+`start()` 只接受有限大小的纯数据 `context`；如果调用方显式提供的 context 无法安全归一化，会抛出 `DOCK_TOMATO_INVALID_CONTEXT`，不会静默丢失关联。context 会绑定到本次新建的专注会话。公开事件包括 `tomato:focus-session-started`、`tomato:focus-session-paused` 和 `tomato:focus-session-completed`。完成事件只会在同一专注会话的记录已通过原有事务持久化后触发；休息、暂停片段、之后手动启动的会话和放弃会话不会伪装成该次外部完成。事件返回稳定 `sessionId`、实际分钟数及安全 `context`，调用方应使用 `sessionId` 幂等去重。`pause()` 采用非破坏性暂停，用户仍可在底栏番茄钟中恢复或放弃。
+
+该接口不依赖任何特定第三方插件，也不开放内部存储路径或可变状态；小飞驴打卡、任务管理、积分或日历插件均可在各自授权范围内消费同一契约。完成通知是实时浏览器事件，并非可持久重放的消息队列；调用方必须按 `sessionId` 去重，也不能假设自身重载后仍能补收旧事件。历史中的安全 context 为未来显式补偿查询接口预留，本版不承诺直接读取内部历史文件。
+
 <details>
 <summary>历史版本更新（点击展开）</summary>
 
