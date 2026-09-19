@@ -1201,6 +1201,13 @@
                         }
                         continue;
                     }
+                    const remoteAlreadyMatchesPending = remote
+                        && compareSyncStateVersions(remote, pending) === 0
+                        && buildSemanticSignature(remote) === buildSemanticSignature(pending);
+                    if (remoteAlreadyMatchesPending) {
+                        this.localState = prepareCanonicalStateForSync(remote);
+                        continue;
+                    }
                     const saved = await this.saveToCloud(pending, false, { confirm: false });
                     if (saved) continue;
                     this._deferredSyncState = pending;
@@ -18352,10 +18359,18 @@
         const prevDatabaseBlockId = currentDatabaseBlockId;
         const previousAssociation = syncState?.integrationEnvelope?.taskAssociation;
         localAssociationChangedAtMs = Date.now();
-        const resolvedTaskBlockId = String(taskBlockId || '').trim() || null;
+        const requestedTaskBlockId = String(taskBlockId || '').trim() || null;
+        let taskContext = null;
+        if (resolveContext && (requestedTaskBlockId || databaseBlockId)) {
+            try { taskContext = await resolveTomatoAttrContext(requestedTaskBlockId || databaseBlockId); } catch (e) {}
+        }
+        // 关联、历史记录和属性结算必须使用同一个内层任务 ID。
+        const resolvedTaskBlockId = requestedTaskBlockId && taskContext?.kind === 'task'
+            ? (taskContext.taskId || requestedTaskBlockId)
+            : requestedTaskBlockId;
         const fallbackTaskBlockName = __sanitizeTaskAssociationName(taskBlockName) || String(taskBlockName || '').trim() || null;
         const resolvedTaskBlockName = resolvedTaskBlockId
-            ? (await __resolveTaskAssociationName(resolvedTaskBlockId, taskBlockName) || fallbackTaskBlockName)
+            ? (await __resolveTaskAssociationName(resolvedTaskBlockId, resolvedTaskBlockId === requestedTaskBlockId ? taskBlockName : null) || fallbackTaskBlockName)
             : null;
         if (resolvedTaskBlockId || databaseBlockId) {
             lastCompletedAssociationFocusSnapshot = null;
@@ -18365,10 +18380,7 @@
         currentDatabaseBlockId = databaseBlockId || null;
         let v2Association = null;
         if (resolvedTaskBlockId || currentDatabaseBlockId) {
-            let attrHostId = resolvedTaskBlockId || currentDatabaseBlockId;
-            if (resolveContext) {
-                try { attrHostId = (await resolveTomatoAttrContext(resolvedTaskBlockId || currentDatabaseBlockId))?.attrHostId || attrHostId; } catch (e) {}
-            }
+            const attrHostId = taskContext?.attrHostId || resolvedTaskBlockId || currentDatabaseBlockId;
             const sameAssociation = previousAssociation
                 && String(previousAssociation.taskBlockId || '') === String(resolvedTaskBlockId || '')
                 && String(previousAssociation.taskBlockName || '') === String(currentTaskBlockName || '')
@@ -18618,11 +18630,11 @@
 
         if (hasRestorableFocusSource()) {
             // 立即高亮
-            highlightTaskBlock(taskBlockId);
+            highlightTaskBlock(currentTaskBlockId || taskBlockId);
 
             // 延迟再次高亮，确保元素已渲染
             setTimeout(() => {
-                highlightTaskBlock(taskBlockId);
+                highlightTaskBlock(currentTaskBlockId || taskBlockId);
             }, 100);
 
             // 启动保持高亮的定时器
@@ -18726,11 +18738,11 @@
 
         if (hasRestorableFocusSource()) {
             // 立即高亮
-            highlightTaskBlock(taskBlockId);
+            highlightTaskBlock(currentTaskBlockId || taskBlockId);
 
             // 延迟再次高亮，确保元素已渲染
             setTimeout(() => {
-                highlightTaskBlock(taskBlockId);
+                highlightTaskBlock(currentTaskBlockId || taskBlockId);
             }, 100);
 
             // 启动保持高亮的定时器
@@ -26723,7 +26735,7 @@ body {
 .shell {
     position: relative;
     width: 100%;
-    height: ${getDesktopFloatWindowCollapsedHeight()}px;
+    height: ${getDesktopFloatWindowCollapsedHeight() - 2}px;
     flex: 0 0 auto;
     box-sizing: border-box;
     padding: ${getDesktopFloatWindowTopPadding()}px 8px 5px;
@@ -26731,7 +26743,7 @@ body {
     background: ${colors.shellBackground};
     color: ${colors.textColor};
     border: 1px solid ${colors.borderColor};
-    box-shadow: 0 10px 22px ${colors.shadowColor};
+    box-shadow: none;
     display: flex;
     flex-direction: column;
     justify-content: flex-end;
@@ -26740,10 +26752,15 @@ body {
     app-region: drag;
     transition: height 140ms ease-out;
 }
+/* Keep the rounded border inside the transparent native window at fractional desktop scales. */
+.shell:not(.circular-mode) {
+    width: calc(100% - 2px);
+    margin: 1px;
+}
 .shell.is-expanded:not(.circular-mode),
 .shell:not(.circular-mode):hover,
 .shell:not(.circular-mode):focus-within {
-    height: ${getDesktopFloatWindowExpandedHeight()}px;
+    height: ${getDesktopFloatWindowExpandedHeight() - 2}px;
 }
 .topline {
     position: absolute;
@@ -27574,7 +27591,7 @@ window.__setTomatoFloatState = function (payload) {
                 focusable: true,
                 transparent: true,
                 backgroundColor: '#00000000',
-                hasShadow: !isDesktopFloatWindowCircularTimerStyleEnabled(),
+                hasShadow: false,
                 webPreferences: {
                     nodeIntegration: true,
                     contextIsolation: false,
@@ -28298,6 +28315,9 @@ window.__setTomatoFloatState = function (payload) {
         floatBar.addEventListener('touchstart', (e) => {
             if (e.target === ctrlBtn || e.target.closest('.tomato-float-ctrl-btn')) return;
 
+            // 阻止原生长按选字，保留控制按钮的点击行为。
+            if (e.cancelable) e.preventDefault();
+
             // 记录触摸开始位置
             touchStartX = e.touches[0].clientX;
             touchStartY = e.touches[0].clientY;
@@ -28338,7 +28358,10 @@ window.__setTomatoFloatState = function (payload) {
                     touches: [{ clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }]
                 });
             }, 500);
-        }, { passive: true });
+        }, { passive: false });
+
+        // 原生长按菜单不能覆盖番茄钟自己的菜单。
+        floatBar.addEventListener('contextmenu', (e) => e.preventDefault());
 
         // 移动端触摸移动 - 处理拖动
         // 🔧 v9.0 修复：使用命名函数并保存引用，确保可以正确清理
@@ -29081,6 +29104,12 @@ window.__setTomatoFloatState = function (payload) {
         const style = document.createElement('style');
         style.id = 'tomato-float-bar-style';
         style.textContent = `
+            #siyuan-tomato-float-bar,
+            #siyuan-tomato-float-bar * {
+                -webkit-user-select: none;
+                user-select: none;
+                -webkit-touch-callout: none;
+            }
             @keyframes tomatoSlideUp {
                 from { transform: translateY(100%); }
                 to { transform: translateY(0); }
@@ -31965,8 +31994,9 @@ window.__setTomatoFloatState = function (payload) {
         if (block.classList?.contains('list') || block.dataset?.type === 'NodeList') {
             Logger.info('⚠️ 步骤1：发现block是.list容器，尝试查找内部.li');
 
-            // 尝试获取第一个.li子元素
-            const firstLi = block.querySelector(':scope > .li[data-node-id]');
+            // 与容器 ID 解析规则一致：优先首个任务项，普通列表仍使用首个列表项。
+            const firstLi = block.querySelector(':scope > .li[data-subtype="t"][data-node-id], :scope > [data-type="NodeListItem"][data-subtype="t"][data-node-id]')
+                || block.querySelector(':scope > .li[data-node-id]');
             if (firstLi) {
                 Logger.info('✅ 步骤1：从.list找到内部.li子元素');
                 Logger.info('✅ 步骤1：返回的data-node-id:', firstLi?.dataset?.nodeId);
@@ -32077,8 +32107,7 @@ window.__setTomatoFloatState = function (payload) {
                 return;
             }
 
-            // 🔧 扩展：判断是否是"单个父列表"
-            // 适用于：任务列表(.li[data-subtype="t"])、有序列表(.li[data-subtype="o"])、无序列表(.li[data-subtype="u"])
+            // 任务项始终保留自身 ID；普通列表沿用单个父列表的处理方式。
             // 单个父列表 = .list 内只有一个 .li 元素（没有兄弟 .li）
             // 多个父列表 = .list 内有多个 .li 元素（有兄弟 .li）
             let targetBlockId = null;
@@ -32104,11 +32133,15 @@ window.__setTomatoFloatState = function (payload) {
             Logger.info('🔍 同级.li元素数量:', siblingLiCount);
             Logger.info('🔍 taskBlock是.li还是.list:', taskBlockClass?.includes('li') ? '.li' : (taskBlockClass?.includes('list') ? '.list' : '未知'));
 
-            // 判断逻辑（适用于任务列表、有序列表、无序列表）：
+            // 普通有序列表、无序列表的判断逻辑：
             // 1. 单个父列表：.li + 同级只有1个.li + 没有子列表 → 使用外层 .list 的 ID
             // 2. 多个父列表：.li + 同级有多个.li → 使用 .li 本身的 ID
             // 3. 有子列表的情况：.li + 有子列表 → 使用 .li 的 ID
-            if (taskBlockClass?.includes('li') && siblingLiCount <= 1 && !hasChildList) {
+            if (taskBlockType === 'NodeListItem' && taskBlock.dataset?.subtype === 't') {
+                // 单个任务也使用内层任务 ID；容器入口由 setTaskAssociation 统一解析。
+                targetBlockId = taskBlock.dataset.nodeId;
+                targetBlockElement = taskBlock;
+            } else if (taskBlockClass?.includes('li') && siblingLiCount <= 1 && !hasChildList) {
                 // 单个父列表：找到外层的 .list 容器
                 if (parentList) {
                     targetBlockId = parentList.dataset.nodeId;
