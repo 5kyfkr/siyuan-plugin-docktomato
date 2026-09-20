@@ -277,14 +277,23 @@
     // and never exposes mutable timer internals or storage paths.
     const DOCK_TOMATO_FOCUS_API_VERSION = 1;
     const DOCK_TOMATO_EXTERNAL_CONTEXT_MAX_BYTES = 4096;
+    let dockTomatoFocusIntegrationEnabled = false; // 默认关闭，用户在设置中开启
     const DOCK_TOMATO_FOCUS_CAPABILITIES = Object.freeze([
         'status',
         'start',
         'pause',
+        'pause-session',
         'completion-event',
         'history-context',
     ]);
     let dockTomatoExternalFocusContext = null;
+
+    const DOCK_TOMATO_INTEGRATION_DISABLED = 'DOCK_TOMATO_INTEGRATION_DISABLED';
+const DOCK_TOMATO_SESSION_MISMATCH = 'DOCK_TOMATO_SESSION_MISMATCH';
+
+function assertIntegrationEnabled() {
+        if (!dockTomatoFocusIntegrationEnabled) throw createDockTomatoFocusError('DOCK_TOMATO_INTEGRATION_DISABLED', 'third-party integration is disabled');
+    }
 
     function createDockTomatoFocusError(code, message = code) {
         const error = new Error(String(message || code));
@@ -340,8 +349,13 @@
         return payload;
     }
 
+    let externalFocusStarting = false;
+
     async function startDockTomatoExternalFocus(input = {}) {
         if (!__tomatoTimerReady || __tomatoDestroyed) throw createDockTomatoFocusError('DOCK_TOMATO_NOT_READY');
+        if (externalFocusStarting) throw createDockTomatoFocusError('DOCK_TOMATO_TIMER_BUSY');
+        externalFocusStarting = true;
+
         const status = getDockTomatoFocusStatus();
         if (status.active) {
             throw createDockTomatoFocusError('DOCK_TOMATO_TIMER_BUSY');
@@ -402,6 +416,10 @@
         syncState.integrationEnvelope.externalFocusSessionId = currentSessionId;
         try {
             await startTimer({confirm: request.confirm !== false});
+            /* startTimer → recordStartTime 可能清空预分配的 currentSessionId;
+               在启动事务完成后恢复,确保返回值携带正确的 sessionId。 */
+            if (!currentSessionId) currentSessionId = createTomatoUuid('focus');
+            if (syncState?.integrationEnvelope) syncState.integrationEnvelope.externalFocusSessionId = currentSessionId;
             const next = getDockTomatoFocusStatus();
             emitDockTomatoFocusEvent('tomato:focus-session-started', next);
             return next;
@@ -439,10 +457,14 @@
         }
     }
 
-    async function pauseDockTomatoExternalFocus() {
+    async function pauseDockTomatoExternalFocus(options = {}) {
         if (!__tomatoTimerReady || __tomatoDestroyed) throw createDockTomatoFocusError('DOCK_TOMATO_NOT_READY');
         const before = getDockTomatoFocusStatus();
         if (!before.active) return before;
+        const requestSessionId = options && typeof options === 'object' ? String(options.sessionId || '').trim() : '';
+        if (requestSessionId && before.sessionId && before.sessionId !== requestSessionId) {
+            throw createDockTomatoFocusError('DOCK_TOMATO_SESSION_MISMATCH', 'session mismatch: ' + before.sessionId + ' !== ' + requestSessionId);
+        }
         // Adapter stop is intentionally non-destructive: preserve elapsed time
         // and let the user resume or abandon it from Dock Tomato.
         if (before.running) await pauseTimer();
@@ -451,18 +473,19 @@
         return next;
     }
 
+    if (!dockTomatoFocusIntegrationEnabled) {
+        emitDockTomatoFocusEvent('tomato:focus-api-availability-changed', {available: false, ready: false, capabilities: []});
+    } else {
     globalThis.__dockTomato.focus = Object.freeze({
         version: DOCK_TOMATO_FOCUS_API_VERSION,
         capabilities: DOCK_TOMATO_FOCUS_CAPABILITIES,
-        getStatus: () => getDockTomatoFocusStatus(),
-        start: (input) => startDockTomatoExternalFocus(input),
-        pause: () => pauseDockTomatoExternalFocus(),
+        getStatus: () => { assertIntegrationEnabled(); return getDockTomatoFocusStatus(); },
+        start: (input) => { assertIntegrationEnabled(); return startDockTomatoExternalFocus(input); },
+        pause: (options) => { assertIntegrationEnabled(); return pauseDockTomatoExternalFocus(options); },
     });
-    emitDockTomatoFocusEvent('tomato:focus-api-availability-changed', {
-        available: true,
-        ready: false,
-        capabilities: DOCK_TOMATO_FOCUS_CAPABILITIES,
-    });
+    emitDockTomatoFocusEvent('tomato:focus-api-availability-changed', {available: true, ready: false, capabilities: DOCK_TOMATO_FOCUS_CAPABILITIES});
+    }
+    // ===== end integration toggle =====
 
     // ========== 配置项 ==========
     const DEFAULT_TOMATO_DURATIONS = [5, 15, 25, 30, 45, 60, 90, 120];

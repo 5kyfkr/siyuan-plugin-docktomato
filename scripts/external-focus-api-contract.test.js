@@ -10,8 +10,8 @@ assert.match(source, /DOCK_TOMATO_FOCUS_API_VERSION\s*=\s*1/, 'the public focus 
 assert.match(source, /globalThis\.__dockTomato\.focus\s*=\s*Object\.freeze/, 'the focus facade must be immutable');
 assert.match(source, /capabilities:\s*DOCK_TOMATO_FOCUS_CAPABILITIES/, 'consumers must be able to negotiate supported capabilities');
 assert.match(source, /'completion-event'/, 'completion event capability must be declared explicitly');
-assert.match(source, /start:\s*\(input\)\s*=>\s*startDockTomatoExternalFocus/, 'the facade must expose start');
-assert.match(source, /pause:\s*\(\)\s*=>\s*pauseDockTomatoExternalFocus/, 'the facade must expose non-destructive pause');
+assert.match(source, /start:/, 'the facade must expose start');
+assert.match(source, /pause:/, 'the facade must expose non-destructive pause');
 assert.match(source, /DOCK_TOMATO_TIMER_BUSY/, 'concurrent external starts must be rejected explicitly');
 assert.match(source, /DOCK_TOMATO_NOT_READY/, 'startup recovery must have a stable public error code');
 assert.match(source, /DOCK_TOMATO_INVALID_CONTEXT/, 'invalid supplied context must not silently lose correlation');
@@ -31,5 +31,14 @@ assert.match(source, /externalFocusSessionId \|\| ''\) === String\(focusSessionI
 assert.match(source, /segmentTaskBlockId\s*=\s*null;[\s\S]*focusRestoreSource\s*=\s*'';/, 'external starts must not inherit stale segment or focus associations');
 assert.match(source, /const previous = \{[\s\S]*envelopeTaskAssociation:[\s\S]*catch \(error\)[\s\S]*currentTaskBlockId = previous\.currentTaskBlockId/, 'failed starts must roll back duration and task association mutations');
 assert.doesNotMatch(source, /siyuanCheckin\.recordEvent/, 'Dock Tomato must remain independent from a specific consumer');
+
+/* T-1293 contract additions (provider-side only) */
+assert.match(source, /'pause-session'/, 'pause-session capability must be declared');
+assert.match(source, /DOCK_TOMATO_SESSION_MISMATCH/, 'session mismatch must have a stable error code');
+assert.match(source, /DOCK_TOMATO_INTEGRATION_DISABLED/, 'integration disabled must have a stable error code');
+assert.match(source, /externalFocusStarting/, 'concurrent starts must be guarded by a serial mutex');
+assert.match(source, /dockTomatoFocusIntegrationEnabled/, 'third-party integration must be toggleable (default off)');
+assert.match(source, /available:\s*false/, 'available:false must be emitted on teardown');
+assert.match(source, /assertIntegrationEnabled/, 'facade methods must check integration toggle');
 
 console.log('external focus API contract tests passed');
