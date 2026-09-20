@@ -272,6 +272,217 @@
         stats: globalThis.__dockTomatoStatsFacade || null,
     };
 
+    // Optional focus API, based on the protocol proposed in PR #5 by ai68298100.
+    // Timer mutations use the same durable executor as local controls.
+    const DOCK_TOMATO_FOCUS_API_VERSION = 1;
+    const DOCK_TOMATO_FOCUS_CAPABILITIES = Object.freeze([
+        'status', 'start', 'pause', 'pause-session', 'completion-event', 'history-context',
+    ]);
+    let dockTomatoFocusIntegrationEnabled = false;
+    let dockTomatoFocusEpoch = 0;
+    let dockTomatoFocusFacade = null;
+
+    function createDockTomatoFocusError(code) {
+        return Object.assign(new Error(code), { code });
+    }
+
+    function normalizeDockTomatoExternalContext(value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+        try {
+            const prototype = Object.getPrototypeOf(value);
+            if (prototype !== Object.prototype && prototype !== null) return null;
+            const entries = Object.entries(Object.getOwnPropertyDescriptors(value));
+            if (!entries.length || entries.length > 24) return null;
+            const safe = {};
+            for (const [key, descriptor] of entries) {
+                if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(key) || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return null;
+                const entry = descriptor.value;
+                if (!(entry === null || typeof entry === 'boolean'
+                    || (typeof entry === 'string' && entry.length <= 512)
+                    || (typeof entry === 'number' && Number.isFinite(entry)))) return null;
+                Object.defineProperty(safe, key, { value: entry, enumerable: true });
+            }
+            if (new TextEncoder().encode(JSON.stringify(safe)).byteLength > 4096) return null;
+            return Object.freeze(safe);
+        } catch (error) { return null; }
+    }
+
+    function assertDockTomatoFocusAvailable(epoch = dockTomatoFocusEpoch) {
+        if (!dockTomatoFocusIntegrationEnabled || epoch !== dockTomatoFocusEpoch || __tomatoDestroyed) {
+            throw createDockTomatoFocusError('DOCK_TOMATO_INTEGRATION_DISABLED');
+        }
+        if (!__tomatoTimerReady) throw createDockTomatoFocusError('DOCK_TOMATO_NOT_READY');
+    }
+
+    function assertDockTomatoFocusSession(state, sessionId, epoch) {
+        assertDockTomatoFocusAvailable(epoch);
+        const timer = state?.activeTimer;
+        if (!sessionId || !['RUNNING', 'PAUSED'].includes(state?.status)
+            || timer?.phase !== 'focus' || String(timer.focusSessionId || '') !== sessionId) {
+            throw createDockTomatoFocusError('DOCK_TOMATO_SESSION_MISMATCH');
+        }
+    }
+
+    function getDockTomatoFocusStatus(state = SyncManager.getState() || syncState) {
+        const timer = state?.activeTimer;
+        const sessionId = String(timer?.focusSessionId || timer?.sessionId || '');
+        const active = ['RUNNING', 'PAUSED'].includes(state?.status);
+        const envelope = state?.integrationEnvelope;
+        return Object.freeze({
+            ready: dockTomatoFocusIntegrationEnabled && __tomatoTimerReady && !__tomatoDestroyed,
+            active,
+            running: state?.status === 'RUNNING',
+            paused: state?.status === 'PAUSED',
+            mode: String(state?.mode || ''),
+            phase: timer?.phase || null,
+            sessionId,
+            durationMinutes: Number(timer?.plannedDurationSec) / 60 || __getDefaultTomatoTimeMinutes(),
+            context: active && timer?.phase === 'focus' && envelope?.externalFocusSessionId === sessionId
+                ? normalizeDockTomatoExternalContext(envelope.externalFocus) : null,
+        });
+    }
+
+    function emitDockTomatoFocusEvent(name, detail) {
+        if (name !== 'tomato:focus-api-availability-changed'
+            && (!dockTomatoFocusIntegrationEnabled || __tomatoDestroyed)) return;
+        try {
+            window.dispatchEvent(new CustomEvent(name, { detail: Object.freeze({ apiVersion: DOCK_TOMATO_FOCUS_API_VERSION, ...detail }) }));
+        } catch (error) {}
+    }
+
+    function refreshDockTomatoFocusAPI() {
+        const enabled = !__tomatoDestroyed && userSettings?.main?.enableFocusIntegration === true;
+        if (enabled !== dockTomatoFocusIntegrationEnabled) {
+            dockTomatoFocusIntegrationEnabled = enabled;
+            dockTomatoFocusEpoch++;
+            dockTomatoFocusFacade = null;
+        }
+        if (enabled && !dockTomatoFocusFacade) {
+            const epoch = dockTomatoFocusEpoch;
+            dockTomatoFocusFacade = Object.freeze({
+                version: DOCK_TOMATO_FOCUS_API_VERSION,
+                capabilities: DOCK_TOMATO_FOCUS_CAPABILITIES,
+                getStatus: () => {
+                    if (!dockTomatoFocusIntegrationEnabled || epoch !== dockTomatoFocusEpoch || __tomatoDestroyed) {
+                        throw createDockTomatoFocusError('DOCK_TOMATO_INTEGRATION_DISABLED');
+                    }
+                    return getDockTomatoFocusStatus();
+                },
+                start: input => startDockTomatoExternalFocus(input, epoch),
+                pause: options => pauseDockTomatoExternalFocus(options, epoch),
+            });
+        }
+        if (globalThis.__dockTomato) {
+            if (enabled) globalThis.__dockTomato.focus = dockTomatoFocusFacade;
+            else delete globalThis.__dockTomato.focus;
+        }
+        emitDockTomatoFocusEvent('tomato:focus-api-availability-changed', {
+            available: enabled,
+            ready: enabled && __tomatoTimerReady && !__tomatoDestroyed,
+            capabilities: enabled ? DOCK_TOMATO_FOCUS_CAPABILITIES : [],
+        });
+    }
+
+    function applyDockTomatoFocusRuntime() {
+        // Read the accepted state again: a UI refresh must never restore a stale session.
+        applyAcceptedSyncStateToTimer(SyncManager.getState());
+        if (timerId !== null) clearInterval(timerId);
+        timerId = null;
+        if (isRunning) startLocalTimerLoop();
+        else pauseBackgroundAudio(false);
+        if (controlButton) controlButton.innerHTML = isRunning ? '⏸️' : '▶️';
+        document.getElementById('siyuan-tomato-float-bar')?.classList.toggle('running', isRunning);
+        try { updateDisplay(true); updateProgressBar(isRunning); } catch (error) {}
+    }
+
+    async function startDockTomatoExternalFocus(input = {}, epoch = dockTomatoFocusEpoch) {
+        assertDockTomatoFocusAvailable(epoch);
+        const request = input && typeof input === 'object' ? input : {};
+        const context = normalizeDockTomatoExternalContext(request.context);
+        if (request.context != null && !context) throw createDockTomatoFocusError('DOCK_TOMATO_INVALID_CONTEXT');
+        const durationMinutes = request.durationMinutes == null ? __getDefaultTomatoTimeMinutes() : Number(request.durationMinutes);
+        if (!Number.isFinite(durationMinutes) || durationMinutes < 1 || durationMinutes > 180) {
+            throw createDockTomatoFocusError('DOCK_TOMATO_INVALID_DURATION');
+        }
+        if (startTimer._starting || (typeof isTimerFinalizing !== 'undefined' && isTimerFinalizing)
+            || isRunning || isTimerPaused || getDockTomatoFocusStatus().active) throw createDockTomatoFocusError('DOCK_TOMATO_TIMER_BUSY');
+        startTimer._starting = true;
+        try {
+            try { await initAudio(); } catch (error) {}
+            const transition = await TransitionExecutor.execute({
+                transitionId: createTomatoUuid('external-start'), deferNetwork: true,
+                validate: () => assertDockTomatoFocusAvailable(epoch),
+            }, latest => {
+                if (['RUNNING', 'PAUSED'].includes(latest?.status) || isRunning || isTimerPaused) {
+                    throw createDockTomatoFocusError('DOCK_TOMATO_TIMER_BUSY');
+                }
+                const next = TimerStateMachine.createFocusState({
+                    phase: 'focus', timerMode: 'countdown', plannedDurationSec: Math.round(durationMinutes) * 60,
+                    ownerDeviceId: SYNC_DEVICE_ID,
+                }, latest);
+                next.continuation = null;
+                for (const key of ['taskBlockId', 'taskBlockName', 'databaseBlockId', 'routineButtonId', 'routineButtonBlockId', 'routineButtonName', 'routineButtonColor', 'routineButtonIcon', 'routineButtonGroupId']) next[key] = null;
+                next.integrationEnvelope.routineButton = null;
+                next.integrationEnvelope.distraction = { count: 0, savedCount: 0 };
+                next.integrationEnvelope.externalFocus = context;
+                next.integrationEnvelope.externalFocusSessionId = next.activeTimer.focusSessionId;
+                return next;
+            });
+            if (!transition?.ok || !transition.durable || !transition.state?.activeTimer?.focusSessionId) {
+                throw createDockTomatoFocusError('DOCK_TOMATO_START_UNCONFIRMED');
+            }
+            // Sidecars and UI are updated only after the timer and context are durable.
+            currentTaskBlockId = currentTaskBlockName = currentDatabaseBlockId = null;
+            segmentTaskBlockId = segmentTaskBlockName = segmentDatabaseBlockId = null;
+            activeRoutineButtonIndex = null;
+            routineButtonHighlightColor = null;
+            focusRestoreSource = '';
+            lastCompletedAssociationFocusSnapshot = null;
+            taskAssociationCleared = true;
+            try { setLocalTaskAssociationSidecar(null); } catch (error) {}
+            try { clearTaskBlockHighlight(); updateTaskBlockIcon(); updateTaskBlockTooltip(); } catch (error) {}
+            try { applyDockTomatoFocusRuntime(); } catch (error) { Logger.warn('联动计时界面刷新失败:', error); }
+            // Reconcile from the latest accepted state without delaying ownership
+            // confirmation on a mobile notification bridge.
+            try { void reconcileTrackedTimerNotification('external-start').catch(error => Logger.warn('联动通知刷新失败:', error)); } catch (error) {}
+            const result = getDockTomatoFocusStatus(transition.state);
+            emitDockTomatoFocusEvent('tomato:focus-session-started', result);
+            return result;
+        } finally {
+            startTimer._starting = false;
+        }
+    }
+
+    async function pauseDockTomatoExternalFocus(options = {}, epoch = dockTomatoFocusEpoch) {
+        assertDockTomatoFocusAvailable(epoch);
+        const before = getDockTomatoFocusStatus();
+        const hasSessionId = options && Object.prototype.hasOwnProperty.call(options, 'sessionId');
+        if (!hasSessionId && !before.active) return before;
+        const sessionId = hasSessionId ? String(options.sessionId || '').trim() : before.sessionId;
+        assertDockTomatoFocusSession(SyncManager.getState(), sessionId, epoch);
+        if (before.paused) {
+            const result = await TransitionExecutor.execute({
+                deferNetwork: true, validate: latest => assertDockTomatoFocusSession(latest, sessionId, epoch),
+            }, latest => {
+                if (latest.status !== 'PAUSED') throw createDockTomatoFocusError('DOCK_TOMATO_SESSION_MISMATCH');
+                return latest;
+            });
+            if (!result.ok) throw createDockTomatoFocusError('DOCK_TOMATO_PAUSE_FAILED');
+            return getDockTomatoFocusStatus(result.state);
+        }
+        // Save the open segment and PAUSED state together. Unlike pauseTimer(),
+        // this path never changes the live timer before the session guard commits.
+        const saved = await recordEndTime(false, before.mode === 'stopwatch', {
+            skipSyncUpdate: true, externalPause: { sessionId, epoch },
+        });
+        if (!saved) throw createDockTomatoFocusError('DOCK_TOMATO_PAUSE_FAILED');
+        try { applyDockTomatoFocusRuntime(); } catch (error) { Logger.warn('联动暂停界面刷新失败:', error); }
+        try { void reconcileTrackedTimerNotification('external-pause').catch(error => Logger.warn('联动通知刷新失败:', error)); } catch (error) {}
+        const result = getDockTomatoFocusStatus();
+        emitDockTomatoFocusEvent('tomato:focus-session-paused', result);
+        return result;
+    }
+
     // ========== 配置项 ==========
     const DEFAULT_TOMATO_DURATIONS = [5, 15, 25, 30, 45, 60, 90, 120];
     const DEFAULT_BREAK_DURATIONS = [5, 10, 15, 30];
@@ -745,6 +956,10 @@
                 routineButton,
                 distraction,
                 notificationSchedules: envelope.notificationSchedules || st.notificationSchedules || {},
+                ...(envelope.externalFocusSessionId ? {
+                    externalFocus: envelope.externalFocus || null,
+                    externalFocusSessionId: envelope.externalFocusSessionId,
+                } : {}),
             },
             writerLease: st.writerLease || null,
             endDialog: st.endDialog || null,
@@ -1697,12 +1912,15 @@
             if (text.length > 1024 * 1024 || value.operations.length > this.maxOperations) throw new Error('JOURNAL_QUEUE_FULL');
             let fileSaved = false;
             let localSaved = false;
+            let validationError = null;
             try {
                 if (!await __tomatoEnsureDir(PLUGIN_STORAGE_DIR, options)) throw new Error('JOURNAL_DIRECTORY_FAILED');
                 if (options.writer) await options.writer.assert();
                 if (options.signal?.aborted || __tomatoDestroyed) throw new Error('TIMER_WRITER_DISPOSED');
+                try { options.beforeWrite?.(); } catch (error) { validationError = error; throw error; }
                 fileSaved = await __tomatoPutFileText(TIMER_JOURNAL_FILE_PATH, text, 'application/json', options) === true;
             } catch (error) {
+                if (validationError) throw validationError;
                 Logger.warn('计时事务写入失败:', { stage: 'journal', transitionId: value.transitionId, error: String(error?.message || error) });
             }
             const requireSharedJournal = typeof isSyncEnabled === 'function' && isSyncEnabled();
@@ -1712,6 +1930,7 @@
                 fileSaved = confirmed?.exists === true && confirmed.text === text;
             }
             if (fileSaved || (!requireSharedJournal && !options.signal?.aborted && !__tomatoDestroyed)) {
+                if (!fileSaved) options.beforeWrite?.();
                 try { localStorage.setItem(TIMER_JOURNAL_LOCAL_KEY, text); localSaved = true; } catch (error) {}
             }
             const saved = requireSharedJournal ? fileSaved : (fileSaved || localSaved);
@@ -1787,6 +2006,9 @@
                 },
                 openRecordId: timer.openRecordId,
             };
+            // A fresh focus/break must not inherit another session's consumer context.
+            delete next.integrationEnvelope.externalFocus;
+            delete next.integrationEnvelope.externalFocusSessionId;
             return projectLegacyFields(next);
         },
         captureFocusContinuation(state, nowMs = Date.now()) {
@@ -3154,6 +3376,7 @@
             desktopFloatWindowOpacity: DEFAULT_DESKTOP_FLOAT_WINDOW_OPACITY,
             enableDesktopMinimizedFloatWindowPausedOrBreak: false,
             enableFocusMode: true,
+            enableFocusIntegration: false,
             focusModeDimOpacity: 0.5,
             extendTomatoOnDistraction: true,
             defaultTomatoTime: DEFAULT_TOMATO_TIME, // 默认番茄时间（分钟）
@@ -3337,6 +3560,7 @@
         userSettings.main.desktopFloatWindowOpacity = normalizeDesktopFloatWindowOpacity(userSettings.main.desktopFloatWindowOpacity);
         if (typeof userSettings.main.enableDesktopMinimizedFloatWindowPausedOrBreak !== 'boolean') userSettings.main.enableDesktopMinimizedFloatWindowPausedOrBreak = false;
         if (typeof userSettings.main.enableFocusMode !== 'boolean') userSettings.main.enableFocusMode = true;
+        userSettings.main.enableFocusIntegration = userSettings.main.enableFocusIntegration === true;
         {
             const v = Number(userSettings.main.focusModeDimOpacity);
             if (!Number.isFinite(v)) userSettings.main.focusModeDimOpacity = 0.5;
@@ -4711,11 +4935,13 @@
         try { applyFocusModeDimOpacity(); } catch (e) {}
         try { __publishTomatoFocusModeState(); } catch (e) {}
         try { __publishTomatoDefaultDuration('load'); } catch (e) {}
+        try { refreshDockTomatoFocusAPI(); } catch (e) {}
         try { Logger.setDebugEnabled(isDebugMode()); } catch (e) {}
         return userSettings;
     }
 
     async function saveUserSettings() {
+        try { refreshDockTomatoFocusAPI(); } catch (e) {}
         const snapshot = JSON.stringify(userSettings, null, 2);
         await __tomatoQueueFileWrite(SETTINGS_FILE_PATH, async () => {
             try {
@@ -14148,7 +14374,10 @@
             if (e.button !== 2) return;
             isRightClick = true;
             longPressTimer = setTimeout(() => {
-                resetCurrentMode();
+                Promise.resolve(completeCurrentTimer()).catch((error) => {
+                    Logger.error('完成计时失败:', error);
+                    try { showMiniToast('计时保存失败，请稍后重试'); } catch (e) {}
+                });
                 isRightClick = false;
             }, 500);
         });
@@ -17092,6 +17321,7 @@
     async function startTimer(options = {}) {
         assertTimerReady();
         if (isRunning) return;
+        if (startTimer._starting) return;
         if (syncState?.status === 'IDLE' && !syncState?.activeTimer) {
             isTimerPaused = false;
             pausedRemainingSeconds = null;
@@ -17105,6 +17335,7 @@
         const stopwatchLimitAtStart = getStopwatchLimitSeconds(wasPausedAtStart ? syncState : null);
         const confirmSync = options?.confirm !== false;
 
+        startTimer._starting = true;
         try {
             taskAssociationCleared = false;
             Logger.info('🔍 startTimer: taskAssociationCleared 重置为 false');
@@ -17371,6 +17602,8 @@
             showMiniToast('启动计时失败');
             await rollbackFailedTimerStart(false);
             throw e;
+        } finally {
+            startTimer._starting = false;
         }
     }
 
@@ -17567,7 +17800,6 @@
             if (floatBar) floatBar.classList.remove('running');
         } catch (e) {}
         try { clearRoutineButtonRunningHighlight(true); } catch (e) {}
-        try { endTimerFocus('stop-timer'); } catch (e) {}
 
         if (timerMode === 'countdown' || timerMode === 'break') {
             syncState.mode = timerMode;
@@ -17624,6 +17856,7 @@
             // background after the bottom-bar timer has ended.
             try { updateDisplay(true); } catch (e) {}
         }
+        try { endTimerFocus('stop-timer'); } catch (e) {}
     }
 
     // 🔧 修复：为正计时添加变量，用于记录正计时的开始时间
@@ -17813,6 +18046,8 @@
     }
 
     async function recordEndTime(isReset = false, isStopwatch = false, options = null) {
+        const externalPause = options?.externalPause || null;
+        if (externalPause) assertDockTomatoFocusSession(syncState, externalPause.sessionId, externalPause.epoch);
         const isCompleted = options?.isCompleted === true;
         const plannedDurationOverride = options?.plannedDurationOverride ?? null;
         const skipSyncUpdate = options?.skipSyncUpdate === true;
@@ -17871,7 +18106,17 @@
         }
         const currentSessionIdAtEnd = currentSessionId;
         const currentPauseStartAtEnd = currentPauseStart;
+        // Completing an already paused linked focus has no open segment. Persist
+        // a zero-duration completion marker so the accumulated time is not lost
+        // or charged again, and the event still has a durable completion clock.
+        const completePausedExternalFocus = isCompleted && !isReset
+            && typeof dockTomatoFocusIntegrationEnabled !== 'undefined' && dockTomatoFocusIntegrationEnabled
+            && v2TimerSnapshot?.phase === 'focus' && v2TimerSnapshot?.status === 'PAUSED'
+            && !v2TimerSnapshot.openRecordId && !v2TimerSnapshot.segmentStartMs
+            && syncStateAtEnd?.integrationEnvelope?.externalFocusSessionId === v2TimerSnapshot.focusSessionId
+            && !!syncStateAtEnd.integrationEnvelope.externalFocus;
         const canMutateLiveTimerStateFromSnapshot = () => {
+            if (externalPause) return false;
             if (String(timerMode || '').trim() !== modeAtEnd) return false;
             if (modeAtEnd === 'stopwatch' || modeAtEnd === 'stopwatch-break') {
                 return stopwatchStartTimestamp === stopwatchStartTimestampAtEnd
@@ -17907,6 +18152,10 @@
             startTimeMs = Number(v2TimerSnapshot.segmentStartMs);
             startTimestamp = new Date(startTimeMs).toISOString();
         }
+        if (completePausedExternalFocus) {
+            startTimeMs = explicitEndTimeMs || Date.now();
+            startTimestamp = new Date(startTimeMs).toISOString();
+        }
         if (!startTimestamp || startTimeMs === 0) {
             Logger.info('🔍 recordEndTime: 时间戳无效，提前返回');
             return v2TimerSnapshot?.status === 'PAUSED' && !v2TimerSnapshot.openRecordId;
@@ -17915,13 +18164,13 @@
         // 🔧 修复：计时结束后保持高亮（只要任务关联存在）
         // 不再清除高亮，让高亮定时器继续工作
 
-        let endTimeMs = explicitEndTimeMs || Date.now();
+        let endTimeMs = completePausedExternalFocus ? startTimeMs : (explicitEndTimeMs || Date.now());
 
         // 🔧 修复：减去暂停时间
         // 如果存在暂停记录（syncState.currentPauseStart），说明是在暂停后恢复计时（或者暂停状态下停止），
         // 此时应该使用暂停开始的时间作为本段计时的结束时间，从而排除掉暂停持续的时间。
         // 仅对倒计时/休息模式有效（正计时模式使用 elapsedSeconds，已处理暂停）。
-        if (!explicitEndTimeMs && (modeAtEnd === 'countdown' || modeAtEnd === 'break') && currentPauseStartAtEnd) {
+        if (!completePausedExternalFocus && !explicitEndTimeMs && (modeAtEnd === 'countdown' || modeAtEnd === 'break') && currentPauseStartAtEnd) {
             endTimeMs = currentPauseStartAtEnd;
             Logger.info('🔍 recordEndTime: 检测到暂停记录，使用暂停时间作为结束时间:', endTimeMs);
         }
@@ -18025,7 +18274,7 @@
             // 日志移除：减少开销
 
             const v2TimerAtEnd = v2TimerSnapshot;
-            if (v2TimerAtEnd?.status === 'PAUSED' && !Number(v2TimerAtEnd.segmentStartMs) && !v2TimerAtEnd.openRecordId) {
+            if (!completePausedExternalFocus && v2TimerAtEnd?.status === 'PAUSED' && !Number(v2TimerAtEnd.segmentStartMs) && !v2TimerAtEnd.openRecordId) {
                 // There is no open physical segment left to close. The outer
                 // stop/reset transition will still commit the terminal state.
                 if (recordEndTimeInFlightKey) recordEndTimeInFlightKeys.delete(recordEndTimeInFlightKey);
@@ -18110,6 +18359,10 @@
                 focusSessionId: focusSessionIdAtEnd,
                 endReason: isCompleted ? 'completed' : (isReset ? 'aborted' : (phaseAtEnd === 'break' ? 'finish-break' : 'manual-end')),
                 recordKind: phaseAtEnd === 'break' ? 'break' : 'focus',
+                ...(typeof dockTomatoFocusIntegrationEnabled !== 'undefined' && dockTomatoFocusIntegrationEnabled
+                    && syncStateAtEnd?.integrationEnvelope?.externalFocusSessionId === focusSessionIdAtEnd ? {
+                        integrationContext: normalizeDockTomatoExternalContext(syncStateAtEnd.integrationEnvelope.externalFocus),
+                    } : {}),
                 // 🔧 新增：按钮颜色，用于时间轴高亮显示
                 routineButtonId: routineMetaAtEnd?.id || null,
                 routineButtonName: routineMetaAtEnd?.name || null,
@@ -18212,6 +18465,13 @@
                     && modeAtEnd !== 'stopwatch-break'
                     && shouldUpdateTaskDurationAttrs);
             });
+            let focusCompletion = null;
+            const validateExternalPause = externalPause ? latest => {
+                assertDockTomatoFocusSession(latest, externalPause.sessionId, externalPause.epoch);
+                if (latest.activeTimer.openRecordId !== v2TimerSnapshot?.openRecordId) {
+                    throw createDockTomatoFocusError('DOCK_TOMATO_SESSION_MISMATCH');
+                }
+            } : undefined;
             const buildCanonicalDraft = (baseState) => {
                 const draft = cloneSyncState(baseState || syncStateAtEnd || syncState || {});
                 const active = draft.activeTimer && typeof draft.activeTimer === 'object'
@@ -18219,6 +18479,17 @@
                 if (!active) return draft;
                 if (v2TimerSnapshot?.sessionId && active.sessionId !== v2TimerSnapshot.sessionId) return draft;
                 if (v2TimerSnapshot?.openRecordId && active.openRecordId !== v2TimerSnapshot.openRecordId) return draft;
+                // Capture the whole session BEFORE settling this physical segment.
+                if (isCompleted && !isReset && active.phase === 'focus' && recordData.integrationContext) {
+                    focusCompletion = {
+                        sessionId: String(active.focusSessionId),
+                        recordId: recordData.recordId,
+                        completedAt: recordData.end,
+                        durationMinutes: (Math.max(0, Number(active.accumulatedMs) || 0) + durationMsToSave) / 60000,
+                        plannedDurationMinutes: Number(active.plannedDurationSec) / 60 || Number(recordData.plannedDuration) || 0,
+                        context: recordData.integrationContext,
+                    };
+                }
                 active.accumulatedMs = Math.max(Number(active.accumulatedMs) || 0, Number(active.accumulatedMs || 0) + durationMsToSave);
                 active.segmentStartMs = null;
                 active.openRecordId = null;
@@ -18226,6 +18497,10 @@
                 // Pausing a break must retain its session just like focus.
                 const terminal = isCompleted || isReset || !skipSyncUpdate;
                 if (terminal) {
+                    if (draft.integrationEnvelope) {
+                        delete draft.integrationEnvelope.externalFocus;
+                        delete draft.integrationEnvelope.externalFocusSessionId;
+                    }
                     draft.activeTimer = null;
                     draft.status = 'IDLE';
                     draft.writerLease = null;
@@ -18246,6 +18521,7 @@
                     deferNetwork: true,
                     allowLeaseTransfer: true,
                     confirm: confirmSync,
+                    validate: validateExternalPause,
                 },
                 latest => buildCanonicalDraft(latest),
             );
@@ -18260,6 +18536,9 @@
                 return false;
             }
             if (transition.state) syncState = transition.state;
+            if (focusCompletion && transition.durable && !transition.duplicate) {
+                emitDockTomatoFocusEvent('tomato:focus-session-completed', focusCompletion);
+            }
             if (canMutateLiveTimerStateFromSnapshot()) lastSavedDistractionCount = syncedDistractionTotal || 0;
             if (canMutateLiveTimerStateFromSnapshot() && routineButtonHighlightColor === routineButtonHighlightColorAtEnd) routineButtonHighlightColor = null;
             if (modeAtEnd === 'countdown' && currentStartTimestamp === currentStartTimestampAtEnd) isFreshTomatoStart = false;
@@ -18268,8 +18547,9 @@
             try { if (userSettings?.timeline?.enabled) updateTimelineBar(true); } catch (e) {}
         } catch (e) {
             // 错误日志保留用于调试
-            console.error('保存记录时出错:', e);
             if (recordEndTimeInFlightKey) recordEndTimeInFlightKeys.delete(recordEndTimeInFlightKey);
+            if (externalPause) throw e;
+            console.error('保存记录时出错:', e);
             return false;
         }
 
@@ -19163,7 +19443,6 @@
             try { hideProgressBar(); } catch (e) {}
             updateDisplay();
             clearRoutineButtonRunningHighlight(true);
-            endTimerFocus('abandon-current-tomato');
 
             syncState.mode = 'countdown';
             syncState.status = 'IDLE';
@@ -19203,6 +19482,7 @@
                 }, 'abandon', { confirm });
                 try { updateDisplay(true); } catch (e) {}
             }
+            endTimerFocus('abandon-current-tomato');
             showToast('已放弃番茄钟', 1600);
             return true;
         });
@@ -19422,7 +19702,6 @@
             if (controlButton) controlButton.innerHTML = '▶️';
             updateDisplay();
             clearRoutineButtonRunningHighlight(true);
-            endTimerFocus('reset-current-mode');
 
             if (timerMode === 'countdown' || timerMode === 'break') {
                 try { await cancelTrackedTimerNotification('reset-timer', false); } catch (e) {}
@@ -19458,6 +19737,7 @@
                 Logger.info('🔄 重置状态已同步到云端');
                 try { updateDisplay(true); } catch (e) {}
             }
+            endTimerFocus('reset-current-mode');
         });
     }
 
@@ -19465,15 +19745,17 @@
         assertTimerReady();
         const opts = (options && typeof options === 'object') ? options : {};
         return withTimerFinalizationLock('complete-current-tomato', async () => {
-            if (timerMode !== 'countdown') return;
+            if (timerMode !== 'countdown' && timerMode !== 'stopwatch') return;
             if (!isRunning && !isTimerPaused) return;
-            if (!currentStartTimestamp && !(syncState && syncState.startTime && syncState.status !== 'IDLE')) return;
+            const isStopwatchMode = timerMode === 'stopwatch';
+            const hasStart = isStopwatchMode ? stopwatchStartTimestamp : currentStartTimestamp;
+            if (!hasStart && !(syncState && syncState.startTime && syncState.status !== 'IDLE')) return;
 
             try { if (timerId !== null) clearInterval(timerId); } catch (e) {}
             timerId = null;
             try { cancelTrackedTimerNotification('complete-timer', false).catch(() => {}); } catch (e) {}
 
-            const pendingRecordSave = recordEndTime(false, false, {
+            const pendingRecordSave = recordEndTime(false, isStopwatchMode, {
                 isCompleted: true,
                 plannedDurationOverride: 'elapsed',
                 confirm: opts.confirm !== false,
@@ -19489,11 +19771,17 @@
             stopBackgroundAudio();
             currentStartTimestamp = null;
             currentStartTimeMs = 0;
+            stopwatchStartTimestamp = null;
+            stopwatchStartTimeMs = 0;
+            stopwatchSegmentStartTimestamp = null;
+            stopwatchSegmentStartTimeMs = 0;
+            stopwatchSegmentBaseElapsedSeconds = 0;
+            stopwatchDisplayOffset = 0;
+            elapsedSeconds = 0;
             remainingSeconds = currentDuration * 60;
             if (controlButton) controlButton.innerHTML = '▶️';
             updateDisplay();
             clearRoutineButtonRunningHighlight(true);
-            endTimerFocus('complete-current-tomato');
             try { hideProgressBar(); } catch (e) {}
 
             await requireTimerPersistence(pendingRecordSave, 'complete-current-tomato');
@@ -19521,8 +19809,16 @@
                 // publish the final IDLE payload to the desktop float window.
                 try { updateDisplay(true); } catch (e) {}
             }
-            if (opts.suppressToast !== true) showToast('✅ 已完成番茄', 1600);
+            endTimerFocus('complete-current-tomato');
+            if (opts.suppressToast !== true) showToast(isStopwatchMode ? '✅ 已完成专注正计时' : '✅ 已完成番茄', 1600);
         });
+    }
+
+    async function completeCurrentTimer(options = {}) {
+        if (timerMode === 'break' || timerMode === 'stopwatch-break') {
+            return resetCurrentMode(options); // End the break and restore its focus continuation.
+        }
+        return completeCurrentTomato(options);
     }
 
     function isCurrentTaskAssociation(blockId) {
@@ -26649,7 +26945,10 @@ function calculateWeeklyStats(dailyStatsArray) {
         else if (timerMode === 'stopwatch') modeText = '专注正计时';
         else if (timerMode === 'stopwatch-break') modeText = '正计时休息';
         const hideModeText = true;
-        const taskText = displayModel.taskText;
+        const routineName = (running || paused)
+            ? String(getActiveRoutineButtonRecordMeta()?.name || syncState?.routineButtonName || '').trim()
+            : '';
+        const taskText = routineName || displayModel.taskText;
         let liveTimerKind = 'static';
         let liveTargetTimeMs = null;
         let liveStartTimeMs = null;
@@ -29418,8 +29717,8 @@ window.__setTomatoFloatState = function (payload) {
             if (e.button !== 2) return;
             isRightClick = true;
             longPressTimer = setTimeout(() => {
-                Promise.resolve(resetCurrentMode()).catch((error) => {
-                    Logger.error('重置计时失败:', error);
+                Promise.resolve(completeCurrentTimer()).catch((error) => {
+                    Logger.error('完成计时失败:', error);
                     try { showMiniToast('计时保存失败，请稍后重试'); } catch (e) {}
                 });
                 isRightClick = false;
@@ -31684,6 +31983,8 @@ window.__setTomatoFloatState = function (payload) {
                 const recovery = await this.recoverQueue({ deferNetwork });
                 if (recovery.blocking) return { ok: false, blocked: true, journal: recovery.journal };
                 const latest = deferNetwork ? (SyncManager.getState() || syncState) : await this.readLatestState();
+                // Optional command guards run under the same writer lock as persistence.
+                command?.validate?.(latest);
                 const leaseOwner = String(latest?.writerLease?.ownerDeviceId || latest?.activeTimer?.ownerDeviceId || '').trim();
                 const requiresLease = ['RUNNING', 'PAUSED'].includes(String(latest?.status || ''));
                 if (requiresLease && leaseOwner && leaseOwner !== SYNC_DEVICE_ID && command?.allowLeaseTransfer !== true && command?.allowForeignLease !== true) {
@@ -31710,6 +32011,7 @@ window.__setTomatoFloatState = function (payload) {
                 if (journal.operations.some(operation => operation.transitionId === transitionId)) {
                     return { ok: true, duplicate: true, state: latest };
                 }
+                command?.validate?.(latest);
                 if (hasDrafts) {
                     journal.operations.push({
                         transitionId,
@@ -31722,7 +32024,10 @@ window.__setTomatoFloatState = function (payload) {
                     });
                 }
                 journal.nextState = committedState;
-                if (!await TimerJournal.persist(journal, this._writeOptions)) throw new Error('JOURNAL_PERSIST_FAILED');
+                const writeOptions = command?.validate
+                    ? { ...this._writeOptions, beforeWrite: () => command.validate(latest) }
+                    : this._writeOptions;
+                if (!await TimerJournal.persist(journal, writeOptions)) throw new Error('JOURNAL_PERSIST_FAILED');
                 const accepted = this.acceptCommittedState(committedState);
                 if (!deferNetwork && isSyncEnabled()) {
                     await SyncManager.saveToCloud(committedState, true, { confirm: command?.confirm !== false });
@@ -34795,6 +35100,17 @@ window.__setTomatoFloatState = function (payload) {
             try { Logger.setDebugEnabled(isDebugMode()); } catch (e) {}
             await saveUserSettings();
         });
+
+        mkToggleRow('第三方专注联动（小驴打卡等）', userSettings.main.enableFocusIntegration === true, async (e) => {
+            userSettings.main.enableFocusIntegration = e.target.checked === true;
+            await saveUserSettings();
+        });
+        {
+            const hint = document.createElement('div');
+            hint.textContent = '默认关闭。开启后允许其他插件启动、暂停专注并接收完成记录；关闭不会停止当前计时。';
+            hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
+            togglesSection.appendChild(hint);
+        }
 
         mkToggleRow('显示桌面底栏番茄钟', isDesktopStatusBarTimerEnabled(), async (e) => {
             userSettings.main.showDesktopStatusBarTimer = e.target.checked;
@@ -38000,6 +38316,7 @@ window.__setTomatoFloatState = function (payload) {
             if (isRunning && !timerId) startLocalTimerLoop();
         }
         __tomatoTimerReady = true;
+        refreshDockTomatoFocusAPI();
         
         // 暴露音频配置函数到全局（方便用户在控制台配置）
         window.tomatoAudio = {
@@ -38415,6 +38732,7 @@ window.__setTomatoFloatState = function (payload) {
 
     const cleanupTomato = () => {
         __tomatoDestroyed = true;
+        try { refreshDockTomatoFocusAPI(); } catch (e) {}
         try { invalidateHistoryStoreCache(); } catch (e) {}
         try {
             historyState.allRecords = [];

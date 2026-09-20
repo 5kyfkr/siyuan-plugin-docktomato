@@ -236,7 +236,9 @@ async function testFloatTimerHistory() {
     }
 }
 
-(async () => {
+module.exports = { createRuntime, attachFloatTimerControls, attachEndRecorder, extract, deferred };
+
+if (require.main === module) (async () => {
     await testFloatTimerHistory();
     const runtime = createRuntime();
     await runtime.start('start-a');
