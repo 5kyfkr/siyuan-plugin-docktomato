@@ -26715,6 +26715,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         try { screen = electron?.screen || remote?.screen || null; } catch (e) {}
         return {
             supported: !!(BrowserWindow && currentWindow),
+            remote,
             BrowserWindow,
             currentWindow,
             Menu,
@@ -27857,6 +27858,33 @@ window.__setTomatoFloatState = function (payload) {
 </html>`;
     }
 
+    // This function runs in Electron's main process. SiYuan can destroy a
+    // workspace without unloading its renderer, so renderer callbacks cannot
+    // own the detached window's lifetime. Do not capture renderer state here.
+    function bindDesktopFloatWindowOwnerLifecycle(ownerWindow, floatWindow) {
+        const destroyFloatWindow = () => {
+            if (!floatWindow.isDestroyed()) floatWindow.destroy();
+        };
+        if (ownerWindow.isDestroyed()) {
+            destroyFloatWindow();
+            return;
+        }
+        const ownerContents = ownerWindow.webContents;
+        const detach = () => {
+            ownerWindow.removeListener('closed', destroyFloatWindow);
+            ownerContents.removeListener('destroyed', destroyFloatWindow);
+            ownerContents.removeListener('render-process-gone', destroyFloatWindow);
+        };
+        if (ownerContents.isDestroyed()) {
+            destroyFloatWindow();
+            return;
+        }
+        ownerWindow.once('closed', destroyFloatWindow);
+        ownerContents.once('destroyed', destroyFloatWindow);
+        ownerContents.once('render-process-gone', destroyFloatWindow);
+        floatWindow.once('closed', detach);
+    }
+
     function closeDesktopMinimizedFloatWindow() {
         desktopFloatWindowLastPayloadKey = '';
         desktopFloatWindowReady = false;
@@ -27866,17 +27894,20 @@ window.__setTomatoFloatState = function (payload) {
         if (!win) return;
         try {
             if (!win.isDestroyed?.()) {
-                win.close();
+                win.destroy();
             }
         } catch (e) {}
     }
 
     async function ensureDesktopMinimizedFloatWindow() {
+        if (__tomatoDestroyed) return null;
         if (desktopFloatWindow && !desktopFloatWindow.isDestroyed?.()) return desktopFloatWindow;
         const support = getDesktopFloatWindowElectronSupport();
         if (!support.supported) return null;
+        let win = null;
         try {
-            const win = new support.BrowserWindow({
+            if (support.currentWindow.isDestroyed() || support.currentWindow.webContents.isDestroyed()) return null;
+            win = new support.BrowserWindow({
                 width: getDesktopFloatWindowExpandedWidth(),
                 height: getDesktopFloatWindowExpandedHeight(),
                 show: false,
@@ -27898,6 +27929,16 @@ window.__setTomatoFloatState = function (payload) {
                 }
             });
             desktopFloatWindow = win;
+            // Keep the native window independent so minimizing the workspace
+            // still leaves the timer visible. Only its lifetime is linked.
+            const bindOwnerLifecycle = support.remote.require('vm').runInThisContext(
+                `(${bindDesktopFloatWindowOwnerLifecycle.toString()})`
+            );
+            bindOwnerLifecycle(support.currentWindow, win);
+            if (win.isDestroyed()) {
+                closeDesktopMinimizedFloatWindow();
+                return null;
+            }
             applyDesktopFloatWindowOpacity(win);
             desktopFloatWindowReady = false;
             desktopFloatWindowLastPayloadKey = '';
@@ -28057,11 +28098,12 @@ window.__setTomatoFloatState = function (payload) {
             });
             const html = buildDesktopFloatWindowHtml();
             await win.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`);
+            if (__tomatoDestroyed || desktopFloatWindow !== win || win.isDestroyed()) return null;
             desktopFloatWindowReady = true;
             return win;
         } catch (e) {
             Logger.warn('🍅 桌面端最小化悬浮窗创建失败:', e);
-            closeDesktopMinimizedFloatWindow();
+            if (desktopFloatWindow === win) closeDesktopMinimizedFloatWindow();
             return null;
         }
     }
@@ -28163,11 +28205,12 @@ window.__setTomatoFloatState = function (payload) {
         }
         handleDesktopFloatWindowThemeMaybeChanged();
         const win = await ensureDesktopMinimizedFloatWindow();
-        if (!win) return;
+        if (__tomatoDestroyed || !win || desktopFloatWindow !== win || win.isDestroyed()) return;
         let visible = false;
         try { visible = !!win.isVisible?.(); } catch (e) {}
         if (!visible) positionDesktopMinimizedFloatWindow(win);
         await refreshDesktopMinimizedFloatWindow();
+        if (__tomatoDestroyed || desktopFloatWindow !== win || win.isDestroyed()) return;
         try {
             if (!win.isVisible?.()) {
                 if (typeof win.showInactive === 'function') win.showInactive();
@@ -28187,6 +28230,7 @@ window.__setTomatoFloatState = function (payload) {
     }
 
     function scheduleDesktopMinimizedFloatWindowSync(reason = '') {
+        if (__tomatoDestroyed) return;
         desktopFloatWindowSyncPendingReason = String(reason || '').trim() || desktopFloatWindowSyncPendingReason;
         if (desktopFloatWindowSyncInFlight || desktopFloatWindowSyncTimer != null) return;
         desktopFloatWindowSyncTimer = __tomatoTrackTimeout(async () => {
