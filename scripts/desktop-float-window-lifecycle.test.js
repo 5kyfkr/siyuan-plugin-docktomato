@@ -15,6 +15,7 @@ const extract = (start, end) => {
 };
 const lifecycleSource = extract('    function bindDesktopFloatWindowOwnerLifecycle(', '    function positionDesktopMinimizedFloatWindow(');
 const syncSource = extract('    async function syncDesktopMinimizedFloatWindow(', '    function handleDesktopFloatWindowThemeMaybeChanged(');
+const eligibilitySource = extract('    const isDesktopMinimizedFloatWindowEnabled =', '    const getDesktopFloatWindowDisplayMode =');
 
 class FakeContents extends EventEmitter {
     destroyed = false;
@@ -51,7 +52,7 @@ class FakeWindow extends EventEmitter {
     }
 }
 
-const createHarness = () => {
+const createHarness = ({ pathname = '/stage/build/app/', displayMode = 'minimized', mobile = false } = {}) => {
     const owner = new FakeWindow();
     const windows = [];
     let mainProcessBindings = 0;
@@ -75,6 +76,8 @@ const createHarness = () => {
         },
     };
     const context = vm.createContext({
+        window: { location: { pathname } },
+        isMobileDevice: () => mobile,
         __tomatoDestroyed: false,
         desktopFloatWindow: null,
         desktopFloatWindowReady: false,
@@ -89,8 +92,7 @@ const createHarness = () => {
         getDesktopFloatWindowExpandedHeight: () => 68,
         applyDesktopFloatWindowOpacity() {},
         buildDesktopFloatWindowHtml: () => '<html></html>',
-        isDesktopMinimizedFloatWindowEnabled: () => true,
-        getDesktopFloatWindowDisplayMode: () => 'minimized',
+        getDesktopFloatWindowDisplayMode: () => displayMode,
         hasUnfinishedTimerState: () => true,
         shouldShowDesktopMinimizedFloatWindowForTimerState: () => true,
         shouldShowDesktopFloatWindow: () => true,
@@ -100,7 +102,7 @@ const createHarness = () => {
         __tomatoTrackTimeout() { throw new Error('disposed runtime must not schedule work'); },
         Logger: { warn() {}, debug() {} },
     });
-    vm.runInContext(lifecycleSource + syncSource, context);
+    vm.runInContext(eligibilitySource + lifecycleSource + syncSource, context);
     return { context, owner, windows, bindings: () => mainProcessBindings };
 };
 
@@ -111,6 +113,37 @@ const assertDetached = (owner) => {
 };
 
 (async () => {
+    // Inbox uses SiYuan openWindow(), whose window.html loads plugins again.
+    // Each renderer has its own desktopFloatWindow variable; only the main
+    // renderer should create the detached timer shared by the workspace.
+    for (const displayMode of ['always', 'minimized']) {
+        const main = createHarness({ displayMode });
+        const inbox = createHarness({ displayMode, pathname: '/stage/build/app/window.html' });
+        const syncingMain = main.context.syncDesktopMinimizedFloatWindow();
+        const syncingInbox = inbox.context.syncDesktopMinimizedFloatWindow();
+        main.windows[0].loading.resolve();
+        // Resolve any duplicate so the old implementation fails, not hangs.
+        for (const win of inbox.windows) win.loading.resolve();
+        await Promise.all([syncingMain, syncingInbox]);
+        assert.equal(main.windows.length, 1, `${displayMode}: main window must keep its timer`);
+        assert.equal(main.windows[0].showCalls, 1);
+        assert.equal(inbox.windows.length, 0, `${displayMode}: an auxiliary window must not create a second timer`);
+        assert.equal(await inbox.context.ensureDesktopMinimizedFloatWindow(), null,
+            'direct creation must also reject auxiliary windows');
+        await inbox.context.syncDesktopMinimizedFloatWindow('drag-or-refresh');
+        assert.equal(inbox.windows.length, 0, 'repeated auxiliary refreshes must not recreate a timer');
+        main.context.closeDesktopMinimizedFloatWindow();
+        assertDetached(main.owner);
+        assertDetached(inbox.owner);
+    }
+
+    for (const options of [{ displayMode: 'off' }, { mobile: true }]) {
+        const disabled = createHarness(options);
+        await disabled.context.syncDesktopMinimizedFloatWindow();
+        assert.equal(await disabled.context.ensureDesktopMinimizedFloatWindow(), null);
+        assert.equal(disabled.windows.length, 0, 'disabled or mobile runtimes must never create a desktop timer');
+    }
+
     const a = createHarness();
     const b = createHarness();
     const loadingA = a.context.ensureDesktopMinimizedFloatWindow();

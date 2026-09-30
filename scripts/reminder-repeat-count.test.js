@@ -62,6 +62,7 @@ const context = {
     __getReminderRepeatMode: (reminder) => String(reminder?.repeatMode || 'manual'),
     __doesReminderFollowTaskSchedule: (reminder) => reminder?.repeatMode === 'followTaskRepeat',
     __getReminderFollowTaskAnchorKey: (reminder) => normalizeDateKey(reminder?.taskCompletionTime || reminder?.startDate),
+    __getReminderCompletedOccurrences: (reminder) => reminder.completedOccurrences || [],
     __isReminderOccurrenceSuppressed: () => false,
     __isReminderWorkdayOccurrence: (candidate) => candidate.getDay() !== 0 && candidate.getDay() !== 6,
     __buildReminderMonthlyDate: buildMonthlyDate,
@@ -155,4 +156,21 @@ assert.equal(normalizeDateKey(context.getLastMonthly(weekReminder, new Date('202
 assert.equal(context.tmRepeatCore, undefined, 'Tomato monthly recurrence must work without Task Horizon');
 assert.equal(context.tmMonthRepeat, undefined, 'Tomato must not rely on a globally loaded monthly module');
 assert.doesNotMatch(source, /monthly-repeat\.js/);
+for (const [fields, after, expected] of [
+    [{ type: 'daily', every: 1 }, '2026-09-30', '2026-10-01'],
+    [{ type: 'daily', every: 2 }, '2026-09-30', '2026-10-02'],
+    [{ type: 'weekly', every: 1, weekdays: [3, 5] }, '2026-09-28', '2026-09-30'],
+    [{ type: 'workday', every: 1 }, '2026-10-02', '2026-10-05'],
+    [{ type: 'monthly', every: 1, monthDays: [28, 30] }, '2026-09-30', '2026-10-28'],
+    [{ type: 'yearly', every: 1 }, '2026-09-28', '2027-09-28'],
+]) {
+    const checkin = { ...followMonthly, times: ['09:00'], taskRepeatRule: { enabled: true, trigger: 'checkin', anchorDate: '2026-09-28', ...fields }, taskRepeatState: { occurrenceCount: 200 } };
+    const at = new Date(`${after}T19:00:00`);
+    assert.equal(normalizeDateKey(context.__test.getNextReminderDateTime(checkin, at)), expected, `check-in reminders progress without completion: ${fields.type}`);
+    assert.equal(normalizeDateKey(getFollowPreview(checkin, at)), expected);
+    assert.equal(normalizeDateKey(context.getLastMonthly(checkin, new Date(`${expected}T10:00:00`))), expected);
+}
+const singleCheckin = { ...followMonthly, times: ['09:00'], taskRepeatRule: { enabled: true, trigger: 'checkin', type: 'weekly', every: 1, weekdays: [3, 5], anchorDate: '2026-09-28', maxOccurrences: 1 } };
+assert.equal(normalizeDateKey(context.__test.getNextReminderDateTime(singleCheckin, new Date('2026-09-28T10:00:00'))), '2026-09-30');
+assert.equal(context.__test.getNextReminderDateTime(singleCheckin, new Date('2026-09-30T10:00:00')), null, 'limits count scheduled days, not completed check-ins');
 console.log('reminder repeat count tests passed');

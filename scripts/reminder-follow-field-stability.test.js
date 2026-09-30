@@ -110,6 +110,7 @@ const sanitizeContext = vm.createContext({
     __normalizeReminderMonthlyMode: (value) => String(value || 'date'),
     __normalizeReminderCalendarMode: (value) => String(value || 'solar'),
     __sanitizeReminderNotificationSchedules: (value) => value || {},
+    __getReminderCompletedOccurrences: (value) => value.completedOccurrences || [],
 });
 vm.runInContext(`${source.slice(sanitizeStart, sanitizeEnd)}\nthis.sanitizeReminder = __sanitizeReminderData;`, sanitizeContext);
 const sanitizedParentReminder = sanitizeContext.sanitizeReminder({

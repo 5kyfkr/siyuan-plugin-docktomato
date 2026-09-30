@@ -71,7 +71,7 @@ assert.match(source, /const __isCompletedReminderTaskBlockRow[\s\S]*?\^\[xX\]\$/
 const completedRowStart = source.indexOf('const __isCompletedReminderTaskBlockRow =');
 const completedRowEnd = source.indexOf('\n    const __sanitizeReminderData', completedRowStart);
 assert.ok(completedRowStart >= 0 && completedRowEnd > completedRowStart, 'completed task row guard must remain extractable');
-const completedRowContext = vm.createContext({});
+const completedRowContext = vm.createContext({ __parseReminderTaskRepeatRule: value => value || null });
 vm.runInContext(`${source.slice(completedRowStart, completedRowEnd)}\nthis.isCompletedRow = __isCompletedReminderTaskBlockRow;`, completedRowContext);
 assert.equal(completedRowContext.isCompletedRow({ type: 'i', markdown: '- [X] 已完成任务' }), true);
 assert.equal(completedRowContext.isCompletedRow({ type: 'i', markdown: '- [ ] 未完成任务' }), false);
@@ -126,6 +126,7 @@ assert.ok(deleteBlock.indexOf('__clearFollowTaskReminderDraft(') < deleteBlock.i
         REMINDER_REPEAT_MODE_MANUAL: 'manual',
         __withReminderOccurrenceMutation: (_blockId, run) => run(),
         __getReminderRepeatMode: (value) => value.repeatMode || 'manual',
+        __isFollowTaskCheckinReminder: () => false,
         __normalizeReminderTaskRepeatState: (value) => ({ occurrenceCount: value?.occurrenceCount || 1 }),
         __reminderOccurrenceKey: (dateKey, timeKey) => `${dateKey} ${timeKey}`,
         getBlockReminder: async () => reminder,

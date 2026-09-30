@@ -59,7 +59,7 @@ const harness = (initial = base) => {
         ['const __normalizeReminderWeekdays =', 'const __getReminderWeekdaysLabel ='],
         ['const __normalizeReminderTaskRepeatTrigger =', 'const __hasReminderIndependentLoop ='],
         ['const __normalizeReminderTaskRepeatState =', 'const __resolveReminderDialogRepeatMode ='],
-        ['const __getReminderCompletedSet =', 'const __getReminderEvery ='],
+        ['const __isFollowTaskCheckinReminder =', 'const __getReminderEvery ='],
         ['const __getReminderCompletionDateKey =', 'const __getReminderMondayStart ='],
         ['const __getReminderMondayStart =', 'const __collectReminderOccurrencesInRange ='],
         ['const __getLastDueReminderDateTime =', 'const __getSessionNotifiedSet ='],
