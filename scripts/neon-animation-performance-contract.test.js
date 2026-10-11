@@ -45,7 +45,7 @@ assert.strictEqual((neonCss.match(/\{/g) || []).length, (neonCss.match(/\}/g) ||
     'the injected neon stylesheet must have balanced rule braces');
 assert.doesNotMatch(neonCss, /\/\//,
     'the injected neon stylesheet must not contain JavaScript-style comments');
-assert.match(source, /@keyframes shimmerFlow\s*\{[\s\S]*translate3d\(-100%,\s*0,\s*0\)[\s\S]*translate3d\(100%,\s*0,\s*0\)/,
+assert.match(source, /@keyframes shimmerFlow\s*\{[\s\S]*transform:\s*translate3d\([\s\S]*100%\s*\{[\s\S]*transform:\s*translate3d\(/,
     'timeline shimmer must move through compositor transforms');
 assert.doesNotMatch(source, /@keyframes shimmerFlow\s*\{[\s\S]{0,300}background-position/,
     'timeline shimmer must not animate background-position');
@@ -53,6 +53,53 @@ assert.match(source, /--shimmer-frames[\s\S]*TOMATO_ANIMATION_FPS/,
     'timeline shimmer must derive its step count from the 30fps cap');
 assert.strictEqual((source.match(/const shouldBreathe = \(userSettings\.timeline\.enableBreathing/g) || []).length, 1,
     'timeline breathing state must be updated once per timeline tick');
+
+const normalizedSource = source.replaceAll('\r\n', '\n');
+const effectsStart = normalizedSource.indexOf('            const timelineAnimationActive =');
+const effectsEnd = normalizedSource.indexOf('\n        }\n\n        let nowPercent', effectsStart);
+assert.ok(effectsStart >= 0 && effectsEnd > effectsStart, 'timeline effect updater must be present');
+const updateEffects = new Function(
+    'userSettings', 'timerMode', 'isRunning', 'isTimerPaused', 'timelineVisual', 'timelineViewport',
+    'isNeonMode', 'hasTimelineCustomColors', 'TOMATO_ANIMATION_FPS',
+    normalizedSource.slice(effectsStart, effectsEnd)
+);
+function createEffectElement() {
+    const classes = new Set();
+    const properties = new Map();
+    return {
+        classes, properties,
+        classList: { toggle(name, enabled) { enabled ? classes.add(name) : classes.delete(name); } },
+        style: { setProperty(name, value) { properties.set(name, value); } }
+    };
+}
+for (const mode of ['countdown', 'stopwatch', 'stopwatch-break', 'break']) {
+    for (const breathing of [false, true]) {
+        for (const appearanceBreathing of [false, true]) {
+            for (const shimmer of [false, true]) {
+                const visual = createEffectElement();
+                const viewport = createEffectElement();
+                const settings = {
+                    timeline: {enableBreathing: breathing, enableShimmerFlow: shimmer, shimmerDuration: 8, shimmerWidth: 5, shimmerColor: '#ffffff'},
+                    appearance: {enableBreathing: appearanceBreathing}
+                };
+                updateEffects(settings, mode, true, false, visual, viewport, false, false, 30);
+                for (const element of [visual, viewport]) {
+                    assert.strictEqual(element.classes.has('shimmering'), shimmer,
+                        `${mode}: shimmer must follow its own switch independently of breathing`);
+                    assert.strictEqual(element.classes.has('breathing'), breathing && appearanceBreathing,
+                        `${mode}: breathing must follow its own switches independently of shimmer`);
+                }
+                for (const [running, paused] of [[true, true], [false, false]]) {
+                    updateEffects(settings, mode, running, paused, visual, viewport, false, false, 30);
+                    for (const element of [visual, viewport]) {
+                        assert.strictEqual(element.classes.has('shimmering'), false, 'inactive timers must clear shimmer');
+                        assert.strictEqual(element.classes.has('breathing'), false, 'inactive timers must clear breathing');
+                    }
+                }
+            }
+        }
+    }
+}
 
 assert.match(source, /tomato-animations-paused/,
     'neon animations must expose a document visibility pause state');

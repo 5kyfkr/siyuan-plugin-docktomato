@@ -1102,6 +1102,14 @@
                 ? getStopwatchLimitSeconds(timer)
                 : Math.max(1, Number(timer.plannedDurationSec) || Number(st.duration) || 1);
             st.openRecordId = timer.openRecordId || null;
+        } else if (st.status === 'IDLE') {
+            // Keep idle snapshots clean at the shared legacy projection boundary.
+            st.startTime = null;
+            st.stopwatchStartTimeMs = null;
+            st.stopwatchDisplayOffset = 0;
+            st.pausedIntervals = [];
+            st.currentPauseStart = null;
+            st.pausedElapsedSeconds = null;
         }
         const association = st.integrationEnvelope?.taskAssociation || null;
         if (association && isTaskAssociationSyncEnabledForSignature()) {
@@ -1762,7 +1770,7 @@
         },
         
         calculateElapsed(state) {
-            if (!state) return 0;
+            if (!state || state.status === 'IDLE') return 0;
 
             const activeTimer = state.activeTimer && typeof state.activeTimer === 'object'
                 ? state.activeTimer
@@ -2726,6 +2734,9 @@
     let backgroundAudioPreviewGeneration = 0;
     let backgroundAudioPlaybackGeneration = 0;
     let backgroundAudioInitGeneration = 0;
+    let workBackgroundAudioFilename = '';
+    let breakBackgroundAudioFilename = '';
+    let workBackgroundAudioFailureCount = 0;
     
     // ========== 统一日志输出系统 ==========
     // 支持日志级别控制，提供结构化日志输出
@@ -3411,6 +3422,8 @@
             workEndPreset: '',     // 预置提示音: '' 表示不使用预置
             breakEndPreset: '',    // 预置提示音: '' 表示不使用预置
             workBackgroundSound: '', // 工作背景音文件名
+            workBackgroundPlaylist: [], // 数组顺序即专注背景音播放顺序
+            workBackgroundPlayMode: 'sequence', // single / sequence
             breakBackgroundSound: '', // 休息背景音文件名
             backgroundVolume: 0.35, // 背景音音量 (0-1)
             backgroundEnabled: true, // 是否启用背景音
@@ -9121,7 +9134,7 @@
             userSettings.timeline.enableBreathing = breathingInput.checked;
             await saveUserSettings();
             updateProgressBar();
-            // 如果开启了呼吸效果，也触发一次时间轴更新，确保折叠态流光效果生效
+            // 修改呼吸开关后立即刷新时间轴
             if (userSettings.timeline.enabled) updateTimelineBar(true);
         };
         content.appendChild(row('时间轴呼吸效果', breathingInput));
@@ -10510,6 +10523,9 @@
         };
         const acknowledgeAndCloseEndDialog = () => runEndDialogAction(async () => {
             if (type === 'break-end') {
+                // Expiry may already have restored focus, or another action may
+                // have started it. Dismissing the reminder must preserve it.
+                if (timerMode !== 'break' && timerMode !== 'stopwatch-break') return;
                 const restoredCanonical = await finishBreakFromContinuation();
                 const isStopwatchBreakEnd = timerMode === 'stopwatch-break' || preBreakState?.mode === 'stopwatch';
                 if (restoredCanonical) {
@@ -10693,9 +10709,33 @@
             const savedTaskBlockName = currentTaskBlockName;
             const focusRestoreOptions = getCurrentFocusRestoreOptions();
 
+            const restoredFocusTimer = syncState?.status === 'PAUSED' && syncState?.activeTimer?.phase === 'focus'
+                ? syncState.activeTimer
+                : null;
             const previousMode = preBreakState ? preBreakState.mode : 'countdown';
             
-            if (previousMode === 'countdown') {
+            if (restoredFocusTimer) {
+                const progressText = restoredFocusTimer.timerMode === 'stopwatch'
+                    ? `已专注 ${formatTime(elapsedSeconds + stopwatchDisplayOffset)}`
+                    : `剩余 ${formatTime(remainingSeconds)}`;
+                messageEl.textContent = `原专注已暂停，${progressText}。\n准备好后继续。`;
+                const continueBtn = document.createElement('button');
+                continueBtn.className = 'tomato-dialog-action';
+                continueBtn.textContent = '▶️ 继续原专注';
+                continueBtn.style.cssText = `padding: 8px 16px; background: var(--b3-theme-primary); color: var(--b3-theme-on-primary);
+                    border: 1px solid var(--b3-theme-primary); border-radius: 8px; cursor: pointer; font-size: 14px;`;
+                continueBtn.onclick = () => {
+                    return runEndDialogAction(async () => {
+                        const current = SyncManager.getState ? SyncManager.getState() : syncState;
+                        if (current?.status !== 'PAUSED' || current?.activeTimer?.sessionId !== restoredFocusTimer.sessionId) {
+                            showMiniToast('原专注状态已变化，请查看计时栏');
+                            return;
+                        }
+                        await startTimer({ confirm: false });
+                    }, '继续专注失败，请重试');
+                };
+                buttonContainer.appendChild(continueBtn);
+            } else if (previousMode === 'countdown') {
                 getTomatoDurations().forEach(min => {
                     const btn = document.createElement('button');
                     btn.className = 'tomato-dialog-action';
@@ -13999,10 +14039,10 @@
 
             const nowLine = document.createElement('div');
             nowLine.style.cssText = `
-                position: absolute; top: 0; bottom: 0; width: 2px;
+                position: absolute; top: 0; bottom: 0; left: 0; width: 2px;
                 background: ${nowLineColor}; z-index: 10;
                 box-shadow: 0 0 4px rgba(0,0,0,0.2);
-                transition: left 1s linear;
+                transition: transform 1s linear;
                 pointer-events: none;
                 display: ${dayOffset === 0 ? 'block' : 'none'};
             `;
@@ -15299,6 +15339,8 @@
             createTimelineBar();
         }
         if (timelineBar) timelineBar.style.display = 'block';
+        // 在写入时间轴样式前读取页宽，指示线用位移避免动画逐帧触发布局。
+        const nowLinePageWidth = timelineNowLine?.parentElement?.clientWidth || 0;
         if (timelineBar) {
             timelineBar.dataset.expanded = isTimelineExpanded ? '1' : '0';
             timelineBar.dataset.segRound = (userSettings.timeline?.enableHighlightRoundedCorners !== false) ? '1' : '0';
@@ -15477,12 +15519,13 @@
                 }
             }
 
-            const shouldBreathe = (userSettings.timeline.enableBreathing !== false)
-                && (userSettings.appearance?.enableBreathing !== false)
-                && (timerMode === 'countdown' || timerMode === 'stopwatch' || timerMode === 'stopwatch-break' || timerMode === 'break')
+            const timelineAnimationActive = (timerMode === 'countdown' || timerMode === 'stopwatch' || timerMode === 'stopwatch-break' || timerMode === 'break')
                 && isRunning
                 && !isTimerPaused;
-            const shouldShimmer = shouldBreathe && userSettings.timeline.enableShimmerFlow !== false;
+            const shouldBreathe = (userSettings.timeline.enableBreathing !== false)
+                && (userSettings.appearance?.enableBreathing !== false)
+                && timelineAnimationActive;
+            const shouldShimmer = userSettings.timeline.enableShimmerFlow !== false && timelineAnimationActive;
             timelineVisual.classList.toggle('breathing', shouldBreathe);
             timelineVisual.classList.toggle('shimmering', shouldShimmer);
             if (timelineViewport) {
@@ -15527,7 +15570,7 @@
             }
         }
         nowPercent = Math.max(0, Math.min(100, nowPercent));
-        if (timelineNowLine) timelineNowLine.style.left = `${nowPercent}%`;
+        if (timelineNowLine) timelineNowLine.style.transform = `translate3d(${(nowLinePageWidth * nowPercent) / 100}px, 0, 0)`;
 
         const startMin = 0;
         const totalMinutes = timelineDisplayMap.enabled ? timelineDisplayMap.totalMinutes : 1440;
@@ -17115,11 +17158,21 @@
 
             await stopTimer({ skipEndRecord: true });
 
+            let restoredFocus = false;
+            if (endMode === 'break') {
+                try {
+                    restoredFocus = await finishBreakFromContinuation();
+                } catch (restoreError) {
+                    Logger.warn('🍅 休息已结束，恢复专注进度失败:', restoreError);
+                    try { showMiniToast('休息已结束，请点击“结束休息”重试恢复专注'); } catch (e) {}
+                }
+            }
+
             if (!isStopwatchMode) {
                 // 🔧 播放霓虹完成动画
                 try {
                     const isNeonMode = userSettings.appearance?.enableNeonEffect && userSettings.appearance?.theme !== 'default';
-                    if (isNeonMode && progressBar) {
+                    if (isNeonMode && progressBar && !restoredFocus) {
                         const progress = progressBar;
                         const currentWidth = progress.style.width;
                         progress.style.setProperty('--current-width', currentWidth);
@@ -17146,7 +17199,7 @@
 
                 try {
                     if (isBreakMode) {
-                        showToastDialog('⏰ 休息结束', '继续你的计时吧！', 'break-end', currentTaskBlockId, currentTaskBlockName);
+                        showToastDialog('⏰ 休息结束', restoredFocus ? '原专注已暂停，准备好后继续。' : '继续你的计时吧！', 'break-end', currentTaskBlockId, currentTaskBlockName);
                     } else {
                         showToastDialog('🍅 时间到！', '该休息一下了～', 'tomato-end', currentTaskBlockId, currentTaskBlockName);
                     }
@@ -17308,6 +17361,8 @@
                 }
             }
         }
+        // 复用计时心跳，只恢复意外暂停或遗漏的歌曲结束，不增加常驻定时器。
+        recoverBackgroundAudioIfNeeded().catch(error => Logger.warn('恢复背景音失败:', error));
     }
 
     function assertTimerReady() {
@@ -19355,16 +19410,22 @@
 
     async function finishBreakFromContinuation() {
         const current = SyncManager.getState ? SyncManager.getState() : syncState;
-        if (!current?.continuation?.focusTimerSnapshot) return false;
+        const focusSnapshot = current?.continuation?.focusTimerSnapshot;
+        if (!focusSnapshot) return false;
         const transition = await TransitionExecutor.execute(
             { transitionId: createTomatoUuid('finish-break'), deferNetwork: true },
-            state => TimerStateMachine.restoreFocusContinuation(state, Date.now(), SYNC_DEVICE_ID),
+            state => {
+                if (state.continuation?.focusTimerSnapshot?.sessionId !== focusSnapshot.sessionId
+                    || state.activeTimer) return state;
+                return TimerStateMachine.restoreFocusContinuation(state, Date.now(), SYNC_DEVICE_ID);
+            },
         );
-        if (!transition?.state) return false;
+        if (!transition?.ok) throw new Error(transition?.blocked ? 'FINISH_BREAK_BLOCKED' : 'FINISH_BREAK_FAILED');
+        if (!transition.state) return false;
         syncState = transition.state;
-        pendingFocusCountdownDuration = null;
         const timer = syncState.activeTimer;
-        if (!timer) return false;
+        if (timer?.phase !== 'focus' || timer.status !== 'PAUSED' || timer.sessionId !== focusSnapshot.sessionId) return false;
+        pendingFocusCountdownDuration = null;
         timerMode = timer.timerMode === 'stopwatch' ? 'stopwatch' : 'countdown';
         currentDuration = timer.plannedDurationSec == null
             ? currentDuration
@@ -20017,7 +20078,7 @@
         menu.id = 'tomy-tomato-context-menu';
         menu.style.cssText = `
             position: fixed;
-            top: 0,
+            top: 0;
             left: 0;
             transform: translate(0, 0);
             background: var(--b3-theme-background);
@@ -20028,6 +20089,8 @@
             font-size: 13px;
             min-width: 160px;
             max-width: 240px;
+            max-height: calc(100vh - 8px);
+            overflow-y: auto;
             padding: 6px 0;
             pointer-events: auto;
             user-select: none;
@@ -20156,6 +20219,38 @@
                 isContextMenuOpen = false;
             };
             menu.appendChild(muteBackgroundItem);
+
+            const workBackgroundItems = getWorkBackgroundMenuItems();
+            if (workBackgroundItems.length) {
+                const playlistMenu = document.createElement('details');
+                playlistMenu.style.cssText = 'max-height: 40vh; overflow-y: auto;';
+                const playlistLabel = document.createElement('summary');
+                playlistLabel.textContent = '专注背景音';
+                playlistLabel.style.cssText = 'padding: 6px 12px; cursor: pointer;';
+                playlistMenu.appendChild(playlistLabel);
+                playlistMenu.ontoggle = () => {
+                    const height = menu.getBoundingClientRect().height;
+                    const top = Math.max(4, Math.min(y, window.innerHeight - height - 4));
+                    const left = menu.getBoundingClientRect().left;
+                    menu.style.transform = `translate(${left}px, ${top}px)`;
+                };
+                workBackgroundItems.forEach(item => {
+                    const button = document.createElement('button');
+                    button.textContent = (item.selected ? '✓ ' : '') + item.label;
+                    button.style.cssText = 'display: block; width: 100%; padding: 6px 20px; border: none; background: transparent; color: var(--b3-theme-on-background); text-align: left; cursor: pointer; overflow-wrap: anywhere;';
+                    if (item.selected != null) button.setAttribute('aria-pressed', String(item.selected));
+                    button.onmouseenter = () => button.style.backgroundColor = 'var(--b3-theme-surface-light)';
+                    button.onmouseleave = () => button.style.backgroundColor = '';
+                    button.onclick = (event) => {
+                        event.stopPropagation();
+                        menu.remove();
+                        isContextMenuOpen = false;
+                        item.action().catch(error => Logger.warn('切换专注背景音失败:', error));
+                    };
+                    playlistMenu.appendChild(button);
+                });
+                menu.appendChild(playlistMenu);
+            }
 
             const hrBackgroundAudio = document.createElement('hr');
             hrBackgroundAudio.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
@@ -26782,6 +26877,17 @@ function calculateWeeklyStats(dailyStatsArray) {
                 label: isMuted ? '🔊 取消静音' : '🔇 静音背景音',
                 click: () => runAction(async () => { await setBackgroundAudioMuted(!isMuted); })
             });
+            const workBackgroundItems = getWorkBackgroundMenuItems();
+            if (workBackgroundItems.length) {
+                template.push({
+                    label: '专注背景音',
+                    submenu: workBackgroundItems.map(item => ({
+                        label: item.label,
+                        ...(item.selected == null ? {} : { type: 'checkbox', checked: item.selected }),
+                        click: () => runAction(item.action)
+                    }))
+                });
+            }
             pushSeparator();
         }
 
@@ -29378,12 +29484,16 @@ window.__setTomatoFloatState = function (payload) {
             }
 
             @keyframes shimmerFlow {
-                from { transform: translate3d(-100%, 0, 0); }
-                to { transform: translate3d(100%, 0, 0); }
+                0% {
+                    transform: translate3d(calc(-50% - var(--shimmer-width, 10%)), 0, 0);
+                }
+                100% {
+                    transform: translate3d(var(--shimmer-width, 10%), 0, 0);
+                }
             }
 
-            #tomato-timeline-bar[data-expanded="0"] .timeline-viewport.breathing.shimmering::after,
-            #tomato-timeline-bar[data-expanded="0"] .timeline-viewport.neon-mode.breathing.shimmering::after {
+            /* 流光固定在可视层，避免随日期页面横向滚动。 */
+            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.shimmering::after {
                 content: '';
                 position: absolute;
                 top: 0;
@@ -29399,15 +29509,13 @@ window.__setTomatoFloatState = function (payload) {
                     transparent 100%
                 );
                 background-size: 100% 100%;
-                animation:
-                    shimmerFlow var(--shimmer-duration, 8s) steps(var(--shimmer-frames, 240), end) infinite,
-                    tomatoBreathe30fps var(--breathing-duration, 3s) steps(1, end) infinite;
-                will-change: transform, opacity;
+                animation: shimmerFlow var(--shimmer-duration, 8s) steps(var(--shimmer-frames, 240), end) infinite;
+                will-change: transform;
                 z-index: 2;
                 pointer-events: none;
             }
 
-            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.breathing.shimmering {
+            #tomato-timeline-bar[data-expanded="0"] .timeline-visual.neon-mode.shimmering {
                 box-shadow: 0 0 10px var(--neon-glow, #ff6b9d);
             }
 
@@ -29417,7 +29525,7 @@ window.__setTomatoFloatState = function (payload) {
             html.tomato-animations-paused .tomato-preview-indicator.breathing,
             html.tomato-animations-paused #tomato-timeline-bar .timeline-visual.breathing > .timeline-viewport,
             html.tomato-animations-paused #tomato-timeline-bar .timeline-segment.breathing,
-            html.tomato-animations-paused #tomato-timeline-bar .timeline-viewport.shimmering::after {
+            html.tomato-animations-paused #tomato-timeline-bar .timeline-visual.shimmering::after {
                 animation-play-state: paused !important;
             }
 
@@ -34142,12 +34250,16 @@ window.__setTomatoFloatState = function (payload) {
     }
 
     function ensureAudioSettingsDefaults() {
+        const legacyWorkSound = String(userSettings.audioSettings?.workBackgroundSound || '').trim();
+        const hasWorkPlaylist = Array.isArray(userSettings.audioSettings?.workBackgroundPlaylist);
         const defaults = {
             workEndSound: '',
             breakEndSound: '',
             workEndPreset: '',
             breakEndPreset: '',
             workBackgroundSound: '',
+            workBackgroundPlaylist: legacyWorkSound ? [{ name: legacyWorkSound, filename: legacyWorkSound }] : [],
+            workBackgroundPlayMode: legacyWorkSound && !hasWorkPlaylist ? 'single' : 'sequence',
             breakBackgroundSound: '',
             backgroundVolume: 0.35,
             backgroundEnabled: true,
@@ -34172,7 +34284,124 @@ window.__setTomatoFloatState = function (payload) {
         userSettings.audioSettings.backgroundEnabled = userSettings.audioSettings.backgroundEnabled !== false;
         userSettings.audioSettings.backgroundMuted = userSettings.audioSettings.backgroundMuted === true;
         audioSettings = userSettings.audioSettings;
+        const filenames = new Set();
+        audioSettings.workBackgroundPlaylist = (Array.isArray(audioSettings.workBackgroundPlaylist)
+            ? audioSettings.workBackgroundPlaylist : defaults.workBackgroundPlaylist).flatMap((track) => {
+            const filename = String(track?.filename || '').trim();
+            if (!filename || filenames.has(filename)) return [];
+            filenames.add(filename);
+            return [{ name: String(track.name || filename), filename }];
+        });
+        if (!filenames.has(audioSettings.workBackgroundSound)) {
+            audioSettings.workBackgroundSound = audioSettings.workBackgroundPlaylist[0]?.filename || '';
+        }
+        audioSettings.workBackgroundPlayMode = audioSettings.workBackgroundPlayMode === 'single' ? 'single' : 'sequence';
         return audioSettings;
+    }
+
+    function notifyWorkBackgroundPlaylistChanged() {
+        document.getElementById('tomato-work-background-section')?.dispatchEvent(new Event('tomato-background-change'));
+    }
+
+    function resetWorkBackgroundAudio(release = true) {
+        backgroundAudioInitGeneration += 1;
+        stopBackgroundAudioPreview();
+        if (currentBackgroundAudio === workBackgroundAudio) {
+            backgroundAudioPlaybackGeneration += 1;
+            currentBackgroundAudio = null;
+        }
+        if (workBackgroundAudio) {
+            try { workBackgroundAudio.pause(); workBackgroundAudio.currentTime = 0; } catch (e) {}
+        }
+        if (release) {
+            releaseAudio(workBackgroundAudio, workBackgroundAudioObjectUrl);
+            workBackgroundAudio = null;
+            workBackgroundAudioObjectUrl = null;
+            workBackgroundAudioFilename = '';
+        }
+    }
+
+    async function setWorkBackgroundPlaylist(playlist, selectedFilename = null) {
+        const settings = ensureAudioSettingsDefaults();
+        const previousFilename = settings.workBackgroundSound;
+        settings.workBackgroundPlaylist = playlist;
+        settings.workBackgroundSound = selectedFilename == null ? previousFilename : selectedFilename;
+        ensureAudioSettingsDefaults();
+        if (previousFilename !== settings.workBackgroundSound) {
+            workBackgroundAudioFailureCount = 0;
+            resetWorkBackgroundAudio(!settings.workBackgroundSound);
+        }
+        const saving = saveAudioSettings();
+        notifyWorkBackgroundPlaylistChanged();
+        if (previousFilename !== settings.workBackgroundSound && isRunning && !isTimerPaused
+            && !isBreakAudioMode() && settings.backgroundEnabled && !settings.backgroundMuted) {
+            await initBackgroundAudio('work');
+        }
+        await saving;
+    }
+
+    async function selectWorkBackgroundSound(filename, automatic = false) {
+        const settings = ensureAudioSettingsDefaults();
+        if (!settings.workBackgroundPlaylist.some(track => track.filename === filename)) return;
+        if (!automatic) workBackgroundAudioFailureCount = 0;
+        settings.workBackgroundSound = filename;
+        resetWorkBackgroundAudio(false);
+        const saving = saveAudioSettings();
+        notifyWorkBackgroundPlaylistChanged();
+        if (isRunning && !isTimerPaused && !isBreakAudioMode() && settings.backgroundEnabled && !settings.backgroundMuted) {
+            await initBackgroundAudio('work');
+        }
+        await saving;
+    }
+
+    function nextWorkBackgroundSound(automatic = false) {
+        const settings = ensureAudioSettingsDefaults();
+        const playlist = settings.workBackgroundPlaylist;
+        if (!playlist.length) return Promise.resolve();
+        const index = playlist.findIndex(track => track.filename === settings.workBackgroundSound);
+        return selectWorkBackgroundSound(playlist[(index + 1) % playlist.length].filename, automatic);
+    }
+
+    async function setWorkBackgroundPlayMode(mode) {
+        const settings = ensureAudioSettingsDefaults();
+        settings.workBackgroundPlayMode = mode === 'single' ? 'single' : 'sequence';
+        workBackgroundAudioFailureCount = 0;
+        if (workBackgroundAudio) workBackgroundAudio.loop = settings.workBackgroundPlayMode === 'single';
+        notifyWorkBackgroundPlaylistChanged();
+        await saveAudioSettings();
+    }
+
+    async function uploadWorkBackgroundFiles(files, onProgress = () => {}) {
+        const tracks = [];
+        const failures = [];
+        for (const file of files) {
+            try {
+                const extension = file.name.match(/\.[^./\\]+$/)?.[0] || '';
+                const filename = await uploadAudioFileToStorage(file, createTomatoUuid('background') + extension);
+                tracks.push({ name: file.name, filename });
+            } catch (error) {
+                failures.push(file.name);
+                Logger.warn('上传专注背景音失败:', file.name, error);
+            }
+            onProgress(tracks.length + failures.length, files.length);
+        }
+        if (tracks.length) {
+            await setWorkBackgroundPlaylist([...ensureAudioSettingsDefaults().workBackgroundPlaylist, ...tracks]);
+        }
+        return { tracks, failures };
+    }
+
+    function getWorkBackgroundMenuItems() {
+        const settings = ensureAudioSettingsDefaults();
+        if (!settings.workBackgroundPlaylist.length) return [];
+        return [
+            { label: '下一首', action: () => nextWorkBackgroundSound() },
+            ...settings.workBackgroundPlaylist.map(track => ({
+                label: track.name,
+                selected: track.filename === settings.workBackgroundSound,
+                action: () => selectWorkBackgroundSound(track.filename)
+            }))
+        ];
     }
 
     function releaseAudio(audio, objectUrl) {
@@ -34219,6 +34448,9 @@ window.__setTomatoFloatState = function (payload) {
         workBackgroundAudioObjectUrl = null;
         breakBackgroundAudioObjectUrl = null;
         currentBackgroundAudio = null;
+        workBackgroundAudioFilename = '';
+        breakBackgroundAudioFilename = '';
+        workBackgroundAudioFailureCount = 0;
     }
 
     async function loadAudioFromStorage(filename, label, options = {}) {
@@ -34258,8 +34490,7 @@ window.__setTomatoFloatState = function (payload) {
         }
     }
 
-    async function uploadAudioFileToStorage(file) {
-        const filename = file?.name || '';
+    async function uploadAudioFileToStorage(file, filename = file?.name || '') {
         if (!filename) throw new Error('empty audio filename');
         try { await __tomatoEnsureDir(AUDIO_STORAGE_PATH); } catch (mkdirErr) {}
 
@@ -34283,13 +34514,15 @@ window.__setTomatoFloatState = function (payload) {
     async function setBackgroundAudioFile(type, filename) {
         audioSettings = ensureAudioSettingsDefaults();
         if (type === 'work') {
-            audioSettings.workBackgroundSound = String(filename || '').trim();
+            const cleanFilename = String(filename || '').trim();
+            await setWorkBackgroundPlaylist(cleanFilename ? [{ name: cleanFilename, filename: cleanFilename }] : [], cleanFilename);
+            return;
         } else if (type === 'break') {
             audioSettings.breakBackgroundSound = String(filename || '').trim();
         }
-        await saveAudioSettings();
-        await initAudio();
-        syncBackgroundAudioWithTimerState();
+        const saving = saveAudioSettings();
+        await initBackgroundAudio('break');
+        await saving;
     }
 
     async function setBackgroundAudioMuted(muted) {
@@ -34305,7 +34538,8 @@ window.__setTomatoFloatState = function (payload) {
     }
 
     function getBackgroundAudioForCurrentMode() {
-        return isBreakAudioMode() ? breakBackgroundAudio : workBackgroundAudio;
+        if (isBreakAudioMode()) return breakBackgroundAudioFilename === audioSettings.breakBackgroundSound ? breakBackgroundAudio : null;
+        return workBackgroundAudioFilename === audioSettings.workBackgroundSound ? workBackgroundAudio : null;
     }
 
     function updateBackgroundAudioVolume() {
@@ -34318,6 +34552,7 @@ window.__setTomatoFloatState = function (payload) {
     }
 
     function pauseBackgroundAudio(reset = false) {
+        backgroundAudioInitGeneration += 1;
         backgroundAudioPlaybackGeneration += 1;
         for (const audio of new Set([workBackgroundAudio, breakBackgroundAudio, currentBackgroundAudio])) {
             if (!audio) continue;
@@ -34331,8 +34566,34 @@ window.__setTomatoFloatState = function (payload) {
 
     function stopBackgroundAudio() {
         backgroundAudioInitGeneration += 1;
+        workBackgroundAudioFailureCount = 0;
         stopBackgroundAudioPreview();
         pauseBackgroundAudio(true);
+    }
+
+    async function handleWorkBackgroundAudioFailure(audio, error) {
+        const settings = ensureAudioSettingsDefaults();
+        if (isBreakAudioMode() || !isRunning || isTimerPaused || !settings.backgroundEnabled || settings.backgroundMuted) return;
+        if (audio && (audio !== currentBackgroundAudio || audio._tomatoBackgroundFailed)) return;
+        if (error?.name === 'NotAllowedError') {
+            if (audio) audio._tomatoBackgroundBlocked = true;
+            pauseBackgroundAudio(false);
+            showMiniToast('请点击曲目或重新开始计时以播放背景音');
+            return;
+        }
+        if (audio) {
+            audio._tomatoBackgroundFailed = true;
+            try { audio.pause(); } catch (e) {}
+        }
+        workBackgroundAudioFailureCount += 1;
+        if (settings.workBackgroundPlayMode === 'sequence'
+            && workBackgroundAudioFailureCount < settings.workBackgroundPlaylist.length) {
+            await nextWorkBackgroundSound(true);
+        } else {
+            pauseBackgroundAudio(false);
+            showMiniToast(settings.workBackgroundPlayMode === 'sequence'
+                ? '专注背景音均无法播放，请检查音频文件' : '专注背景音无法播放，请检查音频文件');
+        }
     }
 
     async function playBackgroundAudioForCurrentMode() {
@@ -34344,9 +34605,19 @@ window.__setTomatoFloatState = function (payload) {
 
         const audio = getBackgroundAudioForCurrentMode();
         if (!audio) {
-            pauseBackgroundAudio(false);
+            const isBreak = isBreakAudioMode();
+            const filename = isBreak ? audioSettings.breakBackgroundSound : audioSettings.workBackgroundSound;
+            const loadedFilename = isBreak ? breakBackgroundAudioFilename : workBackgroundAudioFilename;
+            if (filename && loadedFilename !== filename) {
+                await initBackgroundAudio(isBreak ? 'break' : 'work');
+            } else if (filename && !isBreak) {
+                await handleWorkBackgroundAudioFailure(null);
+            } else {
+                pauseBackgroundAudio(false);
+            }
             return;
         }
+        if (audio._tomatoBackgroundFailed) return;
 
         if (currentBackgroundAudio && currentBackgroundAudio !== audio) {
             try { currentBackgroundAudio.pause(); } catch (e) {}
@@ -34354,12 +34625,16 @@ window.__setTomatoFloatState = function (payload) {
         }
 
         currentBackgroundAudio = audio;
-        audio.loop = true;
+        audio.loop = isBreakAudioMode() || audioSettings.workBackgroundPlayMode === 'single';
         audio.volume = clampAudioVolume(audioSettings.backgroundVolume, 0.35);
+        audio._tomatoBackgroundBlocked = false;
         const playbackGeneration = backgroundAudioPlaybackGeneration;
+        audio._tomatoPlaybackGeneration = playbackGeneration;
 
+        let playPromise;
         try {
-            const playPromise = audio.play();
+            playPromise = audio.play();
+            audio._tomatoPlayPending = playPromise;
             if (playPromise !== undefined) await playPromise;
             audioSettings = ensureAudioSettingsDefaults();
             if (playbackGeneration !== backgroundAudioPlaybackGeneration
@@ -34368,16 +34643,25 @@ window.__setTomatoFloatState = function (payload) {
                 || audioSettings.backgroundMuted
                 || !isRunning
                 || isTimerPaused) {
-                try { audio.pause(); } catch (e) {}
+                if (audio._tomatoPlaybackGeneration === playbackGeneration) {
+                    try { audio.pause(); } catch (e) {}
+                }
             }
         } catch (e) {
             Logger.warn('⚠️ 播放背景音失败:', e?.name || e, e?.message || '');
+            // load()/pause() 可中断 play()，这不表示文件损坏；运行中的心跳会重试。
+            if (e?.name === 'AbortError') return;
+            if (playbackGeneration === backgroundAudioPlaybackGeneration && currentBackgroundAudio === audio) {
+                await handleWorkBackgroundAudioFailure(audio, e);
+            }
+        } finally {
+            if (audio._tomatoPlayPending === playPromise) audio._tomatoPlayPending = null;
         }
     }
 
     function syncBackgroundAudioWithTimerState() {
         if (isRunning && !isTimerPaused) {
-            playBackgroundAudioForCurrentMode().catch((e) => {
+            return playBackgroundAudioForCurrentMode().catch((e) => {
                 Logger.warn('⚠️ 同步背景音状态失败:', e);
             });
         } else {
@@ -34385,56 +34669,110 @@ window.__setTomatoFloatState = function (payload) {
         }
     }
 
-    async function initBackgroundAudio() {
+    async function recoverBackgroundAudioIfNeeded(now = Date.now()) {
+        if (!isRunning || isTimerPaused) return;
+        const audio = currentBackgroundAudio;
+        if (!audio || !audio.src
+            || audio._tomatoBackgroundFailed || audio._tomatoBackgroundBlocked || audio._tomatoPlayPending) return;
+        if (!audio.paused && !audio.ended) return;
+        const settings = ensureAudioSettingsDefaults();
+        if (!settings.backgroundEnabled || settings.backgroundMuted || audio !== getBackgroundAudioForCurrentMode()) return;
+        if (now - (recoverBackgroundAudioIfNeeded._lastAttemptAt || 0) < 5000) return;
+        recoverBackgroundAudioIfNeeded._lastAttemptAt = now;
+        Logger.info('🍅 恢复意外中断的背景音:', { ended: audio.ended, currentTime: audio.currentTime });
+        if (audio.ended && !isBreakAudioMode() && settings.workBackgroundPlayMode === 'sequence') {
+            workBackgroundAudioFailureCount = 0;
+            await nextWorkBackgroundSound(true);
+        } else {
+            await playBackgroundAudioForCurrentMode();
+        }
+    }
+
+    async function initBackgroundAudio(type = null) {
         audioSettings = ensureAudioSettingsDefaults();
         const workBackgroundPath = audioSettings.workBackgroundSound;
         const breakBackgroundPath = audioSettings.breakBackgroundSound;
 
-        cleanupBackgroundAudioResources();
-        const initGeneration = backgroundAudioInitGeneration;
-        let loadedWork = { audio: null, objectUrl: null };
-        let loadedBreak = { audio: null, objectUrl: null };
+        const initGeneration = ++backgroundAudioInitGeneration;
+        const needsWork = type !== 'break' && (workBackgroundAudioFilename !== workBackgroundPath
+            || (!!workBackgroundPath && !workBackgroundAudio) || workBackgroundAudio?._tomatoBackgroundFailed);
+        const needsBreak = type !== 'work' && (breakBackgroundAudioFilename !== breakBackgroundPath
+            || (!!breakBackgroundPath && !breakBackgroundAudio));
 
-        if (workBackgroundPath) {
-            loadedWork = await loadAudioFromStorage(workBackgroundPath, '工作背景音', {
-                loop: true,
+        if (needsWork) {
+            stopBackgroundAudioPreview();
+            if (currentBackgroundAudio === workBackgroundAudio && workBackgroundAudio) {
+                backgroundAudioPlaybackGeneration += 1;
+                currentBackgroundAudio = null;
+            }
+            if (workBackgroundAudio) {
+                try { workBackgroundAudio.pause(); } catch (e) {}
+            }
+            const loadedWork = await loadAudioFromStorage(workBackgroundPath, '工作背景音', {
+                loop: audioSettings.workBackgroundPlayMode === 'single',
                 volume: audioSettings.backgroundVolume
             });
             if (initGeneration !== backgroundAudioInitGeneration) {
                 releaseAudio(loadedWork.audio, loadedWork.objectUrl);
                 return;
             }
+            if (currentBackgroundAudio === workBackgroundAudio) currentBackgroundAudio = null;
+            releaseAudio(workBackgroundAudio, workBackgroundAudioObjectUrl);
+            workBackgroundAudio = loadedWork.audio;
+            workBackgroundAudioObjectUrl = loadedWork.objectUrl;
+            workBackgroundAudioFilename = workBackgroundPath;
+            if (workBackgroundAudio) {
+                const audio = workBackgroundAudio;
+                audio.addEventListener('ended', () => {
+                    const settings = ensureAudioSettingsDefaults();
+                    if (audio !== currentBackgroundAudio || isBreakAudioMode() || !isRunning || isTimerPaused
+                        || !settings.backgroundEnabled || settings.backgroundMuted || settings.workBackgroundPlayMode !== 'sequence') return;
+                    workBackgroundAudioFailureCount = 0;
+                    nextWorkBackgroundSound(true).catch(error => Logger.warn('切换下一首背景音失败:', error));
+                });
+                audio.addEventListener('error', () => {
+                    handleWorkBackgroundAudioFailure(audio, audio.error).catch(error => Logger.warn('跳过背景音失败:', error));
+                });
+            }
         }
 
-        if (breakBackgroundPath) {
-            loadedBreak = await loadAudioFromStorage(breakBackgroundPath, '休息背景音', {
+        if (needsBreak) {
+            stopBackgroundAudioPreview();
+            if (currentBackgroundAudio === breakBackgroundAudio && breakBackgroundAudio) {
+                backgroundAudioPlaybackGeneration += 1;
+                currentBackgroundAudio = null;
+            }
+            if (breakBackgroundAudio) {
+                try { breakBackgroundAudio.pause(); } catch (e) {}
+            }
+            const loadedBreak = await loadAudioFromStorage(breakBackgroundPath, '休息背景音', {
                 loop: true,
                 volume: audioSettings.backgroundVolume
             });
             if (initGeneration !== backgroundAudioInitGeneration) {
-                releaseAudio(loadedWork.audio, loadedWork.objectUrl);
                 releaseAudio(loadedBreak.audio, loadedBreak.objectUrl);
                 return;
             }
+            if (currentBackgroundAudio === breakBackgroundAudio) currentBackgroundAudio = null;
+            releaseAudio(breakBackgroundAudio, breakBackgroundAudioObjectUrl);
+            breakBackgroundAudio = loadedBreak.audio;
+            breakBackgroundAudioObjectUrl = loadedBreak.objectUrl;
+            breakBackgroundAudioFilename = breakBackgroundPath;
         }
 
-        workBackgroundAudio = loadedWork.audio;
-        workBackgroundAudioObjectUrl = loadedWork.objectUrl;
-        breakBackgroundAudio = loadedBreak.audio;
-        breakBackgroundAudioObjectUrl = loadedBreak.objectUrl;
-        if (workBackgroundAudio) Logger.info('🍅 工作背景音已加载:', workBackgroundPath);
-        if (breakBackgroundAudio) Logger.info('🍅 休息背景音已加载:', breakBackgroundPath);
-
+        if (workBackgroundAudio) workBackgroundAudio.loop = audioSettings.workBackgroundPlayMode === 'single';
         updateBackgroundAudioVolume();
-        syncBackgroundAudioWithTimerState();
+        await syncBackgroundAudioWithTimerState();
     }
 
-    async function playBackgroundAudioPreview(type) {
+    async function playBackgroundAudioPreview(type, requestedFilename = null) {
         audioSettings = ensureAudioSettingsDefaults();
         const isBreak = type === 'break';
-        const filename = isBreak ? audioSettings.breakBackgroundSound : audioSettings.workBackgroundSound;
-        const existingAudio = isBreak ? breakBackgroundAudio : workBackgroundAudio;
-        const existingObjectUrl = isBreak ? breakBackgroundAudioObjectUrl : workBackgroundAudioObjectUrl;
+        const filename = requestedFilename == null
+            ? (isBreak ? audioSettings.breakBackgroundSound : audioSettings.workBackgroundSound) : requestedFilename;
+        const matchesLoaded = filename === (isBreak ? breakBackgroundAudioFilename : workBackgroundAudioFilename);
+        const existingAudio = matchesLoaded ? (isBreak ? breakBackgroundAudio : workBackgroundAudio) : null;
+        const existingObjectUrl = matchesLoaded ? (isBreak ? breakBackgroundAudioObjectUrl : workBackgroundAudioObjectUrl) : null;
 
         if (!filename) {
             showMiniToast('请先选择背景音文件');
@@ -35683,6 +36021,166 @@ window.__setTomatoFloatState = function (payload) {
     /**
      * 渲染音频设置页面
      */
+    function createWorkBackgroundPlaylistSection(createAudioButton) {
+        const section = document.createElement('div');
+        section.id = 'tomato-work-background-section';
+        section.style.cssText = 'margin-top: 12px; font-size: 13px;';
+        const title = document.createElement('div');
+        title.textContent = '专注背景音';
+        title.style.cssText = 'margin-bottom: 8px;';
+        section.appendChild(title);
+
+        const modeLabel = document.createElement('label');
+        modeLabel.textContent = '默认播放模式 ';
+        const modeSelect = document.createElement('select');
+        modeSelect.setAttribute('aria-label', '专注背景音默认播放模式');
+        modeSelect.style.cssText = 'padding: 6px; background: var(--b3-theme-background); color: var(--b3-theme-on-background); border: 1px solid var(--b3-theme-surface); border-radius: 4px;';
+        for (const [value, text] of [['sequence', '顺序循环'], ['single', '单曲循环']]) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = text;
+            modeSelect.appendChild(option);
+        }
+        modeSelect.onchange = () => setWorkBackgroundPlayMode(modeSelect.value);
+        modeLabel.appendChild(modeSelect);
+        section.appendChild(modeLabel);
+
+        const list = document.createElement('div');
+        list.style.cssText = 'margin: 8px 0;';
+        const status = document.createElement('div');
+        status.setAttribute('role', 'status');
+        status.style.cssText = 'font-size: 12px; color: var(--b3-theme-on-surface-light); overflow-wrap: anywhere; margin-top: 6px;';
+        const refresh = () => {
+            const settings = ensureAudioSettingsDefaults();
+            modeSelect.value = settings.workBackgroundPlayMode;
+            list.replaceChildren();
+            if (!settings.workBackgroundPlaylist.length) {
+                list.textContent = '上传多个音频，或添加已保存的文件名。';
+                list.style.color = 'var(--b3-theme-on-surface-light)';
+            } else {
+                list.style.color = 'var(--b3-theme-on-background)';
+            }
+            settings.workBackgroundPlaylist.forEach((track, index, playlist) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'padding: 8px 0; border-bottom: 1px solid var(--b3-theme-surface);';
+                const selected = track.filename === settings.workBackgroundSound;
+                const name = document.createElement('div');
+                name.textContent = (index + 1) + '. ' + track.name + (selected ? ' ✓ 当前曲目' : '');
+                name.title = track.name;
+                name.style.cssText = 'overflow-wrap: anywhere; margin-bottom: 6px;';
+                if (selected) name.style.color = 'var(--b3-theme-primary)';
+                row.appendChild(name);
+                const actions = document.createElement('div');
+                actions.style.cssText = 'display: flex; flex-wrap: wrap; gap: 4px;';
+                const addButton = (text, action, disabled = false) => {
+                    const button = createAudioButton(text);
+                    button.style.flex = '0 0 auto';
+                    button.style.padding = '6px 8px';
+                    button.style.color = 'var(--b3-theme-on-background)';
+                    button.disabled = disabled;
+                    button.style.opacity = disabled ? '0.45' : '1';
+                    button.style.cursor = disabled ? 'default' : 'pointer';
+                    button.setAttribute('aria-label', text + ' ' + track.name);
+                    button.onclick = () => Promise.resolve(action()).catch(error => {
+                        Logger.warn('更新专注背景音失败:', error);
+                        status.textContent = '操作失败，请重试';
+                    });
+                    actions.appendChild(button);
+                    return button;
+                };
+                const useButton = addButton('使用', () => selectWorkBackgroundSound(track.filename));
+                useButton.setAttribute('aria-pressed', String(selected));
+                addButton('预览', () => playBackgroundAudioPreview('work', track.filename));
+                const move = (offset) => {
+                    const tracks = [...ensureAudioSettingsDefaults().workBackgroundPlaylist];
+                    const position = tracks.findIndex(item => item.filename === track.filename);
+                    const target = position + offset;
+                    if (position < 0 || target < 0 || target >= tracks.length) return;
+                    [tracks[position], tracks[target]] = [tracks[target], tracks[position]];
+                    return setWorkBackgroundPlaylist(tracks);
+                };
+                addButton('上移', () => move(-1), index === 0);
+                addButton('下移', () => move(1), index === playlist.length - 1);
+                addButton('移除', () => {
+                    const settings = ensureAudioSettingsDefaults();
+                    const position = settings.workBackgroundPlaylist.findIndex(item => item.filename === track.filename);
+                    const tracks = settings.workBackgroundPlaylist.filter(item => item.filename !== track.filename);
+                    const selectedFilename = settings.workBackgroundSound === track.filename
+                        ? tracks[position % tracks.length]?.filename || '' : settings.workBackgroundSound;
+                    return setWorkBackgroundPlaylist(tracks, selectedFilename);
+                });
+                row.appendChild(actions);
+                list.appendChild(row);
+            });
+        };
+        section.addEventListener('tomato-background-change', refresh);
+        section.appendChild(list);
+
+        const addRow = document.createElement('div');
+        addRow.style.cssText = 'display: flex; gap: 6px; margin-bottom: 8px;';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = '已有音频文件名，如 rain.mp3';
+        input.setAttribute('aria-label', '添加已有专注音频文件名');
+        input.style.cssText = 'flex: 1; min-width: 0; padding: 8px; border: 1px solid var(--b3-theme-surface); border-radius: 4px; background: var(--b3-theme-background); color: var(--b3-theme-on-background);';
+        const addButton = createAudioButton('添加');
+        addButton.style.flex = '0 0 auto';
+        addButton.onclick = async () => {
+            const filename = input.value.trim();
+            if (!filename) return;
+            const tracks = ensureAudioSettingsDefaults().workBackgroundPlaylist;
+            if (tracks.some(track => track.filename === filename)) {
+                status.textContent = '该文件已在列表中';
+                return;
+            }
+            await setWorkBackgroundPlaylist([...tracks, { name: filename, filename }]);
+            input.value = '';
+            status.textContent = '';
+        };
+        input.onkeydown = (event) => { if (event.key === 'Enter') addButton.click(); };
+        addRow.appendChild(input);
+        addRow.appendChild(addButton);
+        section.appendChild(addRow);
+
+        const uploadRow = document.createElement('div');
+        uploadRow.style.cssText = 'display: flex; gap: 8px;';
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = 'audio/*,.mp3,.wav,.ogg,.aac,.m4a,.flac';
+        fileInput.multiple = true;
+        fileInput.style.display = 'none';
+        const uploadButton = createAudioButton('上传多个音频', true);
+        uploadButton.onclick = () => fileInput.click();
+        fileInput.onchange = async () => {
+            const files = Array.from(fileInput.files || []);
+            if (!files.length) return;
+            uploadButton.disabled = true;
+            status.textContent = '上传中 0/' + files.length;
+            try {
+                const result = await uploadWorkBackgroundFiles(files, (done, total) => {
+                    status.textContent = '上传中 ' + done + '/' + total;
+                });
+                status.textContent = '已添加 ' + result.tracks.length + ' 个音频'
+                    + (result.failures.length ? '；上传失败：' + result.failures.join('、') : '');
+            } catch (error) {
+                Logger.warn('保存专注背景音列表失败:', error);
+                status.textContent = '保存列表失败，请重试';
+            } finally {
+                uploadButton.disabled = false;
+                fileInput.value = '';
+            }
+        };
+        const clearButton = createAudioButton('清空列表');
+        clearButton.onclick = () => setWorkBackgroundPlaylist([], '');
+        uploadRow.appendChild(uploadButton);
+        uploadRow.appendChild(clearButton);
+        uploadRow.appendChild(fileInput);
+        section.appendChild(uploadRow);
+        section.appendChild(status);
+        refresh();
+        return section;
+    }
+
     function renderAudioSettings(container) {
         audioSettings = getAudioSettings();
 
@@ -35893,7 +36391,7 @@ window.__setTomatoFloatState = function (payload) {
         backgroundContainer.appendChild(backgroundEnableRow);
         backgroundContainer.appendChild(backgroundVolumeLabel);
         backgroundContainer.appendChild(backgroundVolumeSlider);
-        backgroundContainer.appendChild(createBackgroundSoundSection('work', '专注背景音', 'workBackgroundSound', '输入音频文件名，如 rain.mp3'));
+        backgroundContainer.appendChild(createWorkBackgroundPlaylistSection(createAudioButton));
         backgroundContainer.appendChild(createBackgroundSoundSection('break', '休息背景音', 'breakBackgroundSound', '输入音频文件名，如 forest.mp3'));
 
         const backgroundHint = document.createElement('div');
