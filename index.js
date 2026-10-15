@@ -1396,12 +1396,14 @@ module.exports = class TomatoTimerPlugin extends Plugin {
                 `${LEGACY_STORAGE_DIR}/tomato-focus-settings.json`,
                 `${LEGACY_STORAGE_DIR}/tomato-sync.json`,
                 `${PLUGIN_STORAGE_DIR}/tomato-settings.json`,
+                `${PLUGIN_STORAGE_DIR}/tomato-work-background-playlist.json`,
                 `${PLUGIN_STORAGE_DIR}/tomato-focus-settings.json`,
                 `${PLUGIN_STORAGE_DIR}/tomato-sync.json`,
             ];
             for (const p of deleteTargets) {
                 await removeFile(p);
             }
+            try { localStorage.removeItem("tomato-work-background-playlist-v1"); } catch (e) {}
 
             await removeFile(LEGACY_AUDIO_DIR, true);
             await removeFile(PLUGIN_AUDIO_DIR, true);

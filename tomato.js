@@ -522,6 +522,7 @@
     const HISTORY_STORAGE_DIR = `${PLUGIN_STORAGE_DIR}/history`;
     const HISTORY_INDEX_FILE_PATH = `${HISTORY_STORAGE_DIR}/history-index.json`;
     const NEW_SETTINGS_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-settings.json`;
+    const WORK_BACKGROUND_PLAYLIST_PATH = `${PLUGIN_STORAGE_DIR}/tomato-work-background-playlist.json`;
     const NEW_FOCUS_TIME_SETTINGS_PATH = `${PLUGIN_STORAGE_DIR}/tomato-focus-settings.json`;
     const NEW_SYNC_FILE_PATH = `${PLUGIN_STORAGE_DIR}/tomato-sync.json`;
     const TIMER_JOURNAL_FILE_PATH = `${PLUGIN_STORAGE_DIR}/timer-journal.json`;
@@ -645,10 +646,16 @@
         return true;
     }
 
-    async function __tomatoReadDir(path) {
+    async function __tomatoReadDir(path, options = {}) {
         try {
             const r = await postJSON('/api/file/readDir', { path });
-            if (r?.data?.code !== 0) return [];
+            if (r?.data?.code !== 0) {
+                const message = String(r?.data?.msg || '读取音频目录失败');
+                if (options.strict && r?.data?.code !== 404 && !/not exist|not found|no such file|不存在/i.test(message)) {
+                    throw new Error(message);
+                }
+                return [];
+            }
             const payload = r.data?.data;
             if (Array.isArray(payload)) return payload;
             if (Array.isArray(payload?.files)) return payload.files;
@@ -656,6 +663,7 @@
             if (Array.isArray(payload?.children)) return payload.children;
             return [];
         } catch (e) {
+            if (options.strict) throw e;
             return [];
         }
     }
@@ -839,6 +847,7 @@
 
     async function cleanupTomatoFilesOnUninstall() {
         const deleteTargets = [
+            WORK_BACKGROUND_PLAYLIST_PATH,
             FOCUS_TIME_SETTINGS_PATH,
             SYNC_FILE_PATH,
             LEGACY_FOCUS_TIME_SETTINGS_PATH,
@@ -850,6 +859,8 @@
             if (!exists.exists) continue;
             await __tomatoRemoveFile(path);
         }
+        workBackgroundPlaylistRecovery = null;
+        try { localStorage.removeItem(WORK_BACKGROUND_PLAYLIST_LOCAL_KEY); } catch (e) {}
     }
     
     // ========== 番茄钟同步状态数据结构 ==========
@@ -4945,6 +4956,7 @@
                 }
             } catch (localError) {}
         }
+        await loadWorkBackgroundPlaylist();
         try { ensureUserSettings(); } catch (e) {}
         try {
             if (userSettingsAutoFixPending) {
@@ -4963,17 +4975,89 @@
     async function saveUserSettings() {
         try { refreshDockTomatoFocusAPI(); } catch (e) {}
         const snapshot = JSON.stringify(userSettings, null, 2);
-        await __tomatoQueueFileWrite(SETTINGS_FILE_PATH, async () => {
+        const saved = await __tomatoQueueFileWrite(SETTINGS_FILE_PATH, async () => {
             try {
                 try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
                 const ok = await __tomatoPutFileText(SETTINGS_FILE_PATH, snapshot);
                 if (!ok) throw new Error('思源API保存失败');
+                return true;
             } catch (e) {
                 Logger.error('保存设置失败:', e);
                 try { localStorage.setItem('tomato-user-settings', snapshot); } catch (localError) {}
+                return false;
             }
         });
         try { __publishTomatoFocusModeState(); } catch (e) {}
+        return saved;
+    }
+
+    const WORK_BACKGROUND_PLAYLIST_LOCAL_KEY = 'tomato-work-background-playlist-v1';
+    let workBackgroundPlaylistRecovery = null;
+
+    function readWorkBackgroundPlaylistBackup() {
+        if (workBackgroundPlaylistRecovery?.pending) return workBackgroundPlaylistRecovery;
+        try {
+            const backup = JSON.parse(localStorage.getItem(WORK_BACKGROUND_PLAYLIST_LOCAL_KEY) || 'null');
+            if (Array.isArray(backup?.playlist)) return backup;
+        } catch (e) {}
+        return workBackgroundPlaylistRecovery;
+    }
+
+    function rememberWorkBackgroundPlaylist(playlist, pending) {
+        const backup = { playlist: JSON.parse(JSON.stringify(playlist)), pending };
+        workBackgroundPlaylistRecovery = backup;
+        try { localStorage.setItem(WORK_BACKGROUND_PLAYLIST_LOCAL_KEY, JSON.stringify(backup)); } catch (e) {}
+    }
+
+    async function saveWorkBackgroundPlaylist(playlist) {
+        const snapshot = JSON.stringify(playlist);
+        rememberWorkBackgroundPlaylist(playlist, true);
+        return __tomatoQueueFileWrite(WORK_BACKGROUND_PLAYLIST_PATH, async () => {
+            try {
+                await __tomatoEnsureDir(PLUGIN_STORAGE_DIR);
+                const ok = await __tomatoPutFileText(WORK_BACKGROUND_PLAYLIST_PATH, snapshot);
+                if (!ok) throw new Error('思源API保存失败');
+                // A newer queued edit must keep its pending backup until its own write succeeds.
+                if (JSON.stringify(readWorkBackgroundPlaylistBackup()?.playlist) === snapshot) {
+                    rememberWorkBackgroundPlaylist(JSON.parse(snapshot), false);
+                }
+                return true;
+            } catch (e) {
+                Logger.warn('保存专注背景音列表失败，已暂存本机:', e);
+                return false;
+            }
+        });
+    }
+
+    async function loadWorkBackgroundPlaylist() {
+        const backup = readWorkBackgroundPlaylistBackup();
+        const applyPlaylist = playlist => {
+            ensureAudioSettingsDefaults().workBackgroundPlaylist = JSON.parse(JSON.stringify(playlist));
+            return ensureAudioSettingsDefaults().workBackgroundPlaylist;
+        };
+        if (backup?.pending) {
+            await saveWorkBackgroundPlaylist(applyPlaylist(backup.playlist));
+            return;
+        }
+        try {
+            // Other windows and SiYuan sync can change this file without invalidating our cache.
+            __tomatoFileTextCache.delete(WORK_BACKGROUND_PLAYLIST_PATH);
+            const shared = await __tomatoGetFileText(WORK_BACKGROUND_PLAYLIST_PATH);
+            if (shared.exists) {
+                const playlist = JSON.parse(shared.text);
+                if (!Array.isArray(playlist)) throw new Error('无效的专注背景音列表');
+                rememberWorkBackgroundPlaylist(applyPlaylist(playlist), false);
+            } else if (backup) {
+                const playlist = applyPlaylist(backup.playlist);
+                if (shared.missing) await saveWorkBackgroundPlaylist(playlist);
+            } else if (shared.missing) {
+                const playlist = ensureAudioSettingsDefaults().workBackgroundPlaylist;
+                if (playlist.length) await saveWorkBackgroundPlaylist(playlist);
+            }
+        } catch (e) {
+            if (backup) applyPlaylist(backup.playlist);
+            Logger.warn('读取专注背景音列表失败:', e);
+        }
     }
 
     // ========== 专注时间设置管理 ==========
@@ -34331,13 +34415,13 @@ window.__setTomatoFloatState = function (payload) {
             workBackgroundAudioFailureCount = 0;
             resetWorkBackgroundAudio(!settings.workBackgroundSound);
         }
-        const saving = saveAudioSettings();
+        const saving = saveAudioSettings({ playlistChanged: true });
         notifyWorkBackgroundPlaylistChanged();
         if (previousFilename !== settings.workBackgroundSound && isRunning && !isTimerPaused
             && !isBreakAudioMode() && settings.backgroundEnabled && !settings.backgroundMuted) {
             await initBackgroundAudio('work');
         }
-        await saving;
+        return await saving;
     }
 
     async function selectWorkBackgroundSound(filename, automatic = false) {
@@ -34374,6 +34458,7 @@ window.__setTomatoFloatState = function (payload) {
     async function uploadWorkBackgroundFiles(files, onProgress = () => {}) {
         const tracks = [];
         const failures = [];
+        let playlistSaved = true;
         for (const file of files) {
             try {
                 const extension = file.name.match(/\.[^./\\]+$/)?.[0] || '';
@@ -34386,9 +34471,9 @@ window.__setTomatoFloatState = function (payload) {
             onProgress(tracks.length + failures.length, files.length);
         }
         if (tracks.length) {
-            await setWorkBackgroundPlaylist([...ensureAudioSettingsDefaults().workBackgroundPlaylist, ...tracks]);
+            playlistSaved = await setWorkBackgroundPlaylist([...ensureAudioSettingsDefaults().workBackgroundPlaylist, ...tracks]) !== false;
         }
-        return { tracks, failures };
+        return { tracks, failures, playlistSaved };
     }
 
     function getWorkBackgroundMenuItems() {
@@ -34453,23 +34538,42 @@ window.__setTomatoFloatState = function (payload) {
         workBackgroundAudioFailureCount = 0;
     }
 
+    function getAudioStorageDirectories() {
+        return [...new Set([AUDIO_STORAGE_PATH, NEW_AUDIO_STORAGE_PATH, LEGACY_AUDIO_STORAGE_PATH])];
+    }
+
+    async function readAudioFileFromStorage(filename) {
+        let response = null;
+        for (const directory of getAudioStorageDirectories()) {
+            response = await fetch('/api/file/getFile', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: directory + filename })
+            });
+            if (response.ok) return response;
+        }
+        return response;
+    }
+
+    async function listUploadedAudioFiles() {
+        const entries = await Promise.all(getAudioStorageDirectories().map(directory =>
+            __tomatoReadDir(__tomatoNormalizeDirPath(directory), { strict: true })));
+        const names = new Map(ensureAudioSettingsDefaults().workBackgroundPlaylist.map(track => [track.filename, track.name]));
+        const files = new Map();
+        for (const entry of entries.flat()) {
+            const filename = String(entry?.name || '');
+            if (entry?.isDir || /[/\\]/.test(filename) || !/\.(mp3|wav|ogg|oga|opus|aac|m4a|flac|aiff?|wma|webm|mp4)$/i.test(filename)) continue;
+            if (!files.has(filename)) files.set(filename, { filename, name: names.get(filename) || filename });
+        }
+        return [...files.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true }));
+    }
+
     async function loadAudioFromStorage(filename, label, options = {}) {
         const cleanFilename = String(filename || '').trim();
         if (!cleanFilename) return { audio: null, objectUrl: null };
 
         try {
-            let fileResponse = await fetch('/api/file/getFile', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: AUDIO_STORAGE_PATH + cleanFilename })
-            });
-            if (!fileResponse.ok) {
-                fileResponse = await fetch('/api/file/getFile', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: LEGACY_AUDIO_STORAGE_PATH + cleanFilename })
-                });
-            }
+            const fileResponse = await readAudioFileFromStorage(cleanFilename);
             if (!fileResponse.ok) {
                 Logger.warn(`🍅 无法读取${label}文件:`, cleanFilename);
                 return { audio: null, objectUrl: null };
@@ -34522,7 +34626,7 @@ window.__setTomatoFloatState = function (payload) {
         }
         const saving = saveAudioSettings();
         await initBackgroundAudio('break');
-        await saving;
+        return await saving;
     }
 
     async function setBackgroundAudioMuted(muted) {
@@ -34844,9 +34948,15 @@ window.__setTomatoFloatState = function (payload) {
     /**
      * 保存音频配置
      */
-    async function saveAudioSettings() {
+    async function saveAudioSettings(options = {}) {
         userSettings.audioSettings = ensureAudioSettingsDefaults();
-        await saveUserSettings();
+        let playlistSaved = true;
+        if (options.playlistChanged) {
+            playlistSaved = await saveWorkBackgroundPlaylist(userSettings.audioSettings.workBackgroundPlaylist);
+            if (!playlistSaved) showMiniToast('背景音列表暂存本机，恢复后自动重试');
+        }
+        const settingsSaved = await saveUserSettings();
+        return options.playlistChanged ? playlistSaved : settingsSaved;
     }
     
     /**
@@ -34867,12 +34977,13 @@ window.__setTomatoFloatState = function (payload) {
         // 同步回 userSettings
         userSettings.audioSettings = audioSettings;
 
-        await saveAudioSettings();
+        const saved = await saveAudioSettings();
 
         // 重新初始化音频
         await initAudio();
 
         Logger.info(`🍅 已设置 ${type} 提示音:`, filename);
+        return saved;
     }
     
     /**
@@ -34918,18 +35029,7 @@ window.__setTomatoFloatState = function (payload) {
         if (workEndPath) {
             try {
                 // 使用 getFile API 读取文件为 Blob
-                let fileResponse = await fetch('/api/file/getFile', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: AUDIO_STORAGE_PATH + workEndPath })
-                });
-                if (!fileResponse.ok) {
-                    fileResponse = await fetch('/api/file/getFile', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ path: LEGACY_AUDIO_STORAGE_PATH + workEndPath })
-                    });
-                }
+                const fileResponse = await readAudioFileFromStorage(workEndPath);
 
                 if (fileResponse.ok) {
                     const blob = await fileResponse.blob();
@@ -34969,18 +35069,7 @@ window.__setTomatoFloatState = function (payload) {
         if (breakEndPath) {
             try {
                 // 使用 getFile API 读取文件为 Blob
-                let fileResponse = await fetch('/api/file/getFile', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: AUDIO_STORAGE_PATH + breakEndPath })
-                });
-                if (!fileResponse.ok) {
-                    fileResponse = await fetch('/api/file/getFile', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ path: LEGACY_AUDIO_STORAGE_PATH + breakEndPath })
-                    });
-                }
+                const fileResponse = await readAudioFileFromStorage(breakEndPath);
 
                 if (fileResponse.ok) {
                     const blob = await fileResponse.blob();
@@ -36021,7 +36110,94 @@ window.__setTomatoFloatState = function (payload) {
     /**
      * 渲染音频设置页面
      */
-    function createWorkBackgroundPlaylistSection(createAudioButton) {
+    function createUploadedAudioPicker({ label, loadFiles, onRefresh, getSelected, onSelect }) {
+        const picker = document.createElement('div');
+        picker.className = 'tomato-uploaded-audio-picker';
+        picker.style.cssText = 'margin-bottom: 8px; min-width: 0;';
+        const row = document.createElement('div');
+        row.style.cssText = 'display: flex; gap: 6px;';
+        const select = document.createElement('select');
+        select.setAttribute('aria-label', label + '：已上传音频');
+        select.style.cssText = 'flex: 1; min-width: 0; max-width: 100%; padding: 8px; border: 1px solid var(--b3-theme-surface); border-radius: 4px; font-size: 13px; background: var(--b3-theme-background); color: var(--b3-theme-on-background);';
+        const refreshButton = document.createElement('button');
+        refreshButton.type = 'button';
+        refreshButton.textContent = '刷新';
+        refreshButton.setAttribute('aria-label', '刷新' + label + '的已上传音频');
+        refreshButton.style.cssText = 'flex: 0 0 auto; padding: 8px; border: 1px solid var(--b3-theme-surface); border-radius: 4px; cursor: pointer; background: var(--b3-theme-surface); color: var(--b3-theme-on-background);';
+        const status = document.createElement('div');
+        status.setAttribute('role', 'status');
+        status.style.cssText = 'font-size: 12px; color: var(--b3-theme-on-surface-light); overflow-wrap: anywhere;';
+        let files = [];
+        let generation = 0;
+        const placeholder = text => {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = text;
+            option.disabled = true;
+            select.replaceChildren(option);
+            select.value = '';
+        };
+        const syncSelection = () => {
+            const filename = getSelected();
+            select.value = files.some(file => file.filename === filename) ? filename : '';
+        };
+        const refresh = async () => {
+            const currentGeneration = ++generation;
+            select.disabled = true;
+            refreshButton.disabled = true;
+            placeholder('正在读取已上传音频…');
+            status.textContent = '';
+            try {
+                const loaded = await loadFiles();
+                if (generation !== currentGeneration) return;
+                files = loaded;
+                placeholder(files.length ? '选择已上传音频' : '暂无已上传音频，请先上传');
+                for (const file of files) {
+                    const option = document.createElement('option');
+                    option.value = file.filename;
+                    option.textContent = file.name;
+                    option.title = file.filename;
+                    select.appendChild(option);
+                }
+                select.disabled = !files.length;
+                syncSelection();
+            } catch (error) {
+                if (generation !== currentGeneration) return;
+                files = [];
+                placeholder('读取失败，请刷新重试');
+                Logger.warn('读取已上传音频失败:', error);
+            } finally {
+                if (generation === currentGeneration) refreshButton.disabled = false;
+            }
+        };
+        select.onchange = async () => {
+            const file = files.find(file => file.filename === select.value);
+            if (!file) return;
+            select.disabled = true;
+            status.textContent = '正在保存…';
+            try {
+                const saved = await onSelect(file);
+                status.textContent = saved === false ? '设置暂存本机，请稍后重试保存' : '';
+            } catch (error) {
+                status.textContent = '选择音频失败，请重试';
+                Logger.warn('选择已上传音频失败:', error);
+            } finally {
+                select.disabled = !files.length;
+                syncSelection();
+            }
+        };
+        refreshButton.onclick = onRefresh;
+        picker.addEventListener('tomato-audio-files-refresh', refresh);
+        picker.addEventListener('tomato-audio-selection-change', syncSelection);
+        row.appendChild(select);
+        row.appendChild(refreshButton);
+        picker.appendChild(row);
+        picker.appendChild(status);
+        void refresh();
+        return picker;
+    }
+
+    function createWorkBackgroundPlaylistSection(createAudioButton, createUploadedPicker, refreshUploadedPickers) {
         const section = document.createElement('div');
         section.id = 'tomato-work-background-section';
         section.style.cssText = 'margin-top: 12px; font-size: 13px;';
@@ -36055,7 +36231,7 @@ window.__setTomatoFloatState = function (payload) {
             modeSelect.value = settings.workBackgroundPlayMode;
             list.replaceChildren();
             if (!settings.workBackgroundPlaylist.length) {
-                list.textContent = '上传多个音频，或添加已保存的文件名。';
+                list.textContent = '上传多个音频，或从已上传音频中选择添加。';
                 list.style.color = 'var(--b3-theme-on-surface-light)';
             } else {
                 list.style.color = 'var(--b3-theme-on-background)';
@@ -36115,6 +36291,14 @@ window.__setTomatoFloatState = function (payload) {
         };
         section.addEventListener('tomato-background-change', refresh);
         section.appendChild(list);
+        section.appendChild(createUploadedPicker('添加专注背景音', async file => {
+            const tracks = ensureAudioSettingsDefaults().workBackgroundPlaylist;
+            if (tracks.some(track => track.filename === file.filename)) {
+                await selectWorkBackgroundSound(file.filename);
+                return;
+            }
+            return setWorkBackgroundPlaylist([...tracks, file]);
+        }));
 
         const addRow = document.createElement('div');
         addRow.style.cssText = 'display: flex; gap: 6px; margin-bottom: 8px;';
@@ -36160,8 +36344,10 @@ window.__setTomatoFloatState = function (payload) {
                 const result = await uploadWorkBackgroundFiles(files, (done, total) => {
                     status.textContent = '上传中 ' + done + '/' + total;
                 });
+                refreshUploadedPickers();
                 status.textContent = '已添加 ' + result.tracks.length + ' 个音频'
-                    + (result.failures.length ? '；上传失败：' + result.failures.join('、') : '');
+                    + (result.failures.length ? '；上传失败：' + result.failures.join('、') : '')
+                    + (result.playlistSaved ? '' : '；列表暂存本机，恢复后自动重试');
             } catch (error) {
                 Logger.warn('保存专注背景音列表失败:', error);
                 status.textContent = '保存列表失败，请重试';
@@ -36183,6 +36369,25 @@ window.__setTomatoFloatState = function (payload) {
 
     function renderAudioSettings(container) {
         audioSettings = getAudioSettings();
+        let uploadedFilesPromise = null;
+        const notifyPickers = eventName => {
+            container.querySelectorAll('.tomato-uploaded-audio-picker').forEach(picker => picker.dispatchEvent(new Event(eventName)));
+        };
+        const refreshUploadedAudioPickers = () => {
+            uploadedFilesPromise = null;
+            notifyPickers('tomato-audio-files-refresh');
+        };
+        const syncUploadedAudioPickers = () => notifyPickers('tomato-audio-selection-change');
+        const createUploadedPicker = (label, onSelect, getSelected = () => '') => createUploadedAudioPicker({
+            label, onSelect, getSelected, onRefresh: refreshUploadedAudioPickers,
+            loadFiles: () => {
+                if (!uploadedFilesPromise) uploadedFilesPromise = listUploadedAudioFiles().catch(error => {
+                    uploadedFilesPromise = null;
+                    throw error;
+                });
+                return uploadedFilesPromise;
+            }
+        });
 
         const presetOptions = [
             { value: '', label: '不使用预置（自定义文件/浏览器默认）' },
@@ -36232,6 +36437,7 @@ window.__setTomatoFloatState = function (payload) {
             clearBtn.onclick = async () => {
                 input.value = '';
                 await setBackgroundAudioFile(type, '');
+                syncUploadedAudioPickers();
             };
             btns.appendChild(testBtn);
             btns.appendChild(clearBtn);
@@ -36258,6 +36464,7 @@ window.__setTomatoFloatState = function (payload) {
                     const filename = await uploadAudioFileToStorage(file);
                     input.value = filename;
                     await setBackgroundAudioFile(type, filename);
+                    refreshUploadedAudioPickers();
                     uploadStatus.textContent = '✅ 上传成功';
                     setTimeout(() => {
                         playBackgroundAudioPreview(type).catch(() => {});
@@ -36276,7 +36483,9 @@ window.__setTomatoFloatState = function (payload) {
             };
 
             input.onchange = async () => {
-                await setBackgroundAudioFile(type, input.value);
+                const saved = await setBackgroundAudioFile(type, input.value);
+                syncUploadedAudioPickers();
+                return saved;
             };
 
             uploadContainer.appendChild(uploadBtn);
@@ -36284,6 +36493,10 @@ window.__setTomatoFloatState = function (payload) {
             uploadContainer.appendChild(uploadStatus);
 
             section.appendChild(title);
+            section.appendChild(createUploadedPicker(label, async file => {
+                input.value = file.filename;
+                return input.onchange();
+            }, () => getAudioSettings()[prop]));
             section.appendChild(input);
             section.appendChild(btns);
             section.appendChild(uploadContainer);
@@ -36391,7 +36604,7 @@ window.__setTomatoFloatState = function (payload) {
         backgroundContainer.appendChild(backgroundEnableRow);
         backgroundContainer.appendChild(backgroundVolumeLabel);
         backgroundContainer.appendChild(backgroundVolumeSlider);
-        backgroundContainer.appendChild(createWorkBackgroundPlaylistSection(createAudioButton));
+        backgroundContainer.appendChild(createWorkBackgroundPlaylistSection(createAudioButton, createUploadedPicker, refreshUploadedAudioPickers));
         backgroundContainer.appendChild(createBackgroundSoundSection('break', '休息背景音', 'breakBackgroundSound', '输入音频文件名，如 forest.mp3'));
 
         const backgroundHint = document.createElement('div');
@@ -36438,6 +36651,7 @@ window.__setTomatoFloatState = function (payload) {
             }
             await saveAudioSettings();
             await initAudio();
+            syncUploadedAudioPickers();
         };
         workPresetRow.appendChild(workPresetLabel);
         workPresetRow.appendChild(workPresetSelect);
@@ -36471,11 +36685,16 @@ window.__setTomatoFloatState = function (payload) {
             audioSettings.workEndPreset = '';
             workSoundInput.value = '';
             await setAudioFile('work', '');
+            syncUploadedAudioPickers();
         };
         workSoundBtns.appendChild(workTestBtn);
         workSoundBtns.appendChild(workClearBtn);
         workSoundContainer.appendChild(workSoundLabel);
         workSoundContainer.appendChild(workPresetRow);
+        workSoundContainer.appendChild(createUploadedPicker('工作结束提示音', async file => {
+            workSoundInput.value = file.filename;
+            return workSoundInput.onchange();
+        }, () => getAudioSettings().workEndSound));
         workSoundContainer.appendChild(workSoundInput);
         workSoundContainer.appendChild(workSoundBtns);
 
@@ -36503,6 +36722,8 @@ window.__setTomatoFloatState = function (payload) {
 
             workUploadStatus.textContent = '上传中...';
             const filename = file.name;
+            let uploaded = false;
+            let settingsSaved = false;
 
             try {
                 workUploadBtn.disabled = true;
@@ -36524,7 +36745,19 @@ window.__setTomatoFloatState = function (payload) {
 
                 const result = await response.json();
                 if (result.code === 0) {
-                    workUploadStatus.textContent = '✅ 上传成功';
+                    uploaded = true;
+                    audioSettings = ensureAudioSettingsDefaults();
+                    if (workPresetSelect) workPresetSelect.value = '';
+                    audioSettings.workEndPreset = '';
+                    audioSettings.workEndSound = filename;
+                    userSettings.audioSettings = audioSettings;
+                    settingsSaved = await saveUserSettings();
+                    workSoundInput.value = filename;
+                    refreshUploadedAudioPickers();
+                    workUploadStatus.textContent = settingsSaved ? '✅ 上传成功' : '⚠️ 音频已上传，设置暂存本机';
+                    releaseAudio(workEndAudio, workEndAudioObjectUrl);
+                    workEndAudio = null;
+                    workEndAudioObjectUrl = null;
 
                     const fileResponse = await fetch('/api/file/getFile', {
                         method: 'POST',
@@ -36543,43 +36776,29 @@ window.__setTomatoFloatState = function (payload) {
                             workUploadStatus.textContent = '⚠️ 播放失败';
                         });
 
-                        if (workEndAudio) {
-                            try { workEndAudio.pause(); } catch (e) {}
-                            try { workEndAudio.src = ''; } catch (e) {}
-                        }
-                        if (workEndAudioObjectUrl) {
-                            try { URL.revokeObjectURL(workEndAudioObjectUrl); } catch (e) {}
-                            workEndAudioObjectUrl = null;
-                        }
-
                         workEndAudio = newAudio;
                         workEndAudioObjectUrl = objectUrl;
                         Logger.info('🍅 workEndAudio 已更新:', workEndAudio.src);
-
-                        audioSettings = ensureAudioSettingsDefaults();
-                        if (workPresetSelect) workPresetSelect.value = '';
-                        audioSettings.workEndPreset = '';
-                        audioSettings.workEndSound = filename;
-                        userSettings.audioSettings = audioSettings;
-                        await saveUserSettings();
-                        workSoundInput.value = filename;
 
                         setTimeout(() => {
                             playEndSound('work-end').catch(() => {});
                         }, 500);
 
                         setTimeout(() => {
-                            workUploadStatus.textContent = '';
+                            if (settingsSaved) workUploadStatus.textContent = '';
                         }, 3000);
                     } else {
-                        workUploadStatus.textContent = '⚠️ 读取失败';
+                        workUploadStatus.textContent = settingsSaved
+                            ? '⚠️ 音频已上传，预览读取失败' : '⚠️ 音频已上传，设置暂存本机，预览读取失败';
                     }
                 } else {
                     workUploadStatus.textContent = '❌ 上传失败';
                 }
             } catch (error) {
-                workUploadStatus.textContent = '❌ 上传失败';
-                Logger.error('上传音频文件失败:', error);
+                workUploadStatus.textContent = uploaded
+                    ? (settingsSaved ? '⚠️ 音频已上传，预览失败' : '⚠️ 音频已上传，设置暂存本机，预览失败')
+                    : '❌ 上传失败';
+                Logger.error('上传或预览音频文件失败:', error);
             } finally {
                 try { e.target.value = ''; } catch (e) {}
                 workUploadBtn.disabled = false;
@@ -36632,6 +36851,7 @@ window.__setTomatoFloatState = function (payload) {
             }
             await saveAudioSettings();
             await initAudio();
+            syncUploadedAudioPickers();
         };
         breakPresetRow.appendChild(breakPresetLabel);
         breakPresetRow.appendChild(breakPresetSelect);
@@ -36665,11 +36885,16 @@ window.__setTomatoFloatState = function (payload) {
             audioSettings.breakEndPreset = '';
             breakSoundInput.value = '';
             await setAudioFile('break', '');
+            syncUploadedAudioPickers();
         };
         breakSoundBtns.appendChild(breakTestBtn);
         breakSoundBtns.appendChild(breakClearBtn);
         breakSoundContainer.appendChild(breakSoundLabel);
         breakSoundContainer.appendChild(breakPresetRow);
+        breakSoundContainer.appendChild(createUploadedPicker('休息结束提示音', async file => {
+            breakSoundInput.value = file.filename;
+            return breakSoundInput.onchange();
+        }, () => getAudioSettings().breakEndSound));
         breakSoundContainer.appendChild(breakSoundInput);
         breakSoundContainer.appendChild(breakSoundBtns);
 
@@ -36697,6 +36922,8 @@ window.__setTomatoFloatState = function (payload) {
 
             breakUploadStatus.textContent = '上传中...';
             const filename = file.name;
+            let uploaded = false;
+            let settingsSaved = false;
 
             try {
                 breakUploadBtn.disabled = true;
@@ -36718,7 +36945,19 @@ window.__setTomatoFloatState = function (payload) {
 
                 const result = await response.json();
                 if (result.code === 0) {
-                    breakUploadStatus.textContent = '✅ 上传成功';
+                    uploaded = true;
+                    audioSettings = ensureAudioSettingsDefaults();
+                    if (breakPresetSelect) breakPresetSelect.value = '';
+                    audioSettings.breakEndPreset = '';
+                    audioSettings.breakEndSound = filename;
+                    userSettings.audioSettings = audioSettings;
+                    settingsSaved = await saveUserSettings();
+                    breakSoundInput.value = filename;
+                    refreshUploadedAudioPickers();
+                    breakUploadStatus.textContent = settingsSaved ? '✅ 上传成功' : '⚠️ 音频已上传，设置暂存本机';
+                    releaseAudio(breakEndAudio, breakEndAudioObjectUrl);
+                    breakEndAudio = null;
+                    breakEndAudioObjectUrl = null;
 
                     const fileResponse = await fetch('/api/file/getFile', {
                         method: 'POST',
@@ -36737,43 +36976,29 @@ window.__setTomatoFloatState = function (payload) {
                             breakUploadStatus.textContent = '⚠️ 播放失败';
                         });
 
-                        if (breakEndAudio) {
-                            try { breakEndAudio.pause(); } catch (e) {}
-                            try { breakEndAudio.src = ''; } catch (e) {}
-                        }
-                        if (breakEndAudioObjectUrl) {
-                            try { URL.revokeObjectURL(breakEndAudioObjectUrl); } catch (e) {}
-                            breakEndAudioObjectUrl = null;
-                        }
-
                         breakEndAudio = newAudio;
                         breakEndAudioObjectUrl = objectUrl;
                         Logger.info('🍅 breakEndAudio 已更新:', breakEndAudio.src);
-
-                        audioSettings = ensureAudioSettingsDefaults();
-                        if (breakPresetSelect) breakPresetSelect.value = '';
-                        audioSettings.breakEndPreset = '';
-                        audioSettings.breakEndSound = filename;
-                        userSettings.audioSettings = audioSettings;
-                        await saveUserSettings();
-                        breakSoundInput.value = filename;
 
                         setTimeout(() => {
                             playEndSound('break-end').catch(() => {});
                         }, 500);
 
                         setTimeout(() => {
-                            breakUploadStatus.textContent = '';
+                            if (settingsSaved) breakUploadStatus.textContent = '';
                         }, 3000);
                     } else {
-                        breakUploadStatus.textContent = '⚠️ 读取失败';
+                        breakUploadStatus.textContent = settingsSaved
+                            ? '⚠️ 音频已上传，预览读取失败' : '⚠️ 音频已上传，设置暂存本机，预览读取失败';
                     }
                 } else {
                     breakUploadStatus.textContent = '❌ 上传失败';
                 }
             } catch (error) {
-                breakUploadStatus.textContent = '❌ 上传失败';
-                Logger.error('上传音频文件失败:', error);
+                breakUploadStatus.textContent = uploaded
+                    ? (settingsSaved ? '⚠️ 音频已上传，预览失败' : '⚠️ 音频已上传，设置暂存本机，预览失败')
+                    : '❌ 上传失败';
+                Logger.error('上传或预览音频文件失败:', error);
             } finally {
                 try { e.target.value = ''; } catch (e) {}
                 breakUploadBtn.disabled = false;
@@ -36797,12 +37022,16 @@ window.__setTomatoFloatState = function (payload) {
         workSoundInput.onchange = async () => {
             if (workPresetSelect) workPresetSelect.value = '';
             audioSettings.workEndPreset = '';
-            await setAudioFile('work', workSoundInput.value);
+            const saved = await setAudioFile('work', workSoundInput.value);
+            syncUploadedAudioPickers();
+            return saved;
         };
         breakSoundInput.onchange = async () => {
             if (breakPresetSelect) breakPresetSelect.value = '';
             audioSettings.breakEndPreset = '';
-            await setAudioFile('break', breakSoundInput.value);
+            const saved = await setAudioFile('break', breakSoundInput.value);
+            syncUploadedAudioPickers();
+            return saved;
         };
     }
 
