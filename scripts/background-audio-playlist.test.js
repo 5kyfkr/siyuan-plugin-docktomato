@@ -27,12 +27,21 @@ class FakeAudio {
         this.playCalls = 0;
         this.pauseCalls = 0;
     }
+    get src() { return this._src; }
+    set src(value) {
+        this._src = value;
+        this.currentTime = 0;
+        this.ended = false;
+        this.error = null;
+        this.paused = true;
+    }
     addEventListener(type, handler) {
         const listeners = this.listeners.get(type) || [];
         listeners.push(handler);
         this.listeners.set(type, listeners);
     }
     emit(type) {
+        if (type === 'ended') { this.ended = true; this.paused = true; }
         for (const handler of this.listeners.get(type) || []) handler();
     }
     pause() { this.paused = true; this.pauseCalls += 1; }
@@ -40,6 +49,10 @@ class FakeAudio {
         this.playCalls += 1;
         this.paused = false;
         this.ended = false;
+        if (this.playFailure) {
+            this.paused = true;
+            return Promise.reject(Object.assign(new Error('play failed'), { name: this.playFailure }));
+        }
         return this.playResult || Promise.resolve();
     }
 }
@@ -72,6 +85,7 @@ function context(settings = {}, overrides = {}) {
         ...overrides
     });
     vm.runInContext(audioCode, c);
+    const storageLoad = c.loadAudioFromStorage;
     c.saveAudioSettings = async () => { saved.push(copy(c.ensureAudioSettingsDefaults())); };
     c.loadAudioFromStorage = async filename => {
         loads.push(filename);
@@ -81,7 +95,7 @@ function context(settings = {}, overrides = {}) {
         return { audio, objectUrl: audio.src };
     };
     c.ensureAudioSettingsDefaults();
-    return { c, saved, loads, revoked, toasts, timers, audios };
+    return { c, saved, loads, revoked, toasts, timers, audios, storageLoad };
 }
 
 async function testMigrationAndPersistence() {
@@ -264,7 +278,7 @@ async function testFailuresAndPermission() {
     const load = broken.c.loadAudioFromStorage;
     broken.c.loadAudioFromStorage = async filename => {
         const loaded = await load(filename);
-        loaded.audio.playResult = Promise.reject(Object.assign(new Error('bad codec'), { name: 'NotSupportedError' }));
+        (broken.c.workBackgroundAudio || loaded.audio).playFailure = 'NotSupportedError';
         return loaded;
     };
     await broken.c.initBackgroundAudio();
@@ -371,7 +385,7 @@ async function testInterruptedWrapAroundDoesNotSkipFirstTrack() {
         const loaded = await load(filename);
         if (filename === 'rain.mp3') {
             let attempt = 0;
-            loaded.audio.play = function () {
+            (c.workBackgroundAudio || loaded.audio).play = function () {
                 this.playCalls += 1;
                 this.paused = true;
                 if (attempt++ === 0) return Promise.reject(Object.assign(new Error('media playback interrupted'), { name: 'AbortError' }));
@@ -448,11 +462,179 @@ async function testRecoveryHonorsIntentAndPendingPlayback() {
     assert.equal(audio.playCalls, stoppedCalls, 'explicit background stop must remain stopped');
 }
 
+async function testStalledNativePlaybackRecovers() {
+    const { c, toasts } = context({ workBackgroundPlaylist: tracks, workBackgroundSound: 'rain.mp3' });
+    await c.initBackgroundAudio();
+    const stalled = c.currentBackgroundAudio;
+    stalled.currentTime = 12;
+    const now = Date.now();
+    await c.recoverBackgroundAudioIfNeeded(now);
+    await c.recoverBackgroundAudioIfNeeded(now + 16000);
+    assert.equal(c.audioSettings.workBackgroundSound, 'forest.mp3',
+        'native playback can stall without becoming paused or ended; the heartbeat must advance');
+    assert.equal(c.currentBackgroundAudio.paused, false);
+    assert.equal(stalled.src, 'blob:forest.mp3');
+    assert.equal(toasts.length, 0);
+}
+
+async function testPendingPlaybackTimeoutAndConcurrentSync() {
+    const { c } = context({ workBackgroundPlaylist: tracks, workBackgroundSound: 'rain.mp3' });
+    await c.initBackgroundAudio();
+    const stalled = c.currentBackgroundAudio;
+    const pending = deferred();
+    stalled.playResult = pending.promise;
+    const playing = c.playBackgroundAudioForCurrentMode();
+    stalled.playResult = null;
+    const calls = stalled.playCalls;
+    await c.syncBackgroundAudioWithTimerState();
+    assert.equal(stalled.playCalls, calls, 'state refreshes must reuse a pending play request');
+    const now = Date.now();
+    await c.recoverBackgroundAudioIfNeeded(now);
+    await c.recoverBackgroundAudioIfNeeded(now + 16000);
+    assert.equal(c.audioSettings.workBackgroundSound, 'forest.mp3', 'an unresolved play promise must not block the playlist forever');
+    pending.resolve();
+    await playing;
+    assert.equal(stalled.src, 'blob:forest.mp3', 'a late play completion must not restore the skipped source');
+    assert.equal(c.currentBackgroundAudio.paused, false);
+}
+
+async function testMissedEndedWithPendingPlayRecovers() {
+    const { c } = context({ workBackgroundPlaylist: tracks, workBackgroundSound: 'waves.mp3' });
+    await c.initBackgroundAudio();
+    const audio = c.currentBackgroundAudio;
+    const pending = deferred();
+    audio.playResult = pending.promise;
+    const playing = c.playBackgroundAudioForCurrentMode();
+    audio.playResult = null;
+    audio.ended = true;
+    audio.paused = true;
+    await c.recoverBackgroundAudioIfNeeded(Date.now());
+    assert.equal(c.audioSettings.workBackgroundSound, 'rain.mp3', 'a missed ending must recover even when an old play promise is pending');
+    pending.resolve();
+    await playing;
+    assert.equal(c.currentBackgroundAudio.paused, false);
+}
+
+async function testNextTrackReadTimeoutRecovers() {
+    for (const stage of ['response', 'body']) {
+        const { c, storageLoad, timers, toasts } = context({ workBackgroundPlaylist: tracks, workBackgroundSound: 'rain.mp3' }, {
+            NEW_AUDIO_STORAGE_PATH: '/audio/'
+        });
+        await c.initBackgroundAudio();
+        const pending = deferred();
+        let urls = 0;
+        c.URL.createObjectURL = () => 'blob:loaded-' + (++urls);
+        c.fetch = async (url, options) => {
+            const filename = JSON.parse(options.body).path.split('/').at(-1);
+            if (filename === 'forest.mp3') {
+                if (stage === 'response') return pending.promise;
+                return { ok: true, blob: () => pending.promise };
+            }
+            return { ok: true, blob: async () => ({}) };
+        };
+        c.loadAudioFromStorage = storageLoad;
+        const switching = c.nextWorkBackgroundSound();
+        await settle();
+        assert.equal(c.currentBackgroundAudio, null);
+        const timeout = [...timers.values()].find(timer => timer.milliseconds === 15000);
+        assert.ok(timeout, 'loading the next track needs a deadline covering both response and body');
+        timeout.fn();
+        await switching;
+        assert.equal(c.audioSettings.workBackgroundSound, 'waves.mp3', 'an unreadable next track must not strand the player between songs');
+        assert.equal(c.currentBackgroundAudio.paused, false);
+        assert.equal(toasts.length, 0);
+        pending.resolve(stage === 'response' ? { ok: true, blob: async () => ({}) } : {});
+        await settle();
+        assert.equal(urls, 1, 'late timed-out reads must not allocate an unused media URL');
+    }
+}
+
+async function testProgressAndLongPauseDoNotSkipHealthyTracks() {
+    const { c, toasts } = context({ workBackgroundPlaylist: tracks, workBackgroundSound: 'rain.mp3' });
+    await c.initBackgroundAudio();
+    const audio = c.currentBackgroundAudio;
+    const now = Date.now();
+    for (let tick = 1; tick <= 4; tick += 1) {
+        audio.currentTime += 20;
+        await c.recoverBackgroundAudioIfNeeded(now + tick * 20000);
+        assert.equal(c.currentBackgroundAudio, audio, 'progressing playback must survive infrequent background heartbeats');
+    }
+    audio.pause();
+    const position = audio.currentTime;
+    await c.recoverBackgroundAudioIfNeeded(now + 100000);
+    assert.equal(c.currentBackgroundAudio, audio, 'an unexpected pause after a long gap must resume the same track');
+    assert.equal(audio.currentTime, position);
+    assert.equal(audio.paused, false);
+    assert.equal(toasts.length, 0);
+}
+
+async function testStalledTraversalRemainsBounded() {
+    const { c, loads, toasts } = context({ workBackgroundPlaylist: tracks, workBackgroundSound: 'rain.mp3' });
+    await c.initBackgroundAudio();
+    const now = Date.now();
+    for (let index = 0; index < tracks.length; index += 1) {
+        await c.recoverBackgroundAudioIfNeeded(now + (index + 1) * 20000);
+    }
+    assert.equal(loads.length, tracks.length, 'a playlist of stalled files must stop after one traversal');
+    assert.equal(c.currentBackgroundAudio.paused, true);
+    assert.equal(toasts.length, 1);
+    await c.recoverBackgroundAudioIfNeeded(now + 100000);
+    assert.equal(loads.length, tracks.length, 'failed traversal must not restart on subsequent heartbeats');
+}
+
+async function testSequencePreservesElementPlaybackPermission() {
+    const { c } = context({ workBackgroundPlaylist: tracks, workBackgroundSound: 'rain.mp3' });
+    await c.initBackgroundAudio();
+    const permitted = c.currentBackgroundAudio;
+    await c.nextWorkBackgroundSound();
+    assert.equal(c.currentBackgroundAudio, permitted, 'automatic tracks need the same media element unlocked by the user gesture');
+    assert.equal(permitted.src, 'blob:forest.mp3');
+    await c.nextWorkBackgroundSound();
+    assert.equal(c.currentBackgroundAudio, permitted);
+    assert.equal(permitted.listeners.get('ended').length, 1, 'reusing an element must not multiply transition listeners');
+    permitted.emit('ended');
+    await settle();
+    assert.equal(c.audioSettings.workBackgroundSound, 'rain.mp3', 'one natural ending must advance exactly once');
+    await c.setBackgroundAudioMuted(true);
+    await c.selectWorkBackgroundSound('waves.mp3');
+    await c.setBackgroundAudioMuted(false);
+    await settle();
+    assert.equal(c.currentBackgroundAudio, permitted, 'selection while muted must also retain the element permission');
+    const filename = c.audioSettings.workBackgroundSound;
+    permitted.ended = false;
+    for (const handler of permitted.listeners.get('ended')) handler();
+    permitted.emit('error');
+    await settle();
+    assert.equal(c.audioSettings.workBackgroundSound, filename, 'queued old-source events must not skip a new source');
+}
+
+async function testMissingFile202FallsBackToLegacyDirectory() {
+    const { c, storageLoad } = context({}, { NEW_AUDIO_STORAGE_PATH: '/audio/' });
+    const paths = [];
+    c.fetch = async (url, options) => {
+        const requested = JSON.parse(options.body).path;
+        paths.push(requested);
+        if (requested.startsWith('/audio/')) return { ok: true, status: 202, blob: async () => ({ code: 404 }) };
+        return { ok: true, status: 200, blob: async () => ({ audio: true }) };
+    };
+    c.URL.createObjectURL = blob => {
+        assert.equal(blob.audio, true, 'a 202 JSON error response must never reach the media decoder');
+        return 'blob:legacy';
+    };
+    const loaded = await storageLoad('old.mp3', 'work');
+    assert.ok(loaded.audio);
+    assert.deepEqual(paths, ['/audio/old.mp3', '/legacy/old.mp3']);
+}
+
 (async () => {
-    for (const test of [testMigrationAndPersistence, testReorderAndSequence, testPauseStopAndSelection,
+    for (const test of [testSequencePreservesElementPlaybackPermission, testMissingFile202FallsBackToLegacyDirectory,
+        testMigrationAndPersistence, testReorderAndSequence, testPauseStopAndSelection,
         testListMutationAndLegacySetter, testBatchUpload, testLateLoadsAndPlayPromises, testFailuresAndPermission,
         testPreviewDoesNotAdvance, testSelectionWhileMutedAndDisabled, testCanceledLoadsAndResumedPlay,
         testRepeatedNaturalWrapAround, testInterruptedWrapAroundDoesNotSkipFirstTrack,
-        testUnexpectedPauseAndMissedEndedRecover, testRecoveryHonorsIntentAndPendingPlayback]) await test();
+        testUnexpectedPauseAndMissedEndedRecover, testRecoveryHonorsIntentAndPendingPlayback,
+        testStalledNativePlaybackRecovers, testPendingPlaybackTimeoutAndConcurrentSync,
+        testMissedEndedWithPendingPlayRecovers, testNextTrackReadTimeoutRecovers,
+        testProgressAndLongPauseDoNotSkipHealthyTracks, testStalledTraversalRemainsBounded]) await test();
     console.log('background audio playlist tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

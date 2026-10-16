@@ -54,9 +54,12 @@ assert.ok(completeCommitIndex >= 0, 'completion must commit its canonical IDLE s
 assert.ok(completeBlock.indexOf('await requireTimerPersistence(pendingRecordSave') < completeCommitIndex, 'completion must close its record journal before committing IDLE');
 
 const contextMenuStart = source.indexOf('    async function showContextMenu(');
-const contextMenuEnd = source.indexOf('\n \tfunction getWeekStartDate(', contextMenuStart);
+const contextMenuEnd = source.indexOf('function getWeekStartDate(', contextMenuStart);
 const contextMenuBlock = source.slice(contextMenuStart, contextMenuEnd);
-assert.match(contextMenuBlock, /结束休息[\s\S]*await resetCurrentMode\(\)/, 'the timer context menu must close the break segment before restoring focus');
+assert.match(contextMenuBlock, /createTimerMenuItem\('完成', 'complete',[^\n]*await completeCurrentTimer\(\)/, 'the timer context menu must use the shared completion entry');
+const completeTimerStart = source.indexOf('    async function completeCurrentTimer(');
+const completeTimerEnd = source.indexOf('    function isCurrentTaskAssociation(', completeTimerStart);
+assert.match(source.slice(completeTimerStart, completeTimerEnd), /timerMode === 'break' \|\| timerMode === 'stopwatch-break'[\s\S]*return resetCurrentMode\(options\)/, 'the shared completion entry must close the break before restoring focus');
 assert.match(contextMenuBlock, /durationSlider\.type = 'range';[\s\S]*setActiveCountdownDuration\(durationSlider\.value\)/, 'active countdowns must expose a duration slider backed by a canonical transition');
 
 const durationTransitionStart = source.indexOf('    async function setActiveCountdownDuration(');
@@ -89,11 +92,14 @@ assert.match(contextMenuBlock, /tomato-duration-slider:hover::\-webkit-slider-th
 assert.match(contextMenuBlock, /durationSlider\.classList\.add\('is-pressed'\)[\s\S]*durationSlider\.classList\.remove\('is-pressed'\)/, 'pressing the duration slider must provide thumb feedback');
 assert.match(contextMenuBlock, /durationSlider\.addEventListener\('pointermove'[\s\S]*durationSliderDragged = true[\s\S]*durationSlider\.addEventListener\('click'[\s\S]*if \(durationSliderDragged\) return;[\s\S]*startDurationFromControl/, 'duration slider taps must start a timer while drag gestures only adjust duration');
 assert.match(contextMenuBlock, /hasActiveDuration && durationSliderInteraction === 'tap'[\s\S]*return;/, 'a running timer tap must not race an active-duration adjustment');
-assert.match(contextMenuBlock, /const activeMenu = document\.getElementById\('tomy-tomato-context-menu'\);[\s\S]*if \(activeMenu\) activeMenu\.remove\(\);[\s\S]*await switchToCountdownAndStart\(duration\)/, 'duration slider taps must close the menu before waiting for a transition');
-assert.match(contextMenuBlock, /stopwatchItem\.onclick = async[\s\S]*?menu\.remove\(\);[\s\S]*?await startStopwatchForCurrentPhase\(\)/, 'stopwatch menu clicks must close the menu before waiting for a transition');
+assert.match(contextMenuBlock, /const activeMenu = document\.getElementById\('tomy-tomato-context-menu'\);[\s\S]*if \(activeMenu\) closeTimerContextMenu\(\);[\s\S]*await switchToCountdownAndStart\(duration\)/, 'duration slider taps must close the menu before waiting for a transition');
+assert.match(contextMenuBlock, /appendGroup\('专注', 'tomato'[\s\S]*?await startStopwatchForCurrentPhase\(\)/, 'the focus shortcut must retain its existing mode transition');
+const menuActionStart = source.indexOf('    async function runTimerMenuAction(');
+const menuActionEnd = source.indexOf('    function createTimerMenuItem(', menuActionStart);
+assert.match(source.slice(menuActionStart, menuActionEnd), /else closeTimerContextMenu\(\);[\s\S]*await action\(\)/, 'menu shortcuts must close visually before awaiting a mode transition');
 
 const floatMenuStart = source.indexOf('    function buildDesktopFloatWindowMenuTemplate(');
-const floatMenuEnd = source.indexOf('    function showDesktopFloatWindowContextMenu(', floatMenuStart);
+const floatMenuEnd = source.indexOf('    async function getTimerNativeMenuIcon(', floatMenuStart);
 const floatMenuBlock = source.slice(floatMenuStart, floatMenuEnd);
 assert.match(floatMenuBlock, /结束休息[\s\S]*await resetCurrentMode\(\)/, 'the desktop menu must close the break segment before restoring focus');
 

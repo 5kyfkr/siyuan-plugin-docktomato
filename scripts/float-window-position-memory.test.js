@@ -51,6 +51,8 @@ function mobile(localStorage = storage, width = 390, height = 844) {
         isRunning: false, isContextMenuOpen: false, isLongPress: false, floatBarLongPressTimer: null,
         container: null, timeDisplay: null, controlButton: null, floatBarEventHandlers: {},
         getDisplayPrefixForTimer: () => '', formatTime: () => '00:00',
+        getTimerDisplayModel: () => ({ iconName: 'timer' }),
+        setTimerUiIcon() {}, setTimerToggleIcon() {}, isTimerPaused: false,
         setTimeout: () => 1, clearTimeout() {}, isMobileDevice: () => true,
     });
     vm.runInContext(`${keys}\n${mobileState}\n${mobileCreate}\ncreateDraggableFloatBar();`, context);

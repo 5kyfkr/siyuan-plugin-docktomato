@@ -13,7 +13,7 @@ assert.ok(helperStart >= 0 && helperEnd > helperStart, 'stopwatch phase helper m
 const helperSource = source.slice(helperStart, helperEnd);
 const menuCalls = source.match(/await startStopwatchForCurrentPhase\(\)/g) || [];
 assert.equal(menuCalls.length, 2, 'both context menus must use the explicit focus stopwatch action');
-assert.match(source, /label: '⏱️ 专注正计时',[\s\S]*?await startStopwatchForCurrentPhase\(\)/,
+assert.match(source, /label: '专注正计时',[\s\S]*?await startStopwatchForCurrentPhase\(\)/,
     'the desktop float menu must label the focus action consistently even during a break');
 
 const resetStart = source.indexOf('    async function resetCurrentMode(');

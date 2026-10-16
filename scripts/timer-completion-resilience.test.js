@@ -256,6 +256,7 @@ function createPauseContext(startTime, now, finalizeResult = true) {
         document: { getElementById: () => null },
         controlButton: { innerHTML: '' },
         updateDisplay: () => {},
+        setTimerToggleIcon: () => {},
         updateProgressBar: () => {},
         cancelTrackedTimerNotification: async () => {},
         isSyncEnabled: () => false,

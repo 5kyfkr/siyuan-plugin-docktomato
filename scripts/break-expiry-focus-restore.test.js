@@ -13,10 +13,27 @@ function setupBreakFlow(mode = 'countdown', storage, options) {
     const animations = [];
     runtime.context.Logger.warn = (...args) => feedback.push(args.map(String).join(' '));
     const createNode = tag => ({
-        tag, children: [], style: {}, textContent: '',
-        appendChild(node) { this.children.push(node); nodes.push(node); },
-        remove() { this.removed = true; },
+        tag, children: [], style: {}, textContent: '', dataset: {},
+        classList: { toggle() {}, add() {}, remove() {} },
+        appendChild(node) {
+            if (node.parentNode) node.parentNode.children = node.parentNode.children.filter(child => child !== node);
+            this.children.push(node); node.parentNode = this; nodes.push(node);
+        },
+        append(...children) { children.forEach(node => this.appendChild(node)); },
+        replaceChildren(...children) {
+            this.children.forEach(node => { node.parentNode = null; });
+            this.children = []; this.append(...children);
+        },
+        querySelectorAll(tag) {
+            const descendants = this.children.flatMap(node => [node, ...(node.querySelectorAll?.('*') || [])]);
+            return tag === '*' ? descendants : descendants.filter(node => node.tag === tag);
+        },
+        remove() {
+            this.removed = true;
+            if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(child => child !== this);
+        },
         focus() {},
+        setAttribute(name, value) { this[name] = value; },
     });
     Object.assign(runtime.context, {
         isTimerFinalizing: false, activeEndDialog: null, activeEndDialogClose: null,
@@ -25,7 +42,9 @@ function setupBreakFlow(mode = 'countdown', storage, options) {
         document: {
             hidden: true,
             body: createNode('body'),
+            head: createNode('head'),
             createElement: createNode,
+            createTextNode: text => ({ tag: '#text', textContent: text }),
             getElementById: id => nodes.find(node => node.id === id && !node.removed) || null,
         },
         EventManager: {
@@ -46,6 +65,7 @@ function setupBreakFlow(mode = 'countdown', storage, options) {
     });
     runtime.context.userSettings.appearance = { enableNeonEffect: true, theme: 'neon' };
     call(runtime, `
+        ${extract('    // Inline timer icons.', '    function __createMonthRepeatCore()')}
         ${extract('    function buildEndDialogId(', '    // 🔧 性能优化：存储 MutationObserver')}
         ${extract('    async function withTimerFinalizationLock(', '    function waitForTimerPersistence(')}
         ${extract('    function getExpiredTimerSnapshot(', '    let lastKnownHistoryMaxEndMinute')}
@@ -73,7 +93,7 @@ async function startFocus(runtime) {
 const currentButtons = runtime => {
     const dialog = runtime.nodes.findLast(node => node.id === 'tomy-tomato-toast' && !node.removed);
     assert.ok(dialog, `break end dialog must render: ${runtime.feedback.join('; ')}`);
-    return dialog.children.flatMap(node => node.tag === 'button' ? [node] : node.children.filter(child => child.tag === 'button'));
+    return dialog.querySelectorAll('button');
 };
 const assertPausedFocus = (runtime, original, mode) => {
     const state = runtime.api.manager.getState();
@@ -105,8 +125,9 @@ async function testNaturalExpiry(mode, sync, dismissAction) {
     assert.deepEqual(Array.from(r.api.journal.queuedHistory(), record => [record.mode, record.durationMin]), [[mode, 10], ['break', 5]]);
     assert.deepEqual(r.animations, [], 'restored focus must not receive a completion animation');
     const buttons = currentButtons(r);
-    assert.ok(buttons.some(button => button.textContent === '▶️ 继续原专注'));
-    assert.equal(buttons.length, 2, 'restored progress needs continue and acknowledgement, rather than fresh-duration presets');
+    assert.ok(buttons.some(button => button.dataset.action === 'continue-focus'));
+    assert.equal(buttons.filter(button => button.dataset.action === 'continue-focus').length, 1, 'restored progress must expose one continuation action');
+    assert.ok(buttons.every(button => !button.dataset.duration), 'restored progress must not expose fresh-duration presets');
     const beforeDismiss = clone(r.api.manager.getState().activeTimer);
     if (dismissAction === 'escape') {
         r.handlers.get('keydown')({ key: 'Escape' });
@@ -138,7 +159,7 @@ async function testContinueButton() {
     r.timer.advance(5 * 60000);
     await r.context.expire();
     r.timer.advance(3 * 60000);
-    await currentButtons(r).find(button => button.textContent === '▶️ 继续原专注').onclick();
+    await currentButtons(r).find(button => button.dataset.action === 'continue-focus').onclick();
     assert.equal(r.api.manager.getState().status, 'RUNNING');
     assert.equal(r.api.manager.getState().activeTimer.sessionId, original.sessionId);
     assert.equal(r.api.manager.getState().activeTimer.accumulatedMs, 10 * 60000);
@@ -167,7 +188,7 @@ async function testStandaloneBreak() {
     await r.context.expire();
     assert.equal(r.api.manager.getState().status, 'IDLE');
     assert.equal(r.api.manager.getState().activeTimer, null);
-    assert.equal(currentButtons(r).some(button => button.textContent === '▶️ 继续原专注'), false);
+    assert.equal(currentButtons(r).some(button => button.dataset.action === 'continue-focus'), false);
 }
 
 async function testRestoreFailureAndRace() {

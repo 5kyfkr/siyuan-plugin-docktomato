@@ -12,6 +12,488 @@
     let __tomatoInitPromise = null;
     let __tomatoTimerReady = false;
 
+    // Inline timer icons. Tomato: hand-drawn from the approved Icons8 iOS reference
+    // https://icons8.com/icon/set/tomato/ios (not an official Icons8 SVG).
+    // Association: rounded, unhatched Phosphor intersect-square; other icons: Phosphor Bold 2.1.1.
+    /*
+     * MIT License
+     *
+     * Copyright (c) 2023 Phosphor Icons
+     *
+     * Permission is hereby granted, free of charge, to any person obtaining a copy
+     * of this software and associated documentation files (the "Software"), to deal
+     * in the Software without restriction, including without limitation the rights
+     * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+     * copies of the Software, and to permit persons to whom the Software is
+     * furnished to do so, subject to the following conditions:
+     *
+     * The above copyright notice and this permission notice shall be included in all
+     * copies or substantial portions of the Software.
+     *
+     * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+     * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+     * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+     * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+     * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+     * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+     * SOFTWARE.
+     */
+    const TIMER_UI_ICON_SVGS = Object.freeze({
+        audio: "<svg class=\"tomato-ui-icon tomato-ui-icon--audio\" width=\"16\" height=\"16\" aria-hidden=\"true\" focusable=\"false\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 256 256\" fill=\"currentColor\"><path d=\"M157.27,21.22a12,12,0,0,0-12.64,1.31L75.88,76H32A20,20,0,0,0,12,96v64a20,20,0,0,0,20,20H75.88l68.75,53.47A12,12,0,0,0,164,224V32A12,12,0,0,0,157.27,21.22ZM36,100H68v56H36Zm104,99.46L92,162.13V93.87l48-37.33ZM212,128a44,44,0,0,1-11,29.11,12,12,0,1,1-18-15.88,20,20,0,0,0,0-26.43,12,12,0,0,1,18-15.86A43.94,43.94,0,0,1,212,128Zm40,0a83.87,83.87,0,0,1-21.39,56,12,12,0,0,1-17.89-16,60,60,0,0,0,0-80,12,12,0,1,1,17.88-16A83.87,83.87,0,0,1,252,128Z\"/></svg>",
+        muted: "<svg class=\"tomato-ui-icon tomato-ui-icon--muted\" width=\"16\" height=\"16\" aria-hidden=\"true\" focusable=\"false\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 256 256\" fill=\"currentColor\"><path d=\"M56.88,31.93A12,12,0,1,0,39.12,48.07L64.51,76H32A20,20,0,0,0,12,96v64a20,20,0,0,0,20,20H75.88l68.75,53.47A12,12,0,0,0,164,224V185.44l35.12,38.63a12,12,0,0,0,17.76-16.14ZM36,100H68v56H36Zm104,99.46L92,162.13V106.24L140,159Zm-31-134a12,12,0,0,1,2.11-16.84l33.51-26.07A12,12,0,0,1,164,32V94.94a12,12,0,0,1-24,0V56.54l-14.15,11A12,12,0,0,1,109,65.44Zm74,49.35a12,12,0,0,1,18-15.85,44,44,0,0,1,5.55,50.21,12,12,0,0,1-21-11.55A19.67,19.67,0,0,0,188,128,20,20,0,0,0,183,114.79ZM252,128a84.18,84.18,0,0,1-19.11,53.35,12,12,0,1,1-18.53-15.25A60,60,0,0,0,212.73,88a12,12,0,1,1,17.88-16A83.87,83.87,0,0,1,252,128Z\"/></svg>",
+        tomato: '<svg class="tomato-ui-icon tomato-ui-icon--tomato" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="var(--tomato-ui-red,#ef705e)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"> <path fill="none" stroke-width="1.9" d="M7.1 7.1C3.8 7.7 2.5 10.1 2.5 13.15c0 4.42 4.2 7.65 9.5 7.65s9.5-3.23 9.5-7.65c0-2.98-1.5-5.44-4.7-6.05"/> <path fill="none" stroke="var(--tomato-ui-leaf,#8acb77)" transform="translate(-1.2 .15) scale(1.1)" d="M10.7 5.5C9.6 4.4 8.4 4.7 7.5 4c.1 1.3.7 2 1.9 2.4-.8.4-1.4 1.1-2 2 1.6.5 2.8.3 3.8-.6-.2 1.5.5 2.4 1.6 3 .9-1.2 1-2.2.6-3.4 1.2.9 2.4 1 3.7.5-.6-.9-1.4-1.4-2.3-1.7 1.2-.5 1.7-1.1 1.8-1.9-1.5-.1-2.3.5-3.1 1 .1-1 .5-1.8 1.1-2.4-1.5-.2-2.6.7-2.7 2.3-.4 0-.8.1-1.2.3Z"/> </svg>',
+        association: '<svg class="tomato-ui-icon tomato-ui-icon--association" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="24" stroke-linejoin="round"> <rect fill="none" x="40" y="40" width="120" height="120" rx="20"/> <rect fill="none" x="96" y="96" width="120" height="120" rx="20"/> </svg>',
+        distraction: '<svg class="tomato-ui-icon tomato-ui-icon--distraction" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M219.71,117.38a12,12,0,0,0-7.25-8.52L161.28,88.39l10.59-70.61a12,12,0,0,0-20.64-10l-112,120a12,12,0,0,0,4.31,19.33l51.18,20.47L84.13,238.22a12,12,0,0,0,20.64,10l112-120A12,12,0,0,0,219.71,117.38ZM113.6,203.55l6.27-41.77a12,12,0,0,0-7.41-12.92L68.74,131.37,142.4,52.45l-6.27,41.77a12,12,0,0,0,7.41,12.92l43.72,17.49Z"/></svg>',
+        coffee: '<svg class="tomato-ui-icon tomato-ui-icon--coffee" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M212,76H32A12,12,0,0,0,20,88v48a100.24,100.24,0,0,0,26.73,68H32a12,12,0,0,0,0,24H208a12,12,0,0,0,0-24H193.27a100.75,100.75,0,0,0,20-32A44,44,0,0,0,256,128v-8A44.05,44.05,0,0,0,212,76Zm-16,60a76.27,76.27,0,0,1-42,68H86a76.27,76.27,0,0,1-42-68V100H196Zm36-8a20,20,0,0,1-12.57,18.55A97.17,97.17,0,0,0,220,136V101.68A20,20,0,0,1,232,120ZM68,48V24a12,12,0,0,1,24,0V48a12,12,0,0,1-24,0Zm40,0V24a12,12,0,0,1,24,0V48a12,12,0,0,1-24,0Zm40,0V24a12,12,0,0,1,24,0V48a12,12,0,0,1-24,0Z"/></svg>',
+        timer: '<svg class="tomato-ui-icon tomato-ui-icon--timer" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M128,44a96,96,0,1,0,96,96A96.11,96.11,0,0,0,128,44Zm0,168a72,72,0,1,1,72-72A72.08,72.08,0,0,1,128,212ZM164.49,99.51a12,12,0,0,1,0,17l-28,28a12,12,0,0,1-17-17l28-28A12,12,0,0,1,164.49,99.51ZM92,16A12,12,0,0,1,104,4h48a12,12,0,0,1,0,24H104A12,12,0,0,1,92,16Z"/></svg>',
+        complete: '<svg class="tomato-ui-icon tomato-ui-icon--complete" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M176.49,95.51a12,12,0,0,1,0,17l-56,56a12,12,0,0,1-17,0l-24-24a12,12,0,1,1,17-17L112,143l47.51-47.52A12,12,0,0,1,176.49,95.51ZM236,128A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Z"/></svg>',
+        history: '<svg class="tomato-ui-icon tomato-ui-icon--history" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M140,80v41.21l34.17,20.5a12,12,0,1,1-12.34,20.58l-40-24A12,12,0,0,1,116,128V80a12,12,0,0,1,24,0ZM128,28A99.38,99.38,0,0,0,57.24,57.34c-4.69,4.74-9,9.37-13.24,14V64a12,12,0,0,0-24,0v40a12,12,0,0,0,12,12H72a12,12,0,0,0,0-24H57.77C63,86,68.37,80.22,74.26,74.26a76,76,0,1,1,1.58,109,12,12,0,0,0-16.48,17.46A100,100,0,1,0,128,28Z"/></svg>',
+        play: '<svg class="tomato-ui-icon tomato-ui-icon--play" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M234.49,111.07,90.41,22.94A20,20,0,0,0,60,39.87V216.13a20,20,0,0,0,30.41,16.93l144.08-88.13a19.82,19.82,0,0,0,0-33.86ZM84,208.85V47.15L216.16,128Z"/></svg>',
+        pause: '<svg class="tomato-ui-icon tomato-ui-icon--pause" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M200,28H160a20,20,0,0,0-20,20V208a20,20,0,0,0,20,20h40a20,20,0,0,0,20-20V48A20,20,0,0,0,200,28Zm-4,176H164V52h32ZM96,28H56A20,20,0,0,0,36,48V208a20,20,0,0,0,20,20H96a20,20,0,0,0,20-20V48A20,20,0,0,0,96,28ZM92,204H60V52H92Z"/></svg>',
+        close: '<svg class="tomato-ui-icon tomato-ui-icon--close" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M208.49,191.51a12,12,0,0,1-17,17L128,145,64.49,208.49a12,12,0,0,1-17-17L111,128,47.51,64.49a12,12,0,0,1,17-17L128,111l63.51-63.52a12,12,0,0,1,17,17L145,128Z"/></svg>',
+    });
+    const TIMER_UI_MODE_ICONS = Object.freeze({ countdown: 'tomato', break: 'coffee', stopwatch: 'timer', 'stopwatch-break': 'coffee' });
+    const TIMER_UI_COLORS = Object.freeze({
+        dark: { red: '#ef705e', leaf: '#8acb77', muted: '#b8c1ca', green: '#4fd18a', amber: '#f6c65c', association: '#a2abb5' },
+        light: { red: '#ba4335', leaf: '#367a41', muted: '#58636d', green: '#217443', amber: '#946200', association: '#68737d' },
+    });
+    const timerNativeIconCache = new Map();
+    const TIMER_UI_ICON_CSS = `
+        :root { ${Object.entries(TIMER_UI_COLORS.dark).map(([name, color]) => `--tomato-ui-${name}:${color}`).join(';')}; }
+        :root[data-theme-mode="light"] { ${Object.entries(TIMER_UI_COLORS.light).map(([name, color]) => `--tomato-ui-${name}:${color}`).join(';')}; }
+        .tomato-ui-icon { width: 1.15em; height: 1.15em; display: inline-block; flex: 0 0 auto; vertical-align: -0.18em; pointer-events: none; }
+        .tomato-ui-icon * { pointer-events: none; }
+        .tomato-ui-icon--tomato { width: 1.3em; height: 1.3em; }
+        .tomato-ui-icon-label { display: flex; align-items: center; gap: 8px; }
+        .tomato-task-link.tomato-ui-icon-label { display: inline-flex; }
+        .tomato-ui-icon--association { color: var(--tomato-ui-association); }
+        .tomato-ui-icon--tomato,
+        .tomato-ui-icon--tomato path,
+        .tomato-ui-icon--association,
+        .tomato-ui-icon--association rect { fill: none !important; }
+        .tomato-ui-icon--distraction { color: var(--tomato-ui-amber); }
+        .tomato-ui-icon--coffee, .tomato-ui-icon--history { color: var(--tomato-ui-muted); }
+        .tomato-ui-icon--timer, .tomato-ui-icon--complete { color: var(--tomato-ui-green); }
+        .tomato-float-icon { display: inline-flex !important; align-items: center; justify-content: center; line-height: 1; }
+        .tomato-ui-time { display: inline-flex !important; align-items: center; gap: 4px; }
+        .tomato-ui-time-value { font-variant-numeric: tabular-nums; }
+        #tomy-task-block-icon .tomato-ui-icon { width: 16px; height: 16px; }
+        #tomy-tomato-context-menu .tomato-ui-menu-title { color: var(--b3-theme-on-surface-light); }
+        .tomato-dialog-action .tomato-ui-icon { color: inherit; }
+        .tomato-circular-task-icon .tomato-ui-icon { width: 1em; height: 1em; }
+    `;
+
+    function ensureTimerUiIconStyles() {
+        if (document.getElementById('tomato-ui-icon-styles')) return;
+        const style = document.createElement('style');
+        style.id = 'tomato-ui-icon-styles';
+        style.textContent = TIMER_UI_ICON_CSS;
+        document.head.appendChild(style);
+    }
+
+    function getTimerUiIconSvg(name) {
+        return Object.prototype.hasOwnProperty.call(TIMER_UI_ICON_SVGS, name) ? TIMER_UI_ICON_SVGS[name] : '';
+    }
+
+    function setTimerUiIcon(target, name, text = '') {
+        if (!target) return;
+        ensureTimerUiIconStyles();
+        const key = String(name || '') + ':' + String(text || '');
+        const svg = getTimerUiIconSvg(name);
+        target.classList.toggle('tomato-ui-icon-label', !!(svg && text));
+        if (target.dataset.timerUiIcon === key) return;
+        if (svg) {
+            target.innerHTML = svg;
+            if (text) target.appendChild(document.createTextNode(' ' + text));
+        } else {
+            target.textContent = text;
+        }
+        target.dataset.timerUiIcon = key;
+    }
+
+    function setTimerToggleIcon(target, running, paused = false) {
+        if (!target) return;
+        setTimerUiIcon(target, running ? 'pause' : 'play');
+        target.title = running ? '暂停' : (paused ? '继续' : '开始');
+        target.setAttribute('aria-label', target.title);
+    }
+
+    const TIMER_UI_SURFACE_CSS = `
+#tomy-tomato-context-menu, #tomy-tomato-toast.tomato-end-dialog { --tomato-ui-duration-border:color-mix(in srgb,var(--b3-theme-on-background) 20%,var(--b3-theme-background)); --tomato-ui-divider:color-mix(in srgb,var(--b3-theme-on-background) 16%,var(--b3-theme-background)); }
+#tomy-tomato-context-menu { box-sizing:border-box; display:flex; flex-direction:column; width:224px; min-width:0; max-width:calc(100vw - 8px); max-height:min(360px,calc(100dvh - 8px)); padding:0; overflow:hidden; border:1px solid var(--b3-theme-surface-light); border-radius:7px; background:var(--b3-theme-background); color:var(--b3-theme-on-background); box-shadow:0 6px 20px rgba(0,0,0,.16); font-size:12px; text-align:left; user-select:none; }
+#tomy-tomato-context-menu * { box-sizing:border-box; }
+#tomy-tomato-context-menu button { font:inherit; cursor:pointer; color:inherit; }
+#tomy-tomato-context-menu button:disabled { cursor:default; opacity:.5; }
+#tomy-tomato-context-menu button:focus-visible, #tomy-tomato-context-menu summary:focus-visible, #tomy-tomato-context-menu input:focus-visible { outline:2px solid var(--b3-theme-primary); outline-offset:1px; }
+#tomy-tomato-context-menu [hidden] { display:none !important; }
+#tomy-tomato-context-menu .tomato-menu-scroll { min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:7px 9px; scrollbar-width:thin; }
+#tomy-tomato-context-menu .tomato-menu-task { display:flex; align-items:center; flex-shrink:0; gap:5px; margin:0 9px; padding:5px 0; border-bottom:1px solid var(--tomato-ui-divider); }
+#tomy-tomato-context-menu .tomato-menu-task-name { display:flex; align-items:center; gap:6px; flex:1; min-width:0; border:0; padding:0; background:transparent; font-size:11px; color:var(--b3-theme-on-surface-light); text-align:left; }
+#tomy-tomato-context-menu .tomato-menu-task-name span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#tomy-tomato-context-menu .tomato-menu-task-name .tomato-ui-icon { width:12px; height:12px; }
+#tomy-tomato-context-menu .tomato-menu-task .tomato-menu-clear { flex:0 0 22px; width:22px; min-height:22px; padding:3px; justify-content:center; }
+#tomy-tomato-context-menu .tomato-menu-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+#tomy-tomato-context-menu .tomato-menu-heading > span { font-size:12px; font-weight:550; }
+#tomy-tomato-context-menu .tomato-menu-heading .tomato-ui-icon { width:15px; height:15px; }
+#tomy-tomato-context-menu .tomato-menu-heading .tomato-ui-icon-label { gap:7px; }
+#tomy-tomato-context-menu .tomato-menu-group + .tomato-menu-group { margin-top:7px; padding-top:7px; border-top:1px solid var(--tomato-ui-divider); }
+#tomy-tomato-context-menu .tomato-menu-stopwatch { display:flex; align-items:center; gap:4px; min-height:22px; padding:3px 0 3px 5px; border:0; border-radius:4px; background:transparent; font-size:10px; color:var(--b3-theme-on-surface-light); }
+#tomy-tomato-context-menu .tomato-menu-stopwatch .tomato-ui-icon { width:12px; height:12px; }
+#tomy-tomato-context-menu .tomato-menu-presets { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:4px; margin-top:4px; }
+#tomy-tomato-context-menu .tomato-menu-preset { min-width:0; height:23px; padding:0 3px; border:1px solid var(--tomato-ui-duration-border); border-radius:4px; background:transparent; font-size:12px; font-weight:550; font-variant-numeric:tabular-nums; white-space:nowrap; }
+#tomy-tomato-context-menu .tomato-menu-preset[aria-pressed=true] { color:var(--b3-theme-primary); border-color:color-mix(in srgb,var(--b3-theme-primary) 45%,var(--b3-theme-surface-light)); background:color-mix(in srgb,var(--b3-theme-primary) 12%,var(--b3-theme-background)); }
+#tomy-tomato-context-menu .tomato-menu-duration-control { display:flex; align-items:center; gap:6px; min-width:0; margin-top:5px; height:22px; }
+#tomy-tomato-context-menu .tomato-menu-item { display:flex; align-items:center; gap:8px; width:100%; min-height:26px; padding:4px 5px; border:0; border-radius:4px; background:transparent; font-size:12px; text-align:left; }
+#tomy-tomato-context-menu .tomato-menu-item .tomato-ui-icon { width:14px; height:14px; }
+#tomy-tomato-context-menu .tomato-menu-item .tomato-menu-tail { margin-left:auto; max-width:85px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; color:var(--b3-theme-on-surface-light); }
+#tomy-tomato-context-menu .tomato-menu-footer { flex-shrink:0; border-top:1px solid var(--tomato-ui-divider); padding:3px 4px; }
+#tomy-tomato-context-menu .tomato-menu-controls { display:grid; gap:4px; border-top:1px solid var(--tomato-ui-divider); margin-top:3px; padding:6px 4px 3px; }
+#tomy-tomato-context-menu .tomato-menu-control { display:flex; align-items:center; justify-content:center; gap:4px; height:26px; min-width:0; padding:0 3px; border:1px solid var(--b3-theme-surface-light); border-radius:4px; background:transparent; font-size:11px; white-space:nowrap; }
+#tomy-tomato-context-menu .tomato-menu-control .tomato-ui-icon { width:12px; height:12px; }
+#tomy-tomato-context-menu .tomato-menu-control[data-action=complete] { color:var(--tomato-ui-green); }
+#tomy-tomato-context-menu .tomato-menu-control[data-action=abandon] { color:var(--b3-theme-on-surface-light); }
+#tomy-tomato-context-menu button:hover:not(:disabled) { background:var(--b3-theme-surface); }
+#tomy-tomato-context-menu .tomato-menu-audio { display:flex; align-items:center; border-top:1px solid var(--tomato-ui-divider); margin-top:7px; padding-top:3px; gap:3px; }
+#tomy-tomato-context-menu .tomato-menu-audio > .tomato-menu-item { flex:1; min-width:0; padding-left:0; font-size:11px; }
+#tomy-tomato-context-menu .tomato-menu-mute { display:flex; align-items:center; justify-content:center; width:24px; height:24px; flex-shrink:0; padding:3px; border:0; border-radius:4px; background:transparent; }
+#tomy-tomato-context-menu .tomato-menu-mute[aria-pressed=true] { color:var(--b3-theme-primary); background:var(--b3-theme-surface); }
+#tomy-tomato-context-menu[data-mobile=true] { width:240px; max-height:min(440px,calc(100dvh - 8px)); }
+#tomy-tomato-context-menu[data-mobile=true] .tomato-menu-item { min-height:34px; }
+#tomy-tomato-context-menu[data-mobile=true] .tomato-menu-preset, #tomy-tomato-context-menu[data-mobile=true] .tomato-menu-control { height:32px; }
+#tomy-tomato-context-menu[data-mobile=true] .tomato-menu-stopwatch, #tomy-tomato-context-menu[data-mobile=true] .tomato-menu-mute { min-height:30px; }
+#tomy-tomato-toast.tomato-end-dialog { box-sizing:border-box; display:flex; flex-direction:column; padding:0; width:320px; min-width:0; max-width:calc(100vw - 32px); max-height:85vh; border:1px solid var(--b3-theme-surface-light); border-radius:9px; background:var(--b3-theme-background); color:var(--b3-theme-on-background); text-align:left; box-shadow:0 6px 20px rgba(0,0,0,.25); }
+#tomy-tomato-toast.tomato-end-dialog [hidden] { display:none !important; }
+#tomy-tomato-toast .tomato-end-heading { display:flex; align-items:flex-start; gap:11px; padding:18px 18px 0; flex-shrink:0; }
+#tomy-tomato-toast .tomato-end-icon > .tomato-ui-icon { width:27px; height:27px; }
+#tomy-tomato-toast .tomato-end-copy { flex:1; min-width:0; }
+#tomy-tomato-toast .tomato-end-title { margin:0; font-size:17px; font-weight:600; line-height:1.5; color:var(--b3-theme-on-background); }
+#tomy-tomato-toast .tomato-end-message { margin-top:4px; font-size:12px; line-height:1.6; white-space:pre-line; color:var(--b3-theme-on-surface-light); }
+#tomy-tomato-toast .tomato-end-close { display:flex; align-items:center; justify-content:center; flex-shrink:0; width:23px; height:23px; padding:0; margin:-4px -5px 0 0; border:0; border-radius:4px; background:transparent; color:var(--b3-theme-on-surface-light); cursor:pointer; }
+#tomy-tomato-toast .tomato-end-close .tomato-ui-icon { width:13px; height:13px; }
+#tomy-tomato-toast .tomato-end-body { padding:17px 18px 18px; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
+#tomy-tomato-toast .tomato-end-options-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; font-size:11px; color:var(--b3-theme-on-surface-light); }
+#tomy-tomato-toast .tomato-end-presets { display:grid; gap:6px; }
+#tomy-tomato-toast .tomato-end-duration { min-width:0; height:34px; padding:0 5px; border:1px solid var(--tomato-ui-duration-border); border-radius:5px; background:transparent; color:var(--b3-theme-on-background); font-size:14px; font-weight:550; font-variant-numeric:tabular-nums; white-space:nowrap; cursor:pointer; }
+#tomy-tomato-context-menu .tomato-menu-preset:hover:not(:disabled), #tomy-tomato-toast .tomato-end-duration:hover:not(:disabled) { border-color:var(--b3-theme-primary); }
+#tomy-tomato-toast .tomato-end-stopwatch { display:flex; align-items:center; gap:5px; padding:3px 0 3px 6px; border:0; background:transparent; color:var(--tomato-ui-green); font-size:11px; white-space:nowrap; cursor:pointer; }
+#tomy-tomato-toast .tomato-end-stopwatch .tomato-ui-icon { width:13px; height:13px; }
+#tomy-tomato-toast .tomato-end-resume-summary { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; font-size:11px; color:var(--b3-theme-on-surface-light); }
+#tomy-tomato-toast .tomato-end-resume-summary span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#tomy-tomato-toast .tomato-end-resume-summary strong { flex-shrink:0; font-size:11px; font-weight:550; font-variant-numeric:tabular-nums; color:var(--b3-theme-on-background); }
+#tomy-tomato-toast .tomato-end-continue { display:flex; align-items:center; justify-content:center; gap:7px; width:100%; height:34px; border:1px solid var(--b3-theme-primary); border-radius:5px; background:var(--b3-theme-primary); color:var(--b3-theme-on-primary); font-size:12px; font-weight:550; cursor:pointer; }
+#tomy-tomato-toast .tomato-end-continue .tomato-ui-icon { width:13px; height:13px; }
+#tomy-tomato-toast .tomato-end-footer { display:flex; justify-content:flex-end; flex-shrink:0; padding:10px 18px; border-top:1px solid var(--tomato-ui-divider); }
+#tomy-tomato-toast .tomato-end-acknowledge { height:28px; padding:0 12px; border:1px solid var(--b3-theme-surface-light); border-radius:5px; background:var(--b3-theme-surface); color:var(--b3-theme-on-background); font-size:12px; white-space:nowrap; cursor:pointer; }
+#tomy-tomato-toast.tomato-end-dialog .tomato-dialog-action:hover:not(:disabled) { transform:none; box-shadow:none; filter:brightness(1.05); }
+#tomato-background-playlist-backdrop { position:fixed; inset:0; z-index:2147483646; background:rgba(0,0,0,.3); }
+#tomato-background-playlist { box-sizing:border-box; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:2147483647; display:flex; flex-direction:column; width:320px; max-width:calc(100vw - 24px); max-height:calc(100dvh - 32px); border:1px solid var(--b3-theme-surface-light); border-radius:8px; background:var(--b3-theme-background); color:var(--b3-theme-on-background); box-shadow:0 6px 20px rgba(0,0,0,.25); font-size:12px; }
+#tomato-background-playlist button, #tomato-background-playlist select { color:inherit; font:inherit; cursor:pointer; }
+#tomato-background-playlist .tomato-playlist-heading { display:flex; align-items:center; justify-content:space-between; padding:12px 14px 8px; font-size:14px; font-weight:600; }
+#tomato-background-playlist .tomato-playlist-close { display:flex; align-items:center; justify-content:center; width:24px; height:24px; padding:0; border:0; border-radius:4px; background:transparent; }
+#tomato-background-playlist .tomato-playlist-controls { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 14px 10px; }
+#tomato-background-playlist select, #tomato-background-playlist .tomato-playlist-next { height:29px; border:1px solid var(--b3-theme-surface-light); border-radius:4px; background:var(--b3-theme-surface); padding:0 8px; }
+#tomato-background-playlist .tomato-playlist-tracks { min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:0 7px 7px; }
+#tomato-background-playlist .tomato-playlist-track { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; min-height:34px; padding:6px 8px; border:0; border-radius:4px; background:transparent; text-align:left; }
+#tomato-background-playlist .tomato-playlist-track span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#tomato-background-playlist .tomato-playlist-track[aria-pressed=true] { color:var(--b3-theme-primary); background:color-mix(in srgb,var(--b3-theme-primary) 12%,var(--b3-theme-background)); }
+#tomato-background-playlist .tomato-playlist-track[aria-pressed=true]::after { content:'✓'; flex-shrink:0; }
+#tomato-background-playlist button:hover { background:var(--b3-theme-surface); }
+#tomato-background-playlist button:disabled, #tomato-background-playlist select:disabled { opacity:.5; cursor:default; }
+#tomato-background-playlist button:focus-visible, #tomato-background-playlist select:focus-visible { outline:2px solid var(--b3-theme-primary); outline-offset:1px; }
+#tomato-background-playlist .tomato-playlist-hint { margin:0; padding:8px 14px; border-top:1px solid var(--b3-theme-surface-light); color:var(--b3-theme-on-surface-light); font-size:11px; }
+    `;
+
+    function ensureTimerSurfaceStyles() {
+        if (document.getElementById('tomato-timer-surface-style')) return;
+        const style = document.createElement('style');
+        style.id = 'tomato-timer-surface-style';
+        style.textContent = TIMER_UI_SURFACE_CSS;
+        document.head.appendChild(style);
+    }
+
+    function positionTimerContextMenu(menu) {
+        const viewportHeight = window.visualViewport?.height || window.innerHeight;
+        menu.style.maxHeight = Math.max(0, Math.min(menu.dataset.mobile === 'true' ? 440 : 360, viewportHeight - 8)) + 'px';
+        const { width, height } = menu.getBoundingClientRect();
+        const x = Number(menu.dataset.anchorX) || 0;
+        const y = Number(menu.dataset.anchorY) || 0;
+        const left = Math.max(4, Math.min(x, window.innerWidth - width - 4));
+        const top = Math.max(4, Math.min(y + height > viewportHeight - 4 ? y - height : y, viewportHeight - height - 4));
+        menu.style.transform = 'translate(' + left + 'px,' + top + 'px)';
+    }
+
+    function closeTimerContextMenu() {
+        document.getElementById('tomy-tomato-context-menu')?.remove();
+        isContextMenuOpen = false;
+        EventManager.removeByContext('tomato-context-menu');
+    }
+
+    async function runTimerMenuAction(action, keepOpen = false) {
+        const menu = document.getElementById('tomy-tomato-context-menu');
+        if (menu?.dataset.busy === 'true') return;
+        if (menu) menu.dataset.busy = 'true';
+        if (keepOpen) refreshTimerContextMenu();
+        else closeTimerContextMenu();
+        try {
+            return await action();
+        } catch (error) {
+            Logger.error('菜单操作失败:', error);
+            showMiniToast('操作失败，请稍后重试');
+        } finally {
+            if (menu) delete menu.dataset.busy;
+            refreshTimerContextMenu();
+        }
+    }
+
+    function createTimerMenuItem(label, iconName, action, keepOpen = false) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'tomato-menu-item';
+        setTimerUiIcon(button, iconName, label);
+        button.onclick = event => {
+            event.stopPropagation();
+            runTimerMenuAction(action, keepOpen);
+        };
+        return button;
+    }
+
+    function refreshTimerContextMenu() {
+        const menu = document.getElementById('tomy-tomato-context-menu');
+        if (!menu) return;
+        const activity = getEffectiveTimerActivity();
+        const active = !!(activity.running || activity.paused);
+        if (menu.dataset.mode !== timerMode || menu.dataset.active !== String(active)) {
+            closeTimerContextMenu();
+            return;
+        }
+        const busy = menu.dataset.busy === 'true';
+        menu.querySelectorAll('button, input').forEach(node => { node.disabled = busy; });
+        const controls = menu.querySelector('.tomato-menu-controls');
+        controls.hidden = !active;
+        controls.style.gridTemplateColumns = timerMode === 'countdown' ? 'repeat(3,minmax(0,1fr))' : 'repeat(2,minmax(0,1fr))';
+        const toggle = controls.querySelector('[data-action=toggle]');
+        setTimerUiIcon(toggle, isRunning ? 'pause' : 'play', isRunning ? '暂停' : '继续');
+        toggle.setAttribute('aria-label', isRunning ? '暂停' : '继续');
+        const isBreak = timerMode === 'break' || timerMode === 'stopwatch-break';
+        const complete = controls.querySelector('[data-action=complete]');
+        setTimerUiIcon(complete, 'complete', isBreak ? '结束休息' : '完成');
+        complete.setAttribute('aria-label', isBreak ? '结束休息' : '完成本次专注');
+        controls.querySelector('[data-action=abandon]').hidden = timerMode !== 'countdown';
+        const distraction = menu.querySelector('[data-action=distraction]');
+        distraction.hidden = !isRunning || isBreak;
+        const willExtend = timerMode === 'countdown' && userSettings?.main?.extendTomatoOnDistraction !== false;
+        distraction.title = willExtend ? '记录分心（+1分钟）' : '记录分心';
+        distraction.querySelector('.tomato-menu-tail').textContent = (willExtend ? '+1分钟 · ' : '') + Math.max(0, Number(currentDistractionCount) || 0) + '次';
+        menu.querySelectorAll('.tomato-menu-presets').forEach(group => {
+            group.querySelectorAll('button').forEach(button => button.setAttribute('aria-pressed', String(group.dataset.timerMode === timerMode && Number(button.dataset.duration) === currentDuration)));
+        });
+        const mute = menu.querySelector('[data-action=mute]');
+        if (mute) {
+            const settings = getAudioSettings();
+            const muted = settings.backgroundMuted === true;
+            setTimerUiIcon(mute, muted ? 'muted' : 'audio');
+            mute.title = muted ? '取消静音' : '静音背景音';
+            mute.setAttribute('aria-label', mute.title);
+            mute.setAttribute('aria-pressed', String(muted));
+            const selected = settings.workBackgroundPlaylist?.find(track => track.filename === settings.workBackgroundSound);
+            const name = isBreak ? (settings.breakBackgroundSound || '未设置') : (selected?.name || settings.workBackgroundSound || '未设置');
+            const status = menu.querySelector('[data-audio-status]');
+            status.textContent = muted ? '已静音' : name;
+            status.title = name;
+        }
+        positionTimerContextMenu(menu);
+    }
+
+    function closeBackgroundPlaylistDialog() {
+        document.getElementById('tomato-background-playlist')?.remove();
+        document.getElementById('tomato-background-playlist-backdrop')?.remove();
+        EventManager.removeByContext('tomato-playlist-dialog');
+    }
+
+    async function runBackgroundPlaylistAction(action) {
+        const dialog = document.getElementById('tomato-background-playlist');
+        if (!dialog || dialog.dataset.busy === 'true') return;
+        dialog.dataset.busy = 'true';
+        refreshBackgroundPlaylistDialog();
+        try { await action(); }
+        catch (error) { Logger.error('切换背景音失败:', error); showMiniToast('切换背景音失败，请稍后重试'); }
+        finally {
+            delete dialog.dataset.busy;
+            refreshBackgroundPlaylistDialog();
+            refreshTimerContextMenu();
+        }
+    }
+
+    function refreshBackgroundPlaylistDialog() {
+        const dialog = document.getElementById('tomato-background-playlist');
+        if (!dialog) return;
+        const settings = getAudioSettings();
+        const playlist = settings.workBackgroundPlaylist || [];
+        const list = dialog.querySelector('.tomato-playlist-tracks');
+        const key = JSON.stringify(playlist);
+        if (list.dataset.playlist !== key) {
+            list.dataset.playlist = key;
+            list.replaceChildren(...playlist.map(track => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'tomato-playlist-track';
+                button.dataset.filename = track.filename;
+                button.title = track.name;
+                const label = document.createElement('span');
+                label.textContent = track.name;
+                button.appendChild(label);
+                button.onclick = () => runBackgroundPlaylistAction(() => selectWorkBackgroundSound(track.filename));
+                return button;
+            }));
+        }
+        const busy = dialog.dataset.busy === 'true';
+        list.querySelectorAll('button').forEach(button => {
+            button.setAttribute('aria-pressed', String(button.dataset.filename === settings.workBackgroundSound));
+            button.disabled = busy;
+        });
+        const mode = dialog.querySelector('select');
+        mode.value = settings.workBackgroundPlayMode;
+        mode.disabled = busy || !playlist.length;
+        dialog.querySelector('.tomato-playlist-next').disabled = busy || !playlist.length;
+        dialog.querySelector('.tomato-playlist-hint').textContent = !playlist.length ? '暂无专注背景音，可在插件设置中添加。'
+            : (timerMode === 'break' || timerMode === 'stopwatch-break') ? '当前为休息；选择将用于下一段专注。'
+            : '点击曲目或下一首即可切换，循环模式保持不变。';
+    }
+
+    function showBackgroundPlaylistDialog() {
+        closeTimerContextMenu();
+        closeBackgroundPlaylistDialog();
+        ensureTimerSurfaceStyles();
+        const backdrop = document.createElement('div');
+        backdrop.id = 'tomato-background-playlist-backdrop';
+        const dialog = document.createElement('div');
+        dialog.id = 'tomato-background-playlist';
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-label', '专注背景音');
+        const heading = document.createElement('div');
+        heading.className = 'tomato-playlist-heading';
+        const title = document.createElement('span');
+        setTimerUiIcon(title, 'audio', '专注背景音');
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'tomato-playlist-close';
+        close.setAttribute('aria-label', '关闭播放列表');
+        setTimerUiIcon(close, 'close');
+        close.onclick = closeBackgroundPlaylistDialog;
+        heading.append(title, close);
+        const controls = document.createElement('div');
+        controls.className = 'tomato-playlist-controls';
+        const mode = document.createElement('select');
+        mode.setAttribute('aria-label', '循环模式');
+        for (const [value, label] of [['sequence', '顺序循环'], ['single', '单曲循环']]) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            mode.appendChild(option);
+        }
+        mode.onchange = () => {
+            const nextMode = mode.value;
+            runBackgroundPlaylistAction(() => setWorkBackgroundPlayMode(nextMode));
+        };
+        const next = document.createElement('button');
+        next.type = 'button';
+        next.className = 'tomato-playlist-next';
+        next.textContent = '下一首';
+        next.onclick = () => runBackgroundPlaylistAction(() => nextWorkBackgroundSound());
+        controls.append(mode, next);
+        const tracks = document.createElement('div');
+        tracks.className = 'tomato-playlist-tracks';
+        const hint = document.createElement('p');
+        hint.className = 'tomato-playlist-hint';
+        dialog.append(heading, controls, tracks, hint);
+        document.body.append(backdrop, dialog);
+        backdrop.onclick = closeBackgroundPlaylistDialog;
+        EventManager.add(document, 'keydown', event => { if (event.key === 'Escape') closeBackgroundPlaylistDialog(); }, false, 'tomato-playlist-dialog');
+        refreshBackgroundPlaylistDialog();
+        close.focus();
+    }
+
+    function layoutTimerEndDialog(dialog, titleEl, messageEl, buttonContainer, okBtn, type) {
+        ensureTimerSurfaceStyles();
+        dialog.classList.add('tomato-end-dialog');
+        dialog.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2147483648;pointer-events:auto;';
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-labelledby', 'tomato-end-dialog-title');
+        const heading = document.createElement('div');
+        heading.className = 'tomato-end-heading';
+        const symbol = document.createElement('span');
+        symbol.className = 'tomato-end-icon';
+        setTimerUiIcon(symbol, type === 'tomato-end' ? 'tomato' : 'coffee');
+        const copy = document.createElement('div');
+        copy.className = 'tomato-end-copy';
+        titleEl.textContent = String(titleEl.textContent || '').replace(/^[🍅☕⏰\s\uFE0F]+/u, '');
+        titleEl.style.cssText = '';
+        titleEl.className = 'tomato-end-title';
+        titleEl.id = 'tomato-end-dialog-title';
+        messageEl.style.cssText = '';
+        messageEl.className = 'tomato-end-message';
+        copy.append(titleEl, messageEl);
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'tomato-end-close';
+        close.setAttribute('aria-label', '关闭结束提示');
+        setTimerUiIcon(close, 'close');
+        close.onclick = okBtn.onclick;
+        heading.append(symbol, copy, close);
+        const body = document.createElement('div');
+        body.className = 'tomato-end-body';
+        const buttons = Array.from(buttonContainer.querySelectorAll('button'));
+        const continuation = buttons.find(button => button.dataset.action === 'continue-focus');
+        if (continuation) {
+            messageEl.textContent = '原专注已暂停，准备好后继续。';
+            const summary = document.createElement('div');
+            summary.className = 'tomato-end-resume-summary';
+            const task = document.createElement('span');
+            setTimerUiIcon(task, 'association', continuation.dataset.taskName || '未关联任务');
+            task.title = continuation.dataset.taskName || '';
+            const progress = document.createElement('strong');
+            progress.textContent = continuation.dataset.progressText || '';
+            summary.append(task, progress);
+            continuation.style.cssText = '';
+            continuation.className = 'tomato-dialog-action tomato-end-continue tomato-ui-icon-label';
+            body.append(summary, continuation);
+        } else {
+            const optionsHeading = document.createElement('div');
+            optionsHeading.className = 'tomato-end-options-heading';
+            const label = document.createElement('span');
+            label.textContent = type === 'tomato-end' ? '休息时长 · 分钟' : '专注时长 · 分钟';
+            optionsHeading.appendChild(label);
+            const stopwatch = buttons.find(button => !button.dataset.duration);
+            if (stopwatch) {
+                stopwatch.style.cssText = '';
+                stopwatch.className = 'tomato-dialog-action tomato-end-stopwatch';
+                setTimerUiIcon(stopwatch, 'timer', type === 'tomato-end' ? '正计时休息' : (stopwatch.dataset.action === 'continue-stopwatch' ? '继续专注正计时' : '专注正计时'));
+                optionsHeading.appendChild(stopwatch);
+            }
+            const grid = document.createElement('div');
+            grid.className = 'tomato-end-presets';
+            const durations = buttons.filter(button => button.dataset.duration);
+            grid.style.gridTemplateColumns = `repeat(${Math.max(1, Math.min(4, durations.length))},minmax(0,1fr))`;
+            durations.forEach(button => {
+                button.style.cssText = '';
+                button.className = 'tomato-dialog-action tomato-end-duration';
+                setTimerUiIcon(button, '', button.dataset.duration);
+                button.setAttribute('aria-label', `开始 ${button.dataset.duration} 分钟${type === 'tomato-end' ? '休息' : '专注'}`);
+                grid.appendChild(button);
+            });
+            body.append(optionsHeading, grid);
+        }
+        const footer = document.createElement('div');
+        footer.className = 'tomato-end-footer';
+        okBtn.style.cssText = '';
+        okBtn.className = 'tomato-dialog-action tomato-end-acknowledge';
+        footer.appendChild(okBtn);
+        dialog.replaceChildren(heading, body, footer);
+    }
+
+
     function __createMonthRepeatCore() {
         const normalizeDays = (value) => Array.from(new Set((Array.isArray(value) ? value : [])
             .map(Number).filter((day) => Number.isInteger(day) && (day === -1 || (day >= 1 && day <= 31)))))
@@ -390,7 +872,7 @@
         timerId = null;
         if (isRunning) startLocalTimerLoop();
         else pauseBackgroundAudio(false);
-        if (controlButton) controlButton.innerHTML = isRunning ? '⏸️' : '▶️';
+        if (controlButton) setTimerToggleIcon(controlButton, isRunning, isTimerPaused);
         document.getElementById('siyuan-tomato-float-bar')?.classList.toggle('running', isRunning);
         try { updateDisplay(true); updateProgressBar(isRunning); } catch (error) {}
     }
@@ -10436,7 +10918,7 @@
         preBreakState = null;
         lastTickTime = 0;
         // 注意：不再自动清除任务块关联，用户可以通过📋️图标的删除按钮手动清除
-        if (controlButton) controlButton.innerHTML = '▶️';
+        if (controlButton) setTimerToggleIcon(controlButton, false, isTimerPaused);
         updateDisplay();
         // 注意：同步到云端的操作由 stopTimer() 统一处理，这里不再重复调用
         // 避免在 UI 操作中产生同步写入导致的卡顿
@@ -10462,7 +10944,7 @@
         preBreakState = null;
         lastTickTime = 0;
         isFreshTomatoStart = false;
-        if (controlButton) controlButton.innerHTML = '▶️';
+        if (controlButton) setTimerToggleIcon(controlButton, false, isTimerPaused);
         updateDisplay();
 
         if (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
@@ -10554,6 +11036,11 @@
 
     function showToastDialog(title, message, type = 'info', taskBlockId = null, taskBlockName = null, reminderDateKey = null, reminderTimeKey = null, reminderOccurrenceNumber = null) {
         ensureTomatoDialogActionStyles();
+        const isTimerEndDialog = type === 'tomato-end' || type === 'break-end';
+        if (isTimerEndDialog) {
+            closeTimerContextMenu();
+            closeBackgroundPlaylistDialog();
+        }
         if (type === 'tomato-end' || type === 'break-end') {
             // 桌面端改为真正结束时实时通知；移动端仍沿用开始时预约的系统通知。
             if (!shouldUseScheduledTimerNotificationBackend()) {
@@ -10628,7 +11115,7 @@
                         isRunning = false;
                         pausedRemainingSeconds = null;
                         lastTickTime = 0;
-                        if (controlButton) controlButton.innerHTML = '▶️';
+                        if (controlButton) setTimerToggleIcon(controlButton, false, isTimerPaused);
                         updateDisplay();
                         
                         // 🔧 v9.5：恢复番茄钟的 sessionId，供后续保存休息记录使用
@@ -10735,7 +11222,7 @@
         if (type === 'reminder') {
             const doneBtn = document.createElement('button');
             doneBtn.className = 'tomato-dialog-action';
-            doneBtn.textContent = '✅ 完成提醒';
+            setTimerUiIcon(doneBtn, 'complete', '完成提醒');
             doneBtn.style.cssText = `padding: 8px 12px; background: var(--b3-theme-primary); color: white;
                 border: 1px solid rgba(0,0,0,0.2); border-radius: 8px; cursor: pointer; font-size: 13px; min-width: 90px;`;
             doneBtn.onclick = async () => {
@@ -10762,7 +11249,8 @@
             getBreakDurations().forEach(min => {
                 const btn = document.createElement('button');
                 btn.className = 'tomato-dialog-action';
-                btn.textContent = `☕ ${min}分钟`;
+                btn.dataset.duration = String(min);
+                setTimerUiIcon(btn, 'coffee', `${min}分钟`);
                 btn.style.cssText = `padding: 8px 12px; background: #9E9E9E; color: white; border: 1px solid rgba(0,0,0,0.2);
                     border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 60px;`;
                 btn.onclick = () => {
@@ -10776,6 +11264,7 @@
             // 正计时休息按钮放在休息行末尾
             const stopwatchRestBtn = document.createElement('button');
             stopwatchRestBtn.className = 'tomato-dialog-action';
+            stopwatchRestBtn.dataset.action = 'start-stopwatch-break';
             stopwatchRestBtn.textContent = '计';
             stopwatchRestBtn.style.cssText = `padding: 8px 12px; background: #4CAF50; color: white; border: 1px solid rgba(0,0,0,0.2);
                 border-radius: 8px; cursor: pointer; font-size: 13px; min-width: 40px;`;
@@ -10805,7 +11294,10 @@
                 messageEl.textContent = `原专注已暂停，${progressText}。\n准备好后继续。`;
                 const continueBtn = document.createElement('button');
                 continueBtn.className = 'tomato-dialog-action';
-                continueBtn.textContent = '▶️ 继续原专注';
+                continueBtn.dataset.action = 'continue-focus';
+                continueBtn.dataset.progressText = progressText;
+                continueBtn.dataset.taskName = String(currentTaskBlockName || '未关联任务');
+                setTimerUiIcon(continueBtn, 'play', '继续原专注');
                 continueBtn.style.cssText = `padding: 8px 16px; background: var(--b3-theme-primary); color: var(--b3-theme-on-primary);
                     border: 1px solid var(--b3-theme-primary); border-radius: 8px; cursor: pointer; font-size: 14px;`;
                 continueBtn.onclick = () => {
@@ -10823,7 +11315,8 @@
                 getTomatoDurations().forEach(min => {
                     const btn = document.createElement('button');
                     btn.className = 'tomato-dialog-action';
-                    btn.textContent = `🍅 ${min}分钟`;
+                    btn.dataset.duration = String(min);
+                    setTimerUiIcon(btn, 'tomato', `${min}分钟`);
                     btn.style.cssText = `padding: 8px 12px; background: var(--b3-theme-primary); color: white;
                         border: 1px solid rgba(0,0,0,0.2); border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 60px;`;
                     btn.onclick = () => {
@@ -10846,7 +11339,8 @@
                 // 添加正计时按钮
                 const stopwatchBtn = document.createElement('button');
                 stopwatchBtn.className = 'tomato-dialog-action';
-                stopwatchBtn.textContent = `⏱️ 专注正计时`;
+                stopwatchBtn.dataset.action = 'start-stopwatch';
+                setTimerUiIcon(stopwatchBtn, 'timer', '专注正计时');
                 stopwatchBtn.style.cssText = `padding: 8px 12px; background: #4CAF50; color: white; border: 1px solid rgba(0,0,0,0.2);
                     border-radius: 8px; cursor: pointer; font-size: 13px; min-width: 60px;`;
                 stopwatchBtn.onclick = () => {
@@ -10868,7 +11362,8 @@
                 getTomatoDurations().forEach(min => {
                     const btn = document.createElement('button');
                     btn.className = 'tomato-dialog-action';
-                    btn.textContent = `🍅 ${min}分钟`;
+                    btn.dataset.duration = String(min);
+                    setTimerUiIcon(btn, 'tomato', `${min}分钟`);
                     btn.style.cssText = `padding: 8px 12px; background: var(--b3-theme-primary); color: white;
                         border: 1px solid rgba(0,0,0,0.2); border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 60px;`;
                     btn.onclick = () => {
@@ -10889,7 +11384,8 @@
 
                 const continueBtn = document.createElement('button');
                 continueBtn.className = 'tomato-dialog-action';
-                continueBtn.textContent = `⏱️ 继续专注正计时`;
+                continueBtn.dataset.action = 'continue-stopwatch';
+                setTimerUiIcon(continueBtn, 'timer', '继续专注正计时');
                 continueBtn.style.cssText = `padding: 8px 12px; background: #4CAF50; color: white; border: 1px solid rgba(0,0,0,0.2);
                     border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 80px;`;
                 continueBtn.onclick = () => {
@@ -10967,6 +11463,7 @@
         okBtn.onclick = acknowledgeAndCloseEndDialog;
 
         dialog.appendChild(okBtn);
+        if (isTimerEndDialog) layoutTimerEndDialog(dialog, titleEl, messageEl, buttonContainer, okBtn, type);
 
         const handleEsc = (e) => {
             if (e.key === 'Escape') {
@@ -13669,7 +14166,7 @@
         
         // 更新显示
         if (timeDisplay) updateDisplay(true);
-        if (controlButton) controlButton.innerHTML = '⏸️';
+        if (controlButton) setTimerToggleIcon(controlButton, true);
         
         // 启动定时器
         if (!timerId) {
@@ -16528,6 +17025,7 @@
         return {
             mode,
             prefix: getDisplayPrefixForTimer(mode),
+            iconName: getActiveRoutineButtonEmojiIcon() ? '' : (TIMER_UI_MODE_ICONS[mode] || 'tomato'),
             timeText: formatTime(displaySeconds),
             displaySeconds,
             elapsedDisplaySeconds,
@@ -16802,11 +17300,11 @@
             </span>
             <span class="tomato-circular-actions">
                 <span class="tomato-circular-action-buttons">
-                    <button class="tomato-circular-action-btn tomato-circular-toggle" type="button" title="暂停" aria-label="暂停">⏸</button>
+                    <button class="tomato-circular-action-btn tomato-circular-toggle" type="button" title="暂停" aria-label="暂停">${getTimerUiIconSvg('pause')}</button>
                     <button class="tomato-circular-action-btn tomato-circular-more" type="button" title="更多" aria-label="更多">⋯</button>
                 </span>
                 <span class="tomato-circular-action-task" title="未关联任务">
-                    <span class="tomato-circular-task-icon">📎</span>
+                    <span class="tomato-circular-task-icon">${getTimerUiIconSvg('association')}</span>
                     <span class="tomato-circular-task-text">未关联任务</span>
                 </span>
             </span>
@@ -16926,13 +17424,11 @@
         timer.title = `${data.prefix || ''} ${data.timeText || ''}`.trim();
         if (ringProgress) ringProgress.style.strokeDashoffset = String(circumference * (1 - progress));
         if (timeEl) timeEl.textContent = data.timeText || '00:00';
-        if (iconEl) iconEl.textContent = data.prefix || '';
+        setTimerUiIcon(iconEl, data.iconName, data.iconName ? '' : (data.prefix || ''));
         if (taskEl) taskEl.textContent = data.taskText || '未关联任务';
         if (taskWrap) taskWrap.title = data.taskText || '未关联任务';
         if (toggle) {
-            toggle.textContent = data.running ? '⏸' : '▶';
-            toggle.title = data.running ? '暂停' : (data.paused ? '继续' : '开始');
-            toggle.setAttribute('aria-label', toggle.title);
+            setTimerToggleIcon(toggle, data.running, data.paused);
         }
 
         const ticks = timer.querySelectorAll('.tomato-circular-tick');
@@ -17049,6 +17545,8 @@
     }
 
     function updateDisplay(animateProgress = true) {
+        if (document.getElementById('tomy-tomato-context-menu')) refreshTimerContextMenu();
+        if (document.getElementById('tomato-background-playlist')) refreshBackgroundPlaylistDialog();
         ensureTimerUiRefs({ recreate: true });
         // 🔧 v9.0 修复：如果 timeDisplay 不存在且用户已关闭悬浮窗，不重新创建
         if (!isLiveTomatoNode(timeDisplay)) {
@@ -17058,26 +17556,29 @@
             return;
         }
 
+        const displayModel = getTimerDisplayModel();
         const setDisplayText = (prefix, timeText) => {
-            if (timeDisplay?.dataset?.timerStyle === TIMER_STYLE_CIRCULAR) {
+            if (timeDisplay.dataset.timerStyle === TIMER_STYLE_CIRCULAR) {
                 timeDisplay.dataset.timerStyle = DEFAULT_TIMER_STYLE;
                 timeDisplay.dataset.timerSurface = '';
                 timeDisplay.textContent = '';
-                if (timeDisplay.closest?.('#siyuan-tomato-float-bar')) {
-                    timeDisplay.innerHTML = '<span class="tomato-float-icon" style="display:inline-block;line-height:1;width:1.2em;text-align:center;"></span><span class="tomato-float-time" style="display:inline-block;line-height:1;min-width:5ch;text-align:center;font-variant-numeric: tabular-nums; font-feature-settings: &quot;tnum&quot; 1; white-space: nowrap;"></span>';
-                }
             }
-            const timeEl = timeDisplay?.querySelector?.('.tomato-float-time');
-            if (timeEl) {
-                const iconEl = timeDisplay.querySelector('.tomato-float-icon');
-                if (iconEl) iconEl.textContent = prefix || '';
-                timeEl.textContent = timeText || '';
-                return;
+            let iconEl = timeDisplay.querySelector('.tomato-float-icon');
+            let timeEl = timeDisplay.querySelector('.tomato-float-time');
+            if (!timeEl) {
+                iconEl = document.createElement('span');
+                iconEl.className = 'tomato-float-icon';
+                timeEl = document.createElement('span');
+                timeEl.className = 'tomato-float-time tomato-ui-time-value';
+                timeDisplay.classList.add('tomato-ui-time');
+                timeDisplay.appendChild(iconEl);
+                timeDisplay.appendChild(timeEl);
             }
-            timeDisplay.textContent = `${prefix} ${timeText}`.trim();
+            setTimerUiIcon(iconEl, displayModel.iconName, displayModel.iconName ? '' : prefix);
+            if (timeEl.textContent !== timeText) timeEl.textContent = timeText;
         };
 
-        const prefix = getDisplayPrefixForTimer(timerMode);
+        const prefix = displayModel.prefix;
         const { running: effectiveRunning, paused: effectivePaused } = getEffectiveTimerActivity();
         const effectiveActive = !!(effectiveRunning || effectivePaused);
         // 🔧 修复：本地运行时以本地 startTime 为权威重新计算剩余时间，
@@ -17105,7 +17606,7 @@
             if (controlButton) {
                 // 🔧 关键修复：优先使用本地 isRunning 状态决定图标
                 // 避免云端同步延迟导致暂停后图标没更新
-                controlButton.innerHTML = isRunning ? '⏸️' : '▶️';
+                setTimerToggleIcon(controlButton, isRunning, isTimerPaused);
                 controlButton.style.display = 'flex';
             }
         } catch (e) {}
@@ -17219,7 +17720,7 @@
                 if (limitSec > 0) elapsedSeconds = limitSec;
             } else remainingSeconds = 0;
             try {
-                if (controlButton) controlButton.innerHTML = '▶️';
+                if (controlButton) setTimerToggleIcon(controlButton, false, isTimerPaused);
                 updateDisplay();
             } catch (displayError) {
                 Logger.warn('🍅 计时完成显示更新失败，继续结束流程:', displayError);
@@ -17580,7 +18081,7 @@
             recordStartTime();
             Logger.info('🔍 startTimer: recordStartTime 完成，currentStartTimestamp =', currentStartTimestamp, ', currentStartTimeMs =', currentStartTimeMs);
 
-            if (controlButton) controlButton.innerHTML = '⏸️';
+            if (controlButton) setTimerToggleIcon(controlButton, true);
             if (timerId !== null) clearInterval(timerId);
 
             const floatBar = document.getElementById('siyuan-tomato-float-bar');
@@ -17825,7 +18326,7 @@
         const floatBar = document.getElementById('siyuan-tomato-float-bar');
         if (floatBar) floatBar.classList.remove('running');
 
-        if (controlButton) controlButton.innerHTML = '▶️';
+        if (controlButton) setTimerToggleIcon(controlButton, false, isTimerPaused);
         updateDisplay();
         updateProgressBar(false);  // 暂停时不使用动画，进度条保持当前位置
         // 🔧 修复：暂停时标记时间轴缓存为 dirty（不重置 version，不清空 records）
@@ -19591,7 +20092,7 @@
             segmentDatabaseBlockId = null;
             routineButtonHighlightColor = null;
             try { window.__tomatoPausedColor = null; } catch (e) {}
-            if (controlButton) controlButton.innerHTML = '▶️';
+            if (controlButton) setTimerToggleIcon(controlButton, false, isTimerPaused);
             try { hideProgressBar(); } catch (e) {}
             updateDisplay();
             clearRoutineButtonRunningHighlight(true);
@@ -19706,7 +20207,7 @@
                 lastTickTime = 0;
                 isFreshTomatoStart = false;
                 preBreakState = null;
-                if (controlButton) controlButton.innerHTML = '▶️';
+                if (controlButton) setTimerToggleIcon(controlButton, false, isTimerPaused);
                 updateDisplay();
 
                 // 🔧 v9.0 修复：休息模式重置后必须同步状态到云端，否则轮询会覆盖本地状态
@@ -19851,7 +20352,7 @@
             }
 
             // 注意：不再自动清除任务块关联，保留供后续计时使用
-            if (controlButton) controlButton.innerHTML = '▶️';
+            if (controlButton) setTimerToggleIcon(controlButton, false, isTimerPaused);
             updateDisplay();
             clearRoutineButtonRunningHighlight(true);
 
@@ -19931,7 +20432,7 @@
             stopwatchDisplayOffset = 0;
             elapsedSeconds = 0;
             remainingSeconds = currentDuration * 60;
-            if (controlButton) controlButton.innerHTML = '▶️';
+            if (controlButton) setTimerToggleIcon(controlButton, false, isTimerPaused);
             updateDisplay();
             clearRoutineButtonRunningHighlight(true);
             try { hideProgressBar(); } catch (e) {}
@@ -20044,145 +20545,76 @@
         };
     }
 
-    function createButtonGroup(values, currentValue, onClick, isBreak = false) {
+    function createButtonGroup(values, currentValue, onClick) {
         const group = document.createElement('div');
-        const handleActionError = (error) => {
-            Logger.error('计时操作失败:', error);
-            try { showMiniToast('计时保存失败，请稍后重试'); } catch (e) {}
-        };
-        group.style.cssText = `
-            display: flex;
-            gap: 4px;
-            padding: 3px 12px 5px;
-            justify-content: center;
-            flex-wrap: wrap;
-        `;
-        
+        group.className = 'tomato-menu-presets';
+        group.style.gridTemplateColumns = `repeat(${Math.max(1, Math.min(4, values.length))}, minmax(0, 1fr))`;
         values.forEach(val => {
-            const btn = document.createElement('button');
-            btn.textContent = val;
-            btn.style.cssText = `
-                height: 26px;
-                min-height: 26px;
-                font-size: 12px;
-                font-weight: 600;
-                padding: 2px 6px;
-                border-radius: 4px;
-                border: 1px solid var(--b3-theme-surface-light);
-                background: ${val === currentValue ? 'var(--b3-theme-primary)' : 'transparent'};
-                color: ${val === currentValue ? 'white' : 'var(--b3-theme-on-background)'};
-                cursor: pointer;
-                min-width: auto;
-                flex: 1;
-                transition: all 0.2s;
-            `;
-            // 悬停效果
-            btn.onmouseenter = () => {
-                if (val !== currentValue) {
-                    btn.style.background = 'var(--b3-theme-surface-light)';
-                }
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'tomato-menu-preset';
+            button.dataset.duration = String(val);
+            button.textContent = String(val);
+            button.setAttribute('aria-pressed', String(val === currentValue));
+            button.title = val + '分钟';
+            button.onclick = event => {
+                event.stopPropagation();
+                runTimerMenuAction(() => onClick(val));
             };
-            btn.onmouseleave = () => {
-                if (val !== currentValue) {
-                    btn.style.background = 'transparent';
-                }
-            };
-            btn.onclick = (e) => {
-                e.stopPropagation();
-                Promise.resolve().then(() => onClick(val)).catch(handleActionError);
-                const menu = document.getElementById('tomy-tomato-context-menu');
-                if (menu) menu.remove();
-                isContextMenuOpen = false;  // 菜单关闭
-            };
-            group.appendChild(btn);
+            group.appendChild(button);
         });
-        
-        if (isBreak) {
-            const stopwatchBtn = document.createElement('button');
-            stopwatchBtn.textContent = '计';
-            stopwatchBtn.style.cssText = `
-                height: 26px;
-                min-height: 26px;
-                font-size: 12px;
-                font-weight: 600;
-                padding: 2px 6px;
-                border-radius: 4px;
-                border: 1px solid var(--b3-theme-surface-light);
-                background: ${timerMode === 'stopwatch-break' ? '#4CAF50' : 'transparent'};
-                color: ${timerMode === 'stopwatch-break' ? 'white' : 'var(--b3-theme-on-background)'};
-                cursor: pointer;
-                min-width: auto;
-                flex: 1;
-                transition: all 0.2s;
-            `;
-            // 悬停效果
-            stopwatchBtn.onmouseenter = () => {
-                if (timerMode !== 'stopwatch-break') {
-                    stopwatchBtn.style.background = 'var(--b3-theme-surface-light)';
-                }
-            };
-            stopwatchBtn.onmouseleave = () => {
-                if (timerMode !== 'stopwatch-break') {
-                    stopwatchBtn.style.background = 'transparent';
-                }
-            };
-            stopwatchBtn.onclick = async (e) => {
-                e.stopPropagation();
-                const menu = document.getElementById('tomy-tomato-context-menu');
-                if (menu) menu.remove();
-                isContextMenuOpen = false;
-                try {
-                    await startStopwatchBreakMode();
-                } catch (error) {
-                    handleActionError(error);
-                }
-            };
-            group.appendChild(stopwatchBtn);
-        }
-        
         return group;
     }
 
     async function showContextMenu(x, y) {
-        // 设置菜单状态为打开
+        closeTimerContextMenu();
+        ensureTimerSurfaceStyles();
+        ensureTimerUiIconStyles();
         isContextMenuOpen = true;
-
-        // 🔧 关闭悬停显示的悬浮窗，防止堆叠
-        const tooltipEl = document.getElementById('tomy-tomato-tooltip');
-        if (tooltipEl) {
-            tooltipEl.remove();
-        }
-
-        const existing = document.getElementById('tomy-tomato-context-menu');
-        if (existing) {
-            existing.remove();
-        }
-
-        let menu = document.createElement('div');
+        document.getElementById('tomy-tomato-tooltip')?.remove();
+        const activity = getEffectiveTimerActivity();
+        const menu = document.createElement('div');
         menu.id = 'tomy-tomato-context-menu';
-        menu.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            transform: translate(0, 0);
-            background: var(--b3-theme-background);
-            border: 1px solid var(--b3-theme-surface-light);
-            border-radius: 6px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-            z-index: 2147483647;
-            font-size: 13px;
-            min-width: 160px;
-            max-width: 240px;
-            max-height: calc(100vh - 8px);
-            overflow-y: auto;
-            padding: 6px 0;
-            pointer-events: auto;
-            user-select: none;
-            opacity: 0;
-            visibility: hidden;
-            transition: opacity 0.1s ease-out;
-        `;
-
+        menu.dataset.mode = timerMode;
+        menu.dataset.active = String(!!(activity.running || activity.paused));
+        menu.dataset.mobile = String(isMobileDevice());
+        menu.dataset.anchorX = String(x);
+        menu.dataset.anchorY = String(y);
+        menu.style.cssText = 'position:fixed;top:0;left:0;opacity:0;visibility:hidden;z-index:2147483647;pointer-events:auto;';
+        const scroll = document.createElement('div');
+        scroll.className = 'tomato-menu-scroll';
+        if (currentTaskBlockName || currentTaskBlockId || currentDatabaseBlockId) {
+            const taskRow = document.createElement('div');
+            taskRow.className = 'tomato-menu-task';
+            const task = document.createElement(isMobileDevice() ? 'div' : 'button');
+            task.className = 'tomato-menu-task-name';
+            if (!isMobileDevice()) {
+                task.type = 'button';
+                task.onclick = () => runTimerMenuAction(() => navigateToBlock(currentTaskBlockId || currentDatabaseBlockId));
+            }
+            const taskIcon = document.createElement('span');
+            setTimerUiIcon(taskIcon, 'association');
+            const name = document.createElement('span');
+            name.textContent = getTimerTaskTextForDisplay();
+            task.title = name.textContent;
+            task.append(taskIcon, name);
+            taskRow.appendChild(task);
+            if (isMobileDevice() && (currentTaskBlockId || currentDatabaseBlockId)) {
+                const clear = createTimerMenuItem('', 'close', async () => {
+                    await clearCurrentRecordAssociation();
+                    await setTaskAssociation(null, null, null);
+                    document.querySelectorAll('.tomato-task-highlight, .tomato-db-row-highlight').forEach(node => node.classList.remove('tomato-task-highlight', 'tomato-db-row-highlight'));
+                    updateTaskBlockIcon();
+                    updateDisplay();
+                });
+                clear.classList.add('tomato-menu-clear');
+                clear.title = '清除关联任务';
+                clear.setAttribute('aria-label', clear.title);
+                taskRow.appendChild(clear);
+            }
+            menu.appendChild(taskRow);
+        }
+        menu.appendChild(scroll);
         if (!document.getElementById('tomato-duration-slider-style')) {
             const durationSliderStyle = document.createElement('style');
             durationSliderStyle.id = 'tomato-duration-slider-style';
@@ -20252,223 +20684,26 @@
             document.head.appendChild(durationSliderStyle);
         }
 
-        // 移动端：关闭悬浮条选项（放在最顶部，仅当悬浮条存在时显示）
-        if (isMobileDevice() && isUsingFloatBar) {
-            const closeFloatBarItem = document.createElement('div');
-            closeFloatBarItem.textContent = '❌ 关闭悬浮窗';
-            closeFloatBarItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left; color: var(--b3-theme-error, #f44336); font-weight: bold;`;
-            closeFloatBarItem.onmouseenter = () => closeFloatBarItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
-            closeFloatBarItem.onmouseleave = () => closeFloatBarItem.style.backgroundColor = '';
-            closeFloatBarItem.onclick = async (e) => {
-                e.stopPropagation();
-                
-                // 🔧 v9.0 修复：关闭悬浮窗不停止计时，只是隐藏UI
-                // 计时器继续在后台运行，状态保持不变
-                
-                // 🔧 性能优化：先清理事件监听器
-                cleanupFloatBarEvents();
-                // 移除悬浮条
-                document.getElementById('siyuan-tomato-float-bar')?.remove();
-                isUsingFloatBar = false;
-                // 🔧 v9.0 修复：清空 timeDisplay 和 controlButton 引用
-                timeDisplay = null;
-                controlButton = null;
-                // 标记用户主动关闭
-                floatBarHiddenByUser = true;
-                // 关闭菜单
-                menu.remove();
-                isContextMenuOpen = false;
-            };
-            menu.appendChild(closeFloatBarItem);
-
-            const hrClose = document.createElement('hr');
-            hrClose.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
-            menu.appendChild(hrClose);
-        }
-
-        const currentAudioSettings = getAudioSettings();
-        const hasBackgroundAudio = !!(currentAudioSettings.workBackgroundSound || currentAudioSettings.breakBackgroundSound);
-        const shouldShowReopenDesktopFloatWindow = !isMobileDevice() && desktopFloatWindowState.dismissed;
-        if (currentAudioSettings.backgroundEnabled !== false && hasBackgroundAudio) {
-            const muteBackgroundItem = document.createElement('div');
-            const isMuted = currentAudioSettings.backgroundMuted === true;
-            muteBackgroundItem.textContent = isMuted ? '🔊 取消静音' : '🔇 静音背景音';
-            muteBackgroundItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
-            muteBackgroundItem.onmouseenter = () => muteBackgroundItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
-            muteBackgroundItem.onmouseleave = () => muteBackgroundItem.style.backgroundColor = '';
-            muteBackgroundItem.onclick = async (e) => {
-                e.stopPropagation();
-                await setBackgroundAudioMuted(!isMuted);
-                menu.remove();
-                isContextMenuOpen = false;
-            };
-            menu.appendChild(muteBackgroundItem);
-
-            const workBackgroundItems = getWorkBackgroundMenuItems();
-            if (workBackgroundItems.length) {
-                const playlistMenu = document.createElement('details');
-                playlistMenu.style.cssText = 'max-height: 40vh; overflow-y: auto;';
-                const playlistLabel = document.createElement('summary');
-                playlistLabel.textContent = '专注背景音';
-                playlistLabel.style.cssText = 'padding: 6px 12px; cursor: pointer;';
-                playlistMenu.appendChild(playlistLabel);
-                playlistMenu.ontoggle = () => {
-                    const height = menu.getBoundingClientRect().height;
-                    const top = Math.max(4, Math.min(y, window.innerHeight - height - 4));
-                    const left = menu.getBoundingClientRect().left;
-                    menu.style.transform = `translate(${left}px, ${top}px)`;
-                };
-                workBackgroundItems.forEach(item => {
-                    const button = document.createElement('button');
-                    button.textContent = (item.selected ? '✓ ' : '') + item.label;
-                    button.style.cssText = 'display: block; width: 100%; padding: 6px 20px; border: none; background: transparent; color: var(--b3-theme-on-background); text-align: left; cursor: pointer; overflow-wrap: anywhere;';
-                    if (item.selected != null) button.setAttribute('aria-pressed', String(item.selected));
-                    button.onmouseenter = () => button.style.backgroundColor = 'var(--b3-theme-surface-light)';
-                    button.onmouseleave = () => button.style.backgroundColor = '';
-                    button.onclick = (event) => {
-                        event.stopPropagation();
-                        menu.remove();
-                        isContextMenuOpen = false;
-                        item.action().catch(error => Logger.warn('切换专注背景音失败:', error));
-                    };
-                    playlistMenu.appendChild(button);
-                });
-                menu.appendChild(playlistMenu);
-            }
-
-            const hrBackgroundAudio = document.createElement('hr');
-            hrBackgroundAudio.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
-            menu.appendChild(hrBackgroundAudio);
-        }
-
-        if (isRunning && (timerMode === 'countdown' || timerMode === 'stopwatch')) {
-            const distractionItem = document.createElement('div');
-            const willExtend = timerMode === 'countdown' && userSettings?.main?.extendTomatoOnDistraction !== false;
-            distractionItem.textContent = willExtend ? '😵 记录分心（+1分钟）' : '😵 记录分心';
-            distractionItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
-            distractionItem.onmouseenter = () => distractionItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
-            distractionItem.onmouseleave = () => distractionItem.style.backgroundColor = '';
-            distractionItem.onclick = async (e) => {
-                e.stopPropagation();
-                await recordDistraction();
-                menu.remove();
-                isContextMenuOpen = false;
-            };
-            menu.appendChild(distractionItem);
-
-            if (!shouldShowReopenDesktopFloatWindow) {
-                const hrDistraction = document.createElement('hr');
-                hrDistraction.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
-                menu.appendChild(hrDistraction);
-            }
-        }
-
-        if (shouldShowReopenDesktopFloatWindow) {
-            const reopenDesktopFloatWindowItem = document.createElement('div');
-            reopenDesktopFloatWindowItem.textContent = '🪟 开启悬浮窗';
-            reopenDesktopFloatWindowItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
-            reopenDesktopFloatWindowItem.onmouseenter = () => reopenDesktopFloatWindowItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
-            reopenDesktopFloatWindowItem.onmouseleave = () => reopenDesktopFloatWindowItem.style.backgroundColor = '';
-            reopenDesktopFloatWindowItem.onclick = async (e) => {
-                e.stopPropagation();
-                desktopFloatWindowState.dismissed = false;
-                try { installDesktopMinimizedFloatWindowMonitor(); } catch (err) {}
-                try { scheduleDesktopMinimizedFloatWindowSync('bottom-menu-open-desktop-float'); } catch (err) {}
-                menu.remove();
-                isContextMenuOpen = false;
-            };
-            menu.appendChild(reopenDesktopFloatWindowItem);
-
-            const hrDesktopFloat = document.createElement('hr');
-            hrDesktopFloat.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
-            menu.appendChild(hrDesktopFloat);
-        }
-
-        const tomatoTitle = document.createElement('div');
-        tomatoTitle.textContent = '🍅 番茄';
-        tomatoTitle.style.cssText = `
-            padding: 4px 12px 2px;
-            font-size: 12px;
-            font-weight: bold;
-            opacity: 0.7;
-            text-align: left;
-        `;
-        menu.appendChild(tomatoTitle);
-
-        // 移动端显示关联项目名称
-        if (isMobileDevice() && (currentTaskBlockName || currentDatabaseBlockId)) {
-            const taskName = currentTaskBlockName || '数据库任务';
-            const taskNameDisplay = document.createElement('div');
-            taskNameDisplay.innerHTML = `📎 关联: <strong style="color: var(--b3-theme-primary);">${taskName}</strong>`;
-            taskNameDisplay.style.cssText = `
-                padding: 4px 12px;
-                font-size: 12px;
-                color: var(--b3-theme-on-surface);
-                text-align: left;
-            `;
-            menu.appendChild(taskNameDisplay);
-        }
-
-        // 清除关联任务（仅当有关联任务时显示）- 放在显示关联任务下方
-        if (isMobileDevice() && (currentTaskBlockId || currentDatabaseBlockId)) {
-            const clearTaskItem = document.createElement('div');
-            clearTaskItem.textContent = '❌ 清除关联任务';
-            clearTaskItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
-            clearTaskItem.onmouseenter = () => clearTaskItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
-            clearTaskItem.onmouseleave = () => clearTaskItem.style.backgroundColor = '';
-            clearTaskItem.onclick = async (e) => { 
-                e.stopPropagation(); 
-                Logger.info('🔍 清除关联前: currentTaskBlockId =', currentTaskBlockId);
-                // 先清除当前记录中的关联
-                await clearCurrentRecordAssociation();
-                Logger.info('🔍 清除记录关联后: currentTaskBlockId =', currentTaskBlockId);
-                // 清除任务关联（包括任务块和数据库块）
-                await setTaskAssociation(null, null, null);
-                Logger.info('🔍 设置变量为null后: currentTaskBlockId =', currentTaskBlockId);
-                // 清除高亮
-                document.querySelectorAll('.tomato-task-highlight').forEach(el => {
-                    el.classList.remove('tomato-task-highlight');
-                });
-                // 同时清除数据库行高亮
-                document.querySelectorAll('.tomato-db-row-highlight').forEach(el => {
-                    el.classList.remove('tomato-db-row-highlight');
-                });
-                // 更新任务块图标
-                updateTaskBlockIcon();
-                // 🔧 修复：更新显示以恢复默认图标
-                updateDisplay();
-                // 关闭菜单
-                menu.remove(); 
-                isContextMenuOpen = false;  // 菜单关闭
-            };
-            menu.appendChild(clearTaskItem);
-        }
-
-        if (timerMode === 'countdown' && (isRunning || isTimerPaused)) {
-            const completeItem = document.createElement('div');
-            completeItem.textContent = '✅ 完成番茄';
-            completeItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left; font-weight: bold; color: #2e7d32;`;
-            completeItem.onmouseenter = () => completeItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
-            completeItem.onmouseleave = () => completeItem.style.backgroundColor = '';
-            completeItem.onclick = async (e) => {
-                e.stopPropagation();
-                menu.remove();
-                isContextMenuOpen = false;
-                await completeCurrentTomato();
-            };
-            menu.appendChild(completeItem);
-
-            const hrComplete = document.createElement('hr');
-            hrComplete.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
-            menu.appendChild(hrComplete);
-        }
-
-        menu.appendChild(createButtonGroup(getTomatoDurations(),
-            timerMode === 'countdown' ? currentDuration : null,
-            async (val) => { await switchToCountdownAndStart(val); },
-            false
-        ));
-
+        const appendGroup = (label, iconName, values, mode, start, stopwatch) => {
+            const section = document.createElement('section');
+            section.className = 'tomato-menu-group';
+            const heading = document.createElement('div');
+            heading.className = 'tomato-menu-heading';
+            const title = document.createElement('span');
+            setTimerUiIcon(title, iconName, label);
+            const shortcut = createTimerMenuItem('正计时', 'timer', stopwatch);
+            shortcut.className = 'tomato-menu-stopwatch tomato-ui-icon-label';
+            shortcut.setAttribute('aria-label', label === '休息' ? '开始正计时休息' : '开始专注正计时');
+            heading.append(title, shortcut);
+            const presets = createButtonGroup(values, timerMode === mode ? currentDuration : null, start);
+            presets.dataset.timerMode = mode;
+            section.append(heading, presets);
+            scroll.appendChild(section);
+            return section;
+        };
+        const focusGroup = appendGroup('专注', 'tomato', getTomatoDurations(), 'countdown',
+            async val => { await switchToCountdownAndStart(val); },
+            async () => { await startStopwatchForCurrentPhase(); });
         const hasActiveDuration = hasUnfinishedTimerState();
         const isBreakDurationControl = timerMode === 'break' || timerMode === 'stopwatch-break';
         // During a break this remains a focus-duration control. Its value is
@@ -20478,7 +20713,7 @@
             || !hasActiveDuration;
         if (showCountdownDurationControl) {
             const durationControl = document.createElement('div');
-            durationControl.style.cssText = 'padding:1px 12px 7px;display:flex;align-items:center;gap:6px;min-width:0;';
+            durationControl.className = 'tomato-menu-duration-control';
             const durationValue = document.createElement('span');
             durationValue.style.cssText = 'font-size:12px;font-weight:700;color:var(--b3-theme-on-surface);font-variant-numeric:tabular-nums;white-space:nowrap;';
             const durationSlider = document.createElement('input');
@@ -20526,7 +20761,7 @@
                 event.stopPropagation();
                 const duration = normalizeCountdownDurationMinutes(durationSlider.value);
                 const activeMenu = document.getElementById('tomy-tomato-context-menu');
-                if (activeMenu) activeMenu.remove();
+                if (activeMenu) closeTimerContextMenu();
                 isContextMenuOpen = false;
                 try {
                     await switchToCountdownAndStart(duration);
@@ -20571,137 +20806,91 @@
             });
             durationControl.appendChild(durationSlider);
             durationControl.appendChild(durationValue);
-            menu.appendChild(durationControl);
+            focusGroup.appendChild(durationControl);
         }
 
-        const breakTitle = document.createElement('div');
-        breakTitle.textContent = '☕ 休息';
-        breakTitle.style.cssText = `
-            padding: 8px 12px 2px;
-            font-size: 12px;
-            font-weight: bold;
-            opacity: 0.7;
-            text-align: left;
-        `;
-        menu.appendChild(breakTitle);
-
-        menu.appendChild(createButtonGroup(getBreakDurations(),
-            timerMode === 'break' ? currentDuration : null,
-            async (val) => { await startBreakMode(val); },
-            true
-        ));
-
-        const hr2 = document.createElement('hr');
-        hr2.style.cssText = `margin: 4px 0; border: none; border-top: 1px solid var(--b3-theme-surface-light);`;
-        menu.appendChild(hr2);
-
-        const stopwatchItem = document.createElement('div');
-        stopwatchItem.textContent = '⏱️ 专注正计时';
-        stopwatchItem.style.cssText = `
-            padding: 6px 12px;
-            cursor: pointer;
-            font-weight: ${timerMode === 'stopwatch' ? 'bold' : 'normal'};
-            color: ${timerMode === 'stopwatch' ? '#4CAF50' : 'inherit'};
-            text-align: left;
-        `;
-        stopwatchItem.onmouseenter = () => stopwatchItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
-        stopwatchItem.onmouseleave = () => stopwatchItem.style.backgroundColor = '';
-        stopwatchItem.onclick = async (e) => {
-            e.stopPropagation();
-            menu.remove();
-            isContextMenuOpen = false;
-            try {
-                await startStopwatchForCurrentPhase();
-            } catch (error) {
-                Logger.error('切换专注正计时失败:', error);
-                showMiniToast('计时保存失败，请稍后重试');
-            }
-        };
-        menu.appendChild(stopwatchItem);
-
-        const resetItem = document.createElement('div');
-        resetItem.textContent = (timerMode === 'break' || timerMode === 'stopwatch-break')
-            ? '结束休息'
-            : ((timerMode === 'stopwatch') ? '✅ 完成专注正计时' : '放弃番茄钟');
-        resetItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
-        resetItem.onmouseenter = () => resetItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
-        resetItem.onmouseleave = () => resetItem.style.backgroundColor = '';
-        resetItem.onclick = async (e) => {
-            e.stopPropagation();
-            menu.remove();
-            isContextMenuOpen = false;
-            try {
-                if (timerMode === 'countdown') await abandonCurrentTomato();
-                else await resetCurrentMode();
-            } catch (error) {
-                Logger.error(timerMode === 'countdown' ? '放弃番茄钟失败:' : '重置计时失败:', error);
-                showMiniToast(timerMode === 'countdown' ? '放弃番茄钟失败，请稍后重试' : '计时保存失败，请稍后重试');
-            }
-        };
-        menu.appendChild(resetItem);
-
-        const historyItem = document.createElement('div');
-        historyItem.textContent = '查看历史';
-        historyItem.style.cssText = `padding: 6px 12px; cursor: pointer; text-align: left;`;
-        historyItem.onmouseenter = () => historyItem.style.backgroundColor = 'var(--b3-theme-surface-light)';
-        historyItem.onmouseleave = () => historyItem.style.backgroundColor = '';
-        historyItem.onclick = async (e) => { 
-            e.stopPropagation(); 
-            await showHistoryDialog(); 
-            menu.remove(); 
-            isContextMenuOpen = false;  // 菜单关闭
-        };
-        menu.appendChild(historyItem);
-
+        appendGroup('休息', 'coffee', getBreakDurations(), 'break',
+            async val => { await startBreakMode(val); },
+            async () => { await startStopwatchBreakMode(); });
+        const currentAudioSettings = getAudioSettings();
+        const hasBackgroundAudio = !!(currentAudioSettings.workBackgroundSound || currentAudioSettings.breakBackgroundSound);
+        if (currentAudioSettings.backgroundEnabled !== false && hasBackgroundAudio) {
+            const audioRow = document.createElement('div');
+            audioRow.className = 'tomato-menu-audio';
+            const audio = createTimerMenuItem('背景音', 'audio', () => showBackgroundPlaylistDialog());
+            const status = document.createElement('span');
+            status.className = 'tomato-menu-tail';
+            status.setAttribute('data-audio-status', '');
+            audio.appendChild(status);
+            const mute = createTimerMenuItem('', 'audio', () => setBackgroundAudioMuted(getAudioSettings().backgroundMuted !== true), true);
+            mute.className = 'tomato-menu-mute';
+            mute.dataset.action = 'mute';
+            audioRow.append(audio, mute);
+            scroll.appendChild(audioRow);
+        }
+        if (!isMobileDevice() && desktopFloatWindowState.dismissed) {
+            scroll.appendChild(createTimerMenuItem('开启悬浮窗', '', () => {
+                desktopFloatWindowState.dismissed = false;
+                installDesktopMinimizedFloatWindowMonitor();
+                scheduleDesktopMinimizedFloatWindowSync('bottom-menu-open-desktop-float');
+            }));
+        }
+        const footer = document.createElement('div');
+        footer.className = 'tomato-menu-footer';
+        const distraction = createTimerMenuItem('记录分心', 'distraction', () => recordDistraction());
+        distraction.dataset.action = 'distraction';
+        const count = document.createElement('span');
+        count.className = 'tomato-menu-tail';
+        distraction.appendChild(count);
+        const history = createTimerMenuItem('查看历史', 'history', () => showHistoryDialog());
+        history.setAttribute('aria-haspopup', 'dialog');
+        footer.append(distraction, history);
+        if (isMobileDevice() && isUsingFloatBar) {
+            const closeFloat = createTimerMenuItem('关闭悬浮窗', 'close', () => {
+                cleanupFloatBarEvents();
+                document.getElementById('siyuan-tomato-float-bar')?.remove();
+                isUsingFloatBar = false;
+                timeDisplay = null;
+                controlButton = null;
+                floatBarHiddenByUser = true;
+            });
+            closeFloat.title = '关闭悬浮窗，计时继续';
+            footer.appendChild(closeFloat);
+        }
+        const controls = document.createElement('div');
+        controls.className = 'tomato-menu-controls';
+        const toggle = createTimerMenuItem('暂停', 'pause', async () => {
+            if (isRunning) await pauseTimer();
+            else await startTimer();
+        }, true);
+        toggle.dataset.action = 'toggle';
+        const complete = createTimerMenuItem('完成', 'complete', async () => { await completeCurrentTimer(); });
+        complete.dataset.action = 'complete';
+        const abandon = createTimerMenuItem('放弃', 'close', async () => {
+            if (timerMode === 'countdown') await abandonCurrentTomato();
+        });
+        abandon.dataset.action = 'abandon';
+        abandon.title = '放弃番茄钟';
+        for (const button of [toggle, complete, abandon]) button.className = 'tomato-menu-control tomato-ui-icon-label';
+        controls.append(toggle, complete, abandon);
+        footer.appendChild(controls);
+        menu.appendChild(footer);
         document.body.appendChild(menu);
-
-        const { width, height } = menu.getBoundingClientRect();
-        const winW = window.innerWidth;
-        const winH = window.innerHeight;
-
-        let posX = x;
-        let posY = y;
-        if (posX + width > winW - 4) posX = winW - width - 4;
-        if (posY + height > winH - 4) posY = y - height;
-        posX = Math.max(4, posX);
-        posY = Math.max(4, posY);
-
-        menu.style.transform = `translate(${posX}px, ${posY}px)`;
+        refreshTimerContextMenu();
+        positionTimerContextMenu(menu);
         menu.style.visibility = 'visible';
-        setTimeout(() => menu.style.opacity = '1', 10);
-
-        // 清理之前的菜单监听器
-        let clickListenerId = null;
-        let ctxListenerId = null;
-        const closeMenu = (e) => {
-            // 检查点击是否在菜单内部
-            if (menu && !menu.contains(e.target)) {
-                // 隐藏并移除菜单
-                menu.style.opacity = '0';
-                setTimeout(() => {
-                    if (menu && menu.parentNode) {
-                        menu.remove();
-                    }
-                    menu = null;
-                    isContextMenuOpen = false;  // 菜单关闭
-                }, 100);
-                // 清理事件监听器
-                if (clickListenerId) {
-                    try { EventManager.remove(clickListenerId); } catch (err) {}
-                    clickListenerId = null;
-                }
-                if (ctxListenerId) {
-                    try { EventManager.remove(ctxListenerId); } catch (err) {}
-                    ctxListenerId = null;
-                }
-            }
-        };
-
-        // 延迟添加事件监听器
+        menu.style.opacity = '1';
         setTimeout(() => {
-            clickListenerId = EventManager.add(document, 'click', closeMenu, { capture: true }, 'history-context-menu-close');
-            ctxListenerId = EventManager.add(document, 'contextmenu', closeMenu, { capture: true }, 'history-context-menu-close');
-        }, 50);
+            if (!menu.isConnected) return;
+            const outside = event => { if (!menu.contains(event.target)) closeTimerContextMenu(); };
+            EventManager.add(document, 'pointerdown', outside, true, 'tomato-context-menu');
+            EventManager.add(document, 'contextmenu', outside, true, 'tomato-context-menu');
+            EventManager.add(document, 'keydown', event => {
+                if (event.key === 'Escape') closeTimerContextMenu();
+            }, false, 'tomato-context-menu');
+            EventManager.add(window, 'resize', () => positionTimerContextMenu(menu), false, 'tomato-context-menu');
+            if (window.visualViewport) EventManager.add(window.visualViewport, 'resize', () => positionTimerContextMenu(menu), false, 'tomato-context-menu');
+        }, 0);
     }
 
 	function getWeekStartDate(date) {
@@ -26905,6 +27094,8 @@ function calculateWeeklyStats(dailyStatsArray) {
             BrowserWindow,
             currentWindow,
             Menu,
+            nativeImage: electron?.nativeImage || remote?.nativeImage || null,
+            nativeTheme: electron?.nativeTheme || remote?.nativeTheme || null,
             screen
         };
     }
@@ -26938,7 +27129,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
     function getDesktopFloatWindowDistractionLabel() {
         const willExtend = timerMode === 'countdown' && userSettings?.main?.extendTomatoOnDistraction !== false;
-        return willExtend ? '😵 记录分心（+1分钟）' : '😵 记录分心';
+        return willExtend ? '记录分心（+1分钟）' : '记录分心';
     }
 
     function buildDesktopFloatWindowMenuTemplate(win) {
@@ -26958,18 +27149,25 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (currentAudioSettings.backgroundEnabled !== false && hasBackgroundAudio) {
             const isMuted = currentAudioSettings.backgroundMuted === true;
             template.push({
-                label: isMuted ? '🔊 取消静音' : '🔇 静音背景音',
+                label: isMuted ? '取消静音' : '静音背景音',
+                iconName: isMuted ? 'muted' : 'audio',
                 click: () => runAction(async () => { await setBackgroundAudioMuted(!isMuted); })
             });
             const workBackgroundItems = getWorkBackgroundMenuItems();
             if (workBackgroundItems.length) {
                 template.push({
-                    label: '专注背景音',
-                    submenu: workBackgroundItems.map(item => ({
+                    label: '背景音',
+                    iconName: 'audio',
+                    submenu: [
+                        { label: '顺序循环', type: 'radio', checked: currentAudioSettings.workBackgroundPlayMode !== 'single', click: () => runAction(() => setWorkBackgroundPlayMode('sequence')) },
+                        { label: '单曲循环', type: 'radio', checked: currentAudioSettings.workBackgroundPlayMode === 'single', click: () => runAction(() => setWorkBackgroundPlayMode('single')) },
+                        { type: 'separator' },
+                        ...workBackgroundItems.map(item => ({
                         label: item.label,
                         ...(item.selected == null ? {} : { type: 'checkbox', checked: item.selected }),
                         click: () => runAction(item.action)
-                    }))
+                        }))
+                    ]
                 });
             }
             pushSeparator();
@@ -26978,6 +27176,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (canDesktopFloatWindowRecordDistraction()) {
             template.push({
                 label: getDesktopFloatWindowDistractionLabel(),
+                iconName: 'distraction',
                 click: () => runAction(async () => {
                     if (!canDesktopFloatWindowRecordDistraction()) return;
                     await recordDistraction();
@@ -26986,16 +27185,18 @@ function calculateWeeklyStats(dailyStatsArray) {
             pushSeparator();
         }
 
-        template.push({ label: '🍅 番茄', enabled: false });
+        template.push({ label: '番茄', iconName: 'tomato', enabled: false });
         if (currentTaskBlockName || currentDatabaseBlockId) {
             template.push({
-                label: `📎 关联: ${getTimerTaskTextForDisplay()}`,
+                label: `关联: ${getTimerTaskTextForDisplay()}`,
+                iconName: 'association',
                 enabled: false
             });
         }
         if (currentTaskBlockId || currentDatabaseBlockId) {
             template.push({
-                label: '❌ 清除关联任务',
+                label: '清除关联任务',
+                iconName: 'close',
                 click: () => runAction(async () => {
                     await clearCurrentRecordAssociation();
                     await setTaskAssociation(null, null, null);
@@ -27008,7 +27209,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
         if (timerMode === 'countdown' && (isRunning || isTimerPaused)) {
             template.push({
-                label: '✅ 完成番茄',
+                label: '完成番茄',
+                iconName: 'complete',
                 click: () => runAction(async () => { await completeCurrentTomato(); })
             });
         }
@@ -27041,14 +27243,16 @@ function calculateWeeklyStats(dailyStatsArray) {
             checked: timerMode === 'stopwatch-break',
             click: () => runAction(async () => { await startStopwatchBreakMode(); })
         });
-        template.push({ label: '☕ 休息', submenu: breakSubmenu });
+        template.push({ label: '休息', iconName: 'coffee', submenu: breakSubmenu });
         pushSeparator();
 
         template.push({
-            label: '⏱️ 专注正计时',
+            label: '专注正计时',
+            iconName: 'timer',
             click: () => runAction(async () => { await startStopwatchForCurrentPhase(); })
         }, {
             label: isRunning ? '暂停' : '继续',
+            iconName: isRunning ? 'pause' : 'play',
             enabled: hasUnfinishedTimerState(),
             click: () => runAction(async () => {
                 if (isRunning) await pauseTimer();
@@ -27057,7 +27261,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         }, {
             label: (timerMode === 'break' || timerMode === 'stopwatch-break')
                 ? '结束休息'
-                : ((timerMode === 'stopwatch') ? '✅ 完成专注正计时' : '放弃番茄钟'),
+                : ((timerMode === 'stopwatch') ? '完成专注正计时' : '放弃番茄钟'),
+            iconName: timerMode === 'stopwatch' ? 'complete' : (timerMode.includes('break') ? 'coffee' : 'close'),
             click: () => runAction(async () => {
                 if (timerMode === 'break' || timerMode === 'stopwatch-break') {
                     await resetCurrentMode();
@@ -27069,6 +27274,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             })
         }, {
             label: '查看历史',
+            iconName: 'history',
             click: () => runAction(async () => { await showHistoryDialog(); })
         });
         pushSeparator();
@@ -27098,13 +27304,50 @@ function calculateWeeklyStats(dailyStatsArray) {
         return template.filter((item, index, arr) => !(item?.type === 'separator' && (index === 0 || index === arr.length - 1 || arr[index - 1]?.type === 'separator')));
     }
 
-    function showDesktopFloatWindowContextMenu(win) {
+    async function getTimerNativeMenuIcon(name, support) {
+        if (!support.nativeImage || !getTimerUiIconSvg(name)) return undefined;
+        const dark = support.nativeTheme?.shouldUseDarkColors === true;
+        const scaleFactor = Math.max(1, Math.min(3, Number(window.devicePixelRatio) || 1));
+        const key = `${name}:${dark}:${scaleFactor}`;
+        if (!timerNativeIconCache.has(key)) {
+            timerNativeIconCache.set(key, (async () => {
+                const colors = TIMER_UI_COLORS[dark ? 'dark' : 'light'];
+                const color = { distraction: colors.amber, coffee: colors.muted, timer: colors.green, complete: colors.green, history: colors.muted, association: colors.association }[name];
+                const svg = getTimerUiIconSvg(name)
+                    .replace(/var\(--tomato-ui-(red|leaf),#[0-9a-f]+\)/gi, (_match, token) => colors[token])
+                    .replace('<svg ', `<svg style="color:${color || (dark ? '#f4f7fb' : '#24303a')}" `);
+                const image = new Image();
+                await new Promise((resolve, reject) => {
+                    image.onload = resolve;
+                    image.onerror = reject;
+                    image.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+                });
+                const nativeIcon = support.nativeImage.createEmpty();
+                // @electron/remote serializes a single representation as a raw bitmap.
+                // Keep a 1x base so HiDPI images use its lossless PNG transport instead.
+                for (const scale of new Set([1, scaleFactor])) {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = canvas.height = Math.round(16 * scale);
+                    canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+                    nativeIcon.addRepresentation({ scaleFactor: scale, dataURL: canvas.toDataURL('image/png') });
+                }
+                return nativeIcon;
+            })().catch(() => undefined));
+        }
+        return timerNativeIconCache.get(key);
+    }
+
+    async function showDesktopFloatWindowContextMenu(win) {
         if (!win || win.isDestroyed?.()) return;
         const support = getDesktopFloatWindowElectronSupport();
         const Menu = support.Menu;
         if (!Menu || typeof Menu.buildFromTemplate !== 'function') return;
         try {
-            const template = buildDesktopFloatWindowMenuTemplate(win);
+            const template = await Promise.all(buildDesktopFloatWindowMenuTemplate(win).map(async ({ iconName, ...item }) => {
+                if (iconName) item.icon = await getTimerNativeMenuIcon(iconName, support);
+                return item;
+            }));
+            if (__tomatoDestroyed || win.isDestroyed?.()) return;
             const menu = Menu.buildFromTemplate(template);
             menu.popup({ window: win });
         } catch (e) {}
@@ -27163,6 +27406,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
         return {
             prefix,
+            iconName: displayModel.iconName,
             timeText: getDesktopFloatWindowTimeText(),
             statusText,
             modeText,
@@ -27209,12 +27453,14 @@ function calculateWeeklyStats(dailyStatsArray) {
         const circularTimeColor = colors.mode === 'light' ? '#171b20' : '#f4f7fb';
         desktopFloatWindowLastResolvedColorMode = colors.mode;
         return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme-mode="${colors.mode}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DockTomato</title>
 <style>
+${TIMER_UI_ICON_CSS}
+.toolbtn .tomato-ui-icon { color: inherit; }
 html, body {
     margin: 0;
     width: 100%;
@@ -27337,9 +27583,12 @@ body {
 }
 .icon {
     font-size: 14px;
-    width: 16px;
+    width: 18px;
     text-align: center;
-    flex: 0 0 16px;
+    flex: 0 0 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     line-height: 1;
     overflow: visible;
 }
@@ -27350,6 +27599,9 @@ body {
     transform-origin: left center;
 }
 .task {
+    display: flex;
+    align-items: center;
+    gap: 4px;
     font-size: 10px;
     line-height: 1.15;
     opacity: 0.82;
@@ -27357,6 +27609,8 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
 }
+#task-association { display: inline-flex; flex: 0 0 auto; }
+#task { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .content {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -27603,7 +27857,7 @@ body {
 <div id="shell" class="shell" data-actions-side="${desktopFloatWindowState.circularExpandedLeft ? 'left' : 'right'}">
     <div class="topline">
         <div class="leftbox">
-            <button id="toggle-run" class="toolbtn" title="暂停">⏸</button>
+            <button id="toggle-run" class="toolbtn" title="暂停">${getTimerUiIconSvg('pause')}</button>
             <button id="pin" class="toolbtn active" title="切换置顶">📌</button>
             <button id="close" class="toolbtn closebtn" title="关闭">✕</button>
         </div>
@@ -27613,10 +27867,10 @@ body {
     </div>
     <div class="content">
         <div class="time">
-            <span id="icon" class="icon">🍅</span>
+            <span id="icon" class="icon">${getTimerUiIconSvg('tomato')}</span>
             <span id="time">00:00</span>
         </div>
-        <div id="task" class="task">未关联任务</div>
+        <div class="task"><span id="task-association">${getTimerUiIconSvg('association')}</span> <span id="task">未关联任务</span></div>
         <div id="circular" class="circular" data-mode="countdown" data-actions-side="${desktopFloatWindowState.circularExpandedLeft ? 'left' : 'right'}">
             <svg class="circular-ring" viewBox="0 0 48 48" aria-hidden="true">
                 <circle class="circular-ring-track" cx="24" cy="24" r="20"></circle>
@@ -27626,7 +27880,7 @@ body {
             <span class="circular-face"><span id="circular-time" class="circular-time">00:00</span></span>
             <span class="circular-actions">
                 <span class="circular-action-buttons">
-                    <button id="circular-toggle-run" class="toolbtn" title="暂停">⏸</button>
+                    <button id="circular-toggle-run" class="toolbtn" title="暂停">${getTimerUiIconSvg('pause')}</button>
                     <button id="circular-more" class="toolbtn" title="更多">⋯</button>
                 </span>
             </span>
@@ -27634,6 +27888,11 @@ body {
     </div>
 </div>
 <script>
+var TIMER_UI_ICON_SVGS = ${JSON.stringify(TIMER_UI_ICON_SVGS)};
+function ensureTimerUiIconStyles() {}
+${getTimerUiIconSvg.toString()}
+${setTimerUiIcon.toString()}
+${setTimerToggleIcon.toString()}
 var __electron = null;
 var __ipcRenderer = null;
 try { __electron = window.require && window.require('electron'); } catch (e) {}
@@ -27824,13 +28083,7 @@ function __syncRunButtonState(payload) {
     var paused = !!payload.paused;
     var canToggle = payload.canToggleRun !== false;
     buttons.forEach(function (btn) {
-        if (running) {
-            btn.textContent = '⏸';
-            btn.title = '暂停';
-        } else {
-            btn.textContent = '▶';
-            btn.title = paused ? '继续' : '开始';
-        }
+        setTimerToggleIcon(btn, running, paused);
         if (btn.id === 'circular-toggle-run') btn.dataset.running = running ? 'true' : 'false';
         btn.disabled = !canToggle;
         btn.style.opacity = canToggle ? '1' : '0.45';
@@ -27857,7 +28110,9 @@ window.__setTomatoFloatState = function (payload) {
         mode.textContent = payload.hideModeText ? '' : (payload.modeText || '番茄钟');
         mode.style.display = payload.hideModeText ? 'none' : '';
     }
-    if (icon) icon.textContent = payload.prefix || '🍅';
+    setTimerUiIcon(icon, payload.iconName, payload.iconName ? '' : (payload.prefix || ''));
+    var association = document.getElementById('task-association');
+    if (association) association.style.display = payload.taskText && payload.taskText !== '未关联任务' ? '' : 'none';
     if (time) time.textContent = payload.timeText || '00:00';
     if (task) task.textContent = payload.taskText || '未关联任务';
     if (circular) __renderCircularFromPayload(payload.timeText || '00:00');
@@ -28622,7 +28877,8 @@ window.__setTomatoFloatState = function (payload) {
         const initTime = (timerMode === 'stopwatch' || timerMode === 'stopwatch-break')
             ? formatTime(elapsedSeconds + (timerMode === 'stopwatch' ? (stopwatchDisplayOffset || 0) : 0))
             : formatTime(remainingSeconds);
-        if (iconEl) iconEl.textContent = initPrefix;
+        const initIconName = getTimerDisplayModel().iconName;
+        setTimerUiIcon(iconEl, initIconName, initIconName ? '' : initPrefix);
         if (timeEl) timeEl.textContent = initTime;
         floatBar.appendChild(timerDisplay);
         container = timerDisplay;
@@ -28650,9 +28906,8 @@ window.__setTomatoFloatState = function (payload) {
             padding: 0;
             line-height: 1;
         `;
-        ctrlBtn.innerHTML = isRunning ? '⏸' : '▶';
+        setTimerToggleIcon(ctrlBtn, isRunning, isTimerPaused);
         ctrlBtn.setAttribute('data-tomato-role', 'toggle');
-        ctrlBtn.title = isRunning ? '暂停' : '开始';
         ctrlBtn.onclick = async (e) => {
             e.stopPropagation();
             if (isRunning) {
@@ -28868,13 +29123,7 @@ window.__setTomatoFloatState = function (payload) {
 
             // 如果菜单已经打开，再次触摸则关闭菜单并重置状态
             if (isContextMenuOpen) {
-                const existingMenu = document.getElementById('tomy-tomato-context-menu');
-                if (existingMenu) {
-                    existingMenu.style.opacity = '0';
-                    setTimeout(() => {
-                        existingMenu.remove();
-                    }, 100);
-                }
+                closeTimerContextMenu();
                 // 立即重置状态，确保可以继续操作
                 isContextMenuOpen = false;
                 // 清除长按定时器
@@ -29774,7 +30023,7 @@ window.__setTomatoFloatState = function (payload) {
         // 任务块关联图标（默认隐藏）
         const taskBlockIcon = document.createElement('span');
         taskBlockIcon.id = 'tomy-task-block-icon';
-        taskBlockIcon.innerHTML = '📋️';
+        setTimerUiIcon(taskBlockIcon, 'association');
         taskBlockIcon.style.cssText = `
             cursor: pointer;
             font-size: 14px;
@@ -29935,7 +30184,7 @@ window.__setTomatoFloatState = function (payload) {
         }
 
         controlButton = document.createElement('button');
-        controlButton.innerHTML = '▶️';
+        setTimerToggleIcon(controlButton, false, isTimerPaused);
         controlButton.setAttribute('data-tomato-role', 'toggle');
         controlButton.style.cssText = `
             width: 24px; height: 24px; padding: 0; margin: 0; border: none !important;
@@ -29979,7 +30228,8 @@ window.__setTomatoFloatState = function (payload) {
         });
 
         EventManager.add(container, 'contextmenu', (e) => {
-            if (isRightClick) e.preventDefault();
+            e.preventDefault();
+            e.stopPropagation();
         });
 
         container.appendChild(timeDisplay);
@@ -30002,7 +30252,7 @@ window.__setTomatoFloatState = function (payload) {
             // 使用 data-block-id 属性存储块ID，和历史记录完全一致
             taskName.setAttribute('data-block-id', blockId);
             taskName.className = 'tomato-task-link'; // 使用和历史记录相同的类名
-            taskName.textContent = '📋️ ' + blockName;
+            setTimerUiIcon(taskName, 'association', blockName);
             taskName.title = '点击跳转到任务块位置';
 
             // 添加悬浮效果样式
@@ -30066,7 +30316,7 @@ window.__setTomatoFloatState = function (payload) {
         if (icon) {
             if (currentTaskBlockId) {
                 // 有任务关联时显示图标
-                icon.style.display = 'inline';
+                icon.style.display = 'inline-flex';
             } else {
                 // 清除关联时隐藏图标并确保从DOM中移除可能的残留
                 icon.style.display = 'none';
@@ -33397,6 +33647,7 @@ window.__setTomatoFloatState = function (payload) {
     }
 
     function createNativeTomatoMenuItems(block) {
+        ensureTimerUiIconStyles();
         const blockInfo = getBlockInfoFromElement(block);
         if (!blockInfo?.id) return [];
         const start = (duration, mode) => async () => {
@@ -33405,14 +33656,14 @@ window.__setTomatoFloatState = function (payload) {
         };
         const items = getTomatoDurations().map((minutes) => ({
             id: `tomatoTimer${minutes}`,
-            icon: 'iconClock',
-            label: `🍅 ${minutes}分钟`,
+            iconHTML: getTimerUiIconSvg('tomato'),
+            label: `${minutes}分钟`,
             click: start(minutes, 'countdown'),
         }));
         items.push({
             id: 'tomatoTimerStopwatch',
-            icon: 'iconClock',
-            label: '⏱️ 专注正计时',
+            iconHTML: getTimerUiIconSvg('timer'),
+            label: '专注正计时',
             click: start(null, 'stopwatch'),
         });
         items.push({type: 'separator'});
@@ -33457,8 +33708,8 @@ window.__setTomatoFloatState = function (payload) {
         if (!items.length) return;
         menu.addItem({
             id: 'tomatoTimer',
-            icon: 'iconClock',
-            label: '🍅 番茄钟',
+            iconHTML: getTimerUiIconSvg('tomato'),
+            label: '番茄钟',
             type: 'submenu',
             submenu: items,
         });
@@ -34542,15 +34793,17 @@ window.__setTomatoFloatState = function (payload) {
         return [...new Set([AUDIO_STORAGE_PATH, NEW_AUDIO_STORAGE_PATH, LEGACY_AUDIO_STORAGE_PATH])];
     }
 
-    async function readAudioFileFromStorage(filename) {
+    async function readAudioFileFromStorage(filename, signal) {
         let response = null;
         for (const directory of getAudioStorageDirectories()) {
             response = await fetch('/api/file/getFile', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: directory + filename })
+                body: JSON.stringify({ path: directory + filename }),
+                signal
             });
-            if (response.ok) return response;
+            // getFile 使用 HTTP 202 返回 JSON 错误，不能交给音频解码器或提前结束目录回退。
+            if (response.ok && response.status !== 202) return response;
         }
         return response;
     }
@@ -34572,14 +34825,23 @@ window.__setTomatoFloatState = function (payload) {
         const cleanFilename = String(filename || '').trim();
         if (!cleanFilename) return { audio: null, objectUrl: null };
 
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        let timeoutId;
         try {
-            const fileResponse = await readAudioFileFromStorage(cleanFilename);
-            if (!fileResponse.ok) {
-                Logger.warn(`🍅 无法读取${label}文件:`, cleanFilename);
-                return { audio: null, objectUrl: null };
-            }
-
-            const blob = await fileResponse.blob();
+            // 同时限制响应和文件体读取，避免切歌时永久停在没有当前音频的状态。
+            const blob = await Promise.race([
+                (async () => {
+                    const fileResponse = await readAudioFileFromStorage(cleanFilename, controller?.signal);
+                    if (!fileResponse?.ok || fileResponse.status === 202) throw new Error(`无法读取音频文件: ${cleanFilename}`);
+                    return await fileResponse.blob();
+                })(),
+                new Promise((resolve, reject) => {
+                    timeoutId = setTimeout(() => {
+                        reject(new Error(`读取音频文件超时: ${cleanFilename}`));
+                        controller?.abort();
+                    }, 15000);
+                })
+            ]);
             const objectUrl = URL.createObjectURL(blob);
             const audio = new Audio(objectUrl);
             audio.loop = options.loop === true;
@@ -34591,6 +34853,8 @@ window.__setTomatoFloatState = function (payload) {
         } catch (e) {
             Logger.warn(`⚠️ 无法加载${label}:`, e);
             return { audio: null, objectUrl: null };
+        } finally {
+            clearTimeout(timeoutId);
         }
     }
 
@@ -34728,11 +34992,16 @@ window.__setTomatoFloatState = function (payload) {
             try { currentBackgroundAudio.currentTime = 0; } catch (e) {}
         }
 
+        const playbackGeneration = backgroundAudioPlaybackGeneration;
+        if (audio._tomatoPlayPending && audio._tomatoPlaybackGeneration === playbackGeneration) return;
+        if (currentBackgroundAudio !== audio || audio._tomatoPlaybackGeneration !== playbackGeneration) {
+            audio._tomatoLastProgressTime = audio.currentTime;
+            audio._tomatoLastProgressAt = Date.now();
+        }
         currentBackgroundAudio = audio;
         audio.loop = isBreakAudioMode() || audioSettings.workBackgroundPlayMode === 'single';
         audio.volume = clampAudioVolume(audioSettings.backgroundVolume, 0.35);
         audio._tomatoBackgroundBlocked = false;
-        const playbackGeneration = backgroundAudioPlaybackGeneration;
         audio._tomatoPlaybackGeneration = playbackGeneration;
 
         let playPromise;
@@ -34777,16 +35046,23 @@ window.__setTomatoFloatState = function (payload) {
         if (!isRunning || isTimerPaused) return;
         const audio = currentBackgroundAudio;
         if (!audio || !audio.src
-            || audio._tomatoBackgroundFailed || audio._tomatoBackgroundBlocked || audio._tomatoPlayPending) return;
-        if (!audio.paused && !audio.ended) return;
+            || audio._tomatoBackgroundFailed || audio._tomatoBackgroundBlocked) return;
         const settings = ensureAudioSettingsDefaults();
         if (!settings.backgroundEnabled || settings.backgroundMuted || audio !== getBackgroundAudioForCurrentMode()) return;
+        if (audio._tomatoLastProgressTime !== audio.currentTime) {
+            audio._tomatoLastProgressTime = audio.currentTime;
+            audio._tomatoLastProgressAt = now;
+        }
+        const stalled = now - audio._tomatoLastProgressAt >= 15000;
+        if (!audio.ended && (audio._tomatoPlayPending ? !stalled : !audio.paused && !stalled)) return;
         if (now - (recoverBackgroundAudioIfNeeded._lastAttemptAt || 0) < 5000) return;
         recoverBackgroundAudioIfNeeded._lastAttemptAt = now;
-        Logger.info('🍅 恢复意外中断的背景音:', { ended: audio.ended, currentTime: audio.currentTime });
+        Logger.info('🍅 恢复意外中断的背景音:', { ended: audio.ended, currentTime: audio.currentTime, stalled });
         if (audio.ended && !isBreakAudioMode() && settings.workBackgroundPlayMode === 'sequence') {
             workBackgroundAudioFailureCount = 0;
             await nextWorkBackgroundSound(true);
+        } else if (stalled && !audio.ended && (!audio.paused || audio._tomatoPlayPending) && !isBreakAudioMode()) {
+            await handleWorkBackgroundAudioFailure(audio, new Error('背景音播放超时'));
         } else {
             await playBackgroundAudioForCurrentMode();
         }
@@ -34798,6 +35074,7 @@ window.__setTomatoFloatState = function (payload) {
         const breakBackgroundPath = audioSettings.breakBackgroundSound;
 
         const initGeneration = ++backgroundAudioInitGeneration;
+        let workLoadFailed = false;
         const needsWork = type !== 'break' && (workBackgroundAudioFilename !== workBackgroundPath
             || (!!workBackgroundPath && !workBackgroundAudio) || workBackgroundAudio?._tomatoBackgroundFailed);
         const needsBreak = type !== 'work' && (breakBackgroundAudioFilename !== breakBackgroundPath
@@ -34821,22 +35098,36 @@ window.__setTomatoFloatState = function (payload) {
                 return;
             }
             if (currentBackgroundAudio === workBackgroundAudio) currentBackgroundAudio = null;
-            releaseAudio(workBackgroundAudio, workBackgroundAudioObjectUrl);
-            workBackgroundAudio = loadedWork.audio;
+            // 思源要求每个媒体元素取得用户手势许可；切歌保留已解锁元素，替换音源。
+            if (workBackgroundAudio && loadedWork.audio) {
+                workBackgroundAudio.src = loadedWork.audio.src;
+                releaseAudio(loadedWork.audio, workBackgroundAudioObjectUrl);
+            } else if (loadedWork.audio) {
+                workBackgroundAudio = loadedWork.audio;
+            } else {
+                releaseAudio(workBackgroundAudio, workBackgroundAudioObjectUrl);
+            }
+            workLoadFailed = !loadedWork.audio;
             workBackgroundAudioObjectUrl = loadedWork.objectUrl;
             workBackgroundAudioFilename = workBackgroundPath;
             if (workBackgroundAudio) {
                 const audio = workBackgroundAudio;
-                audio.addEventListener('ended', () => {
-                    const settings = ensureAudioSettingsDefaults();
-                    if (audio !== currentBackgroundAudio || isBreakAudioMode() || !isRunning || isTimerPaused
-                        || !settings.backgroundEnabled || settings.backgroundMuted || settings.workBackgroundPlayMode !== 'sequence') return;
-                    workBackgroundAudioFailureCount = 0;
-                    nextWorkBackgroundSound(true).catch(error => Logger.warn('切换下一首背景音失败:', error));
-                });
-                audio.addEventListener('error', () => {
-                    handleWorkBackgroundAudioFailure(audio, audio.error).catch(error => Logger.warn('跳过背景音失败:', error));
-                });
+                audio._tomatoBackgroundFailed = workLoadFailed;
+                audio._tomatoBackgroundBlocked = false;
+                if (!audio._tomatoWorkBackgroundBound) {
+                    audio._tomatoWorkBackgroundBound = true;
+                    audio.addEventListener('ended', () => {
+                        const settings = ensureAudioSettingsDefaults();
+                        if (!audio.ended || audio !== currentBackgroundAudio || isBreakAudioMode() || !isRunning || isTimerPaused
+                            || !settings.backgroundEnabled || settings.backgroundMuted || settings.workBackgroundPlayMode !== 'sequence') return;
+                        workBackgroundAudioFailureCount = 0;
+                        nextWorkBackgroundSound(true).catch(error => Logger.warn('切换下一首背景音失败:', error));
+                    });
+                    audio.addEventListener('error', () => {
+                        if (!audio.error) return;
+                        handleWorkBackgroundAudioFailure(audio, audio.error).catch(error => Logger.warn('跳过背景音失败:', error));
+                    });
+                }
             }
         }
 
@@ -34866,7 +35157,8 @@ window.__setTomatoFloatState = function (payload) {
 
         if (workBackgroundAudio) workBackgroundAudio.loop = audioSettings.workBackgroundPlayMode === 'single';
         updateBackgroundAudioVolume();
-        await syncBackgroundAudioWithTimerState();
+        if (workLoadFailed && !isBreakAudioMode()) await handleWorkBackgroundAudioFailure(null);
+        else await syncBackgroundAudioWithTimerState();
     }
 
     async function playBackgroundAudioPreview(type, requestedFilename = null) {
@@ -38761,7 +39053,7 @@ window.__setTomatoFloatState = function (payload) {
 
                     if (timeDisplay) updateDisplay(true);
                     if (controlButton) {
-                        controlButton.innerHTML = isRunning ? '⏸️' : '▶️';
+                        setTimerToggleIcon(controlButton, isRunning, isTimerPaused);
                     }
 
                     if (isRunning && !timerId) {
@@ -38816,7 +39108,7 @@ window.__setTomatoFloatState = function (payload) {
                         // 重启本地计时器
                         isRunning = true;
                         isTimerPaused = false;
-                        if (controlButton) controlButton.innerHTML = '⏸️';
+                        if (controlButton) setTimerToggleIcon(controlButton, true);
                         if (timeDisplay) updateDisplay(true);
                         updateRoutineButtonRunningHighlight(true);
 
@@ -38897,7 +39189,7 @@ window.__setTomatoFloatState = function (payload) {
                         pausedRemainingSeconds = remainingSeconds;
                     }
 
-                    if (controlButton) controlButton.innerHTML = '▶️';
+                    if (controlButton) setTimerToggleIcon(controlButton, false, isTimerPaused);
                     if (timeDisplay) updateDisplay(true);
                     updateRoutineButtonRunningHighlight(true);
 
@@ -38955,7 +39247,7 @@ window.__setTomatoFloatState = function (payload) {
                     }
 
                     // 更新UI
-                    if (controlButton) controlButton.innerHTML = '▶️';
+                    if (controlButton) setTimerToggleIcon(controlButton, false, isTimerPaused);
                     if (timeDisplay) updateDisplay();
                     syncActiveRoutineButtonFromState(newState);
                     updateRoutineButtonRunningHighlight(true);
@@ -38976,7 +39268,7 @@ window.__setTomatoFloatState = function (payload) {
                     applyAcceptedSyncStateToTimer(newState);
                     pausedRemainingSeconds = null;
 
-                    if (controlButton) controlButton.innerHTML = '⏸️';
+                    if (controlButton) setTimerToggleIcon(controlButton, true);
                     if (timeDisplay) updateDisplay(true);
                     updateRoutineButtonRunningHighlight(true);
 
@@ -39005,7 +39297,7 @@ window.__setTomatoFloatState = function (payload) {
                 if (remainingSeconds !== previousRemainingSeconds || timerMode !== previousMode) {
                     if (timeDisplay) updateDisplay(true);
                     if (controlButton) {
-                        controlButton.innerHTML = isRunning ? '⏸️' : '▶️';
+                        setTimerToggleIcon(controlButton, isRunning, isTimerPaused);
                     }
                 }
 
@@ -39062,7 +39354,7 @@ window.__setTomatoFloatState = function (payload) {
                     timerId = null;
                 }
                 if (timeDisplay) updateDisplay(true);
-                if (controlButton) controlButton.innerHTML = isRunning ? '⏸️' : '▶️';
+                if (controlButton) setTimerToggleIcon(controlButton, isRunning, isTimerPaused);
             } else {
                 Logger.info('🔄 SyncManager: 云端无有效状态或状态为空闲');
             }
@@ -39510,6 +39802,7 @@ window.__setTomatoFloatState = function (payload) {
 
     const cleanupTomato = () => {
         __tomatoDestroyed = true;
+        timerNativeIconCache.clear();
         try { refreshDockTomatoFocusAPI(); } catch (e) {}
         try { invalidateHistoryStoreCache(); } catch (e) {}
         try {
@@ -39609,7 +39902,9 @@ window.__setTomatoFloatState = function (payload) {
         try { document.getElementById('tomato-settings-backdrop')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-settings-dialog')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-breadcrumb-btn')?.remove(); } catch (e) {}
-        try { document.getElementById('tomy-tomato-context-menu')?.remove(); } catch (e) {}
+        try { closeTimerContextMenu(); } catch (e) {}
+        try { closeBackgroundPlaylistDialog(); } catch (e) {}
+        try { document.getElementById('tomato-timer-surface-style')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-task-submenu')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-db-submenu')?.remove(); } catch (e) {}
         try { removeNativePluginMenuFeature(); } catch (e) {}
@@ -39619,6 +39914,7 @@ window.__setTomatoFloatState = function (payload) {
         try { document.getElementById('tomy-tomato-history-dialog')?.remove(); } catch (e) {}
         try { document.getElementById('tomy-tomato-history-backdrop')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-float-bar-style')?.remove(); } catch (e) {}
+        try { document.getElementById('tomato-ui-icon-styles')?.remove(); } catch (e) {}
         try { progressBar?.remove(); } catch (e) {}
         try { progressIndicator?.remove(); } catch (e) {}
         try { stopTimelineLoop(); } catch (e) {}
