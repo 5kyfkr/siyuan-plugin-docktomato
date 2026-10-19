@@ -62,7 +62,7 @@ const subscriptionEnd = source.indexOf('\n    const __getLastDueReminderDateTime
 assert.ok(subscriptionStart >= 0 && subscriptionEnd > subscriptionStart, 'subscription occurrence adapter must remain extractable');
 const subscriptionBlock = source.slice(subscriptionStart, subscriptionEnd);
 assert.match(subscriptionBlock, /queryAllReminderBlocks\(false,\s*\{[\s\S]*?throwOnError:\s*true,[\s\S]*?excludeCompletedTaskBlocks:\s*true,[\s\S]*?limit:\s*20000/, 'subscription reads must fail closed, exclude completed task blocks, and avoid the short UI query');
-assert.match(subscriptionBlock, /getNextReminderDateTime\(reminder, cursor\)/, 'subscription projection must reuse authoritative reminder recurrence logic');
+assert.match(subscriptionBlock, /getNextReminderDateTime\(subscriptionReminder, cursor\)/, 'subscription projection must reuse authoritative recurrence while retaining check-in history');
 assert.match(subscriptionBlock, /stableIdentity/, 'follow-task current occurrences must expose a stable ICS identity');
 assert.match(subscriptionBlock, /truncated:\s*true/, 'subscription projection must report truncation instead of silently dropping instances');
 assert.match(source, /tomato-reminder-updated/, 'reminder writes must notify the calendar subscription publisher');

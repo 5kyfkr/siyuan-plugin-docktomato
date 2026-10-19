@@ -110,5 +110,40 @@ vm.runInContext(arrow('__setFollowTaskReminderCheckin') + arrow('__markReminderO
     assert.equal(await context.api.mark('habit', '2026-09-28', '09:00'), false);
     bridgeReady = true; failSave = true;
     assert.equal(await context.api.undo('habit', '2026-09-28', '09:00'), false, 'failed check-in writes must not report success');
-    console.log('check-in reminder schedule, daily projection, completion and historical undo tests passed');
+    // ICS uses the same recurrence resolver, but must not prefill future habits.
+    let subscriptionToday = '2026-09-30T12:00:00';
+    class SubscriptionClock extends Date {
+        constructor(...args) { super(...(args.length ? args : [subscriptionToday])); }
+        static [Symbol.hasInstance](value) { return value instanceof Date; }
+    }
+    const habit = { ...reminder, times: ['09:00', '18:00'], completedOccurrences: [], taskRepeatState: { checkinHistory: [] } };
+    const ordinary = { ...habit, blockId: 'ordinary', repeatMode: 'manual', interval: 'daily', startDate: '2026-09-28', times: ['09:00'], taskRepeatRule: null };
+    Object.assign(context, { Date: SubscriptionClock, queryAllReminderBlocks: async () => [habit, ordinary] });
+    vm.runInContext(between('    const __listReminderOccurrencesForSubscription =', '    const __getLastDueReminderDateTime') + '\nthis.api.list = __listReminderOccurrencesForSubscription;', context);
+    const period = { startAt: new Date('2026-09-28T00:00:00').getTime(), endAt: new Date('2026-10-05T00:00:00').getTime(), limit: 100 };
+    let subscription = await context.api.list(period);
+    assert.deepEqual(Array.from(subscription.occurrences.filter(item => item.blockId === 'habit'), item => dateKey(new Date(item.startAt))), ['2026-09-28', '2026-09-28', '2026-09-30', '2026-09-30']);
+    assert.ok(subscription.occurrences.some(item => item.blockId === 'ordinary' && dateKey(new Date(item.startAt)) === '2026-10-02'), 'ordinary future reminders stay subscribed');
+    assert.equal(subscription.truncated, false);
+    habit.taskRepeatState.checkinHistory.push({ scheduledDate: '2026-09-30', checkedAt: '2026-09-30T10:00:00' });
+    subscription = await context.api.list(period);
+    assert.equal(subscription.occurrences.filter(item => item.blockId === 'habit').length, 4, 'checking today retains both reminder times for calendar history');
+    assert.equal(subscription.occurrences.filter(item => item.blockId === 'habit' && item.completed === true).length, 2);
+    assert.equal(nextKey(habit, '2026-09-30T08:00:00'), '2026-10-02', 'actual reminders still skip checked days');
+    habit.taskRepeatState.checkinHistory.push({ scheduledDate: '2026-09-29', checkedAt: '2026-09-29T10:00:00' });
+    const savedHistory = JSON.stringify(habit.taskRepeatState);
+    subscription = await context.api.list(period);
+    assert.equal(subscription.occurrences.filter(item => item.blockId === 'habit').length, 6, 'extra check-ins outside the current weekday plan retain their history');
+    assert.equal(subscription.occurrences.filter(item => item.blockId === 'habit' && item.completed === true).length, 4);
+    assert.equal(JSON.stringify(habit.taskRepeatState), savedHistory, 'export never clears the live completion history');
+    habit.taskRepeatState.checkinHistory = [];
+    subscription = await context.api.list(period);
+    assert.equal(subscription.occurrences.filter(item => item.completed === true).length, 0, 'undo clears the exported completion status');
+    subscriptionToday = '2026-10-02T12:00:00';
+    subscription = await context.api.list(period);
+    assert.ok(subscription.occurrences.some(item => item.blockId === 'habit' && dateKey(new Date(item.startAt)) === '2026-10-02'), 'a planned day appears when its local date arrives');
+    habit.taskRepeatRule = { ...habit.taskRepeatRule, maxOccurrences: 1 };
+    subscription = await context.api.list(period);
+    assert.equal(subscription.occurrences.filter(item => item.blockId === 'habit').length, 2, 'occurrence limits still apply');
+    console.log('check-in reminder schedule, completion, undo and ICS date visibility tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

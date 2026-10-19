@@ -44408,26 +44408,53 @@ window.__setTomatoFloatState = function (payload) {
         if (!Number.isFinite(startAt) || !Number.isFinite(endAt) || endAt <= startAt) {
             throw new Error('提醒订阅时间范围无效');
         }
+        const docIds = Array.isArray(options.docIds) ? Array.from(new Set(options.docIds.map(id => String(id || '').trim()).filter(Boolean))) : null;
+        const docIdSet = docIds ? new Set(docIds) : null;
+        if (docIds && !docIds.length) return { occurrences: [], truncated: false };
         const reminders = await queryAllReminderBlocks(false, {
             throwOnError: true,
             excludeCompletedTaskBlocks: true,
             limit: 20000,
+            ...(docIds ? { docIds } : {}),
         });
         const occurrences = [];
         const seen = new Set();
+        const endOfToday = new Date();
+        endOfToday.setHours(24, 0, 0, 0);
         for (const reminder of reminders) {
             if (!reminder?.enabled) continue;
+            const docId = String(reminder.rootId || '').trim();
+            if (docIdSet && !docIdSet.has(docId)) continue;
             const followRule = __parseReminderTaskRepeatRule(reminder?.taskRepeatRule);
+            const checkin = __getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK
+                && followRule?.enabled === true && followRule.trigger === 'checkin';
+            const occurrenceEndAt = checkin ? Math.min(endAt, endOfToday.getTime()) : endAt;
+            const checkedOccurrences = checkin ? __getReminderCompletedSet(reminder) : null;
+            // Subscription history includes checked days. Keep the live reminder
+            // unchanged so completed days still suppress actual notifications.
+            const subscriptionReminder = checkin
+                ? { ...reminder, taskRepeatState: { ...reminder.taskRepeatState, checkinHistory: [] } }
+                : reminder;
+            const excluded = checkin ? __getReminderExcludedSet(reminder) : null;
+            const checkedDates = checkin ? __getReminderCompletedOccurrences(reminder)
+                .filter(entry => !excluded.has(__reminderOccurrenceKey(entry.date, entry.time)))
+                .map(entry => new Date(`${entry.date}T${entry.time}:00`))
+                .filter(date => Number.isFinite(date.getTime()) && date.getTime() >= startAt && date.getTime() < occurrenceEndAt)
+                .sort((left, right) => left.getTime() - right.getTime()) : [];
+            let checkedIndex = 0;
             const stableIdentity = __getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK
                 && (followRule?.type === 'fsrs' || (!followRule?.enabled && __normalizeReminderInterval(reminder?.interval || 'once') === 'once'))
                 ? 'follow-current'
                 : '';
             let cursor = new Date(startAt - 1);
             while (occurrences.length <= limit) {
-                const occurrence = getNextReminderDateTime(reminder, cursor);
+                let occurrence = getNextReminderDateTime(subscriptionReminder, cursor);
+                while (checkedIndex < checkedDates.length && checkedDates[checkedIndex].getTime() <= cursor.getTime()) checkedIndex++;
+                const checkedDate = checkedDates[checkedIndex];
+                if (checkedDate && (!(occurrence instanceof Date) || !Number.isFinite(occurrence.getTime()) || checkedDate < occurrence)) occurrence = checkedDate;
                 if (!(occurrence instanceof Date) || Number.isNaN(occurrence.getTime())) break;
                 const occurrenceAt = occurrence.getTime();
-                if (occurrenceAt >= endAt) break;
+                if (occurrenceAt >= occurrenceEndAt) break;
                 const dateKey = formatDateKey(occurrence);
                 const timeKey = `${String(occurrence.getHours()).padStart(2, '0')}:${String(occurrence.getMinutes()).padStart(2, '0')}`;
                 const blockId = String(reminder.blockId || '').trim();
@@ -44439,8 +44466,10 @@ window.__setTomatoFloatState = function (payload) {
                         occurrenceKey,
                         stableIdentity,
                         blockId,
+                        docId,
                         title: String(reminder.blockName || reminder.blockContent || '').trim() || '任务提醒',
                         startAt: occurrenceAt,
+                        ...(checkin ? { checkin: true, completed: checkedOccurrences.has(occurrenceKey) } : {}),
                     });
                     if (occurrences.length > limit) {
                         return { occurrences: occurrences.slice(0, limit), truncated: true };
@@ -45056,6 +45085,7 @@ window.__setTomatoFloatState = function (payload) {
             setOccurrenceDone: true,
             taskContextChanged: true,
             listOccurrences: true,
+            documentScope: true,
         }),
         showDialog: (blockId, blockName, options = {}) => {
             const dialogOptions = (options && typeof options === 'object') ? options : {};
@@ -45731,6 +45761,9 @@ window.__setTomatoFloatState = function (payload) {
         const throwOnError = queryOptions.throwOnError === true;
         const excludeCompletedTaskBlocks = queryOptions.excludeCompletedTaskBlocks === true;
         const queryLimit = Math.max(1, Math.min(20000, Number.parseInt(queryOptions.limit, 10) || 200));
+        const scopeDocIds = Array.isArray(queryOptions.docIds) ? queryOptions.docIds.map(id => String(id || '').trim()).filter(Boolean) : null;
+        if (scopeDocIds && !scopeDocIds.length) return [];
+        const documentScopeSql = scopeDocIds ? `AND b.root_id IN (${scopeDocIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})` : '';
         try {
             // 主动触发同步并等待，确保读取到云端最新数据
             if (forceRefresh && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
@@ -45759,6 +45792,7 @@ window.__setTomatoFloatState = function (payload) {
                 WHERE a.name = 'custom-tomato-reminder'
                 AND a.value != ''
                 AND b.type IN ('p', 'h', 'i', 'l', 'c')
+                ${documentScopeSql}
                 ORDER BY b.updated DESC
                 LIMIT ${queryLimit + 1}
             `;
