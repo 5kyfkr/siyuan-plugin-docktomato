@@ -7803,6 +7803,8 @@
                     completeBtn.setAttribute('aria-busy', 'true');
                     const ok = await __markReminderOccurrenceCompleted(entry.blockId, entry.dateKey, entry.timeKey, {
                         source: 'docktomato-expired-notification',
+                        taskOccurrenceId: __getReminderRepeatMode(entry.reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK ? __getFollowTaskOccurrenceId(entry.reminder) : '',
+                        scheduleSignature: __getReminderScheduleSignature(entry.reminder),
                         occurrenceNumber: entry.reminder?.trigger === 'complete' ? __normalizeReminderTaskRepeatState(entry.reminder.repeatState).occurrenceCount : null,
                     });
                     if (!ok) {
@@ -11034,7 +11036,7 @@
         document.head.appendChild(style);
     }
 
-    function showToastDialog(title, message, type = 'info', taskBlockId = null, taskBlockName = null, reminderDateKey = null, reminderTimeKey = null, reminderOccurrenceNumber = null) {
+    function showToastDialog(title, message, type = 'info', taskBlockId = null, taskBlockName = null, reminderDateKey = null, reminderTimeKey = null, reminderOccurrenceNumber = null, reminderContext = null) {
         ensureTomatoDialogActionStyles();
         const isTimerEndDialog = type === 'tomato-end' || type === 'break-end';
         if (isTimerEndDialog) {
@@ -11234,7 +11236,7 @@
                     closeDialog();
                     return;
                 }
-                const ok = await __markReminderOccurrenceCompleted(blockId, dateKey, timeKey, { occurrenceNumber: reminderOccurrenceNumber });
+                const ok = await __markReminderOccurrenceCompleted(blockId, dateKey, timeKey, { occurrenceNumber: reminderOccurrenceNumber, taskOccurrenceId: reminderContext?.taskOccurrenceId, scheduleSignature: reminderContext?.scheduleSignature });
                 showMiniToast(ok ? '已标记完成' : '标记失败');
                 closeDialog();
             };
@@ -20494,6 +20496,10 @@
     async function stopAssociatedTaskAfterDone(blockId, options = {}) {
         const id = String(blockId || '').trim();
         const opts = (options && typeof options === 'object') ? options : {};
+        const sessionId = String(syncState?.activeTimer?.sessionId || '');
+        if (Object.prototype.hasOwnProperty.call(opts, 'expectedSessionId') && String(opts.expectedSessionId || '') !== sessionId) {
+            return { matched: false, stopped: false, associationCleared: false, reason: 'stale-session' };
+        }
         const effectiveAssociation = getEffectiveTaskAssociation(syncState) || null;
         const associationMatches = effectiveAssociation
             ? [effectiveAssociation.taskBlockId, effectiveAssociation.databaseBlockId].some(value => String(value || '').trim() === id)
@@ -40398,7 +40404,7 @@ window.__setTomatoFloatState = function (payload) {
         const guardLimit = Math.min(130000, Math.max(800, (every + 2) * 34 + 400));
         for (let i = 0; i < guardLimit; i += 1) {
             const info = __getReminderLunarDateInfo(cursor);
-            if (info && info.day === anchorInfo.day && info.isLeap === anchorInfo.isLeap) {
+            if (info && info.day === anchorInfo.day && (!info.isLeap || anchorInfo.isLeap)) {
                 const diffMonths = __getReminderLunarMonthIndex(info) - anchorIndex;
                 if (diffMonths >= 0 && diffMonths % every === 0) return new Date(cursor.getTime());
             }
@@ -40543,6 +40549,8 @@ window.__setTomatoFloatState = function (payload) {
             }, new Map());
         return {
             occurrenceCount: Math.max(1, parseInt(raw.occurrenceCount, 10) || 1),
+            ...(raw.occurrenceId ? { occurrenceId: String(raw.occurrenceId) } : {}),
+            ...(raw.lastCompletionId ? { lastCompletionId: String(raw.lastCompletionId) } : {}),
             lastCompletedAt: String(raw.lastCompletedAt || '').trim(),
             lastAdvancedAt: String(raw.lastAdvancedAt || '').trim(),
             lastInstanceStart: __normalizeReminderDateKey(raw.lastInstanceStart || ''),
@@ -40567,6 +40575,8 @@ window.__setTomatoFloatState = function (payload) {
             timeKey,
             taskId: String(raw.taskId || '').trim(),
             completedAt: String(raw.completedAt || '').trim(),
+            completionId: String(raw.completionId || ''),
+            taskOccurrenceId: String(raw.taskOccurrenceId || ''),
         };
     };
 
@@ -40802,6 +40812,14 @@ window.__setTomatoFloatState = function (payload) {
         return history.flatMap(entry => times.map(time => ({ date: entry.scheduledDate, time, doneAt: entry.checkedAt })));
     };
 
+    const __getFollowTaskOccurrenceId = (reminder) => {
+        const repeatState = __normalizeReminderTaskRepeatState(reminder?.taskRepeatState);
+        return repeatState.occurrenceId || 'legacy-' + encodeURIComponent(JSON.stringify([
+            String(reminder?.taskId || reminder?.blockId || ''), repeatState.occurrenceCount,
+            repeatState.lastAdvancedAt, repeatState.lastCompletedAt, reminder?.taskRepeatRule?.anchorDate || '',
+        ]));
+    };
+
     const __getReminderCompletedSet = (reminder) => {
         const set = new Set();
         try {
@@ -40809,6 +40827,10 @@ window.__setTomatoFloatState = function (payload) {
             if (Array.isArray(arr)) {
                 for (const it of arr) {
                     if (!it) continue;
+                    if (it.taskOccurrenceId && __getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK
+                        && it.taskOccurrenceId !== __getFollowTaskOccurrenceId(reminder)) continue;
+                    if (!it.taskOccurrenceId && reminder.taskRepeatState?.occurrenceId && reminder.taskRepeatRule?.enabled
+                        && __getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK) continue;
                     if (reminder?.trigger === 'complete' && it.occurrenceNumber && it.date === __getReminderCompletionDateKey(reminder)
                         && Number(it.occurrenceNumber) !== Math.max(1, Number(reminder.repeatState?.occurrenceCount) || 1)) continue;
                     if (typeof it === 'string') {
@@ -42122,7 +42144,52 @@ window.__setTomatoFloatState = function (payload) {
         }
     };
 
+    const __completeFollowReminderThroughTask = async (blockId, reminder, dateKey, timeKey, options = {}) => {
+        const bridge = getTaskHorizonSharedApi()?.reminderBridge;
+        if (bridge?.capabilities?.completionReceipt !== true) return false;
+        if (options.scheduleSignature && options.scheduleSignature !== __getReminderScheduleSignature(reminder)
+            && (!options.taskOccurrenceId || options.taskOccurrenceId === __getFollowTaskOccurrenceId(reminder))) return false;
+        const taskOccurrenceId = options.taskOccurrenceId || __getFollowTaskOccurrenceId(reminder);
+        const occurrenceKey = __reminderOccurrenceKey(dateKey, timeKey);
+        const operationId = options.operationId || 'reminder-' + String(reminder.taskId || blockId) + '-' + encodeURIComponent(taskOccurrenceId + '|' + occurrenceKey);
+        let response;
+        try {
+            response = await bridge.completeFromReminder({
+                taskId: reminder.taskId || blockId, blockId, reminder, taskOccurrenceId,
+                operationId, occurrenceKey, dateKey, timeKey, completedAt: new Date().toISOString(),
+                source: options.source || 'docktomato-reminder-complete',
+            });
+        } catch (e) { return false; }
+        if (!response?.ok || !response.completion) return false;
+        const completion = response.completion;
+        return __withReminderOccurrenceMutation(blockId, async () => {
+            const latest = await getBlockReminder(blockId);
+            if (!latest) return false;
+            const times = Array.from(new Set((reminder.times || [timeKey]).map(value => __parseTime(value)?.key).filter(Boolean)));
+            const existing = latest.completedOccurrences || [];
+            const completed = existing.filter(entry => !(entry.taskOccurrenceId === taskOccurrenceId && entry.date === dateKey && times.includes(entry.time)));
+            completed.unshift(...times.map(time => ({ date: dateKey, time, doneAt: completion.completedAt,
+                taskOccurrenceId, completionId: completion.completionId || '', operationId: completion.operationId })));
+            const saved = await saveBlockReminder(blockId, {
+                ...latest, completedOccurrences: completed.slice(0, Math.max(30, times.length * 2)),
+                taskCompletionOwner: {
+                    occurrenceKey, dateKey, timeKey, taskId: completion.taskId || reminder.taskId || blockId,
+                    taskOccurrenceId, completionId: completion.completionId || '', completedAt: completion.completedAt,
+                },
+            });
+            if (!saved) return false;
+            try { await __syncReminderDeviceSchedule(blockId, await getBlockReminder(blockId), { silent: true }); } catch (e) {}
+            return true;
+        });
+    };
+
     const __markReminderOccurrenceCompleted = async (blockId, dateKey, timeKey, options = {}) => {
+        if (options.skipTaskSync !== true && typeof getTaskHorizonSharedApi === 'function') {
+            const reminder = await getBlockReminder(blockId);
+            if (reminder && __getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK && !__isFollowTaskCheckinReminder(reminder)) {
+                return __completeFollowReminderThroughTask(blockId, reminder, dateKey, timeKey, options);
+            }
+        }
         let committed = null;
         const ok = await __withReminderOccurrenceMutation(blockId, async () => {
             const k = __reminderOccurrenceKey(dateKey, timeKey);
@@ -42257,6 +42324,11 @@ window.__setTomatoFloatState = function (payload) {
     const __restoreFollowTaskReminderCompletion = async (blockId, reminder, ownerInput) => {
         const owner = __normalizeReminderTaskCompletionOwner(ownerInput);
         if (!owner || __getReminderRepeatMode(reminder) !== REMINDER_REPEAT_MODE_FOLLOW_TASK) return false;
+        const bridge = typeof getTaskHorizonSharedApi === 'function' ? getTaskHorizonSharedApi()?.reminderBridge : null;
+        if (owner.completionId && bridge?.capabilities?.restoreCompletion === true) {
+            const result = await bridge.restoreCompletion({ taskId: owner.taskId || reminder.taskId || blockId, blockId, owner });
+            return result?.ok === true;
+        }
         if (typeof window.tmSetDone !== 'function' && typeof window.tmSetTaskCheckin !== 'function') return false;
         try {
             const context = await resolveReminderTaskAttrContext(blockId);
@@ -42293,6 +42365,23 @@ window.__setTomatoFloatState = function (payload) {
     };
 
     const __unmarkReminderOccurrenceCompleted = async (blockId, dateKey, timeKey, options = {}) => {
+        const followed = await getBlockReminder(blockId);
+        const target = (followed?.completedOccurrences || []).find(entry => entry.date === dateKey && entry.time === timeKey
+            && (!options.taskOccurrenceId || entry.taskOccurrenceId === options.taskOccurrenceId)
+            && (!options.completionId || entry.completionId === options.completionId));
+        const owner = target?.completionId ? { ...followed.taskCompletionOwner, ...target,
+            completionId: target.completionId, taskId: followed.taskId || blockId,
+            dateKey, timeKey, occurrenceKey: __reminderOccurrenceKey(dateKey, timeKey), completedAt: target.doneAt,
+        } : (followed?.taskCompletionOwner?.dateKey === dateKey ? followed.taskCompletionOwner : null);
+        if (owner?.completionId && __getReminderRepeatMode(followed) === REMINDER_REPEAT_MODE_FOLLOW_TASK) {
+            if (options.taskOccurrenceId && options.taskOccurrenceId !== owner.taskOccurrenceId) return false;
+            // Do not hold the reminder lock while the task receipt calls back
+            // to remove its linked reminder records.
+            try {
+                if (!await __restoreFollowTaskReminderCompletion(blockId, followed, owner)) return false;
+                return __restoreReminderTaskCompletion(blockId, { restoredCompletionId: owner.completionId });
+            } catch (e) { return false; }
+        }
         let committedOwner = null;
         const ok = await __withReminderOccurrenceMutation(blockId, async () => {
             const k = __reminderOccurrenceKey(dateKey, timeKey);
@@ -43462,6 +43551,7 @@ window.__setTomatoFloatState = function (payload) {
                 __normalizeReminderDateKey(reminder?.taskStartDate || ''),
                 __normalizeReminderDateKey(reminder?.taskCompletionTime || ''),
                 JSON.stringify(__parseReminderTaskRepeatRule(reminder?.taskRepeatRule) || null),
+                reminder?.taskRepeatState?.occurrenceId || '',
             ].join('|');
         } catch (e) {
             return '';
@@ -43743,25 +43833,55 @@ window.__setTomatoFloatState = function (payload) {
         return formatDateKey(reminder?.createdAt || new Date());
     };
 
-    const __completeFollowTaskReminder = async (blockId) => {
+    const __restoreReminderTaskCompletion = async (blockId, completion) => __withReminderOccurrenceMutation(blockId, async () => {
+        const reminder = await getBlockReminder(blockId);
+        if (!reminder) return true;
+        const id = completion.restoredCompletionId;
+        if (reminder.taskCompletionOwner?.completionId !== id && !(reminder.completedOccurrences || []).some(entry => entry.completionId === id)) return true;
+        return saveBlockReminder(blockId, {
+            ...reminder,
+            completedOccurrences: (reminder.completedOccurrences || []).filter(entry => entry.completionId !== id),
+            taskCompletionOwner: reminder.taskCompletionOwner?.completionId === id ? null : reminder.taskCompletionOwner,
+        });
+    });
+
+    const __completeFollowTaskReminder = async (blockId, options = {}) => {
         const id = String(blockId || '').trim();
         if (!id) return false;
         try {
             const reminder = await getBlockReminder(id);
-            if (!reminder) return false;
+            if (!reminder) return true;
             if (__isFollowTaskCheckinReminder(reminder)) {
                 await __refreshReminderAfterTaskContextChanged(id, { reason: 'task-checkin' });
                 return true;
             }
             const followsTask = __getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK;
-            if (!followsTask) return false;
-            const dateKey = __getReminderFollowTaskAnchorKey(reminder)
+            if (!followsTask) return true;
+            const completion = options.completion;
+            const dateKey = completion?.previousDates?.completionTime || completion?.previousDates?.startDate || __getReminderFollowTaskAnchorKey(reminder)
                 || __normalizeReminderDateKey(reminder.startDate || '');
             const timeKeys = Array.from(new Set((Array.isArray(reminder.times) ? reminder.times : [])
                 .map((time) => __parseTime(time)?.key || '')
                 .filter(Boolean)));
             if (!dateKey || !timeKeys.length) return false;
             let completed = false;
+            if (completion) {
+                return __withReminderOccurrenceMutation(id, async () => {
+                    const latest = await getBlockReminder(id);
+                    if (!latest) return true;
+                    const entries = latest.completedOccurrences || [];
+                    if (entries.some(entry => entry.completionId === completion.completionId)) return true;
+                    return saveBlockReminder(id, { ...latest,
+                        taskCompletionOwner: { taskId: completion.taskId || id, completionId: completion.completionId,
+                            taskOccurrenceId: completion.occurrenceId, completedAt: completion.completedAt,
+                            dateKey, timeKey: timeKeys[0], occurrenceKey: __reminderOccurrenceKey(dateKey, timeKeys[0]) },
+                        completedOccurrences: [
+                        ...timeKeys.map(time => ({ date: dateKey, time, doneAt: completion.completedAt,
+                            taskOccurrenceId: completion.occurrenceId, completionId: completion.completionId })),
+                        ...entries,
+                    ].slice(0, Math.max(30, timeKeys.length * 2)) });
+                });
+            }
             for (const timeKey of timeKeys) {
                 const ok = await __markReminderOccurrenceCompleted(id, dateKey, timeKey, {
                     skipTaskSync: true,
@@ -44885,7 +45005,8 @@ window.__setTomatoFloatState = function (payload) {
             showMiniToast(title + ': ' + fullMessage, 8000);
             // 同时显示对话框
             setTimeout(() => {
-                showToastDialog(title, fullMessage, 'reminder', reminder.blockId, reminder.blockName, currentDate, time, reminder.trigger === 'complete' ? __normalizeReminderTaskRepeatState(reminder.repeatState).occurrenceCount : null);
+                showToastDialog(title, fullMessage, 'reminder', reminder.blockId, reminder.blockName, currentDate, time, reminder.trigger === 'complete' ? __normalizeReminderTaskRepeatState(reminder.repeatState).occurrenceCount : null,
+                    { taskOccurrenceId: __getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK ? __getFollowTaskOccurrenceId(reminder) : '', scheduleSignature: __getReminderScheduleSignature(reminder) });
             }, 100);
         }
         
@@ -45086,6 +45207,12 @@ window.__setTomatoFloatState = function (payload) {
             taskContextChanged: true,
             listOccurrences: true,
             documentScope: true,
+            completionReceipt: true,
+            getOccurrenceContext: true,
+        }),
+        getOccurrenceContext: (reminder) => ({
+            taskOccurrenceId: __getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK ? __getFollowTaskOccurrenceId(reminder) : '',
+            scheduleSignature: __getReminderScheduleSignature(reminder),
         }),
         showDialog: (blockId, blockName, options = {}) => {
             const dialogOptions = (options && typeof options === 'object') ? options : {};
@@ -45249,6 +45376,7 @@ window.__setTomatoFloatState = function (payload) {
             };
         },
         completeFollowTaskReminder: __completeFollowTaskReminder,
+        restoreTaskCompletion: __restoreReminderTaskCompletion,
         recordTaskCompletionOwner: __recordFollowTaskReminderCompletionOwner,
         isCheckinDate: __isCheckinReminderDate,
         completeOccurrence: __markReminderOccurrenceCompleted,
@@ -45540,11 +45668,12 @@ window.__setTomatoFloatState = function (payload) {
             try {
                 const result = await stopAssociatedTaskAfterDone(blockId, options);
                 const ok = !!(result?.matched && (result?.stopped || result?.associationCleared));
-                return { ...result, ok, action: ok ? action : null, reason: ok ? null : 'association-mismatch' };
+                return { ...result, ok, action: ok ? action : null, reason: ok ? null : (result?.reason || 'association-mismatch') };
             } catch (e) {
                 return { ok: false, reason: `${action}-failed` };
             }
         },
+        getSettlementContext: () => ({ sessionId: String(syncState?.activeTimer?.sessionId || '') }),
     };
     try {
         if (typeof EventManager !== 'undefined' && typeof EventManager.add === 'function' && typeof window !== 'undefined') {
@@ -47704,7 +47833,7 @@ window.__setTomatoFloatState = function (payload) {
                 refs.moreBtn.disabled = true;
                 refs.mobileBtn.disabled = true;
                 item.style.opacity = '0.62';
-                const ok = await __markReminderOccurrenceCompleted(reminder.blockId, dateKey, timeKey, { occurrenceNumber: reminder.trigger === 'complete' ? __normalizeReminderTaskRepeatState(reminder.repeatState).occurrenceCount : null });
+                const ok = await __markReminderOccurrenceCompleted(reminder.blockId, dateKey, timeKey, { taskOccurrenceId: __getFollowTaskOccurrenceId(reminder), scheduleSignature: __getReminderScheduleSignature(reminder), occurrenceNumber: reminder.trigger === 'complete' ? __normalizeReminderTaskRepeatState(reminder.repeatState).occurrenceCount : null });
                 showMiniToast(ok ? '已标记完成' : '标记失败');
                 if (!ok) {
                     refs.doneBtn.disabled = false;
@@ -47778,7 +47907,7 @@ window.__setTomatoFloatState = function (payload) {
             refs.undoBtn.title = refs.undoBtn.disabled ? '后续期次已有完成记录，不能撤销较早期次' : '撤销完成';
             refs.undoBtn.onclick = async (event) => {
                 try { event.preventDefault(); event.stopPropagation(); } catch (e) {}
-                const ok = await __unmarkReminderOccurrenceCompleted(reminder.blockId, entry.dateKey, entry.timeKey, { occurrenceNumber: entry.occurrenceNumber });
+                const ok = await __unmarkReminderOccurrenceCompleted(reminder.blockId, entry.dateKey, entry.timeKey, { occurrenceNumber: entry.occurrenceNumber, taskOccurrenceId: entry.taskOccurrenceId, completionId: entry.completionId });
                 showMiniToast(ok ? '已撤销' : '撤销失败');
                 __invalidateReminderDockCache();
                 renderReminderDockList('time', false);
@@ -47820,7 +47949,7 @@ window.__setTomatoFloatState = function (payload) {
                     if (!dateKey || !timeKey) continue;
                     const fallbackCompletedAtMs = Date.parse(`${dateKey}T${timeKey}:00`) || 0;
                     const completedAtMs = doneAtMs || fallbackCompletedAtMs;
-                    completedEntries.push({ reminder: r, dateKey, timeKey, doneAtMs, completedAtMs, occurrenceNumber: it.occurrenceNumber });
+                    completedEntries.push({ reminder: r, dateKey, timeKey, doneAtMs, completedAtMs, occurrenceNumber: it.occurrenceNumber, taskOccurrenceId: it.taskOccurrenceId, completionId: it.completionId });
                 }
             }
             completedEntries.sort((a, b) => (b.completedAtMs || 0) - (a.completedAtMs || 0));

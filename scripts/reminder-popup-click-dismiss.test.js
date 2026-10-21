@@ -126,6 +126,10 @@ class FakeElement {
         closeExpiredNotification: notification => notification.remove(),
         showMiniToast: message => toasts.push(message),
         __setReminderDockIcon: target => { target.textContent = '✓'; },
+        REMINDER_REPEAT_MODE_FOLLOW_TASK: 'followTaskRepeat',
+        __getReminderRepeatMode: reminder => reminder.repeatMode || 'manual',
+        __getFollowTaskOccurrenceId: () => 'captured-round',
+        __getReminderScheduleSignature: () => 'captured-schedule',
         __markReminderOccurrenceCompleted: async (...args) => {
             completionCalls.push(args);
             return shouldComplete;
