@@ -46,6 +46,7 @@
         distraction: '<svg class="tomato-ui-icon tomato-ui-icon--distraction" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M219.71,117.38a12,12,0,0,0-7.25-8.52L161.28,88.39l10.59-70.61a12,12,0,0,0-20.64-10l-112,120a12,12,0,0,0,4.31,19.33l51.18,20.47L84.13,238.22a12,12,0,0,0,20.64,10l112-120A12,12,0,0,0,219.71,117.38ZM113.6,203.55l6.27-41.77a12,12,0,0,0-7.41-12.92L68.74,131.37,142.4,52.45l-6.27,41.77a12,12,0,0,0,7.41,12.92l43.72,17.49Z"/></svg>',
         coffee: '<svg class="tomato-ui-icon tomato-ui-icon--coffee" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M212,76H32A12,12,0,0,0,20,88v48a100.24,100.24,0,0,0,26.73,68H32a12,12,0,0,0,0,24H208a12,12,0,0,0,0-24H193.27a100.75,100.75,0,0,0,20-32A44,44,0,0,0,256,128v-8A44.05,44.05,0,0,0,212,76Zm-16,60a76.27,76.27,0,0,1-42,68H86a76.27,76.27,0,0,1-42-68V100H196Zm36-8a20,20,0,0,1-12.57,18.55A97.17,97.17,0,0,0,220,136V101.68A20,20,0,0,1,232,120ZM68,48V24a12,12,0,0,1,24,0V48a12,12,0,0,1-24,0Zm40,0V24a12,12,0,0,1,24,0V48a12,12,0,0,1-24,0Zm40,0V24a12,12,0,0,1,24,0V48a12,12,0,0,1-24,0Z"/></svg>',
         timer: '<svg class="tomato-ui-icon tomato-ui-icon--timer" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M128,44a96,96,0,1,0,96,96A96.11,96.11,0,0,0,128,44Zm0,168a72,72,0,1,1,72-72A72.08,72.08,0,0,1,128,212ZM164.49,99.51a12,12,0,0,1,0,17l-28,28a12,12,0,0,1-17-17l28-28A12,12,0,0,1,164.49,99.51ZM92,16A12,12,0,0,1,104,4h48a12,12,0,0,1,0,24H104A12,12,0,0,1,92,16Z"/></svg>',
+        reminder: '<svg class="tomato-ui-icon tomato-ui-icon--reminder" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M128,36A100,100,0,1,0,228,136,100.11,100.11,0,0,0,128,36Zm0,176a76,76,0,1,1,76-76A76.08,76.08,0,0,1,128,212ZM32.49,72.49a12,12,0,1,1-17-17l32-32a12,12,0,1,1,17,17Zm208,0a12,12,0,0,1-17,0l-32-32a12,12,0,1,1,17-17l32,32A12,12,0,0,1,240.49,72.49ZM176,124a12,12,0,0,1,0,24H128a12,12,0,0,1-12-12V88a12,12,0,0,1,24,0v36Z"/></svg>',
         complete: '<svg class="tomato-ui-icon tomato-ui-icon--complete" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M176.49,95.51a12,12,0,0,1,0,17l-56,56a12,12,0,0,1-17,0l-24-24a12,12,0,1,1,17-17L112,143l47.51-47.52A12,12,0,0,1,176.49,95.51ZM236,128A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Z"/></svg>',
         history: '<svg class="tomato-ui-icon tomato-ui-icon--history" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M140,80v41.21l34.17,20.5a12,12,0,1,1-12.34,20.58l-40-24A12,12,0,0,1,116,128V80a12,12,0,0,1,24,0ZM128,28A99.38,99.38,0,0,0,57.24,57.34c-4.69,4.74-9,9.37-13.24,14V64a12,12,0,0,0-24,0v40a12,12,0,0,0,12,12H72a12,12,0,0,0,0-24H57.77C63,86,68.37,80.22,74.26,74.26a76,76,0,1,1,1.58,109,12,12,0,0,0-16.48,17.46A100,100,0,1,0,128,28Z"/></svg>',
         play: '<svg class="tomato-ui-icon tomato-ui-icon--play" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M234.49,111.07,90.41,22.94A20,20,0,0,0,60,39.87V216.13a20,20,0,0,0,30.41,16.93l144.08-88.13a19.82,19.82,0,0,0,0-33.86ZM84,208.85V47.15L216.16,128Z"/></svg>',
@@ -71,13 +72,15 @@
         .tomato-ui-icon--tomato path,
         .tomato-ui-icon--association,
         .tomato-ui-icon--association rect { fill: none !important; }
-        .tomato-ui-icon--distraction { color: var(--tomato-ui-amber); }
+        .tomato-ui-icon--distraction, .tomato-ui-icon--reminder { color: var(--tomato-ui-amber); }
         .tomato-ui-icon--coffee, .tomato-ui-icon--history { color: var(--tomato-ui-muted); }
         .tomato-ui-icon--timer, .tomato-ui-icon--complete { color: var(--tomato-ui-green); }
         .tomato-float-icon { display: inline-flex !important; align-items: center; justify-content: center; line-height: 1; }
         .tomato-ui-time { display: inline-flex !important; align-items: center; gap: 4px; }
         .tomato-ui-time-value { font-variant-numeric: tabular-nums; }
+        #tomato-breadcrumb-btn .tomato-ui-icon,
         #tomy-task-block-icon .tomato-ui-icon { width: 16px; height: 16px; }
+        .b3-menu__icon > .tomato-ui-icon { width: 100%; height: 100%; display: block; }
         #tomy-tomato-context-menu .tomato-ui-menu-title { color: var(--b3-theme-on-surface-light); }
         .tomato-dialog-action .tomato-ui-icon { color: inherit; }
         .tomato-circular-task-icon .tomato-ui-icon { width: 1em; height: 1em; }
@@ -10074,11 +10077,12 @@
         const highlightWrap = document.createElement('div');
         highlightWrap.style.cssText = `display: flex; flex-direction: column; gap: 8px;`;
 
-        const createColorRow = (labelText, colorValue) => {
+        const createColorRow = (labelText, colorValue, iconName = '') => {
             const r = document.createElement('div');
             r.style.cssText = `display: flex; align-items: center; justify-content: space-between; gap: 12px;`;
             const label = document.createElement('div');
-            label.textContent = labelText;
+            if (iconName) setTimerUiIcon(label, iconName, labelText);
+            else label.textContent = labelText;
             label.style.cssText = `font-size: 12px; opacity: 0.85;`;
             if (!isMobile) {
                 const input = document.createElement('input');
@@ -10096,7 +10100,7 @@
             return { rowEl: r, inputEl: null, getValue: picker.getColor };
         };
 
-        const tomatoHighlight = createColorRow('🍅 番茄记录', userSettings.timeline.highlightColors.tomato);
+        const tomatoHighlight = createColorRow('番茄记录', userSettings.timeline.highlightColors.tomato, 'tomato');
         const stopwatchHighlight = createColorRow('⏱️ 专注正计时记录', userSettings.timeline.highlightColors.stopwatch);
         const breakHighlight = createColorRow('☕ 休息记录', userSettings.timeline.highlightColors.break);
         highlightWrap.appendChild(tomatoHighlight.rowEl);
@@ -21570,7 +21574,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         titleBar.appendChild(audioSettingsBtn);
 
         const title = document.createElement('div');
-        title.textContent = `🍅 番茄钟历史记录`;
+        setTimerUiIcon(title, 'tomato', '番茄钟历史记录');
         // 移动端适配：更小的字体
         if (isMobile) {
             title.style.cssText = `
@@ -21583,6 +21587,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 text-align: center; flex: 1; margin: 0 10px;
             `;
         }
+        title.style.justifyContent = 'center';
         titleBar.appendChild(title);
 
         // 🔧 新增：窗口外点击关闭功能（必须在 closeBtn.onclick 使用前定义）
@@ -23266,9 +23271,9 @@ function calculateWeeklyStats(dailyStatsArray) {
             let tableHTML = `
                 <div style="display: grid; grid-template-columns: 80px repeat(9, 1fr); gap: 5px; margin-bottom: 5px; padding: 8px; background: var(--b3-theme-surface-light); border-radius: 5px; min-width: 880px; font-weight: bold; position: sticky; top: 0; z-index: 1;">
                     <div style="text-align: left;">月份</div>
-                    <div style="text-align: center;">🍅 数量</div>
-                    <div style="text-align: center;">🍅 实际</div>
-                    <div style="text-align: center;">🍅 计划</div>
+                    <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 数量</div>
+                    <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 实际</div>
+                    <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 计划</div>
                     <div style="text-align: center;">⏱️ 数量</div>
                     <div style="text-align: center;">⏱️ 时长</div>
                     <div style="text-align: center;">☕ 时长</div>
@@ -23466,9 +23471,9 @@ function calculateWeeklyStats(dailyStatsArray) {
                 let currentTableHTML = `
                     <div style="display: grid; grid-template-columns: 120px repeat(9, 1fr); gap: 5px; margin-bottom: 5px; padding: 8px; background: var(--b3-theme-surface-light); border-radius: 5px; min-width: 880px; font-weight: bold; position: sticky; top: 0; z-index: 1;">
                         <div style="text-align: left;">周次</div>
-                        <div style="text-align: center;">🍅 数量</div>
-                        <div style="text-align: center;">🍅 实际</div>
-                        <div style="text-align: center;">🍅 计划</div>
+                        <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 数量</div>
+                        <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 实际</div>
+                        <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 计划</div>
                         <div style="text-align: center;">⏱️ 数量</div>
                         <div style="text-align: center;">⏱️ 时长</div>
                         <div style="text-align: center;">☕ 时长</div>
@@ -23683,9 +23688,9 @@ function calculateWeeklyStats(dailyStatsArray) {
             let currentTableHTML = `
                 <div style="display: grid; grid-template-columns: 90px repeat(9, 1fr); gap: 5px; margin-bottom: 5px; padding: 8px; background: var(--b3-theme-surface-light); border-radius: 5px; min-width: 980px; font-weight: bold; position: sticky; top: 0; z-index: 1;">
                     <div style="text-align: left;">日期</div>
-                    <div style="text-align: center;">🍅 数量</div>
-                    <div style="text-align: center;">🍅 实际</div>
-                    <div style="text-align: center;">🍅 计划</div>
+                    <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 数量</div>
+                    <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 实际</div>
+                    <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 计划</div>
                     <div style="text-align: center;">⏱️ 数量</div>
                     <div style="text-align: center;">⏱️ 时长</div>
                     <div style="text-align: center;">☕ 时长</div>
@@ -25927,7 +25932,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             
             statsHTML += `
                 <div style="margin: 6px 0;">
-                    🍅 ${dailyTomatoCount} 个番茄<br>
+                    ${getTimerUiIconSvg('tomato')} ${dailyTomatoCount} 个番茄<br>
                     实际: ${formatHistoryStatNumber(dailyTomatoActual)}分钟 | 计划: ${formatHistoryStatNumber(dailyTomatoPlanned)}分钟<br>
                     完成度: <span style="color:${rateColor}; font-weight:bold">${completionRate}%</span>
                 </div>
@@ -25968,6 +25973,7 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     function createHistoryItem(record, allRecords = []) {
+        ensureTimerUiIconStyles();
         const item = document.createElement('div');
         item.style.cssText = `
             display: flex;
@@ -25990,7 +25996,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             item.style.backgroundColor = 'var(--b3-theme-background)';
         }
         
-        const modeEmoji = record.mode === 'countdown' ? '🍅' : 
+        const modeIcon = record.mode === 'countdown' ? getTimerUiIconSvg('tomato') :
                          record.mode === 'break' ? '☕' : 
                          record.mode === 'stopwatch-break' ? '☕' :
                          record.mode === 'lumina-note' ? '📝' : '⏱️';
@@ -26101,7 +26107,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         leftContent.style.cssText = `flex: 1; min-width: 0;`;
         leftContent.innerHTML = `
             <div style="display: flex; align-items: center; gap: 8px;">
-                <strong>${modeEmoji}</strong> 
+                <strong>${modeIcon}</strong>
                 <span style="white-space: nowrap;">${formatShortTime(startDate)} - ${formatShortTime(endDate)}</span>
                 ${timePeriodText ? `<small style="opacity:0.7; white-space: nowrap;">${timePeriodText}</small>` : ''}
             </div>
@@ -33225,6 +33231,7 @@ window.__setTomatoFloatState = function (payload) {
     // ========== 通用子菜单创建函数 ==========
     // 减少重复的菜单创建代码
     function createTomatoSubMenu(onItemClick, blockInfo) {
+        ensureTimerUiIconStyles();
         const subMenu = document.createElement('div');
         subMenu.className = 'b3-menu';
         subMenu.style.cssText = `
@@ -33246,7 +33253,7 @@ window.__setTomatoFloatState = function (payload) {
         getTomatoDurations().forEach(min => {
             const item = document.createElement('button');
             item.className = 'b3-menu__item';
-            item.innerHTML = `<span class="b3-menu__label">🍅 ${min}分钟</span>`;
+            item.innerHTML = `<span class="b3-menu__icon">${getTimerUiIconSvg('tomato')}</span><span class="b3-menu__label">${min}分钟</span>`;
             item.style.cssText = 'width:100%;box-sizing:border-box;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
             item.onclick = () => onItemClick(min, 'countdown');
             // 🔧 修复：添加 hover 样式
@@ -33258,7 +33265,7 @@ window.__setTomatoFloatState = function (payload) {
         // 添加正计时选项
         const stopwatchItem = document.createElement('button');
         stopwatchItem.className = 'b3-menu__item';
-        stopwatchItem.innerHTML = `<span class="b3-menu__label">⏱️ 专注正计时</span>`;
+        stopwatchItem.innerHTML = `<span class="b3-menu__icon">${getTimerUiIconSvg('timer')}</span><span class="b3-menu__label">专注正计时</span>`;
         stopwatchItem.style.cssText = 'width:100%;box-sizing:border-box;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
         stopwatchItem.onclick = () => onItemClick(null, 'stopwatch');
         // 🔧 修复：添加 hover 样式
@@ -33276,7 +33283,7 @@ window.__setTomatoFloatState = function (payload) {
             // 添加提醒按钮
             const reminderBtn = document.createElement('button');
             reminderBtn.className = 'b3-menu__item';
-            reminderBtn.innerHTML = `<span class="b3-menu__label">⏰ 添加提醒</span>`;
+            reminderBtn.innerHTML = `<span class="b3-menu__icon">${getTimerUiIconSvg('reminder')}</span><span class="b3-menu__label">添加提醒</span>`;
             reminderBtn.style.cssText = 'width:100%;box-sizing:border-box;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
             reminderBtn.onmouseenter = () => reminderBtn.style.backgroundColor = 'var(--b3-menu-background-hover, var(--b3-theme-surface-light))';
             reminderBtn.onmouseleave = () => reminderBtn.style.backgroundColor = 'transparent';
@@ -33371,6 +33378,7 @@ window.__setTomatoFloatState = function (payload) {
     function showTomatoTimeSelectionDialog(onItemClick, blockInfo) {
         removeById('tomato-time-select-dialog', 'tomato-time-select-backdrop');
         ensureTomatoCommonStyles();
+        ensureTimerUiIconStyles();
 
         // 创建遮罩层
         const backdrop = document.createElement('div');
@@ -33417,7 +33425,7 @@ window.__setTomatoFloatState = function (payload) {
                 align-items: center;
                 gap: 4px;
             `;
-            option.innerHTML = `<span style="font-size:20px;">🍅</span><span>${min}分钟</span>`;
+            option.innerHTML = `<span style="font-size:20px;">${getTimerUiIconSvg('tomato')}</span><span>${min}分钟</span>`;
             // 悬停效果
             option.onmouseenter = () => {
                 option.style.background = 'var(--b3-theme-surface-light)';
@@ -33453,7 +33461,7 @@ window.__setTomatoFloatState = function (payload) {
             justify-content: center;
             gap: 8px;
         `;
-        stopwatchOption.innerHTML = `<span style="font-size:20px;">⏱️</span><span>专注正计时（不限时）</span>`;
+        stopwatchOption.innerHTML = `<span style="font-size:20px;">${getTimerUiIconSvg('timer')}</span><span>专注正计时（不限时）</span>`;
         // 悬停效果
         stopwatchOption.onmouseenter = () => {
             stopwatchOption.style.background = 'var(--b3-theme-surface-light)';
@@ -33487,7 +33495,7 @@ window.__setTomatoFloatState = function (payload) {
                 justify-content: center;
                 gap: 8px;
             `;
-            reminderOption.innerHTML = `<span style="font-size:20px;">⏰</span><span>添加提醒</span>`;
+            reminderOption.innerHTML = `<span style="font-size:20px;">${getTimerUiIconSvg('reminder')}</span><span>添加提醒</span>`;
             reminderOption.onmouseenter = () => {
                 reminderOption.style.background = 'var(--b3-theme-surface-light)';
                 reminderOption.style.borderColor = 'var(--b3-theme-primary)';
@@ -33540,6 +33548,7 @@ window.__setTomatoFloatState = function (payload) {
     
     // ========== 通用菜单创建函数 ==========
     function createTomatoMenuItem(menuItems, insertBefore, callback) {
+        ensureTimerUiIconStyles();
         // 避免重复添加：如果存在旧的番茄钟菜单项，先移除再重建，防止回调/目标块被“卡住”
         try {
             const existing = menuItems.querySelector('.tomato-menu-item');
@@ -33562,8 +33571,8 @@ window.__setTomatoFloatState = function (payload) {
         tomatoMenu.className = 'b3-menu__item tomato-menu-item';
         tomatoMenu.setAttribute('data-id', 'tomatoTimer');
         tomatoMenu.innerHTML = `
-            <svg class="b3-menu__icon"><use xlink:href="#iconClock"></use></svg>
-            <span class="b3-menu__label">🍅 番茄钟</span>
+            <span class="b3-menu__icon">${getTimerUiIconSvg('tomato')}</span>
+            <span class="b3-menu__label">番茄钟</span>
             <svg class="b3-menu__icon" style="margin-left: auto;"><use xlink:href="#iconRight"></use></svg>
         `;
         divider.after(tomatoMenu);
@@ -33675,8 +33684,8 @@ window.__setTomatoFloatState = function (payload) {
         items.push({type: 'separator'});
         items.push({
             id: 'tomatoTimerReminder',
-            icon: 'iconClock',
-            label: '⏰ 添加提醒',
+            iconHTML: getTimerUiIconSvg('reminder'),
+            label: '添加提醒',
             click: () => {
                 window.siyuan?.menus?.menu?.remove();
                 globalThis.__tomatoReminder?.showDialog?.(blockInfo.id, blockInfo.name);
@@ -34244,6 +34253,7 @@ window.__setTomatoFloatState = function (payload) {
      * 🔧 修复：直接查找菜单关联的数据库行
      */
     async function handleDatabaseMenu(menuItems, openByBtn) {
+        ensureTimerUiIconStyles();
         // 避免重复添加
         if (menuItems.querySelector('.tomato-start-from-db')) {
             Logger.info('🍅 数据库菜单已存在，跳过添加');
@@ -34338,8 +34348,8 @@ window.__setTomatoFloatState = function (payload) {
         tomatoMenu.className = 'b3-menu__item tomato-start-from-db';
         tomatoMenu.setAttribute('data-id', 'tomatoTimerFromDB');
         tomatoMenu.innerHTML = `
-            <svg class="b3-menu__icon"><use xlink:href="#iconClock"></use></svg>
-            <span class="b3-menu__label">🍅 番茄钟</span>
+            <span class="b3-menu__icon">${getTimerUiIconSvg('tomato')}</span>
+            <span class="b3-menu__label">番茄钟</span>
             <svg class="b3-menu__icon" style="margin-left: auto;"><use xlink:href="#iconRight"></use></svg>
         `;
 
@@ -38742,7 +38752,7 @@ window.__setTomatoFloatState = function (payload) {
             tomatoBtn.className = 'block__icon fn__flex-center ariaLabel';
             tomatoBtn.title = '打开番茄钟';
             tomatoBtn.setAttribute('aria-label', '打开番茄钟');
-            tomatoBtn.innerHTML = '<span aria-hidden="true" style="display:block;line-height:1;">🍅</span>';
+            setTimerUiIcon(tomatoBtn, 'tomato');
             tomatoBtn.style.cssText = `
                 margin: 0 4px;
                 flex-shrink: 0;

@@ -16,38 +16,47 @@ const segment = (start, end) => {
     return source.slice(from, to);
 };
 
-const resetReloadVisibility = segment('const resetReminderDockReloadVisibility =', 'const fetchText =');
-const persisted = [];
-const sandbox = {
-    siyuan: {
-        storage: {
-            'local-plugin-docks': {
-                'siyuan-plugin-docktomato': {
-                    'siyuan-plugin-docktomato::tomato-reminder': { position: 'RightBottom', index: 3, show: true },
-                },
-            },
-        },
-    },
-    platformUtils: {
-        setStorageVal: (key, value) => persisted.push({ key, value }),
+const layoutReady = segment('    onLayoutReady() {', '    onunload() {');
+
+// SiYuan runs onLayoutReady before mounting plugin docks. This hook must not
+// rewrite the persisted show state, otherwise every startup clears the dock
+// that the user left open in the previous session.
+assert.doesNotMatch(source, /resetReminderDockReloadVisibility/);
+assert.doesNotMatch(layoutReady, /local-plugin-docks|setStorageVal|\.show\s*=/);
+
+const dockKey = 'siyuan-plugin-docktomato::tomato-reminder';
+const savedDocks = {
+    'siyuan-plugin-docktomato': {
+        [dockKey]: {position: 'RightTop', index: 8, show: true},
     },
 };
+const {onLayoutReady} = vm.runInNewContext(`({${layoutReady}})`, {savedDocks});
 
-vm.runInNewContext(`
-const PLUGIN_ID = "siyuan-plugin-docktomato";
-const REMINDER_DOCK_TYPE = "::tomato-reminder";
-${resetReloadVisibility}
-this.resetReminderDockReloadVisibility = resetReminderDockReloadVisibility;
-`, sandbox);
+const calls = [];
+const registered = {
+    _reminderDockAdded: true,
+    _registerReminderDock: (reason) => calls.push(`register:${reason}`),
+    _scheduleReminderDockRecover: (reason) => calls.push(`recover:${reason}`),
+};
+onLayoutReady.call(registered);
+assert.deepEqual(calls, ['recover:layout-ready']);
+assert.equal(savedDocks['siyuan-plugin-docktomato'][dockKey].show, true,
+    'an open Dock must survive the startup layout hook');
 
-sandbox.resetReminderDockReloadVisibility({ name: 'siyuan-plugin-docktomato' });
-assert.equal(sandbox.siyuan.storage['local-plugin-docks']['siyuan-plugin-docktomato']['siyuan-plugin-docktomato::tomato-reminder'].show, false);
-assert.equal(persisted.length, 1);
-assert.equal(persisted[0].key, 'local-plugin-docks');
-sandbox.resetReminderDockReloadVisibility({ name: 'siyuan-plugin-docktomato' });
-assert.equal(persisted.length, 1, 'an already closed reminder Dock must not be persisted again');
+calls.length = 0;
+const unregistered = {
+    _reminderDockAdded: false,
+    _registerReminderDock: (reason) => calls.push(`register:${reason}`),
+    _scheduleReminderDockRecover: (reason) => calls.push(`recover:${reason}`),
+};
+onLayoutReady.call(unregistered);
+assert.deepEqual(calls, ['register:layout-ready']);
+assert.equal(savedDocks['siyuan-plugin-docktomato'][dockKey].show, true,
+    'registering during startup must not rewrite the saved open state');
 
-const layoutReady = segment('    onLayoutReady() {', '    onunload() {');
-assert.match(layoutReady, /resetReminderDockReloadVisibility\(this\)/);
+savedDocks['siyuan-plugin-docktomato'][dockKey].show = false;
+onLayoutReady.call(registered);
+assert.equal(savedDocks['siyuan-plugin-docktomato'][dockKey].show, false,
+    'a closed Dock must stay closed');
 
-console.log('reminder Dock reload visibility tests passed');
+console.log('reminder Dock startup visibility tests passed');
