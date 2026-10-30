@@ -1,9 +1,9 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
+const fs = require('./i18n-source-fixture');
 const path = require('node:path');
-const vm = require('node:vm');
+const vm = require('./i18n-vm-fixture');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'tomato.js'), 'utf8');
 
@@ -54,7 +54,8 @@ const deleteContext = vm.createContext({
 vm.runInContext(`${deleteBlock}\nthis.deleteOccurrence = __deleteReminderOccurrence;`, deleteContext);
 
 const dialogStart = source.indexOf('function showMobileConfirmDialog');
-const dialogEnd = source.indexOf('\n    // 关闭移动端弹窗', dialogStart);
+const dialogEnd = source.indexOf('\n    function closeMobileModal(', dialogStart);
+assert.ok(dialogEnd > dialogStart, 'delete-scope dialog must remain extractable');
 const dialogBlock = source.slice(dialogStart, dialogEnd);
 assert.match(dialogBlock, /tomy-mobile-confirm-modal/, 'delete scope must use the plugin dialog skin');
 assert.match(dialogBlock, /\.tomy-mobile-confirm-btn\.danger/, 'the plugin dialog must expose a destructive choice style');

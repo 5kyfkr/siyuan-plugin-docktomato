@@ -18,7 +18,23 @@ if (-not (@($manifest.kernels) -contains 'all')) { throw 'plugin.json must enabl
 if ($manifest.disabledInPublish -ne $true) { throw 'plugin.json must disable the plugin in publish-service pages' }
 
 $tests = Get-ChildItem -LiteralPath (Join-Path $root 'scripts') -Filter '*.test.js' -File | Sort-Object Name
+& node (Join-Path $root 'scripts/check-i18n.js')
+if ($LASTEXITCODE -ne 0) { throw 'Language dictionary or README check failed' }
 if (-not $tests.Count) { throw 'No contract tests found' }
+if ([string]::IsNullOrWhiteSpace($env:PLAYWRIGHT_MODULE)) {
+    $playwrightVersion = '1.63.0'
+    $dependencyDir = Join-Path ([System.IO.Path]::GetTempPath()) "docktomato-release-tests-$playwrightVersion"
+    $playwrightModule = Join-Path $dependencyDir 'node_modules/playwright'
+    if (-not (Test-Path -LiteralPath (Join-Path $playwrightModule 'package.json'))) {
+        & npm install --prefix $dependencyDir --no-save --no-package-lock --ignore-scripts "playwright@$playwrightVersion"
+        if ($LASTEXITCODE -ne 0) { throw 'Playwright installation failed' }
+    }
+    $browserArgs = @('install', 'chromium')
+    if ($IsLinux) { $browserArgs = @('install', '--with-deps', 'chromium') }
+    & node (Join-Path $playwrightModule 'cli.js') @browserArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Chromium installation failed' }
+    $env:PLAYWRIGHT_MODULE = $playwrightModule
+}
 foreach ($test in $tests) {
     $repoRelativePath = 'scripts/' + $test.Name
     $trackedPath = @(& git -C $root ls-files -- $repoRelativePath)
@@ -29,7 +45,7 @@ foreach ($test in $tests) {
     if ($LASTEXITCODE -ne 0) { throw "Test failed: $($test.Name)" }
 }
 
-foreach ($relativePath in @('index.js', 'tomato.js', 'kernel.js')) {
+foreach ($relativePath in @('index.js', 'tomato.js', 'kernel.js', 'i18n/runtime.js')) {
     & node --check (Join-Path $root $relativePath)
     if ($LASTEXITCODE -ne 0) { throw "Syntax check failed: $relativePath" }
 }

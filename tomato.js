@@ -5,6 +5,7 @@
 
 (function () {
     'use strict';
+    const __tt = (key, params) => globalThis.__dockTomatoI18n.t(key, params);
 
     if (globalThis.__TomatoTimerLoaded) return;
     globalThis.__TomatoTimerLoaded = true;
@@ -117,7 +118,7 @@
     function setTimerToggleIcon(target, running, paused = false) {
         if (!target) return;
         setTimerUiIcon(target, running ? 'pause' : 'play');
-        target.title = running ? '暂停' : (paused ? '继续' : '开始');
+        target.title = running ? __tt("timer.paused") : (paused ? __tt("timer.continue") : __tt("timer.start"));
         target.setAttribute('aria-label', target.title);
     }
 
@@ -241,7 +242,7 @@
             return await action();
         } catch (error) {
             Logger.error('菜单操作失败:', error);
-            showMiniToast('操作失败，请稍后重试');
+            showMiniToast(__tt("timer.operationFailedPleaseTryAgainLater"));
         } finally {
             if (menu) delete menu.dataset.busy;
             refreshTimerContextMenu();
@@ -275,18 +276,18 @@
         controls.hidden = !active;
         controls.style.gridTemplateColumns = timerMode === 'countdown' ? 'repeat(3,minmax(0,1fr))' : 'repeat(2,minmax(0,1fr))';
         const toggle = controls.querySelector('[data-action=toggle]');
-        setTimerUiIcon(toggle, isRunning ? 'pause' : 'play', isRunning ? '暂停' : '继续');
-        toggle.setAttribute('aria-label', isRunning ? '暂停' : '继续');
+        setTimerUiIcon(toggle, isRunning ? 'pause' : 'play', isRunning ? __tt("timer.paused") : __tt("timer.continue"));
+        toggle.setAttribute('aria-label', isRunning ? __tt("timer.paused") : __tt("timer.continue"));
         const isBreak = timerMode === 'break' || timerMode === 'stopwatch-break';
         const complete = controls.querySelector('[data-action=complete]');
-        setTimerUiIcon(complete, 'complete', isBreak ? '结束休息' : '完成');
-        complete.setAttribute('aria-label', isBreak ? '结束休息' : '完成本次专注');
+        setTimerUiIcon(complete, 'complete', isBreak ? __tt("timer.endrest") : __tt("timer.done"));
+        complete.setAttribute('aria-label', isBreak ? __tt("timer.endrest") : __tt("timer.finishThisFocusSession"));
         controls.querySelector('[data-action=abandon]').hidden = timerMode !== 'countdown';
         const distraction = menu.querySelector('[data-action=distraction]');
         distraction.hidden = !isRunning || isBreak;
         const willExtend = timerMode === 'countdown' && userSettings?.main?.extendTomatoOnDistraction !== false;
-        distraction.title = willExtend ? '记录分心（+1分钟）' : '记录分心';
-        distraction.querySelector('.tomato-menu-tail').textContent = (willExtend ? '+1分钟 · ' : '') + Math.max(0, Number(currentDistractionCount) || 0) + '次';
+        distraction.title = willExtend ? __tt("timer.recordDistractionMinute") : __tt("timer.recordDistraction");
+        distraction.querySelector('.tomato-menu-tail').textContent = (willExtend ? __tt("timer.minutes") : '') + Math.max(0, Number(currentDistractionCount) || 0) + __tt("timer.times");
         menu.querySelectorAll('.tomato-menu-presets').forEach(group => {
             group.querySelectorAll('button').forEach(button => button.setAttribute('aria-pressed', String(group.dataset.timerMode === timerMode && Number(button.dataset.duration) === currentDuration)));
         });
@@ -295,13 +296,13 @@
             const settings = getAudioSettings();
             const muted = settings.backgroundMuted === true;
             setTimerUiIcon(mute, muted ? 'muted' : 'audio');
-            mute.title = muted ? '取消静音' : '静音背景音';
+            mute.title = muted ? __tt("timer.unmute") : __tt("timer.muteBackgroundAudio");
             mute.setAttribute('aria-label', mute.title);
             mute.setAttribute('aria-pressed', String(muted));
             const selected = settings.workBackgroundPlaylist?.find(track => track.filename === settings.workBackgroundSound);
-            const name = isBreak ? (settings.breakBackgroundSound || '未设置') : (selected?.name || settings.workBackgroundSound || '未设置');
+            const name = isBreak ? (settings.breakBackgroundSound || __tt("common.notSet")) : (selected?.name || settings.workBackgroundSound || __tt("common.notSet"));
             const status = menu.querySelector('[data-audio-status]');
-            status.textContent = muted ? '已静音' : name;
+            status.textContent = muted ? __tt("timer.muted") : name;
             status.title = name;
         }
         positionTimerContextMenu(menu);
@@ -319,7 +320,7 @@
         dialog.dataset.busy = 'true';
         refreshBackgroundPlaylistDialog();
         try { await action(); }
-        catch (error) { Logger.error('切换背景音失败:', error); showMiniToast('切换背景音失败，请稍后重试'); }
+        catch (error) { Logger.error('切换背景音失败:', error); showMiniToast(__tt("timer.couldNotChangeBackgroundAudioPleaseTryAgainShortly")); }
         finally {
             delete dialog.dataset.busy;
             refreshBackgroundPlaylistDialog();
@@ -358,9 +359,9 @@
         mode.value = settings.workBackgroundPlayMode;
         mode.disabled = busy || !playlist.length;
         dialog.querySelector('.tomato-playlist-next').disabled = busy || !playlist.length;
-        dialog.querySelector('.tomato-playlist-hint').textContent = !playlist.length ? '暂无专注背景音，可在插件设置中添加。'
-            : (timerMode === 'break' || timerMode === 'stopwatch-break') ? '当前为休息；选择将用于下一段专注。'
-            : '点击曲目或下一首即可切换，循环模式保持不变。';
+        dialog.querySelector('.tomato-playlist-hint').textContent = !playlist.length ? __tt("timer.noFocusBackgroundAudioYetAddTracksInPlugin")
+            : (timerMode === 'break' || timerMode === 'stopwatch-break') ? __tt("timer.youAreOnABreakYourSelectionWillPlay")
+            : __tt("timer.selectATrackOrNextToSwitchTracksThe");
     }
 
     function showBackgroundPlaylistDialog() {
@@ -373,23 +374,23 @@
         dialog.id = 'tomato-background-playlist';
         dialog.setAttribute('role', 'dialog');
         dialog.setAttribute('aria-modal', 'true');
-        dialog.setAttribute('aria-label', '专注背景音');
+        dialog.setAttribute('aria-label', __tt("timer.focusBackgroundAudio"));
         const heading = document.createElement('div');
         heading.className = 'tomato-playlist-heading';
         const title = document.createElement('span');
-        setTimerUiIcon(title, 'audio', '专注背景音');
+        setTimerUiIcon(title, 'audio', __tt("timer.focusBackgroundAudio"));
         const close = document.createElement('button');
         close.type = 'button';
         close.className = 'tomato-playlist-close';
-        close.setAttribute('aria-label', '关闭播放列表');
+        close.setAttribute('aria-label', __tt("timer.closePlaylist"));
         setTimerUiIcon(close, 'close');
         close.onclick = closeBackgroundPlaylistDialog;
         heading.append(title, close);
         const controls = document.createElement('div');
         controls.className = 'tomato-playlist-controls';
         const mode = document.createElement('select');
-        mode.setAttribute('aria-label', '循环模式');
-        for (const [value, label] of [['sequence', '顺序循环'], ['single', '单曲循环']]) {
+        mode.setAttribute('aria-label', __tt("timer.repeatmode"));
+        for (const [value, label] of [['sequence', __tt("timer.repeatPlaylist")], ['single', __tt("timer.repeatOne")]]) {
             const option = document.createElement('option');
             option.value = value;
             option.textContent = label;
@@ -402,7 +403,7 @@
         const next = document.createElement('button');
         next.type = 'button';
         next.className = 'tomato-playlist-next';
-        next.textContent = '下一首';
+        next.textContent = __tt("timer.nextTrack");
         next.onclick = () => runBackgroundPlaylistAction(() => nextWorkBackgroundSound());
         controls.append(mode, next);
         const tracks = document.createElement('div');
@@ -441,7 +442,7 @@
         const close = document.createElement('button');
         close.type = 'button';
         close.className = 'tomato-end-close';
-        close.setAttribute('aria-label', '关闭结束提示');
+        close.setAttribute('aria-label', __tt("timer.dismissCompletionNotice"));
         setTimerUiIcon(close, 'close');
         close.onclick = okBtn.onclick;
         heading.append(symbol, copy, close);
@@ -450,11 +451,11 @@
         const buttons = Array.from(buttonContainer.querySelectorAll('button'));
         const continuation = buttons.find(button => button.dataset.action === 'continue-focus');
         if (continuation) {
-            messageEl.textContent = '原专注已暂停，准备好后继续。';
+            messageEl.textContent = __tt("timer.yourPreviousFocusSessionIsPausedResumeWhenReady");
             const summary = document.createElement('div');
             summary.className = 'tomato-end-resume-summary';
             const task = document.createElement('span');
-            setTimerUiIcon(task, 'association', continuation.dataset.taskName || '未关联任务');
+            setTimerUiIcon(task, 'association', continuation.dataset.taskName || __tt("timer.noLinkedTask"));
             task.title = continuation.dataset.taskName || '';
             const progress = document.createElement('strong');
             progress.textContent = continuation.dataset.progressText || '';
@@ -466,13 +467,13 @@
             const optionsHeading = document.createElement('div');
             optionsHeading.className = 'tomato-end-options-heading';
             const label = document.createElement('span');
-            label.textContent = type === 'tomato-end' ? '休息时长 · 分钟' : '专注时长 · 分钟';
+            label.textContent = type === 'tomato-end' ? __tt("timer.restdurationMinutes") : __tt("timer.focusTimeMinutes");
             optionsHeading.appendChild(label);
             const stopwatch = buttons.find(button => !button.dataset.duration);
             if (stopwatch) {
                 stopwatch.style.cssText = '';
                 stopwatch.className = 'tomato-dialog-action tomato-end-stopwatch';
-                setTimerUiIcon(stopwatch, 'timer', type === 'tomato-end' ? '正计时休息' : (stopwatch.dataset.action === 'continue-stopwatch' ? '继续专注正计时' : '专注正计时'));
+                setTimerUiIcon(stopwatch, 'timer', type === 'tomato-end' ? __tt("timer.stopwatchrest") : (stopwatch.dataset.action === 'continue-stopwatch' ? __tt("timer.continuefocusstopwatch") : __tt("timer.focusstopwatch")));
                 optionsHeading.appendChild(stopwatch);
             }
             const grid = document.createElement('div');
@@ -483,7 +484,7 @@
                 button.style.cssText = '';
                 button.className = 'tomato-dialog-action tomato-end-duration';
                 setTimerUiIcon(button, '', button.dataset.duration);
-                button.setAttribute('aria-label', `开始 ${button.dataset.duration} 分钟${type === 'tomato-end' ? '休息' : '专注'}`);
+                button.setAttribute('aria-label', __tt("timer.startMinutes", { duration: button.dataset.duration, value2: type === 'tomato-end' ? __tt("timer.rest") : __tt("timer.focus") }));
                 grid.appendChild(button);
             });
             body.append(optionsHeading, grid);
@@ -624,29 +625,29 @@
         const label = (value) => {
             const days = normalizeDays(value);
             const dates = days.filter((day) => day > 0);
-            return [dates.length ? dates.join('、') + '日' : '', days.includes(-1) ? '最后一天' : ''].filter(Boolean).join('、');
+            return [dates.length ? dates.join('、') + __tt("timer.day") : '', days.includes(-1) ? __tt("timer.lastDay") : ''].filter(Boolean).join('、');
         };
         const weekdayLabel = (value, anchorKey = '') => {
             const pattern = weekdayRule(value, anchorKey);
-            return (pattern.ordinal === -1 ? '最后一个' : ['第一个', '第二个', '第三个', '第四个', '第五个'][pattern.ordinal - 1])
-                + ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][pattern.weekday];
+            return (pattern.ordinal === -1 ? __tt("timer.last") : [__tt("timer.first"), __tt("timer.second"), __tt("timer.third"), __tt("timer.fourth"), __tt("timer.fifth")][pattern.ordinal - 1])
+                + [__tt("timer.sunday"), __tt("timer.monday"), __tt("timer.tuesday"), __tt("timer.wednesday"), __tt("timer.thursday"), __tt("timer.friday"), __tt("timer.saturday")][pattern.weekday];
         };
         const weekdayPickerHTML = (value, anchorKey = '') => {
             const pattern = weekdayRule(value, anchorKey);
-            const ordinals = [[1, '第一个'], [2, '第二个'], [3, '第三个'], [4, '第四个'], [5, '第五个'], [-1, '最后一个']];
-            const weekdays = [[0, '周日'], [1, '周一'], [2, '周二'], [3, '周三'], [4, '周四'], [5, '周五'], [6, '周六']];
+            const ordinals = [[1, __tt("timer.first")], [2, __tt("timer.second")], [3, __tt("timer.third")], [4, __tt("timer.fourth")], [5, __tt("timer.fifth")], [-1, __tt("timer.last")]];
+            const weekdays = [[0, __tt("timer.sunday")], [1, __tt("timer.monday")], [2, __tt("timer.tuesday")], [3, __tt("timer.wednesday")], [4, __tt("timer.thursday")], [5, __tt("timer.friday")], [6, __tt("timer.saturday")]];
             const select = (field, label, values, selected) => '<select data-tm-month-week="' + field + '" aria-label="' + label + '" style="flex:1;min-width:0;height:36px;padding:0 10px;border:1px solid var(--tm-border-color,var(--b3-theme-surface-light));border-radius:6px;background:var(--tm-bg-color,var(--b3-theme-background));color:var(--tm-text-color,var(--b3-theme-on-background));font:inherit;">'
                 + values.map(([key, text]) => '<option value="' + key + '"' + (key === selected ? ' selected' : '') + '>' + text + '</option>').join('') + '</select>';
-            return '<div style="display:flex;gap:8px;width:100%;min-width:0;">' + select('ordinal', '每月第几个星期', ordinals, pattern.ordinal) + select('weekday', '星期几', weekdays, pattern.weekday) + '</div>';
+            return '<div style="display:flex;gap:8px;width:100%;min-width:0;">' + select('ordinal', __tt("timer.weekdayOfTheMonth"), ordinals, pattern.ordinal) + select('weekday', __tt("timer.weekday"), weekdays, pattern.weekday) + '</div>';
         };
         const pickerHTML = (value, anchorKey = '') => {
             const days = value === undefined ? [parseKey(anchorKey)?.day || 1] : normalizeDays(value);
             const buttons = Array.from({ length: 32 }, (_, index) => index < 31 ? index + 1 : -1).map((day) => {
                 const selected = days.includes(day);
-                const title = day === -1 ? '最后一天' : String(day);
-                return '<button type="button" class="tm-repeat-month-day' + (selected ? ' is-selected' : '') + '" data-tm-month-day="' + day + '" aria-pressed="' + selected + '" aria-label="每月' + (day === -1 ? title : title + '日') + '">' + title + '</button>';
+                const title = day === -1 ? __tt("timer.lastDay") : String(day);
+                return '<button type="button" class="tm-repeat-month-day' + (selected ? ' is-selected' : '') + '" data-tm-month-day="' + day + '" aria-pressed="' + selected + __tt("timer.ariaLabelMonthly") + (day === -1 ? title : title + __tt("timer.day")) + '">' + title + '</button>';
             }).join('');
-            return '<style>.tm-repeat-month-days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;width:100%;min-width:0}.tm-repeat-month-day{position:relative;z-index:0;min-width:0;height:36px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--tm-text-color,var(--b3-theme-on-background));font:inherit;font-size:12px;font-weight:750;cursor:pointer}.tm-repeat-month-day::after{content:"";position:absolute;z-index:-1;pointer-events:none;width:28px;height:28px;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:999px}.tm-repeat-month-day:hover::after{background:var(--tm-hover-bg,var(--b3-theme-surface-light))}.tm-repeat-month-day.is-selected{color:var(--tm-primary-color,var(--b3-theme-primary))}.tm-repeat-month-day.is-selected::after{background:color-mix(in srgb,var(--tm-primary-color,var(--b3-theme-primary)) 20%,var(--tm-card-bg,var(--b3-theme-background)) 80%)}.tm-repeat-month-day:focus-visible{outline:2px solid var(--tm-primary-color,var(--b3-theme-primary));outline-offset:1px}.tm-repeat-month-day[data-tm-month-day="-1"]{grid-column:span 2;font-weight:500}.tm-repeat-month-day[data-tm-month-day="-1"]::after{width:calc(100% - 8px);border-radius:6px}.tm-repeat-month-days-note{margin:6px 0 0;color:var(--tm-secondary-text,var(--b3-theme-on-surface-light));font-size:12px;line-height:1.5}@media(pointer:coarse){.tm-repeat-month-day{height:44px}.tm-repeat-month-day::after{width:32px;height:32px}}</style><div class="tm-repeat-month-days" role="group" aria-label="每月日期，可多选">' + buttons + '</div><p class="tm-repeat-month-days-note">' + (value === undefined ? '可多选；未修改时保留原有月末规则。' : '当月不存在的日期跳过；最后一天随月份变化。') + '</p>';
+            return `<style>.tm-repeat-month-days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;width:100%;min-width:0}.tm-repeat-month-day{position:relative;z-index:0;min-width:0;height:36px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--tm-text-color,var(--b3-theme-on-background));font:inherit;font-size:12px;font-weight:750;cursor:pointer}.tm-repeat-month-day::after{content:"";position:absolute;z-index:-1;pointer-events:none;width:28px;height:28px;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:999px}.tm-repeat-month-day:hover::after{background:var(--tm-hover-bg,var(--b3-theme-surface-light))}.tm-repeat-month-day.is-selected{color:var(--tm-primary-color,var(--b3-theme-primary))}.tm-repeat-month-day.is-selected::after{background:color-mix(in srgb,var(--tm-primary-color,var(--b3-theme-primary)) 20%,var(--tm-card-bg,var(--b3-theme-background)) 80%)}.tm-repeat-month-day:focus-visible{outline:2px solid var(--tm-primary-color,var(--b3-theme-primary));outline-offset:1px}.tm-repeat-month-day[data-tm-month-day="-1"]{grid-column:span 2;font-weight:500}.tm-repeat-month-day[data-tm-month-day="-1"]::after{width:calc(100% - 8px);border-radius:6px}.tm-repeat-month-days-note{margin:6px 0 0;color:var(--tm-secondary-text,var(--b3-theme-on-surface-light));font-size:12px;line-height:1.5}@media(pointer:coarse){.tm-repeat-month-day{height:44px}.tm-repeat-month-day::after{width:32px;height:32px}}</style><div class="tm-repeat-month-days" role="group" aria-label="${globalThis.__dockTomatoI18n.html("timer.monthlyDatesMultiSelect")}">` + buttons + '</div><p class="tm-repeat-month-days-note">' + (value === undefined ? __tt("timer.multiSelectKeepsTheOriginalMonthEndRuleWhen") : __tt("timer.datesThatDoNotExistInTheMonthAre")) + '</p>';
         };
         return Object.freeze({ version: 1, normalizeDays, weekdayRule, weekdayLabel, weekdayPickerHTML, isExplicit, candidates, nextDateKey, previousDateKey, ordinal, iterate, afterCompletion, label, pickerHTML });
     }
@@ -1135,7 +1136,7 @@
         try {
             const r = await postJSON('/api/file/readDir', { path });
             if (r?.data?.code !== 0) {
-                const message = String(r?.data?.msg || '读取音频目录失败');
+                const message = String(r?.data?.msg || __tt("timer.couldNotReadTheAudioFolder"));
                 if (options.strict && r?.data?.code !== 404 && !/not exist|not found|no such file|不存在/i.test(message)) {
                     throw new Error(message);
                 }
@@ -3200,10 +3201,10 @@
     let stopwatchDisplayOffset = 0;  // 🔧 休息前的时间，用于显示偏移
     
     const TIME_PERIODS = {
-        'night': '凌晨',
-        'morning': '上午',
-        'afternoon': '下午',
-        'evening': '晚上'
+        'night': __tt("timer.earlyMorning"),
+        'morning': __tt("timer.morning"),
+        'afternoon': __tt("timer.afternoon"),
+        'evening': __tt("timer.evening")
     };
 
     const TIME_PERIOD_ORDER = ['night', 'morning', 'afternoon', 'evening'];
@@ -3578,13 +3579,13 @@
 
         // 用户提示消息模板
         messages: {
-            network: '网络连接异常，请检查网络设置',
-            parameter: '参数错误，请稍后重试',
-            permission: '权限不足，无法执行此操作',
-            api: '服务暂时不可用，请稍后重试',
-            parse: '数据处理异常，请稍后重试',
-            timeout: '请求超时，请稍后重试',
-            unknown: '发生未知错误，请稍后重试'
+            network: __tt("timer.connectionFailedCheckYourNetworkSettings"),
+            parameter: __tt("timer.invalidParametersPleaseTryAgain"),
+            permission: __tt("timer.youDoNotHavePermissionToPerformThisAction"),
+            api: __tt("timer.theServiceIsTemporarilyUnavailablePleaseTryAgainShortly"),
+            parse: __tt("timer.dataProcessingFailedPleaseTryAgain"),
+            timeout: __tt("timer.theRequestTimedOutPleaseTryAgain"),
+            unknown: __tt("timer.anUnexpectedErrorOccurredPleaseTryAgain")
         },
 
         /**
@@ -3682,7 +3683,7 @@
          * @param {string} message - 错误消息
          * @param {string} title - 标题（可选）
          */
-        showUserNotification(message, title = '提示') {
+        showUserNotification(message, title = __tt("timer.notice")) {
             if (typeof showToastDialog === 'function') {
                 showToastDialog(title, message, 'error');
             } else {
@@ -3825,11 +3826,11 @@
         const hours = Math.floor(minutes / 60);
         const mins = Math.round(minutes % 60);
         if (hours > 0 && mins > 0) {
-            return `${hours}小时${mins}分钟`;
+            return __tt("timer.hMinutes", { hours: hours, mins: mins });
         } else if (hours > 0) {
-            return `${hours}小时`;
+            return __tt("timer.h", { hours: hours });
         } else {
-            return `${mins}分钟`;
+            return __tt("timer.minutes2", { mins: mins });
         }
     }
 
@@ -4275,31 +4276,31 @@
     // ========== 霓虹主题配置 ==========
     const NEON_THEMES = {
         'classic': {
-            name: '经典霓虹粉紫',
+            name: __tt("settings.themeClassic"),
             colors: ['#ff6b9d', '#c44569', '#f8efba', '#f19066'],
             gradientStart: '#ff6b9d',
             gradientEnd: '#c44569',
             glowColor: '#ff6b9d',
             bgColor: '#1a1a2e',
-            description: '浪漫温柔的霓虹粉紫渐变'
+            description: __tt("timer.aSoftPinkAndPurpleNeonGradient")
         },
         'future': {
-            name: '未来科技蓝绿',
+            name: __tt("settings.themeFuture"),
             colors: ['#00d2d3', '#54a0ff', '#5f27cd', '#01a3a4'],
             gradientStart: '#00d2d3',
             gradientEnd: '#54a0ff',
             glowColor: '#00d2d3',
             bgColor: '#0a0a1a',
-            description: '科技感十足的蓝绿冷色调'
+            description: __tt("timer.coolBlueAndGreenTones")
         },
         'default': {
-            name: '默认简约',
+            name: __tt("settings.themeDefault"),
             colors: ['#1E88E5', '#43A047', '#FB8C00', '#E53935'],
             gradientStart: '#1E88E5',
             gradientEnd: '#43A047',
             glowColor: '#1E88E5',
             bgColor: 'transparent',
-            description: '简洁清新的默认风格'
+            description: __tt("timer.aCleanFreshDefaultStyle")
         }
     };
 
@@ -4346,25 +4347,25 @@
             const customColors = userSettings.appearance?.customColors;
             if (customColors && customColors.start && customColors.end && customColors.glow) {
                 return {
-                    name: '自定义颜色',
+                    name: __tt("settings.themeCustom"),
                     colors: [customColors.start, customColors.end],
                     gradientStart: customColors.start,
                     gradientEnd: customColors.end,
                     glowColor: customColors.glow,
                     bgColor: '#1a1a2e',
-                    description: '使用您选择的自定义颜色'
+                    description: __tt("timer.useYourSelectedCustomColor")
                 };
             }
             // 回退到单一 customColor
             const customColor = userSettings.appearance?.customColor || '#ff6b9d';
             return {
-                name: '自定义颜色',
+                name: __tt("settings.themeCustom"),
                 colors: [customColor, adjustColor(customColor, -30), adjustColor(customColor, 60), adjustColor(customColor, -60)],
                 gradientStart: customColor,
                 gradientEnd: adjustColor(customColor, -30),
                 glowColor: customColor,
                 bgColor: '#1a1a2e',
-                description: '使用您选择的自定义颜色'
+                description: __tt("timer.useYourSelectedCustomColor")
             };
         }
         
@@ -4605,9 +4606,9 @@
 
     function getLuminaTimerModeLabel(modeValue = null) {
         const mode = String(modeValue || timerMode || '').trim();
-        if (mode === 'break' || mode === 'stopwatch-break') return '休息计时';
-        if (mode === 'stopwatch') return '专注正计时';
-        if (mode === 'countdown') return '番茄计时';
+        if (mode === 'break' || mode === 'stopwatch-break') return __tt("timer.resttimer");
+        if (mode === 'stopwatch') return __tt("timer.focusstopwatch");
+        if (mode === 'countdown') return __tt("timer.pomodorotimer");
         return '';
     }
 
@@ -4669,9 +4670,9 @@
         const activity = getEffectiveTimerActivity();
         if (!activity.running && !activity.paused) return '';
         const mode = String(modeValue || syncState?.mode || timerMode || '').trim();
-        if (mode === 'countdown') return '番茄';
-        if (mode === 'stopwatch') return '专注正计时';
-        if (mode === 'break' || mode === 'stopwatch-break') return '休息';
+        if (mode === 'countdown') return __tt("timer.pomodoro");
+        if (mode === 'stopwatch') return __tt("timer.focusstopwatch");
+        if (mode === 'break' || mode === 'stopwatch-break') return __tt("timer.rest");
         return '';
     }
 
@@ -4773,9 +4774,9 @@
         const path = String(cfg.configPath || DEFAULT_LUMINA_CONFIG_PATH).trim() || DEFAULT_LUMINA_CONFIG_PATH;
         try { if (__tomatoFileTextCache instanceof Map) __tomatoFileTextCache.delete(path); } catch (e) {}
         const file = await __tomatoGetFileText(path);
-        if (!file?.exists) throw new Error('未读取到轻语配置');
+        if (!file?.exists) throw new Error(__tt("timer.luminaSettingsCouldNotBeRead"));
         const raw = safeJsonParse(file.text);
-        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('轻语配置格式无效');
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(__tt("timer.invalidLuminaSettings"));
         const syncMode = raw.syncMode === 'doc' ? 'doc' : 'dailynote';
         const notebookId = String(raw.notebookId || raw.syncNotebookId || '').trim();
         const syncDocId = String(raw.syncDocId || '').trim();
@@ -4933,17 +4934,17 @@
 
     async function getOrCreateTimelineLuminaDailyNoteDoc(config, date) {
         const notebookId = String(config?.notebookId || '').trim();
-        if (!notebookId) throw new Error('轻语未配置日记笔记本');
+        if (!notebookId) throw new Error(__tt("timer.noJournalNotebookIsConfiguredInLumina"));
         const template = await getLuminaDailyNoteTemplate(config);
         const hPath = renderLuminaDailyNotePath(template, date);
-        if (!hPath) throw new Error('轻语日记路径模板无效');
+        if (!hPath) throw new Error(__tt("timer.invalidLuminaJournalPathTemplate"));
         const idsRes = await postJSON('/api/filetree/getIDsByHPath', { notebook: notebookId, path: hPath });
         const ids = Array.isArray(idsRes?.data?.data) ? idsRes.data.data : [];
         if (ids.length > 0) return { docId: ids[0], hPath, isNew: false };
         const createRes = await postJSON('/api/filetree/createDocWithMd', { notebook: notebookId, path: hPath, markdown: '' });
-        if (createRes?.data?.code !== 0 || !createRes.data?.data) throw new Error(createRes?.data?.msg || '创建轻语日记失败');
+        if (createRes?.data?.code !== 0 || !createRes.data?.data) throw new Error(createRes?.data?.msg || __tt("timer.couldNotCreateTheLuminaJournal"));
         const docId = typeof createRes.data.data === 'string' ? createRes.data.data : (createRes.data.data.id || createRes.data.data.blockId);
-        if (!docId) throw new Error('创建轻语日记后未返回文档 ID');
+        if (!docId) throw new Error(__tt("timer.noDocumentIdWasReturnedAfterCreatingTheLumina"));
         await applyLuminaDailyNoteIcon(config, docId, date);
         return { docId, hPath, isNew: true };
     }
@@ -4968,7 +4969,7 @@
             dataType: 'markdown',
             data: markdown
         });
-        if (res?.data?.code !== 0) throw new Error(res?.data?.msg || '写入轻语记录失败');
+        if (res?.data?.code !== 0) throw new Error(res?.data?.msg || __tt("timer.couldNotWriteTheLuminaEntry"));
         return extractBlockIdFromBlockOpResult(res.data?.data, false);
     }
 
@@ -4978,7 +4979,7 @@
 
     async function appendTimelineLuminaToDocWithDateGroup(docId, markdown, timestamp) {
         const rootId = String(docId || '').trim();
-        if (!rootId) throw new Error('轻语未配置指定文档');
+        if (!rootId) throw new Error(__tt("timer.noDestinationDocumentIsConfiguredInLumina"));
         const dateStr = formatLuminaDateOnly(timestamp);
         const safeDocId = escapeSqlString(rootId);
         const safeDateStr = escapeSqlString(dateStr);
@@ -5025,7 +5026,7 @@
             data: markdown,
             previousID: previousId
         });
-        if (insertRes?.data?.code !== 0) throw new Error(insertRes?.data?.msg || '写入轻语记录失败');
+        if (insertRes?.data?.code !== 0) throw new Error(insertRes?.data?.msg || __tt("timer.couldNotWriteTheLuminaEntry"));
         return extractBlockIdFromBlockOpResult(insertRes.data?.data, true);
     }
 
@@ -5043,14 +5044,14 @@
 
     async function writeTimelineLuminaRecord(content, options = {}) {
         const cfg = getTimelineLuminaLinkSettings();
-        if (cfg.enabled !== true) throw new Error('轻语联动未开启');
+        if (cfg.enabled !== true) throw new Error(__tt("timer.luminaIntegrationIsDisabled"));
         const timestamp = Number(options.timestamp || Date.now());
         const status = String(options.status || '').trim();
         const fullContent = String(content || '').trim();
-        if (!fullContent) throw new Error('记录内容为空');
+        if (!fullContent) throw new Error(__tt("timer.theEntryIsEmpty"));
         const luminaPlugin = getLuminaPluginInstance();
-        if (!luminaPlugin) throw new Error('轻语插件未加载');
-        if (typeof luminaPlugin.addBreezeNote !== 'function') throw new Error('当前轻语版本不支持番茄钟记录');
+        if (!luminaPlugin) throw new Error(__tt("timer.theLuminaPluginIsNotLoaded"));
+        if (typeof luminaPlugin.addBreezeNote !== 'function') throw new Error(__tt("timer.thisLuminaVersionDoesNotSupportPomodoroEntries"));
         const routineTag = getActiveRoutineNameForLuminaTag(syncState?.taskBlockId || currentTaskBlockId || '');
         const fallbackTag = routineTag ? '' : getTimerModeLuminaFallbackTag(syncState?.mode || timerMode || '');
         const luminaTag = routineTag || fallbackTag;
@@ -5059,11 +5060,11 @@
         const recordContent = tagLine && !existingTags.includes(tagLine) ? `${fullContent}\n${tagLine}` : fullContent;
         const note = await luminaPlugin.addBreezeNote({ content: recordContent, timestamp });
         const noteId = String(note?.id || '').trim();
-        if (!noteId) throw new Error('轻语记录保存成功但未返回记录 ID');
+        if (!noteId) throw new Error(__tt("timer.luminaSavedTheEntryButDidNotReturnAn"));
         return {
             blockId: '',
             noteId,
-            targetText: '轻语 / 清风记录',
+            targetText: __tt("timer.luminaQingfengEntries"),
             content: fullContent,
             status,
             tag: luminaTag,
@@ -5145,11 +5146,11 @@
 
     async function describeTimelineLuminaTarget() {
         const luminaPlugin = getLuminaPluginInstance();
-        if (!luminaPlugin) return { ok: false, text: '轻语插件未加载' };
+        if (!luminaPlugin) return { ok: false, text: __tt("timer.theLuminaPluginIsNotLoaded") };
         if (typeof luminaPlugin.addBreezeNote !== 'function') {
-            return { ok: false, text: '当前轻语版本不支持番茄钟记录' };
+            return { ok: false, text: __tt("timer.thisLuminaVersionDoesNotSupportPomodoroEntries") };
         }
-        return { ok: true, text: '轻语 / 清风记录' };
+        return { ok: true, text: __tt("timer.luminaQingfengEntries") };
     }
 
     function showMiniToast(text, durationMs = 1400) {
@@ -5227,7 +5228,7 @@
         try {
             const notificationPayload = {
                 channel: DEVICE_NOTIFICATION_CHANNEL,
-                title: '⏱️ 正计时提醒',
+                title: __tt("timer.stopwatchwarnings"),
                 body,
                 delayInSeconds: 0,
                 timeoutType: 'default',
@@ -5260,7 +5261,7 @@
         if (!sessionKey || hour <= loadStopwatchHourlyReminderState(sessionKey)) return;
         stopwatchHourlyReminderLastHour = hour;
         saveStopwatchHourlyReminderState(sessionKey, hour);
-        const body = `正计时已进行 ${hour} 小时`;
+        const body = __tt("timer.theStopwatchHasBeenRunningForHours", { hour: hour });
         try { if (!document.hidden) showMiniToast(body, STOPWATCH_HOURLY_TOAST_DURATION_MS); } catch (e) {}
         sendStopwatchHourlyDesktopNotification(body);
     }
@@ -5268,12 +5269,15 @@
     function getDistractionToastText(count) {
         try {
             ensureUserSettings();
-            const template = String(userSettings?.main?.distractionToastText ?? '已记录一次分心（{count} 次）');
+            let template = String(userSettings?.main?.distractionToastText ?? '已记录一次分心（{count} 次）');
+            if (template === '已记录一次分心（{count} 次）' || template === 'Distraction recorded ({count} total)') {
+                template = __tt('timer.distractionRecordedTotal', { count: '{count}' });
+            }
             const n = Number.isFinite(Number(count)) ? String(Math.max(0, Math.floor(Number(count)))) : '';
             const out = template.replaceAll('{count}', n);
-            return out || `已记录一次分心（${n} 次）`;
+            return out || __tt("timer.distractionRecordedTotal2", { n: n });
         } catch (e) {
-            return `已记录一次分心（${count} 次）`;
+            return __tt("timer.distractionRecordedTotal", { count: count });
         }
     }
 
@@ -5317,7 +5321,7 @@
     async function recordDistractionForHistory(recordTimestamp) {
         const ts = parseInt(recordTimestamp, 10);
         if (!ts || isNaN(ts)) {
-            showMiniToast('无法识别记录');
+            showMiniToast(__tt("timer.unrecognizedRecord"));
             return false;
         }
         
@@ -5333,10 +5337,10 @@
                 return true;
             }, { timestamp: ts });
             if (!changed || !updatedRecord) {
-                showMiniToast('未找到对应记录');
+                showMiniToast(__tt("timer.recordNotFound"));
                 return false;
             }
-            showMiniToast(`已为记录添加分心（${updatedRecord.distractionCount} 次）`);
+            showMiniToast(__tt("timer.distractionAddedToThisRecordTotal", { distractionCount: updatedRecord.distractionCount }));
             
             // 刷新时间轴显示
             try {
@@ -5360,7 +5364,7 @@
             return true;
         } catch (e) {
             Logger.error('添加历史记录分心失败:', e);
-            showMiniToast('添加分心失败');
+            showMiniToast(__tt("timer.adddistractionsfailed"));
             return false;
         }
     }
@@ -5464,7 +5468,7 @@
             try {
                 try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
                 const ok = await __tomatoPutFileText(SETTINGS_FILE_PATH, snapshot);
-                if (!ok) throw new Error('思源API保存失败');
+                if (!ok) throw new Error(__tt("timer.siyuanApiSaveFailed"));
                 return true;
             } catch (e) {
                 Logger.error('保存设置失败:', e);
@@ -5501,7 +5505,7 @@
             try {
                 await __tomatoEnsureDir(PLUGIN_STORAGE_DIR);
                 const ok = await __tomatoPutFileText(WORK_BACKGROUND_PLAYLIST_PATH, snapshot);
-                if (!ok) throw new Error('思源API保存失败');
+                if (!ok) throw new Error(__tt("timer.siyuanApiSaveFailed"));
                 // A newer queued edit must keep its pending backup until its own write succeeds.
                 if (JSON.stringify(readWorkBackgroundPlaylistBackup()?.playlist) === snapshot) {
                     rememberWorkBackgroundPlaylist(JSON.parse(snapshot), false);
@@ -5530,7 +5534,7 @@
             const shared = await __tomatoGetFileText(WORK_BACKGROUND_PLAYLIST_PATH);
             if (shared.exists) {
                 const playlist = JSON.parse(shared.text);
-                if (!Array.isArray(playlist)) throw new Error('无效的专注背景音列表');
+                if (!Array.isArray(playlist)) throw new Error(__tt("timer.invalidFocusBackgroundPlaylist"));
                 rememberWorkBackgroundPlaylist(applyPlaylist(playlist), false);
             } else if (backup) {
                 const playlist = applyPlaylist(backup.playlist);
@@ -5581,7 +5585,7 @@
             try {
                 try { await __tomatoEnsureDir(PLUGIN_STORAGE_DIR); } catch (e) {}
                 const ok = await __tomatoPutFileText(FOCUS_TIME_SETTINGS_PATH, snapshot);
-                if (!ok) throw new Error('思源API保存失败');
+                if (!ok) throw new Error(__tt("timer.siyuanApiSaveFailed"));
                 Logger.info('专注时间设置保存成功');
                 return true;
             } catch (e) {
@@ -5618,7 +5622,7 @@
     const HISTORY_LOCAL_STORAGE_KEY = 'siyuan-tomato-history';
     const HISTORY_LOCAL_FALLBACK_META_KEY = 'siyuan-tomato-history-fallback-meta';
     function historyRecordLimitError() {
-        const error = new Error(`历史记录超过 ${HISTORY_RECORD_MEMORY_LIMIT} 条，请拆分或归档后重试`);
+        const error = new Error(__tt("timer.historyContainsMoreThanRecordsSplitOrArchiveIt", { HISTORY_RECORD_MEMORY_LIMIT: HISTORY_RECORD_MEMORY_LIMIT }));
         error.code = 'HISTORY_RECORD_LIMIT_EXCEEDED';
         return error;
     }
@@ -5629,13 +5633,13 @@
 
     function assertHistoryTextSize(value) {
         if (String(value || '').length <= HISTORY_TEXT_MEMORY_LIMIT) return;
-        const error = new Error('历史数据文件过大，请拆分或归档后重试');
+        const error = new Error(__tt("timer.theHistoryFileIsTooLargeSplitOrArchive"));
         error.code = 'HISTORY_TEXT_LIMIT_EXCEEDED';
         throw error;
     }
 
     function historyTextLimitError(path = '') {
-        const error = new Error('历史数据文件过大，请拆分或归档后重试');
+        const error = new Error(__tt("timer.theHistoryFileIsTooLargeSplitOrArchive"));
         error.code = 'HISTORY_TEXT_LIMIT_EXCEEDED';
         error.details = { path: String(path || ''), maxTextBytes: HISTORY_TEXT_MEMORY_LIMIT };
         return error;
@@ -5649,7 +5653,7 @@
     }
 
     function historyWriterDisposedError() {
-        const error = new Error('番茄历史写入已停止');
+        const error = new Error(__tt("plugin.pomodoroHistoryWritesHaveStopped"));
         error.code = 'HISTORY_WRITER_DISPOSED';
         return error;
     }
@@ -5669,11 +5673,11 @@
 
     function getHistoryMutationErrorMessage(error) {
         const code = String(error?.code || '');
-        if (code === 'HISTORY_REVISION_CHANGED') return '历史记录已被其他窗口更新，请刷新后重试';
-        if (code === 'HISTORY_WRITER_BUSY') return '历史记录正在被其他窗口保存，请稍后重试';
-        if (code === 'HISTORY_WRITER_TIMEOUT') return '历史记录写入协调超时，请稍后重试';
-        if (code === 'HISTORY_SOURCE_UNAVAILABLE') return '历史文件暂时不可用，请检查思源状态后重试';
-        return String(error?.message || '保存失败');
+        if (code === 'HISTORY_REVISION_CHANGED') return __tt("timer.anotherWindowUpdatedHistoryRefreshAndTryAgain");
+        if (code === 'HISTORY_WRITER_BUSY') return __tt("timer.anotherWindowIsSavingHistoryPleaseTryAgainShortly");
+        if (code === 'HISTORY_WRITER_TIMEOUT') return __tt("timer.historyWriteCoordinationTimedOutPleaseTryAgain");
+        if (code === 'HISTORY_SOURCE_UNAVAILABLE') return __tt("timer.theHistoryFileIsTemporarilyUnavailableCheckSiyuanAnd");
+        return String(error?.message || __tt("timer.savefailed"));
     }
 
     async function withHistoryIoTimeout(path, operation) {
@@ -5689,7 +5693,7 @@
             const timeout = new Promise((resolve, reject) => {
                 timer = setTimeout(() => {
                     try { controller?.abort?.(); } catch (e) {}
-                    reject(historySourceError(`读取历史文件超时: ${path}`, {
+                    reject(historySourceError(__tt("timer.historyFileReadTimedOut", { path: path }), {
                         path,
                         timeoutMs: HISTORY_IO_TIMEOUT_MS,
                     }));
@@ -5702,7 +5706,7 @@
         } catch (cause) {
             if (writerSignal?.aborted) throw historyWriterDisposedError();
             if (cause?.code) throw cause;
-            throw historySourceError(`读取历史文件失败: ${path}`, {
+            throw historySourceError(__tt("timer.couldNotReadTheHistoryFile", { path: path }), {
                 path,
                 timeoutMs: HISTORY_IO_TIMEOUT_MS,
                 cause: String(cause?.message || ''),
@@ -5723,7 +5727,7 @@
             });
             if (response.status === 404 && options?.optional === true) return null;
             if (!response.ok) {
-                throw historySourceError(`读取历史文件失败: ${path}`, { path, status: response.status });
+                throw historySourceError(__tt("timer.couldNotReadTheHistoryFile", { path: path }), { path, status: response.status });
             }
             return readHistoryResponseText(response, path);
         });
@@ -5739,7 +5743,7 @@
             });
             if (response.status === 404) return { code: 0, data: [] };
             if (!response.ok) {
-                throw historySourceError('读取历史目录失败', {
+                throw historySourceError(__tt("kernel.couldNotReadTheHistoryFolder"), {
                     path: HISTORY_STORAGE_DIR,
                     status: response.status,
                 });
@@ -5747,7 +5751,7 @@
             const raw = await readHistoryResponseText(response, HISTORY_STORAGE_DIR);
             try { return JSON.parse(String(raw || '')); }
             catch (cause) {
-                throw historySourceError('历史目录响应格式错误', {
+                throw historySourceError(__tt("kernel.invalidHistoryFolderResponse"), {
                     path: HISTORY_STORAGE_DIR,
                     cause: String(cause?.message || ''),
                 });
@@ -5964,7 +5968,7 @@
         const currentIndex = await readHistoryIndex();
         assertHistoryWriteActive();
         if (historyIndexIdentity(currentIndex) === historyIndexIdentity(expectedIndex)) return true;
-        const error = new Error('历史索引已被其他窗口更新，请重试');
+        const error = new Error(__tt("timer.anotherWindowUpdatedTheHistoryIndexPleaseTryAgain"));
         error.code = 'HISTORY_REVISION_CHANGED';
         throw error;
     }
@@ -6045,14 +6049,14 @@
 
     async function readHistoryFileTextStrict(path) {
         const text = await requestHistoryFileText(path);
-        if (!String(text || '').trim()) throw new Error(`历史文件为空: ${path}`);
+        if (!String(text || '').trim()) throw new Error(__tt("timer.historyFileIsEmpty", { path: path }));
         return String(text);
     }
 
     async function readHistoryJsonFileStrict(path) {
         const text = await readHistoryFileTextStrict(path);
         const parsed = JSON.parse(String(text));
-        if (!Array.isArray(parsed)) throw new Error(`历史文件格式错误: ${path}`);
+        if (!Array.isArray(parsed)) throw new Error(__tt("timer.invalidHistoryFile", { path: path }));
         return normalizeHistoryRecords(parsed);
     }
 
@@ -6064,7 +6068,7 @@
             const message = String(parsed.msg || '').toLowerCase();
             if (parsed.code !== 0 && (message.includes('not exist') || message.includes('not found') || message.includes('no such file') || message.includes('不存在'))) return [];
         }
-        if (!Array.isArray(parsed)) throw new Error(`旧历史文件格式错误: ${path}`);
+        if (!Array.isArray(parsed)) throw new Error(__tt("timer.invalidLegacyHistoryFile", { path: path }));
         return normalizeHistoryRecords(parsed);
     }
 
@@ -6074,7 +6078,7 @@
             const message = String(result?.msg || result?.message || '').toLowerCase();
             if (message.includes('not exist') || message.includes('not found')
                 || message.includes('no such file') || message.includes('不存在')) return [];
-            throw historySourceError('读取历史目录失败', {
+            throw historySourceError(__tt("kernel.couldNotReadTheHistoryFolder"), {
                 path: HISTORY_STORAGE_DIR,
                 code: Number(result?.code) || -1,
                 message,
@@ -6103,7 +6107,7 @@
     }
 
     async function readHistoryIndex() {
-        if (!await ensureHistoryStorageDir()) throw new Error('创建历史目录失败');
+        if (!await ensureHistoryStorageDir()) throw new Error(__tt("timer.couldNotCreateTheHistoryFolder"));
         try {
             const path = `${HISTORY_STORAGE_DIR}/history-index.json`;
             const raw = await requestHistoryFileText(path, { optional: true });
@@ -6143,7 +6147,7 @@
         }
         const names = await listHistoryShardNames();
         if (names.some(name => !/^(?:\d{4}|unknown)\.json$/.test(name))) {
-            throw historySourceError('历史索引缺失，无法确定权威分片版本', { path: HISTORY_STORAGE_DIR });
+            throw historySourceError(__tt("kernel.theHistoryIndexIsMissingTheCurrentShardVersion"), { path: HISTORY_STORAGE_DIR });
         }
         return names.map(name => ({ name, hash: '' }));
     }
@@ -6188,13 +6192,13 @@
         const path = `${HISTORY_STORAGE_DIR}/${name}`;
         const raw = await readHistoryFileTextStrict(path);
         if (hash && hashHistoryText(raw) !== hash) {
-            const error = historySourceError(`历史分片校验失败: ${name}`, { path });
+            const error = historySourceError(__tt("kernel.historyShardVerificationFailed", { name: name }), { path });
             error.code = 'HISTORY_REVISION_CHANGED';
             throw error;
         }
         const cacheable = useCache && prepareHistoryShardRead(entry, raw.length);
         const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) throw historySourceError(`历史分片格式错误: ${name}`, { path });
+        if (!Array.isArray(parsed)) throw historySourceError(__tt("kernel.invalidHistoryShard", { name: name }), { path });
         const records = normalizeHistoryRecords(parsed);
         assertHistoryRecordCount(records.length);
         if (cacheable) retainHistoryShard(name, hash, records, raw.length);
@@ -6236,10 +6240,10 @@
         const meta = JSON.parse(metaRaw);
         assertHistoryRecordCount(meta?.recordCount);
         const raw = localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY);
-        if (!String(raw || '').trim()) throw new Error('本地历史回退标记缺少数据');
+        if (!String(raw || '').trim()) throw new Error(__tt("timer.theLocalHistoryFallbackMarkerHasNoData"));
         assertHistoryTextSize(raw);
         const parsed = JSON.parse(String(raw));
-        if (!Array.isArray(parsed)) throw new Error('本地历史回退数据格式错误');
+        if (!Array.isArray(parsed)) throw new Error(__tt("timer.invalidLocalHistoryFallbackData"));
         assertHistoryRecordCount(parsed.length);
         return normalizeHistoryRecords(parsed);
     }
@@ -6339,7 +6343,7 @@
     async function writeHistoryShardSet(records) {
         normalizeHistoryRecords(records);
         assertHistoryRecordCount(records?.length);
-        if (!await ensureHistoryStorageDir()) throw new Error('创建历史目录失败');
+        if (!await ensureHistoryStorageDir()) throw new Error(__tt("timer.couldNotCreateTheHistoryFolder"));
         const historyIndexFilePath = `${HISTORY_STORAGE_DIR}/history-index.json`;
         const existingIndex = await readHistoryIndex();
         const previousRevision = Math.max(0, Number(existingIndex?.revision) || 0);
@@ -6363,7 +6367,7 @@
             if (!reuseExisting) {
                 name = createHistoryShardFileName(year, revision, hash);
                 if (!await putHistoryFileText(`${HISTORY_STORAGE_DIR}/${name}`, data)) {
-                    throw new Error(`保存历史文件失败: ${name}`);
+                    throw new Error(__tt("timer.couldNotSaveTheHistoryFile", { name: name }));
                 }
             }
             shards[year] = {
@@ -6383,7 +6387,7 @@
         }, null, 2);
         await assertHistoryIndexCommitAllowed(existingIndex);
         if (!await putHistoryFileText(historyIndexFilePath, indexData)) {
-            throw new Error('保存历史索引失败');
+            throw new Error(__tt("timer.couldNotSaveTheHistoryIndex"));
         }
         await cleanupHistoryShardFiles({ shards }, existingIndex);
         invalidateHistoryStoreCache();
@@ -6393,7 +6397,7 @@
 
     async function writeHistoryYearRecords(year, records, currentIndex) {
         if (!/^(?:\d{4}|unknown)$/.test(year) || !currentIndex?.shards) {
-            throw new Error('年度历史写入参数无效');
+            throw new Error(__tt("timer.invalidAnnualHistoryWriteParameters"));
         }
         normalizeHistoryRecords(records);
         assertHistoryRecordCount(records?.length);
@@ -6416,7 +6420,7 @@
             if (!reuseExisting) {
                 name = createHistoryShardFileName(year, revision, hash);
                 if (!await putHistoryFileText(`${HISTORY_STORAGE_DIR}/${name}`, data)) {
-                    throw new Error(`保存历史文件失败: ${name}`);
+                    throw new Error(__tt("timer.couldNotSaveTheHistoryFile", { name: name }));
                 }
             }
             shards[year] = {
@@ -6438,7 +6442,7 @@
         }, null, 2);
         await assertHistoryIndexCommitAllowed(currentIndex);
         if (!await putHistoryFileText(`${HISTORY_STORAGE_DIR}/history-index.json`, indexData)) {
-            throw new Error('保存历史索引失败');
+            throw new Error(__tt("timer.couldNotSaveTheHistoryIndex"));
         }
         await cleanupHistoryShardFiles({ shards }, currentIndex);
         invalidateHistoryStoreCache();
@@ -6478,8 +6482,8 @@
         try {
             await writeHistoryShardSet(records);
             if (isRecoveringFallback) {
-                if (!await verifyHistoryMigration(records)) throw new Error('历史后备恢复校验失败');
-                if (!await clearLegacyHistorySources()) throw new Error('历史后备恢复后清空旧数据失败');
+                if (!await verifyHistoryMigration(records)) throw new Error(__tt("timer.historyFallbackRecoveryVerificationFailed"));
+                if (!await clearLegacyHistorySources()) throw new Error(__tt("timer.couldNotClearLegacyDataAfterRecoveringTheHistory"));
             }
             localStorage.removeItem(HISTORY_LOCAL_STORAGE_KEY);
             localStorage.removeItem(HISTORY_LOCAL_FALLBACK_META_KEY);
@@ -6567,7 +6571,7 @@
                     assertHistoryRecordCount(records.length);
                     try {
                         if (records.some(record => getHistoryRecordStorageYear(record) !== year)) {
-                            throw new Error('年度历史变更跨年份');
+                            throw new Error(__tt("timer.theAnnualHistoryChangeSpansMultipleYears"));
                         }
                         await writeHistoryYearRecords(year, records, index);
                     } catch (error) {
@@ -6817,11 +6821,11 @@
             if (fallbackMetaRaw) assertHistoryRecordCount(JSON.parse(fallbackMetaRaw)?.recordCount);
             const localRaw = String(localStorage.getItem(HISTORY_LOCAL_STORAGE_KEY) || '');
             assertHistoryTextSize(localRaw);
-            if (hasLocalFallback && !localRaw.trim()) throw new Error('本地历史回退标记缺少数据');
+            if (hasLocalFallback && !localRaw.trim()) throw new Error(__tt("timer.theLocalHistoryFallbackMarkerHasNoData"));
             let localRecords = [];
             if (localRaw.trim()) {
                 localRecords = JSON.parse(localRaw);
-                if (!Array.isArray(localRecords)) throw new Error('旧本地历史格式错误');
+                if (!Array.isArray(localRecords)) throw new Error(__tt("timer.invalidLegacyLocalHistory"));
                 assertHistoryRecordCount(localRecords.length);
             }
             if (legacyRecords.length === 0 && currentRecords.length === 0 && !localRaw.trim() && !hasLocalFallback) return true;
@@ -6831,8 +6835,8 @@
                 : mergeUniqueHistoryRecords(shardRecords, legacyRecords, currentRecords, localRecords);
             migrationRecords = mergedRecords;
             await writeHistoryShardSet(mergedRecords);
-            if (!await verifyHistoryMigration(mergedRecords)) throw new Error('年度历史迁移校验失败');
-            if (!await clearLegacyHistorySources()) throw new Error('旧历史文件清空失败');
+            if (!await verifyHistoryMigration(mergedRecords)) throw new Error(__tt("timer.annualHistoryMigrationVerificationFailed"));
+            if (!await clearLegacyHistorySources()) throw new Error(__tt("timer.couldNotClearTheLegacyHistoryFile"));
             invalidateHistoryStoreCache();
             return true;
         } catch (e) {
@@ -7009,7 +7013,7 @@
         try {
             const records = HistoryRepository.statisticsView(await loadHistoryRecords());
             if (!records || records.length === 0) {
-                showMiniToast('暂无历史记录可导出');
+                showMiniToast(__tt("timer.noHistoryRecordsToExport"));
                 return;
             }
 
@@ -7020,7 +7024,7 @@
                 'PRODID:-//思源笔记番茄钟//ZH',
                 'CALSCALE:GREGORIAN',
                 'METHOD:PUBLISH',
-                'X-WR-CALNAME:番茄钟专注记录',
+                __tt("timer.xWrCalnamePomodorofocusRecords"),
                 'X-WR-TIMEZONE:Asia/Shanghai',
                 ''
             ];
@@ -7047,25 +7051,25 @@
 
                 // 获取摘要和描述
                 const modeLabels = {
-                    'countdown': '🍅 番茄专注',
-                    'break': '☕ 休息',
-                    'stopwatch': '⏱️ 专注正计时',
-                    'stopwatch-break': '☕ 正计时休息',
-                    'idle': '📋 闲置'
+                    'countdown': __tt("timer.pomodorofocus"),
+                    'break': __tt("timer.rest2"),
+                    'stopwatch': __tt("timer.focusstopwatch2"),
+                    'stopwatch-break': __tt("timer.stopwatchrest2"),
+                    'idle': __tt("timer.idle")
                 };
                 const displayTaskName = getRecordDisplayTaskName(record);
                 const summary = displayTaskName
-                    ? `${modeLabels[record.mode] || '🍅 专注'}: ${displayTaskName}`
-                    : (modeLabels[record.mode] || '🍅 专注');
+                    ? `${modeLabels[record.mode] || __tt("timer.focus2")}: ${displayTaskName}`
+                    : (modeLabels[record.mode] || __tt("timer.focus2"));
                 
                 // 构建描述
                 const durationText = record.durationSec 
-                    ? `持续时间: ${Math.floor(record.durationSec / 60)}分${record.durationSec % 60}秒`
+                    ? __tt("timer.durationMS", { value1: Math.floor(record.durationSec / 60), value2: record.durationSec % 60 })
                     : '';
                 const descriptionParts = [];
                 if (durationText) descriptionParts.push(durationText);
-                if (record.description) descriptionParts.push(`备注: ${record.description}`);
-                if (record.distractionCount) descriptionParts.push(`分心次数: ${record.distractionCount}`);
+                if (record.description) descriptionParts.push(__tt("timer.note", { description: record.description }));
+                if (record.distractionCount) descriptionParts.push(__tt("timer.distractions", { distractionCount: record.distractionCount }));
                 const description = descriptionParts.join('\\n');
 
                 // 添加事件
@@ -7087,8 +7091,8 @@
                 }
                 // 添加分类标签
                 const categories = record.mode === 'break' || record.mode === 'stopwatch-break' 
-                    ? '休息' 
-                    : '专注';
+                    ? __tt("timer.rest")
+                    : __tt("timer.focus");
                 icsLines.push(`CATEGORIES:${categories}`);
                 icsLines.push('END:VEVENT');
                 icsLines.push('');
@@ -7098,7 +7102,7 @@
             icsLines.push('END:VCALENDAR');
 
             if (exportedCount === 0) {
-                showMiniToast('没有有效的记录可导出');
+                showMiniToast(__tt("timer.noValidRecordsToExport"));
                 return;
             }
 
@@ -7111,18 +7115,18 @@
             link.href = url;
             const now = new Date();
             const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-            link.download = `番茄钟记录_${dateStr}.ics`;
+            link.download = __tt("timer.pomodoroRecordsIcs", { dateStr: dateStr });
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
             
             URL.revokeObjectURL(url);
             
-            showMiniToast(`✅ 成功导出 ${exportedCount} 条记录`);
+            showMiniToast(__tt("timer.exportedRecords", { exportedCount: exportedCount }));
             Logger.info('📅 导出 ICS 文件成功:', { count: exportedCount });
         } catch (error) {
             Logger.error('导出 ICS 文件失败:', error);
-            showMiniToast('❌ 导出失败: ' + error.message);
+            showMiniToast(__tt("timer.exportfailed") + error.message);
         }
     }
 
@@ -7133,7 +7137,7 @@
 
         // 如果不是移动端且没有开启无需确认，则弹出确认对话框
         if (!isMobile && !userSettings.deleteWithoutConfirm) {
-            if (!confirm(`确定要删除这条记录吗？\n${new Date(record.start).toLocaleString('zh-CN')} - ${formatFocusTime(record.durationMin)}`)) {
+            if (!confirm(__tt("timer.deleteThisRecord", { value1: new Date(record.start).toLocaleString('zh-CN'), value2: formatFocusTime(record.durationMin) }))) {
                 return false;
             }
         }
@@ -7178,7 +7182,7 @@
     }
 
     // ========== 插件确认对话框 ==========
-    function showMobileConfirmDialog(message, title = '确认', options = {}) {
+    function showMobileConfirmDialog(message, title = __tt("timer.confirm"), options = {}) {
         return new Promise((resolve) => {
             // 移除已存在的弹窗
             const existingModal = document.querySelector('.tomy-mobile-confirm-modal');
@@ -7198,8 +7202,8 @@
                         : 'confirm',
                 })).filter((item) => item.label)
                 : [
-                    { label: '取消', value: false, tone: 'cancel' },
-                    { label: '确定', value: true, tone: 'confirm' },
+                    { label: __tt("common.cancel"), value: false, tone: 'cancel' },
+                    { label: __tt("common.ok"), value: true, tone: 'confirm' },
                 ];
             const dismissValue = Object.prototype.hasOwnProperty.call(dialogOptions, 'dismissValue')
                 ? dialogOptions.dismissValue
@@ -7448,10 +7452,10 @@
         notification.innerHTML = `
             <div class="tomy-notification-icon"></div>
             <div class="tomy-notification-content">
-                <div class="tomy-notification-title"><span>已过期</span><span class="tomy-expired-count" data-role="expired-count">${pendingEntries.length}</span></div>
+                <div class="tomy-notification-title"><span>${__tt("timer.overdue")}</span><span class="tomy-expired-count" data-role="expired-count">${pendingEntries.length}</span></div>
                 <div class="tomy-expired-list"></div>
             </div>
-            <button type="button" class="tomy-notification-close" data-action="close-notification" aria-label="关闭过期提醒">×</button>
+            <button type="button" class="tomy-notification-close" data-action="close-notification" aria-label="${globalThis.__dockTomatoI18n.html("timer.offexpiredwarnings")}">×</button>
         `;
         const notificationIcon = notification.querySelector('.tomy-notification-icon');
         if (notificationIcon) __setReminderDockIcon(notificationIcon, 'alarm');
@@ -7783,7 +7787,7 @@
 
                 const name = document.createElement('div');
                 name.className = 'tomy-expired-item-name';
-                name.textContent = entry.reminder?.blockName || '未命名任务';
+                name.textContent = entry.reminder?.blockName || __tt("timer.untitledTask");
                 name.title = name.textContent;
 
                 itemContent.appendChild(name);
@@ -7792,11 +7796,11 @@
                 completeBtn.type = 'button';
                 completeBtn.className = 'tomy-expired-complete';
                 __setReminderDockIcon(completeBtn, 'complete');
-                completeBtn.title = '完成';
-                completeBtn.setAttribute('aria-label', `完成提醒：${name.textContent}`);
+                completeBtn.title = __tt("timer.done");
+                completeBtn.setAttribute('aria-label', __tt("timer.donewarnings", { textContent: name.textContent }));
                 const canComplete = !!(entry.blockId && entry.dateKey && entry.timeKey);
                 completeBtn.disabled = !canComplete;
-                if (!canComplete) completeBtn.title = '缺少提醒发生信息，无法完成';
+                if (!canComplete) completeBtn.title = __tt("timer.theReminderOccurrenceIsMissingAndCannotBeCompleted");
                 completeBtn.onclick = async (event) => {
                     event.stopPropagation();
                     if (completeBtn.disabled) return;
@@ -7814,11 +7818,11 @@
                         completeBtn.disabled = false;
                         __setReminderDockIcon(completeBtn, 'complete');
                         completeBtn.removeAttribute('aria-busy');
-                        showMiniToast('标记失败');
+                        showMiniToast(__tt("timer.couldNotMarkComplete"));
                         return;
                     }
                     pendingEntries = pendingEntries.filter(item => item !== entry);
-                    showMiniToast('已标记完成');
+                    showMiniToast(__tt("timer.markedComplete"));
                     if (pendingEntries.length === 0) {
                         dismissNotification();
                         return;
@@ -7835,7 +7839,7 @@
             if (pendingEntries.length > 10) {
                 const more = document.createElement('div');
                 more.className = 'tomy-expired-more';
-                more.textContent = `...共 ${pendingEntries.length} 个`;
+                more.textContent = __tt("timer.inTotal", { length: pendingEntries.length });
                 list.appendChild(more);
             }
         };
@@ -8414,12 +8418,7 @@
             border-radius: 6px; font-size: 12px; line-height: 1.6;
         `;
         intro.innerHTML = `
-            <strong>💡 使用说明</strong><br>
-            • 启用专注时间范围后，统计页面将只统计指定时间段内的记录<br>
-            • 可设置多个时间组（如工作日/周末）<br>
-            • 每个组支持多个时间段<br>
-            • 建议先禁用"专注时间筛选"功能确认原始数据完整
-        `;
+            <strong>${__tt("timer.howToUse")}</strong><br>${__tt("timer.whenFocusPeriodFilteringIsEnabledStatisticsIncludeOnly")}<br>${__tt("timer.addMultipleGroupsSuchAsWeekdaysAndWeekends")}<br>${__tt("timer.eachGroupCanContainMultipleTimePeriods")}<br>${__tt("timer.disableFocusPeriodFilteringFirstToCheckThatAll")}`;
         container.appendChild(intro);
 
         // 全局开关
@@ -8431,7 +8430,7 @@
         `;
         const switchLabel = document.createElement('label');
         switchLabel.style.cssText = `font-size: 13px; cursor: pointer; flex: 1;`;
-        switchLabel.innerHTML = '<strong>🎯 启用专注时间筛选</strong><br><span style="opacity:0.7; font-size:11px;">开启后将只统计符合时间范围的记录';
+        switchLabel.innerHTML = `<strong>${__tt("timer.filterByFocusPeriods")}</strong><br><span style="opacity:0.7; font-size:11px;">${__tt("timer.includeOnlyRecordsWithinTheSelectedTimePeriods")}`;
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         const hasEnabledGroup = focusTimeSettings.groups?.some(g => g.enabled);
@@ -8456,7 +8455,7 @@
 
         // 添加分组按钮
         const addGroupBtn = document.createElement('button');
-        addGroupBtn.innerHTML = '+ 添加时间段分组';
+        addGroupBtn.innerHTML = __tt("timer.addtimeRangegroup");
         addGroupBtn.style.cssText = `
             width: 100%; padding: 10px; margin-top: 12px;
             background: var(--b3-theme-surface); color: var(--b3-theme-primary);
@@ -8473,7 +8472,7 @@
             if (!Array.isArray(focusTimeSettings.groups)) focusTimeSettings.groups = [];
             const newGroup = {
                 id: 'group_' + Date.now(),
-                name: '新时间段',
+                name: __tt("routine.newPeriod"),
                 enabled: true,
                 daysOfWeek: [1, 2, 3, 4, 5],
                 timeRanges: [{ start: '09:00', end: '12:00' }]
@@ -8499,7 +8498,11 @@
 
         const nameInput = document.createElement('input');
         nameInput.type = 'text';
-        nameInput.value = group.name;
+        const originalGroupName = group.name;
+        const displayGroupName = group.id === 'default' && group.name === '工作日专注时间'
+            ? __tt('focus.weekdayPeriods') : group.name;
+        nameInput.value = displayGroupName;
+        const readGroupName = () => nameInput.value === displayGroupName ? originalGroupName : nameInput.value;
         nameInput.style.cssText = `
             flex: 1; padding: 6px 10px; font-size: 13px;
             background: var(--b3-theme-background);
@@ -8511,7 +8514,7 @@
         let nameDebounceTimer = null;
         nameInput.oninput = () => {
             // 立即更新内存中的值
-            group.name = nameInput.value;
+            group.name = readGroupName();
             // 防抖保存
             if (nameDebounceTimer) clearTimeout(nameDebounceTimer);
             nameDebounceTimer = setTimeout(() => {
@@ -8519,7 +8522,7 @@
             }, 450);
         };
         nameInput.onchange = () => {
-            group.name = nameInput.value;
+            group.name = readGroupName();
             saveFocusTimeSettings();
         };
         nameInput.onkeydown = (e) => {
@@ -8534,7 +8537,7 @@
                 nameDebounceTimer = null;
             }
             // 🔧 修复：确保 blur 时也保存最新的值
-            group.name = nameInput.value;
+            group.name = readGroupName();
             saveFocusTimeSettings();
         };
         header.appendChild(nameInput);
@@ -8542,7 +8545,7 @@
         // 启用开关
         const enableLabel = document.createElement('label');
         enableLabel.style.cssText = `font-size: 12px; cursor: pointer; white-space: nowrap;`;
-        enableLabel.innerHTML = '启用';
+        enableLabel.innerHTML = __tt("timer.enable");
         const enableCheckbox = document.createElement('input');
         enableCheckbox.type = 'checkbox';
         enableCheckbox.checked = group.enabled;
@@ -8556,7 +8559,7 @@
         // 删除按钮
         const delBtn = document.createElement('button');
         delBtn.innerHTML = '🗑️';
-        delBtn.title = '删除此分组';
+        delBtn.title = __tt("timer.deleteThisGroup");
         delBtn.style.cssText = `
             padding: 4px 8px; background: transparent;
             border: 1px solid var(--b3-theme-surface-light);
@@ -8564,10 +8567,10 @@
         `;
         delBtn.onclick = () => {
             if (focusTimeSettings.groups.length <= 1) {
-                alert('至少保留一个分组');
+                alert(__tt("timer.keepAtLeastOneGroup"));
                 return;
             }
-            if (!confirm('确定删除此分组？')) return;
+            if (!confirm(__tt("timer.deleteThisGroup2"))) return;
             focusTimeSettings.groups.splice(index, 1);
             saveFocusTimeSettings();
             renderFocusTimeSettings(container);
@@ -8581,12 +8584,12 @@
             margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
         `;
         const daysLabel = document.createElement('span');
-        daysLabel.textContent = '星期:';
+        daysLabel.textContent = __tt("timer.weekdays");
         daysLabel.style.cssText = `font-size: 12px; min-width: 45px;`;
         daysRow.appendChild(daysLabel);
 
-        const weekDays = ['一', '二', '三', '四', '五', '六', '日'];
-        const weekDaysFull = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+        const weekDays = [__tt("timer.m"), __tt("timer.t"), __tt("timer.w"), __tt("timer.t2"), __tt("timer.f"), __tt("timer.s"), __tt("timer.day")];
+        const weekDaysFull = [__tt("timer.monday"), __tt("timer.tuesday"), __tt("timer.wednesday"), __tt("timer.thursday"), __tt("timer.friday"), __tt("timer.saturday"), __tt("timer.sunday")];
         const daysOfWeek = group.daysOfWeek || [];
 
         weekDaysFull.forEach((day, i) => {
@@ -8616,10 +8619,10 @@
         
         const selectLink = document.createElement('a');
         selectLink.href = 'javascript:void(0)';
-        selectLink.textContent = '全选';
+        selectLink.textContent = __tt("timer.selectAll");
         selectLink.style.cssText = `color: var(--b3-theme-primary); text-decoration: none; cursor: pointer;`;
         selectLink.onclick = () => {
-            const checked = selectLink.textContent === '全选';
+            const checked = selectLink.textContent === __tt("common.selectAll");
             // 找到当前分组的所有星期复选框（只在这一个分组内）
             const dayCheckboxes = daysRow.querySelectorAll('input[type=checkbox]');
             dayCheckboxes.forEach(cb => cb.checked = checked);
@@ -8634,7 +8637,7 @@
             saveFocusTimeSettings();
             
             // 切换文本
-            selectLink.textContent = checked ? '取消' : '全选';
+            selectLink.textContent = checked ? __tt("common.cancel") : __tt("timer.selectAll");
         };
         quickSelect.appendChild(selectLink);
         daysRow.appendChild(quickSelect);
@@ -8662,7 +8665,7 @@
             };
 
             const separator = document.createElement('span');
-            separator.textContent = '至';
+            separator.textContent = __tt("timer.to");
 
             const endInput = document.createElement('input');
             endInput.type = 'time';
@@ -8676,7 +8679,7 @@
             // 删除时间范围
             const delRangeBtn = document.createElement('button');
             delRangeBtn.innerHTML = '×';
-            delRangeBtn.title = '删除此时间段';
+            delRangeBtn.title = __tt("timer.deleteThisTimePeriod");
             delRangeBtn.style.cssText = `
                 width: 22px; height: 22px; padding: 0; line-height: 1;
                 background: var(--b3-theme-error); color: white;
@@ -8697,7 +8700,7 @@
 
         // 添加时间段按钮
         const addRangeBtn = document.createElement('button');
-        addRangeBtn.textContent = '+ 添加时间段';
+        addRangeBtn.textContent = __tt("timer.addtimeRange");
         addRangeBtn.style.cssText = `
             margin-top: 6px; padding: 6px 12px; font-size: 12px;
             background: var(--b3-theme-surface-light);
@@ -8754,7 +8757,7 @@
         titleBar.style.cssText = `display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;`;
 
         const title = document.createElement('div');
-        title.textContent = '⚙️ 时间范围设置';
+        title.textContent = __tt("timer.timescopesettings");
         title.style.cssText = `
             font-weight: bold; font-size: 16px; color: var(--b3-theme-primary);
             text-align: center; flex: 1; margin: 0 10px;
@@ -8762,7 +8765,7 @@
         titleBar.appendChild(title);
 
         const closeBtn = document.createElement('button');
-        closeBtn.textContent = '关闭';
+        closeBtn.textContent = __tt("common.close");
         closeBtn.style.cssText = `
             padding: 6px 12px; background: var(--b3-theme-surface-light); color: var(--b3-theme-on-background);
             border: 1px solid var(--b3-theme-surface); border-radius: 4px; cursor: pointer;
@@ -8794,11 +8797,9 @@
             Logger.error('专注时间设置渲染失败:', error);
             contentArea.innerHTML = `
                 <div style="padding: 20px; color: var(--b3-theme-error); text-align: center;">
-                    <p><strong>渲染失败</strong></p>
+                    <p><strong>${__tt("timer.couldNotRenderContent")}</strong></p>
                     <p style="font-size: 12px; margin-top: 10px;">${error.message}</p>
-                    <button onclick="location.reload()" style="margin-top: 15px; padding: 8px 16px; background: var(--b3-theme-primary); color: white; border: none; border-radius: 4px; cursor: pointer;">
-                        刷新页面
-                    </button>
+                    <button onclick="location.reload()" style="margin-top: 15px; padding: 8px 16px; background: var(--b3-theme-primary); color: white; border: none; border-radius: 4px; cursor: pointer;">${__tt("timer.refreshPage")}</button>
                 </div>
             `;
         }
@@ -9085,10 +9086,10 @@
         const actions = document.createElement('div');
         actions.className = 'tomato-actions';
         const cancelBtn = document.createElement('button');
-        cancelBtn.textContent = '取消';
+        cancelBtn.textContent = __tt("common.cancel");
         cancelBtn.className = 'tomato-btn tomato-btn--cancel';
         const okBtn = document.createElement('button');
-        okBtn.textContent = '应用';
+        okBtn.textContent = __tt("common.apply");
         okBtn.className = 'tomato-btn tomato-btn--primary';
         const close = () => {
             dialog.remove();
@@ -9183,7 +9184,7 @@
 
         const track = document.createElement('div');
         track.className = 'tomato-timeline-expand-trigger-track';
-        track.setAttribute('aria-label', '桌面端展开触发区域预览');
+        track.setAttribute('aria-label', __tt("timer.desktopExpansionTriggerAreaPreview"));
         track.style.cssText = `
             position: relative; width: 100%; height: 32px; box-sizing: border-box;
             overflow: hidden; border: 1px solid var(--b3-theme-surface-light); border-radius: 6px;
@@ -9195,8 +9196,8 @@
         selection.className = 'tomato-timeline-expand-trigger-selection';
         selection.tabIndex = 0;
         selection.setAttribute('role', 'slider');
-        selection.setAttribute('aria-label', '移动展开触发区域');
-        selection.title = '拖动调整展开触发区域的位置';
+        selection.setAttribute('aria-label', __tt("timer.mobileExpansionTriggerArea"));
+        selection.title = __tt("timer.dragToMoveTheExpansionTriggerArea");
         selection.style.cssText = `
             position: absolute; top: 0; bottom: 0; cursor: grab;
             background: color-mix(in srgb, var(--b3-theme-primary) 24%, var(--b3-theme-surface));
@@ -9226,8 +9227,8 @@
             return handle;
         };
 
-        const leftHandle = createHandle('left', '调整展开触发区域左边界');
-        const rightHandle = createHandle('right', '调整展开触发区域右边界');
+        const leftHandle = createHandle('left', __tt("timer.adjustTheLeftEdgeOfTheExpansionTriggerArea"));
+        const rightHandle = createHandle('right', __tt("timer.adjustTheRightEdgeOfTheExpansionTriggerArea"));
         selection.appendChild(leftHandle);
         selection.appendChild(rightHandle);
         track.appendChild(selection);
@@ -9263,10 +9264,10 @@
             return { field, input };
         };
 
-        const startField = createPercentField('起点');
-        const widthField = createPercentField('宽度');
-        startField.input.setAttribute('aria-label', '展开触发区域起点百分比');
-        widthField.input.setAttribute('aria-label', '展开触发区域宽度百分比');
+        const startField = createPercentField(__tt("timer.start2"));
+        const widthField = createPercentField(__tt("timer.width"));
+        startField.input.setAttribute('aria-label', __tt("timer.expansionTriggerStartPercentage"));
+        widthField.input.setAttribute('aria-label', __tt("timer.expansionTriggerWidthPercentage"));
         valueRow.appendChild(startField.field);
         valueRow.appendChild(widthField.field);
         root.appendChild(valueRow);
@@ -9278,7 +9279,7 @@
             selection.setAttribute('aria-valuemin', '0');
             selection.setAttribute('aria-valuemax', String(100 - widthPercent));
             selection.setAttribute('aria-valuenow', String(startPercent));
-            selection.setAttribute('aria-valuetext', `起点 ${startPercent}%，宽度 ${widthPercent}%，终点 ${endPercent}%`);
+            selection.setAttribute('aria-valuetext', __tt("timer.startWidthEnd", { startPercent: startPercent, widthPercent: widthPercent, endPercent: endPercent }));
             startField.input.min = '0';
             startField.input.max = String(100 - widthPercent);
             startField.input.value = String(startPercent);
@@ -9525,7 +9526,7 @@
         `;
 
         const title = document.createElement('div');
-        title.textContent = '📅 时间轴设置';
+        title.textContent = __tt("timer.timelinesettings");
         title.style.cssText = `font-weight: bold; font-size: 16px;`;
         header.appendChild(title);
 
@@ -9556,8 +9557,8 @@
             `;
             return btn;
         };
-        const basicTabBtn = createTabBtn('基础设置', 'basic');
-        const luminaTabBtn = createTabBtn('轻语联动', 'lumina');
+        const basicTabBtn = createTabBtn(__tt("timer.basicSettings"), 'basic');
+        const luminaTabBtn = createTabBtn(__tt("timer.luminaIntegration"), 'lumina');
         tabs.appendChild(basicTabBtn);
         tabs.appendChild(luminaTabBtn);
         dialog.appendChild(tabs);
@@ -9595,19 +9596,19 @@
         luminaEnabledInput.type = 'checkbox';
         luminaEnabledInput.checked = luminaCfg.enabled === true;
         luminaEnabledInput.style.cssText = `cursor: pointer; transform: scale(1.15);`;
-        luminaContent.appendChild(row('启用轻语联动', luminaEnabledInput));
+        luminaContent.appendChild(row(__tt("timer.enableLuminaIntegration"), luminaEnabledInput));
 
         const luminaAttachHistoryInput = document.createElement('input');
         luminaAttachHistoryInput.type = 'checkbox';
         luminaAttachHistoryInput.checked = luminaCfg.attachToHistory !== false;
         luminaAttachHistoryInput.style.cssText = `cursor: pointer; transform: scale(1.15);`;
-        luminaContent.appendChild(row('写入番茄钟历史', luminaAttachHistoryInput));
+        luminaContent.appendChild(row(__tt("timer.saveToPomodoroHistory"), luminaAttachHistoryInput));
 
         const luminaAppendStatusInput = document.createElement('input');
         luminaAppendStatusInput.type = 'checkbox';
         luminaAppendStatusInput.checked = luminaCfg.appendTimerStatus !== false;
         luminaAppendStatusInput.style.cssText = `cursor: pointer; transform: scale(1.15);`;
-        luminaContent.appendChild(row('追加计时状态尾巴', luminaAppendStatusInput));
+        luminaContent.appendChild(row(__tt("timer.appendTimerStatus"), luminaAppendStatusInput));
 
         const luminaTargetStatus = document.createElement('div');
         luminaTargetStatus.style.cssText = `
@@ -9615,14 +9616,14 @@
             background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
             font-size: 12px; line-height: 1.5; word-break: break-all;
         `;
-        luminaTargetStatus.textContent = '正在检测轻语写入目标...';
-        luminaContent.appendChild(rowStack('当前写入目标', luminaTargetStatus));
+        luminaTargetStatus.textContent = __tt("timer.checkingTheLuminaDestination");
+        luminaContent.appendChild(rowStack(__tt("timer.currentwritetarget"), luminaTargetStatus));
 
         const luminaSaveRow = document.createElement('div');
         luminaSaveRow.style.cssText = `display: flex; gap: 8px;`;
         const luminaRefreshBtn = document.createElement('button');
         luminaRefreshBtn.type = 'button';
-        luminaRefreshBtn.textContent = '重新检测';
+        luminaRefreshBtn.textContent = __tt("timer.reCheck");
         luminaRefreshBtn.style.cssText = `
             flex: 1; padding: 9px 8px; border: 1px solid var(--b3-theme-surface-light);
             border-radius: 4px; background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
@@ -9630,7 +9631,7 @@
         `;
         const luminaSaveBtn = document.createElement('button');
         luminaSaveBtn.type = 'button';
-        luminaSaveBtn.textContent = '保存联动配置';
+        luminaSaveBtn.textContent = __tt("timer.saveIntegrationSettings");
         luminaSaveBtn.style.cssText = `
             flex: 1.4; padding: 9px 8px; border: none; border-radius: 4px;
             background: var(--b3-theme-primary); color: #fff; cursor: pointer;
@@ -9647,7 +9648,7 @@
             });
         };
         const refreshLuminaTargetStatus = async () => {
-            luminaTargetStatus.textContent = '正在检测轻语写入目标...';
+            luminaTargetStatus.textContent = __tt("timer.checkingTheLuminaDestination");
             luminaTargetStatus.style.color = 'var(--b3-theme-on-surface)';
             const result = await describeTimelineLuminaTarget();
             luminaTargetStatus.textContent = result.text;
@@ -9673,7 +9674,7 @@
         luminaRefreshBtn.onclick = refreshLuminaTargetStatus;
         luminaSaveBtn.onclick = async () => {
             await saveLuminaSettingsFromDialog();
-            showToast('轻语联动配置已保存', 1500);
+            showToast(__tt("timer.luminaIntegrationSettingsSaved"), 1500);
         };
         syncLuminaInputsDisabled();
 
@@ -9694,7 +9695,7 @@
             }
             updateProgressBar();
         };
-        content.appendChild(row('启用时间轴功能', enabledInput));
+        content.appendChild(row(__tt("timer.enabletimelinefeature"), enabledInput));
 
         const breathingInput = document.createElement('input');
         breathingInput.type = 'checkbox';
@@ -9708,7 +9709,7 @@
             // 修改呼吸开关后立即刷新时间轴
             if (userSettings.timeline.enabled) updateTimelineBar(true);
         };
-        content.appendChild(row('时间轴呼吸效果', breathingInput));
+        content.appendChild(row(__tt("timer.timelineBreathingEffect"), breathingInput));
 
         // 🔧 新增：折叠态流光效果开关
         const shimmerFlowInput = document.createElement('input');
@@ -9722,7 +9723,7 @@
             syncShimmerDurationDisabled();
             if (userSettings.timeline.enabled) updateTimelineBar(true);
         };
-        content.appendChild(row('折叠态流光效果', shimmerFlowInput));
+        content.appendChild(row(__tt("timer.glowEffectWhenCollapsed"), shimmerFlowInput));
 
         // 🔧 新增：流光滑动时间设置
         const shimmerDurationWrap = document.createElement('div');
@@ -9760,7 +9761,7 @@
         };
         shimmerDurationWrap.appendChild(shimmerDurationInput);
         shimmerDurationWrap.appendChild(shimmerDurationText);
-        content.appendChild(rowStack('流光滑动周期', shimmerDurationWrap));
+        content.appendChild(rowStack(__tt("timer.glowAnimationCycle"), shimmerDurationWrap));
 
         // 🔧 新增：流光宽度设置
         const shimmerWidthWrap = document.createElement('div');
@@ -9790,13 +9791,13 @@
         };
         shimmerWidthWrap.appendChild(shimmerWidthInput);
         shimmerWidthWrap.appendChild(shimmerWidthText);
-        content.appendChild(rowStack('流光宽度', shimmerWidthWrap));
+        content.appendChild(rowStack(__tt("timer.glowWidth"), shimmerWidthWrap));
 
         // 🔧 新增：流光颜色设置
         let shimmerColorControl;
         if (isMobileDevice()) {
             const btnObj = createMobileColorPickerButton(
-                '流光颜色', // labelText
+                __tt("timer.glowColor"), // labelText
                 userSettings.timeline.shimmerColor || '#ffffff', // initialColor
                 async (newColor) => {
                     ensureTimelineDefaults();
@@ -9819,7 +9820,7 @@
                 if (userSettings.timeline.enabled) updateTimelineBar(true);
             };
         }
-        content.appendChild(row('流光颜色', shimmerColorControl));
+        content.appendChild(row(__tt("timer.glowColor"), shimmerColorControl));
 
         // 同步禁用状态
         const syncAllShimmerDisabled = () => {
@@ -9865,7 +9866,7 @@
                 if (routineToolbar) renderRoutineButtons(routineToolbar);
             } catch (e) {}
         };
-        content.appendChild(row('高亮玻璃效果', glassEffectInput));
+        content.appendChild(row(__tt("timer.highlightGlassEffect"), glassEffectInput));
 
         const roundedCornersInput = document.createElement('input');
         roundedCornersInput.type = 'checkbox';
@@ -9877,7 +9878,7 @@
             await saveUserSettings();
             try { if (userSettings.timeline.enabled) updateTimelineBar(true); } catch (e) {}
         };
-        content.appendChild(row('高亮块圆角(展开时)', roundedCornersInput));
+        content.appendChild(row(__tt("timer.highlightCornerRadiusExpanded"), roundedCornersInput));
 
         const glassIntensityWrap = document.createElement('div');
         glassIntensityWrap.style.cssText = `display: flex; align-items: center; gap: 8px;`;
@@ -9918,7 +9919,7 @@
         };
         glassIntensityWrap.appendChild(glassIntensityInput);
         glassIntensityWrap.appendChild(glassIntensityText);
-        content.appendChild(rowStack('玻璃效果强度', glassIntensityWrap));
+        content.appendChild(rowStack(__tt("timer.glassEffectIntensity"), glassIntensityWrap));
 
         // 🔧 新增：日常事务按钮颜色同步到时间轴的全局开关
         const syncRoutineHighlightInput = document.createElement('input');
@@ -9930,7 +9931,7 @@
             userSettings.timeline.syncRoutineButtonsHighlight = syncRoutineHighlightInput.checked;
             await saveUserSettings();
         };
-        content.appendChild(row('日常事务按钮颜色同步到时间轴', syncRoutineHighlightInput));
+        content.appendChild(row(__tt("timer.useRoutineButtonColorsOnTheTimeline"), syncRoutineHighlightInput));
 
         const startInput = document.createElement('input');
         startInput.type = 'text';
@@ -9952,7 +9953,7 @@
         rangeWrap.appendChild(startInput);
         rangeWrap.appendChild(dash);
         rangeWrap.appendChild(endInput);
-        content.appendChild(rowStack('显示起止时间', rangeWrap));
+        content.appendChild(rowStack(__tt("timer.showStartAndEndTimes"), rangeWrap));
 
         const hideEnabledInput = document.createElement('input');
         hideEnabledInput.type = 'checkbox';
@@ -9987,7 +9988,7 @@
         hideDash.textContent = '-';
         hideDash.style.cssText = `opacity: 0.7;`;
         const hideHint = document.createElement('div');
-        hideHint.textContent = '全日(0-24)生效';
+        hideHint.textContent = __tt("timer.applyAllDay");
         hideWrap.appendChild(hideEnabledInput);
         hideWrap.appendChild(hideStartInput);
         hideWrap.appendChild(hideDash);
@@ -9997,14 +9998,14 @@
         hideHint.style.cssText = `opacity: 0.65; font-size: 12px;`;
         hideStack.appendChild(hideWrap);
         hideStack.appendChild(hideHint);
-        content.appendChild(rowStack('隐藏时间段', hideStack));
+        content.appendChild(rowStack(__tt("timer.hidetimeRange"), hideStack));
 
         const scaleSelect = document.createElement('select');
         scaleSelect.style.cssText = `width: 120px; padding: 6px 8px; border: 1px solid var(--b3-theme-surface-light); border-radius: 4px; background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);`;
         (isMobile ? [60] : [30, 60]).forEach((m) => {
             const opt = document.createElement('option');
             opt.value = String(m);
-            opt.textContent = `${m} 分钟`;
+            opt.textContent = __tt("timer.min", { m: m });
             if (Number(userSettings.timeline.scaleMinutes) === m) opt.selected = true;
             scaleSelect.appendChild(opt);
         });
@@ -10013,7 +10014,7 @@
             scaleSelect.style.opacity = '0.7';
             scaleSelect.style.cursor = 'not-allowed';
         }
-        content.appendChild(row('刻度间隔', scaleSelect));
+        content.appendChild(row(__tt("timer.tickInterval"), scaleSelect));
 
         const opacityWrap = document.createElement('div');
         opacityWrap.style.cssText = `display: flex; gap: 8px; align-items: center;`;
@@ -10032,16 +10033,16 @@
         expandedOpacity.value = String(userSettings.timeline.expandedOpacity);
         expandedOpacity.style.cssText = collapsedOpacity.style.cssText;
         const opLabel1 = document.createElement('span');
-        opLabel1.textContent = '收起';
+        opLabel1.textContent = __tt("timer.collapse");
         opLabel1.style.cssText = `opacity: 0.7; font-size: 12px;`;
         const opLabel2 = document.createElement('span');
-        opLabel2.textContent = '展开';
+        opLabel2.textContent = __tt("timer.expand");
         opLabel2.style.cssText = `opacity: 0.7; font-size: 12px;`;
         opacityWrap.appendChild(opLabel1);
         opacityWrap.appendChild(collapsedOpacity);
         opacityWrap.appendChild(opLabel2);
         opacityWrap.appendChild(expandedOpacity);
-        content.appendChild(row('透明度', opacityWrap));
+        content.appendChild(row(__tt("timer.opacity"), opacityWrap));
 
         const heightWrap = document.createElement('div');
         heightWrap.style.cssText = `display: flex; gap: 8px; align-items: center;`;
@@ -10060,19 +10061,19 @@
         expandedHeight.value = String(userSettings.timeline.expandedHeightPx);
         expandedHeight.style.cssText = collapsedHeight.style.cssText;
         const htLabel1 = document.createElement('span');
-        htLabel1.textContent = '收起px';
+        htLabel1.textContent = __tt("timer.collapsepx");
         htLabel1.style.cssText = `opacity: 0.7; font-size: 12px;`;
         const htLabel2 = document.createElement('span');
-        htLabel2.textContent = '展开px';
+        htLabel2.textContent = __tt("timer.expandpx");
         htLabel2.style.cssText = `opacity: 0.7; font-size: 12px;`;
         heightWrap.appendChild(htLabel1);
         heightWrap.appendChild(collapsedHeight);
         heightWrap.appendChild(htLabel2);
         heightWrap.appendChild(expandedHeight);
-        content.appendChild(row('高度', heightWrap));
+        content.appendChild(row(__tt("timer.height"), heightWrap));
 
         const expandTriggerEditor = createTimelineExpandTriggerRegionEditor(userSettings.timeline);
-        content.appendChild(rowStack('桌面端展开触发区域', expandTriggerEditor.element));
+        content.appendChild(rowStack(__tt("timer.desktopExpansionTriggerArea"), expandTriggerEditor.element));
 
         const highlightWrap = document.createElement('div');
         highlightWrap.style.cssText = `display: flex; flex-direction: column; gap: 8px;`;
@@ -10100,13 +10101,13 @@
             return { rowEl: r, inputEl: null, getValue: picker.getColor };
         };
 
-        const tomatoHighlight = createColorRow('番茄记录', userSettings.timeline.highlightColors.tomato, 'tomato');
-        const stopwatchHighlight = createColorRow('⏱️ 专注正计时记录', userSettings.timeline.highlightColors.stopwatch);
-        const breakHighlight = createColorRow('☕ 休息记录', userSettings.timeline.highlightColors.break);
+        const tomatoHighlight = createColorRow(__tt("timer.pomodoroRecords"), userSettings.timeline.highlightColors.tomato, 'tomato');
+        const stopwatchHighlight = createColorRow(__tt("timer.focusStopwatchRecords"), userSettings.timeline.highlightColors.stopwatch);
+        const breakHighlight = createColorRow(__tt("timer.breakRecords"), userSettings.timeline.highlightColors.break);
         highlightWrap.appendChild(tomatoHighlight.rowEl);
         highlightWrap.appendChild(stopwatchHighlight.rowEl);
         highlightWrap.appendChild(breakHighlight.rowEl);
-        content.appendChild(rowStack('记录高亮颜色', highlightWrap));
+        content.appendChild(rowStack(__tt("timer.recordHighlightColors"), highlightWrap));
 
         const applyHighlightColorChange = async () => {
             ensureTimelineDefaults();
@@ -10123,7 +10124,7 @@
         if (breakHighlight.inputEl) breakHighlight.inputEl.onchange = applyHighlightColorChange;
 
         const saveBtn = document.createElement('button');
-        saveBtn.textContent = '保存配置';
+        saveBtn.textContent = __tt("timer.saveConfiguration");
         saveBtn.style.cssText = `
             width: 100%; padding: 10px 8px; background: var(--b3-theme-primary); color: #fff;
             border: none; border-radius: 4px; cursor: pointer; margin-top: 4px;
@@ -10133,11 +10134,11 @@
             const startMin = parseTimeToMinutes(startInput.value);
             const endMin = parseTimeToMinutes(endInput.value);
             if (startMin == null || endMin == null) {
-                alert('请输入正确的时间格式：HH:MM（例如 08:00，结束可用 24:00）');
+                alert(__tt("timer.enterAValidTimeAsHhMmSuchAs"));
                 return;
             }
             if (startMin >= endMin) {
-                alert('起始时间必须小于结束时间');
+                alert(__tt("timer.theStartTimeMustBeEarlierThanTheEnd"));
                 return;
             }
 
@@ -10148,15 +10149,15 @@
                 const hs = parseTimeToMinutes(hideStartInput.value);
                 const he = parseTimeToMinutes(hideEndInput.value);
                 if (hs == null || he == null) {
-                    alert('隐藏时间段请输入正确的时间格式：HH:MM（例如 00:00，结束可用 24:00）');
+                    alert(__tt("timer.enterHiddenTimesAsHhMmSuchAsEnd"));
                     return;
                 }
                 if (hs >= he) {
-                    alert('隐藏时间段：起始时间必须小于结束时间');
+                    alert(__tt("timer.hiddenPeriodTheStartTimeMustBeEarlierThan"));
                     return;
                 }
                 if (he - hs >= 1440) {
-                    alert('隐藏时间段不能覆盖全天');
+                    alert(__tt("timer.aHiddenPeriodCannotCoverTheEntireDay"));
                     return;
                 }
             }
@@ -10216,7 +10217,7 @@
         ensureTomatoCommonStyles();
         removeById('tomato-lumina-record-dialog', 'tomato-lumina-record-backdrop');
         if (!isTimelineLuminaLinkEnabled()) {
-            showToast('请先在时间轴设置中开启轻语联动', 1800);
+            showToast(__tt("timer.enableLuminaIntegrationInTimelineSettingsFirst"), 1800);
             return;
         }
 
@@ -10246,7 +10247,7 @@
             display: flex; align-items: center; justify-content: space-between; gap: 12px;
         `;
         const title = document.createElement('div');
-        title.textContent = '记录到轻语';
+        title.textContent = __tt("timer.recordInLumina");
         title.style.cssText = 'font-size: 16px; font-weight: 600;';
         const closeBtn = document.createElement('button');
         closeBtn.type = 'button';
@@ -10268,7 +10269,7 @@
 
         const textarea = document.createElement('textarea');
         textarea.rows = 6;
-        textarea.placeholder = '写下这一刻...';
+        textarea.placeholder = __tt("timer.writeAboutThisMoment");
         const isMobileInput = isMobileDevice();
         if (!isMobileInput) {
             textarea.enterKeyHint = 'done';
@@ -10288,7 +10289,7 @@
             border: 1px solid var(--b3-theme-surface-light); color: var(--b3-theme-on-surface);
             font-size: 12px; line-height: 1.5; min-height: 18px;
         `;
-        statusPreview.textContent = '正在读取计时状态...';
+        statusPreview.textContent = __tt("timer.readingTimerStatus");
         body.appendChild(statusPreview);
 
         const actions = document.createElement('div');
@@ -10299,7 +10300,7 @@
         `;
         const cancelBtn = document.createElement('button');
         cancelBtn.type = 'button';
-        cancelBtn.textContent = '取消';
+        cancelBtn.textContent = __tt("common.cancel");
         cancelBtn.style.cssText = `
             padding: 8px 14px; border: 1px solid var(--b3-theme-surface-light);
             border-radius: 4px; background: var(--b3-theme-surface);
@@ -10308,7 +10309,7 @@
         cancelBtn.onclick = close;
         const saveBtn = document.createElement('button');
         saveBtn.type = 'button';
-        saveBtn.textContent = '保存';
+        saveBtn.textContent = __tt("common.save");
         saveBtn.style.cssText = `
             padding: 8px 16px; border: none; border-radius: 4px;
             background: var(--b3-theme-primary); color: #fff; cursor: pointer;
@@ -10325,10 +10326,10 @@
         const refreshStatusPreview = async () => {
             try {
                 const status = await buildLuminaTimerStatusTail();
-                statusPreview.textContent = status || '当前无运行或暂停计时';
+                statusPreview.textContent = status || __tt("timer.noRunningOrPausedTimer");
                 statusPreview.style.opacity = status ? '1' : '0.72';
             } catch (e) {
-                statusPreview.textContent = '当前无运行或暂停计时';
+                statusPreview.textContent = __tt("timer.noRunningOrPausedTimer");
                 statusPreview.style.opacity = '0.72';
             }
         };
@@ -10359,7 +10360,7 @@
         saveBtn.onclick = async () => {
             const rawContent = String(textarea.value || '').trim();
             if (!rawContent) {
-                showToast('请输入记录内容', 1600);
+                showToast(__tt("timer.enterSomeText"), 1600);
                 return;
             }
             const timestamp = Date.now();
@@ -10369,19 +10370,19 @@
             const fullContent = status ? `${rawContent}\n${status}` : rawContent;
             saveBtn.disabled = true;
             cancelBtn.disabled = true;
-            saveBtn.textContent = '保存中...';
+            saveBtn.textContent = __tt("timer.saving");
             try {
                 const result = await writeTimelineLuminaRecord(fullContent, { timestamp, status });
                 await attachTimelineLuminaRecordToHistory({ ...result, content: rawContent }, activeSnapshot);
-                showToast('已记录到轻语', 1800);
+                showToast(__tt("timer.recordedInLumina"), 1800);
                 close();
             } catch (e) {
                 Logger.warn('轻语记录保存失败:', e);
-                showToast(e?.message || '轻语记录保存失败', 2400);
+                showToast(e?.message || __tt("timer.couldNotSaveTheLuminaEntry"), 2400);
             } finally {
                 saveBtn.disabled = false;
                 cancelBtn.disabled = false;
-                saveBtn.textContent = '保存';
+                saveBtn.textContent = __tt("common.save");
             }
         };
     }
@@ -10619,8 +10620,8 @@
         if (!Number.isFinite(delayInSeconds) || delayInSeconds <= 0) return null;
         return {
             channel: isOfficialMobileNotificationRuntime() ? DEVICE_NOTIFICATION_CHANNEL : '',
-            title: mode === 'break' ? '⏰ 休息结束' : '🍅 时间到！',
-            body: mode === 'break' ? '继续你的计时吧！' : '该休息一下了～',
+            title: mode === 'break' ? __tt("timer.restend") : __tt("timer.timeSUp"),
+            body: mode === 'break' ? __tt("timer.keepYourTimerGoing") : __tt("timer.timeForABreak"),
             delayInSeconds,
             dueAtMs: now + delayInSeconds * 1000,
             timerKey: buildTimerNotificationKey({ ...state, mode, duration: durationSec, startTime: startAtMs }),
@@ -10791,7 +10792,7 @@
         setCurrentDeviceNotificationSchedule(next, syncState);
         setLocalTimerNotificationSchedule(null);
         if (shouldPreferDeviceNotificationBackend() && shouldShowTimerNotificationCancelToast(reason)) {
-            showMiniToast('已取消预约通知');
+            showMiniToast(__tt("timer.scheduledNotificationCancelled"));
         }
         if (persist) await persistNotificationScheduleState();
         return true;
@@ -10841,7 +10842,7 @@
         setCurrentDeviceNotificationSchedule(nextSchedule, syncState);
         setLocalTimerNotificationSchedule(nextSchedule);
         if (shouldPreferDeviceNotificationBackend() && String(reason || '').trim() !== 'start-timer') {
-            showMiniToast(`已同步预约通知（${payload.delayInSeconds}秒后）`);
+            showMiniToast(__tt("timer.scheduledNotificationSyncedInSeconds", { delayInSeconds: payload.delayInSeconds }));
         }
         if (persist) await persistNotificationScheduleState();
         return true;
@@ -11084,7 +11085,7 @@
             background: rgba(0, 0, 0, 0.3); z-index: 2147483646;
         `;
         let endDialogActionPending = false;
-        const runEndDialogAction = (action, errorMessage = '操作失败，请重试', options = {}) => {
+        const runEndDialogAction = (action, errorMessage = __tt("timer.operationFailedTryAgain"), options = {}) => {
             if (endDialogActionPending) return Promise.resolve(false);
             endDialogActionPending = true;
             closeDialog();
@@ -11166,7 +11167,7 @@
             } else if (type === 'tomato-end') {
                 await resetToLastTomato();
             }
-        }, '操作失败，请重试', { reportError: false });
+        }, __tt("timer.operationFailedTryAgain"), { reportError: false });
 
         backdrop.onclick = (e) => {
             if (e.target === backdrop) {
@@ -11228,7 +11229,7 @@
         if (type === 'reminder') {
             const doneBtn = document.createElement('button');
             doneBtn.className = 'tomato-dialog-action';
-            setTimerUiIcon(doneBtn, 'complete', '完成提醒');
+            setTimerUiIcon(doneBtn, 'complete', __tt("timer.donewarnings2"));
             doneBtn.style.cssText = `padding: 8px 12px; background: var(--b3-theme-primary); color: white;
                 border: 1px solid rgba(0,0,0,0.2); border-radius: 8px; cursor: pointer; font-size: 13px; min-width: 90px;`;
             doneBtn.onclick = async () => {
@@ -11236,12 +11237,12 @@
                 const dateKey = String(reminderDateKey || '').trim();
                 const timeKey = String(reminderTimeKey || '').trim();
                 if (!blockId || !dateKey || !timeKey) {
-                    showMiniToast('无法标记完成');
+                    showMiniToast(__tt("timer.couldNotMarkComplete2"));
                     closeDialog();
                     return;
                 }
                 const ok = await __markReminderOccurrenceCompleted(blockId, dateKey, timeKey, { occurrenceNumber: reminderOccurrenceNumber, taskOccurrenceId: reminderContext?.taskOccurrenceId, scheduleSignature: reminderContext?.scheduleSignature });
-                showMiniToast(ok ? '已标记完成' : '标记失败');
+                showMiniToast(ok ? __tt("timer.markedComplete") : __tt("timer.couldNotMarkComplete"));
                 closeDialog();
             };
             buttonContainer.appendChild(doneBtn);
@@ -11256,14 +11257,14 @@
                 const btn = document.createElement('button');
                 btn.className = 'tomato-dialog-action';
                 btn.dataset.duration = String(min);
-                setTimerUiIcon(btn, 'coffee', `${min}分钟`);
+                setTimerUiIcon(btn, 'coffee', __tt("timer.minutes3", { min: min }));
                 btn.style.cssText = `padding: 8px 12px; background: #9E9E9E; color: white; border: 1px solid rgba(0,0,0,0.2);
                     border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 60px;`;
                 btn.onclick = () => {
                     runEndDialogAction(async () => {
                         if (isRunning) await recordEndTime();
                         await startBreakMode(min, { confirm: false });
-                    }, '启动计时失败');
+                    }, __tt("timer.couldNotStartTheTimer"));
                 };
                 breakRow.appendChild(btn);
             });
@@ -11271,14 +11272,14 @@
             const stopwatchRestBtn = document.createElement('button');
             stopwatchRestBtn.className = 'tomato-dialog-action';
             stopwatchRestBtn.dataset.action = 'start-stopwatch-break';
-            stopwatchRestBtn.textContent = '计';
+            stopwatchRestBtn.textContent = __tt("timer.timer");
             stopwatchRestBtn.style.cssText = `padding: 8px 12px; background: #4CAF50; color: white; border: 1px solid rgba(0,0,0,0.2);
                 border-radius: 8px; cursor: pointer; font-size: 13px; min-width: 40px;`;
             stopwatchRestBtn.onclick = () => {
                 runEndDialogAction(async () => {
                     if (isRunning) await recordEndTime();
                     await startStopwatchBreakMode({ confirm: false });
-                }, '启动计时失败');
+                }, __tt("timer.couldNotStartTheTimer"));
             };
             breakRow.appendChild(stopwatchRestBtn);
             buttonContainer.appendChild(breakRow);
@@ -11295,26 +11296,26 @@
             
             if (restoredFocusTimer) {
                 const progressText = restoredFocusTimer.timerMode === 'stopwatch'
-                    ? `已专注 ${formatTime(elapsedSeconds + stopwatchDisplayOffset)}`
-                    : `剩余 ${formatTime(remainingSeconds)}`;
-                messageEl.textContent = `原专注已暂停，${progressText}。\n准备好后继续。`;
+                    ? __tt("timer.focusedFor", { value1: formatTime(elapsedSeconds + stopwatchDisplayOffset) })
+                    : __tt("timer.remaining", { value1: formatTime(remainingSeconds) });
+                messageEl.textContent = __tt("timer.yourPreviousFocusSessionIsPausedResumeWhenReady2", { progressText: progressText });
                 const continueBtn = document.createElement('button');
                 continueBtn.className = 'tomato-dialog-action';
                 continueBtn.dataset.action = 'continue-focus';
                 continueBtn.dataset.progressText = progressText;
-                continueBtn.dataset.taskName = String(currentTaskBlockName || '未关联任务');
-                setTimerUiIcon(continueBtn, 'play', '继续原专注');
+                continueBtn.dataset.taskName = String(currentTaskBlockName || __tt("timer.noLinkedTask"));
+                setTimerUiIcon(continueBtn, 'play', __tt("timer.resumePreviousFocusSession"));
                 continueBtn.style.cssText = `padding: 8px 16px; background: var(--b3-theme-primary); color: var(--b3-theme-on-primary);
                     border: 1px solid var(--b3-theme-primary); border-radius: 8px; cursor: pointer; font-size: 14px;`;
                 continueBtn.onclick = () => {
                     return runEndDialogAction(async () => {
                         const current = SyncManager.getState ? SyncManager.getState() : syncState;
                         if (current?.status !== 'PAUSED' || current?.activeTimer?.sessionId !== restoredFocusTimer.sessionId) {
-                            showMiniToast('原专注状态已变化，请查看计时栏');
+                            showMiniToast(__tt("timer.thePreviousFocusSessionHasChangedCheckTheTimer"));
                             return;
                         }
                         await startTimer({ confirm: false });
-                    }, '继续专注失败，请重试');
+                    }, __tt("timer.continuefocusfailedTryAgain"));
                 };
                 buttonContainer.appendChild(continueBtn);
             } else if (previousMode === 'countdown') {
@@ -11322,7 +11323,7 @@
                     const btn = document.createElement('button');
                     btn.className = 'tomato-dialog-action';
                     btn.dataset.duration = String(min);
-                    setTimerUiIcon(btn, 'tomato', `${min}分钟`);
+                    setTimerUiIcon(btn, 'tomato', __tt("timer.minutes3", { min: min }));
                     btn.style.cssText = `padding: 8px 12px; background: var(--b3-theme-primary); color: white;
                         border: 1px solid rgba(0,0,0,0.2); border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 60px;`;
                     btn.onclick = () => {
@@ -11337,7 +11338,7 @@
                             } else {
                                 await switchToCountdownAndStart(min, { confirm: false });
                             }
-                        }, '启动计时失败');
+                        }, __tt("timer.couldNotStartTheTimer"));
                     };
                     buttonContainer.appendChild(btn);
                 });
@@ -11346,7 +11347,7 @@
                 const stopwatchBtn = document.createElement('button');
                 stopwatchBtn.className = 'tomato-dialog-action';
                 stopwatchBtn.dataset.action = 'start-stopwatch';
-                setTimerUiIcon(stopwatchBtn, 'timer', '专注正计时');
+                setTimerUiIcon(stopwatchBtn, 'timer', __tt("timer.focusstopwatch"));
                 stopwatchBtn.style.cssText = `padding: 8px 12px; background: #4CAF50; color: white; border: 1px solid rgba(0,0,0,0.2);
                     border-radius: 8px; cursor: pointer; font-size: 13px; min-width: 60px;`;
                 stopwatchBtn.onclick = () => {
@@ -11361,7 +11362,7 @@
                         } else {
                             await switchToStopwatchAndStart({ confirm: false });
                         }
-                    }, '启动计时失败');
+                    }, __tt("timer.couldNotStartTheTimer"));
                 };
                 buttonContainer.appendChild(stopwatchBtn);
             } else if (previousMode === 'stopwatch') {
@@ -11369,7 +11370,7 @@
                     const btn = document.createElement('button');
                     btn.className = 'tomato-dialog-action';
                     btn.dataset.duration = String(min);
-                    setTimerUiIcon(btn, 'tomato', `${min}分钟`);
+                    setTimerUiIcon(btn, 'tomato', __tt("timer.minutes3", { min: min }));
                     btn.style.cssText = `padding: 8px 12px; background: var(--b3-theme-primary); color: white;
                         border: 1px solid rgba(0,0,0,0.2); border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 60px;`;
                     btn.onclick = () => {
@@ -11383,7 +11384,7 @@
                             } else {
                                 await switchToCountdownAndStart(min, { confirm: false });
                             }
-                        }, '启动计时失败');
+                        }, __tt("timer.couldNotStartTheTimer"));
                     };
                     buttonContainer.appendChild(btn);
                 });
@@ -11391,7 +11392,7 @@
                 const continueBtn = document.createElement('button');
                 continueBtn.className = 'tomato-dialog-action';
                 continueBtn.dataset.action = 'continue-stopwatch';
-                setTimerUiIcon(continueBtn, 'timer', '继续专注正计时');
+                setTimerUiIcon(continueBtn, 'timer', __tt("timer.continuefocusstopwatch"));
                 continueBtn.style.cssText = `padding: 8px 12px; background: #4CAF50; color: white; border: 1px solid rgba(0,0,0,0.2);
                     border-radius: 8px; cursor: pointer; font-size: 13px; flex: 1; min-width: 80px;`;
                 continueBtn.onclick = () => {
@@ -11426,7 +11427,7 @@
                             updateDisplay();
                             await startTimer({ confirm: false });
                         }
-                    }, '启动计时失败');
+                    }, __tt("timer.couldNotStartTheTimer"));
                 };
                 buttonContainer.appendChild(continueBtn);
             }
@@ -11460,7 +11461,7 @@
 
         const okBtn = document.createElement('button');
         okBtn.className = 'tomato-dialog-action';
-        okBtn.textContent = type === 'reminder' ? '关闭' : (type === 'info' ? '确定' : '我知道了');
+        okBtn.textContent = type === 'reminder' ? __tt("common.close") : (type === 'info' ? __tt("common.ok") : __tt("timer.gotIt"));
         okBtn.style.cssText = `
             padding: 8px 16px; background: var(--b3-theme-surface-light); color: var(--b3-theme-on-background);
             border: 1px solid var(--b3-theme-on-surface-light); border-radius: 8px; cursor: pointer; font-size: 14px;
@@ -11857,9 +11858,9 @@
             const t = clean(text);
             if (!t) return false;
             const hit = (k) => t.includes(k);
-            if (hit('上下拖动图片') || hit('添加题头图') || hit('添加标签') || hit('添加图标')) return true;
-            const hasCancelOk = hit('取消') && hit('确定');
-            if (hasCancelOk && (hit('添加标签') || hit('添加图标') || hit('添加题头图'))) return true;
+            if (hit(__tt("timer.dragTheImageVertically")) || hit(__tt("timer.addCoverImage")) || hit(__tt("timer.addtags")) || hit(__tt("timer.addicon"))) return true;
+            const hasCancelOk = hit(__tt("common.cancel")) && hit(__tt("common.ok"));
+            if (hasCancelOk && (hit(__tt("timer.addtags")) || hit(__tt("timer.addicon")) || hit(__tt("timer.addCoverImage")))) return true;
             return false;
         };
         const getDocTitleFromDOM = (docId) => {
@@ -11965,7 +11966,7 @@
             Logger.error('🔍 DOM 查询错误:', e);
         }
 
-        return '未命名任务';
+        return __tt("timer.untitledTask");
     }
 
     let routineSortDialogOpen = false;
@@ -12066,7 +12067,7 @@
             id: entry.id || (entry.blockId ? `bid:${entry.blockId}` : `name:${entry.name || index + 1}`),
             hasExplicitId: !!entry.id,
             blockId: pick(entry, 'blockId', entry.blockId || ''),
-            name: pick(entry, 'name', entry.name || `恢复日常 ${index + 1}`),
+            name: pick(entry, 'name', entry.name || __tt("timer.resumeRoutine", { value1: index + 1 })),
             icon: pick(entry, 'icon'),
             groupId: pick(entry, 'groupId'),
             color: pick(entry, 'color', '#1E88E5'),
@@ -12336,8 +12337,8 @@
     function createTimelineLuminaRecordButton() {
         const btn = document.createElement('div');
         btn.className = 'tomato-lumina-record-btn';
-        btn.title = '记录到轻语';
-        btn.innerHTML = `${TOMATO_LUMINA_RECORD_ICON_SVG}<span class="tomato-lumina-record-text">记录</span>`;
+        btn.title = __tt("timer.recordInLumina");
+        btn.innerHTML = `${TOMATO_LUMINA_RECORD_ICON_SVG}<span class="tomato-lumina-record-text">${__tt("timer.record")}</span>`;
         btn.style.cssText = `
             display: inline-flex;
             align-items: center;
@@ -12435,9 +12436,9 @@
         };
         const getGroupName = (id) => {
             const gid = normalizeGroupId(id);
-            if (!gid) return '未分组';
+            if (!gid) return __tt("kernel.ungrouped");
             const g = groups.find(x => x && x.id === gid);
-            return String(g?.name || '分组');
+            return String(g?.name || __tt("kernel.group"));
         };
         const orderGroups = () => {
             const ids = groups.map(g => g?.id).filter(Boolean);
@@ -12453,7 +12454,7 @@
             const btn = document.createElement('div');
             btn.className = 'tomato-routine-btn';
             btn.dataset.index = String(index);
-            btn.title = config.name || '点击开始计时';
+            btn.title = config.name || __tt("timer.clickToStartTiming");
             
             // 构建按钮内容
             const iconVal = String(config.icon || '').trim();
@@ -12478,7 +12479,7 @@
             }
             let btnContent = `<span style="margin-right: 4px; user-select: none; -webkit-user-select: none;">${iconHtml}</span>`;
             if (config.showName !== false) {
-                btnContent += `<span class="btn-name" style="user-select: none; -webkit-user-select: none; text-shadow: 0 1px 1px rgba(0,0,0,0.25);">${config.name || '任务'}</span>`;
+                btnContent += `<span class="btn-name" style="user-select: none; -webkit-user-select: none; text-shadow: 0 1px 1px rgba(0,0,0,0.25);">${config.name || __tt("timer.task")}</span>`;
             }
             btn.innerHTML = btnContent;
             
@@ -12632,9 +12633,9 @@
         const menu = document.createElement('div');
         menu.className = 'tomato-routine-btn-menu';
         menu.innerHTML = `
-            <div class="menu-item edit">编辑</div>
-            <div class="menu-item sort">分组与排序</div>
-            <div class="menu-item delete">删除</div>
+            <div class="menu-item edit">${__tt("timer.edit")}</div>
+            <div class="menu-item sort">${__tt("timer.groupsOrder")}</div>
+            <div class="menu-item delete">${__tt("common.delete")}</div>
         `;
         menu.style.cssText = `
             position: fixed;
@@ -12746,8 +12747,8 @@
 
         dialog.innerHTML = `
             <div class="sort-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid var(--b3-theme-surface-light,#e0e0e0);background:var(--b3-theme-surface-light,rgba(0,0,0,0.03));">
-                <div style="font-weight:600;font-size:14px;color:var(--b3-theme-on-background,#333);">日常按钮分组与排序</div>
-                <button class="sort-close" style="padding:6px 10px;border:1px solid var(--b3-theme-surface-light,#d9d9d9);border-radius:8px;background:var(--b3-theme-background-light,#f5f5f5);cursor:pointer;">关闭</button>
+                <div style="font-weight:600;font-size:14px;color:var(--b3-theme-on-background,#333);">${__tt("timer.routineButtonGroupsOrder")}</div>
+                <button class="sort-close" style="padding:6px 10px;border:1px solid var(--b3-theme-surface-light,#d9d9d9);border-radius:8px;background:var(--b3-theme-background-light,#f5f5f5);cursor:pointer;">${__tt("common.close")}</button>
             </div>
             <div class="sort-body" style="padding:10px 12px;overflow:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch;"></div>
         `;
@@ -12767,7 +12768,7 @@
             userSettings.routineGroups.forEach((g) => {
                 if (!g || typeof g !== 'object') return;
                 const id = String(g.id || '').trim() || ('grp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
-                const name = String(g.name || '').trim() || '分组';
+                const name = String(g.name || '').trim() || __tt("kernel.group");
                 g.id = id;
                 g.name = name;
                 next.push(g);
@@ -12780,7 +12781,7 @@
         };
         const getGroupOptions = () => {
             ensureGroups();
-            const opts = [{ id: null, name: '未分组' }];
+            const opts = [{ id: null, name: __tt("routine.ungrouped") }];
             userSettings.routineGroups.forEach(g => { opts.push({ id: g.id, name: g.name }); });
             return opts;
         };
@@ -12814,10 +12815,10 @@
                 const layoutSection = document.createElement('div');
                 layoutSection.style.cssText = sectionStyle;
                 layoutSection.innerHTML = `
-                    <div style="font-weight:600;margin-bottom:8px;color:var(--b3-theme-on-background,#333);">展示方式</div>
+                    <div style="font-weight:600;margin-bottom:8px;color:var(--b3-theme-on-background,#333);">${__tt("timer.display")}</div>
                     <select class="rb-layout-select" style="width:100%;padding:8px 10px;border:1px solid var(--b3-theme-surface-light,#d9d9d9);border-radius:8px;background:var(--b3-theme-background,#fff);color:var(--b3-theme-on-background,#333);font-size:13px;box-sizing:border-box;">
-                        <option value="rows">分组分行（可换行）</option>
-                        <option value="inline">分组横排（可横向滚动）</option>
+                        <option value="rows">${__tt("timer.groupsOnSeparateRowsWrap")}</option>
+                        <option value="inline">${__tt("timer.groupsInOneRowHorizontalScrolling")}</option>
                     </select>
                 `;
                 body.appendChild(layoutSection);
@@ -12836,8 +12837,8 @@
                 const layoutSection = document.createElement('div');
                 layoutSection.style.cssText = sectionStyle;
                 layoutSection.innerHTML = `
-                    <div style="font-weight:600;margin-bottom:6px;color:var(--b3-theme-on-background,#333);">展示方式</div>
-                    <div style="color:var(--b3-theme-on-surface,#666);font-size:13px;">移动端固定为分组分行展示</div>
+                    <div style="font-weight:600;margin-bottom:6px;color:var(--b3-theme-on-background,#333);">${__tt("timer.display")}</div>
+                    <div style="color:var(--b3-theme-on-surface,#666);font-size:13px;">${__tt("timer.mobileAlwaysDisplaysGroupsOnSeparateRows")}</div>
                 `;
                 body.appendChild(layoutSection);
             }
@@ -12846,8 +12847,8 @@
             groupSection.style.cssText = sectionStyle;
             groupSection.innerHTML = `
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;">
-                    <div style="font-weight:600;color:var(--b3-theme-on-background,#333);">分组</div>
-                    <button class="btn-add-group" style="padding:6px 10px;border:1px solid var(--b3-theme-surface-light,#d9d9d9);border-radius:8px;background:var(--b3-theme-background-light,#f5f5f5);cursor:pointer;">新增分组</button>
+                    <div style="font-weight:600;color:var(--b3-theme-on-background,#333);">${__tt("kernel.group")}</div>
+                    <button class="btn-add-group" style="padding:6px 10px;border:1px solid var(--b3-theme-surface-light,#d9d9d9);border-radius:8px;background:var(--b3-theme-background-light,#f5f5f5);cursor:pointer;">${__tt("timer.addGroup")}</button>
                 </div>
                 <div class="group-list"></div>
             `;
@@ -12857,7 +12858,7 @@
             const renderGroupList = () => {
                 groupList.innerHTML = '';
                 if (!userSettings.routineGroups.length) {
-                    groupList.innerHTML = `<div style="color:var(--b3-theme-on-surface,#666);font-size:13px;">暂无分组（按钮默认在“未分组”）</div>`;
+                    groupList.innerHTML = `<div style="color:var(--b3-theme-on-surface,#666);font-size:13px;">${__tt("timer.noGroupsYetButtonsAppearUnderUngrouped")}</div>`;
                     return;
                 }
                 userSettings.routineGroups.forEach((g, gi) => {
@@ -12865,7 +12866,7 @@
                     row.style.cssText = 'display:flex;gap:8px;align-items:center;margin:6px 0;';
                     const input = document.createElement('input');
                     input.value = g.name;
-                    input.placeholder = '分组名称';
+                    input.placeholder = __tt("timer.groupname");
                     input.style.cssText = 'flex:1;min-width:0;padding:6px 10px;border:1px solid var(--b3-theme-surface-light,#d9d9d9);border-radius:8px;font-size:13px;box-sizing:border-box;background:var(--b3-theme-background,#fff);color:var(--b3-theme-on-background,#333);';
                     const up = document.createElement('button');
                     up.textContent = '↑';
@@ -12874,13 +12875,13 @@
                     down.textContent = '↓';
                     down.disabled = gi === userSettings.routineGroups.length - 1;
                     const del = document.createElement('button');
-                    del.textContent = '删除';
+                    del.textContent = __tt("common.delete");
                     [up, down, del].forEach(b => {
                         b.style.cssText = 'padding:6px 10px;border:1px solid var(--b3-theme-surface-light,#d9d9d9);border-radius:8px;background:var(--b3-theme-background-light,#f5f5f5);cursor:pointer;font-size:12px;';
                     });
 
                     const persistGroupName = async () => {
-                        const v = String(input.value || '').trim() || '分组';
+                        const v = String(input.value || '').trim() || __tt("kernel.group");
                         g.name = v;
                         await saveUserSettings();
                         const toolbar = timelineBar?.querySelector('#tomato-routine-toolbar');
@@ -12891,7 +12892,7 @@
                     // 使用 oninput 实时更新 + 防抖保存
                     input.oninput = () => {
                         // 立即更新内存中的值
-                        const v = String(input.value || '').trim() || '分组';
+                        const v = String(input.value || '').trim() || __tt("kernel.group");
                         g.name = v;
                         // 防抖保存
                         if (debounceTimer) clearTimeout(debounceTimer);
@@ -12914,7 +12915,7 @@
                             debounceTimer = null;
                         }
                         // 🔧 修复：确保 blur 时也保存最新的值
-                        const v = String(input.value || '').trim() || '分组';
+                        const v = String(input.value || '').trim() || __tt("kernel.group");
                         g.name = v;
                         await saveUserSettings();
                         const toolbar = timelineBar?.querySelector('#tomato-routine-toolbar');
@@ -12966,20 +12967,20 @@
 
             groupSection.querySelector('.btn-add-group').onclick = async () => {
                 const id = 'grp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-                userSettings.routineGroups.push({ id, name: '新分组' });
+                userSettings.routineGroups.push({ id, name: __tt("routine.newGroup") });
                 await saveUserSettings();
                 render();
             };
 
             const buttonsSection = document.createElement('div');
             buttonsSection.style.cssText = sectionStyle;
-            buttonsSection.innerHTML = `<div style="font-weight:600;margin-bottom:8px;color:var(--b3-theme-on-background,#333);">按钮（归类与排序）</div>`;
+            buttonsSection.innerHTML = `<div style="font-weight:600;margin-bottom:8px;color:var(--b3-theme-on-background,#333);">${__tt("timer.buttonsGroupingOrder")}</div>`;
             body.appendChild(buttonsSection);
 
             if (list.length === 0) {
                 const empty = document.createElement('div');
                 empty.style.cssText = 'color:var(--b3-theme-on-surface,#666);font-size:13px;padding:6px 0;';
-                empty.textContent = '暂无按钮';
+                empty.textContent = __tt("timer.noButtonsYet");
                 buttonsSection.appendChild(empty);
                 return;
             }
@@ -13011,7 +13012,7 @@
                 title.style.cssText = 'margin:10px 0 6px 0;font-size:12px;color:var(--b3-theme-on-surface,#666);display:flex;align-items:center;gap:8px;';
                 const line = document.createElement('div');
                 line.style.cssText = 'height:1px;background:var(--b3-theme-surface-light,#e0e0e0);flex:1;';
-                title.innerHTML = `<span style="font-weight:600;">${gid ? (userSettings.routineGroups.find(g => g.id === gid)?.name || '分组') : '未分组'}</span>`;
+                title.innerHTML = `<span style="font-weight:600;">${gid ? (userSettings.routineGroups.find(g => g.id === gid)?.name || __tt("kernel.group")) : __tt("kernel.ungrouped")}</span>`;
                 title.appendChild(line);
                 buttonsSection.appendChild(title);
 
@@ -13033,7 +13034,7 @@
                     const iconNode = getIconNode(cfg);
                     const name = document.createElement('div');
                     name.style.cssText = 'flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--b3-theme-on-background,#333);font-size:13px;';
-                    name.textContent = String(cfg?.name || '未命名任务');
+                    name.textContent = String(cfg?.name || __tt("timer.untitledTask"));
 
                     const groupSelect = document.createElement('select');
                     groupSelect.style.cssText = 'max-width:120px;padding:6px 8px;border:1px solid var(--b3-theme-surface-light,#d9d9d9);border-radius:8px;background:var(--b3-theme-background,#fff);color:var(--b3-theme-on-background,#333);font-size:12px;';
@@ -13127,10 +13128,10 @@
         dialog.id = 'tomato-routine-delete-dialog';
         dialog.innerHTML = `
             <div class="dialog-content">
-                <p>确定要删除「${config.name || '日常事务'}」按钮吗？</p>
+                <p>${__tt("timer.deleteTheButton", { value1: config.name || __tt("timer.routines") })}</p>
                 <div class="dialog-actions">
-                    <button class="btn-cancel">取消</button>
-                    <button class="btn-confirm">删除</button>
+                    <button class="btn-cancel">${__tt("common.cancel")}</button>
+                    <button class="btn-confirm">${__tt("common.delete")}</button>
                 </div>
             </div>
         `;
@@ -13218,63 +13219,63 @@
         const dialog = document.createElement('div');
         dialog.id = 'tomato-routine-btn-dialog';
         dialog.innerHTML = `
-            <div class="dialog-header">${isEdit ? '编辑按钮' : '添加日常事务按钮'}</div>
+            <div class="dialog-header">${isEdit ? __tt("timer.editButton") : __tt("timer.addRoutineButton")}</div>
             <div class="dialog-body">
                 <div class="form-group">
-                    <label>块ID（任务块\\列表块\\标题块\\文档块的块标菜单内复制ID即可）</label>
-                    <input type="text" class="input-block-id" placeholder="可选：留空则仅按按钮名称记录" value="${config?.blockId || ''}">
+                    <label>${__tt("timer.blockIdCopyItFromTheBlockMenuOf")}</label>
+                    <input type="text" class="input-block-id" placeholder="${globalThis.__dockTomatoI18n.html("timer.optionalLeaveEmptyToRecordByButtonNameOnly")}" value="${config?.blockId || ''}">
                 </div>
                 <div class="form-group">
-                    <label>按钮名称</label>
+                    <label>${__tt("timer.buttonName")}</label>
                     <div style="display: flex; gap: 8px;">
-                        <input type="text" class="input-name" placeholder="手动输入或获取" value="${config?.name || ''}" style="flex: 1;">
-                        <button class="btn-get-name">获取</button>
+                        <input type="text" class="input-name" placeholder="${globalThis.__dockTomatoI18n.html("timer.enterManuallyOrFetch")}" value="${config?.name || ''}" style="flex: 1;">
+                        <button class="btn-get-name">${__tt("timer.fetch")}</button>
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>分组</label>
+                    <label>${__tt("kernel.group")}</label>
                     <select class="input-group" style="width: 100%; padding: 8px 10px; border: 1px solid var(--b3-theme-border, #d9d9d9); border-radius: 4px; font-size: 14px; box-sizing: border-box;">
-                        <option value="">未分组</option>
+                        <option value="">${__tt("kernel.ungrouped")}</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>图标（emoji）</label>
+                    <label>${__tt("timer.iconEmoji")}</label>
                     <div class="emoji-input-wrapper">
                         <input type="text" class="input-icon" placeholder="📌" value="${config?.icon || ''}" maxlength="128">
-                        <button class="btn-emoji-picker" title="选择emoji">😊</button>
+                        <button class="btn-emoji-picker" title="${globalThis.__dockTomatoI18n.html("timer.chooseEmoji")}">😊</button>
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>计时类型</label>
+                    <label>${__tt("timer.timertype")}</label>
                     <select class="input-timer-type" style="width: 100%; padding: 8px 10px; border: 1px solid var(--b3-theme-border, #d9d9d9); border-radius: 4px; font-size: 14px; box-sizing: border-box;">
-                        <option value="stopwatch" ${config?.timerType !== 'pomodoro' ? 'selected' : ''}>专注正计时</option>
-                        <option value="pomodoro" ${config?.timerType === 'pomodoro' ? 'selected' : ''}>番茄计时</option>
+                        <option value="stopwatch" ${config?.timerType !== 'pomodoro' ? 'selected' : ''}>${__tt("timer.focusstopwatch")}</option>
+                        <option value="pomodoro" ${config?.timerType === 'pomodoro' ? 'selected' : ''}>${__tt("timer.pomodorotimer")}</option>
                     </select>
                 </div>
                 <div class="form-group checkbox-group">
                     <input type="checkbox" class="input-use-break" id="use-break" ${config?.useBreakMode === true ? 'checked' : ''}>
-                    <label for="use-break">休息模式</label>
+                    <label for="use-break">${__tt("timer.restmode")}</label>
                 </div>
                 <div class="form-group input-tomato-duration-group" style="display: ${config?.timerType === 'pomodoro' ? 'block' : 'none'};">
-                    <label class="tomato-duration-label">番茄时长（分钟）</label>
+                    <label class="tomato-duration-label">${__tt("timer.pomodorodurationMinutes")}</label>
                     <input type="number" class="input-tomato-duration" value="${config?.tomatoDuration || (config?.useBreakMode ? 5 : 30)}" min="1" max="120">
                 </div>
                 <div class="form-group">
-                    <label>背景颜色</label>
+                    <label>${__tt("timer.backgroundcolor")}</label>
                     <input type="color" class="input-color" value="${config?.color || '#4CAF50'}">
                 </div>
                 <div class="form-group">
-                    <label>宽度（像素）</label>
+                    <label>${__tt("timer.widthPixels")}</label>
                     <input type="number" class="input-width" value="${config?.width || 80}" min="40" max="200">
                 </div>
                 <div class="form-group checkbox-group">
                     <input type="checkbox" class="input-show-name" id="show-name" ${config?.showName !== false ? 'checked' : ''}>
-                    <label for="show-name">显示名称</label>
+                    <label for="show-name">${__tt("timer.showName")}</label>
                 </div>
             </div>
             <div class="dialog-footer">
-                <button class="btn-cancel">取消</button>
-                <button class="btn-save">保存</button>
+                <button class="btn-cancel">${__tt("common.cancel")}</button>
+                <button class="btn-save">${__tt("common.save")}</button>
             </div>
         `;
         
@@ -13412,12 +13413,12 @@
         };
         
         const __fallbackEmojiGroups = () => ([
-            { name: '常用', items: ['🍅','✅','📌','⏰','📝','📋','🎯','⚙️','💡','🔥','💤','💪','🎉','❤️','👍','😎','😊','🤔'] },
-            { name: '表情', items: ['😀','😁','😂','🤣','😊','😍','😘','😋','😎','🥳','😴','🤯','😭','😡','🤔','🤗','🤐','🙄','😬','😇'] },
-            { name: '工作', items: ['💻','🧠','📚','📖','🧾','📅','📌','📍','✏️','🖊️','🧰','🔧','🪛','🧪','📎','🗂️','🗃️','🧹'] },
-            { name: '时间', items: ['⏰','⌛','⏳','🕒','🕘','📆','🗓️','⏱️','⏲️'] },
-            { name: '生活', items: ['☕','🍵','🥤','🍎','🍞','🥗','🏃','🧘','🛏️','🛁','🧼','🧴','🌙','☀️'] },
-            { name: '符号', items: ['✅','☑️','❌','⭕','⚠️','⭐','🌟','🔔','🔕','📣','➡️','⬅️','⬆️','⬇️'] },
+            { name: __tt("emoji.common"), items: ['🍅','✅','📌','⏰','📝','📋','🎯','⚙️','💡','🔥','💤','💪','🎉','❤️','👍','😎','😊','🤔'] },
+            { name: __tt("emoji.faces"), items: ['😀','😁','😂','🤣','😊','😍','😘','😋','😎','🥳','😴','🤯','😭','😡','🤔','🤗','🤐','🙄','😬','😇'] },
+            { name: __tt("emoji.work"), items: ['💻','🧠','📚','📖','🧾','📅','📌','📍','✏️','🖊️','🧰','🔧','🪛','🧪','📎','🗂️','🗃️','🧹'] },
+            { name: __tt("emoji.time"), items: ['⏰','⌛','⏳','🕒','🕘','📆','🗓️','⏱️','⏲️'] },
+            { name: __tt("emoji.life"), items: ['☕','🍵','🥤','🍎','🍞','🥗','🏃','🧘','🛏️','🛁','🧼','🧴','🌙','☀️'] },
+            { name: __tt("emoji.symbols"), items: ['✅','☑️','❌','⭕','⚠️','⭐','🌟','🔔','🔕','📣','➡️','⬅️','⬆️','⬇️'] },
         ]);
 
         const __decodeEmojiHex = (hex) => {
@@ -13465,7 +13466,7 @@
                             items.push({ type: 'builtin', label: cn, path: cp });
                         }
                     }
-                    if (items.length) groups.push({ name: `内置-${name}`, items });
+                    if (items.length) groups.push({ name: __tt('emoji.builtInGroup', { name }), items });
                     continue;
                 }
 
@@ -13473,9 +13474,9 @@
                     const base = name.replace(/\.[^.]+$/, '');
                     const decoded = __decodeEmojiHex(base);
                     if (decoded) {
-                        groups.push({ name: '内置', items: [{ type: 'hex', value: base }] });
+                        groups.push({ name: __tt("emoji.builtIn"), items: [{ type: 'hex', value: base }] });
                     } else {
-                        groups.push({ name: '内置', items: [{ type: 'builtin', label: name, path }] });
+                        groups.push({ name: __tt("emoji.builtIn"), items: [{ type: 'builtin', label: name, path }] });
                     }
                 }
             }
@@ -13483,56 +13484,56 @@
         };
         
         const __staticEmojiGroups = () => ([
-            { name: '常用', items: [
+            { name: __tt("emoji.common"), items: [
                 '🍅','✅','📌','⏰','📝','📋','🎯','⚙️','💡','🔥','💤','💪','🎉','❤️','👍','👎','😎','😊','🤔','✨','⭐','🌟','✅','❌','⚠️','ℹ️','📎','📍','📣','🔔','🔕',
                 '🧠','📚','✏️','🧾','📅','🗓️','⏱️','⏲️','⌛','⏳','🧘','🏃','🚶','☕','🍵','🥤','🛏️','🛁','🧹','🧴','🧯','🔧','🪛','🔨','🧰',
             ] },
-            { name: '表情', items: [
+            { name: __tt("emoji.faces"), items: [
                 '😀','😁','😂','🤣','😃','😄','😅','😆','😉','😊','🙂','🙃','😍','🥰','😘','😗','😙','😚','😋','😛','😝','😜','🤪','🤨','🧐','🤓','😎','🥳',
                 '😏','😒','😞','😔','😟','😕','🙁','☹️','😣','😖','😫','😩','🥺','🥹','😢','😭','😤','😠','😡','🤬','😳','🥵','🥶','😱','😨','😰','😥',
                 '😓','🤗','🤔','🫡','🫠','🤐','🙄','😬','😇','🤩','😌','😪','😴','🤯','😷','🤒','🤕','🤧','🤮','🤢',
             ] },
-            { name: '手势', items: [
+            { name: __tt("emoji.gestures"), items: [
                 '👍','👎','👌','✌️','🤞','🤟','🤘','🤙','🫶','👏','🙌','👐','🤲','🙏','✋','🤚','🖐️','👋','🫱','🫲','👉','👈','👆','👇','☝️',
                 '🫵','🤝','🤜','🤛','✊','👊','🫳','🫴','🖖','🫰','🤌','🤏',
             ] },
-            { name: '人物', items: [
+            { name: __tt("emoji.people"), items: [
                 '👤','👥','🧑','👨','👩','🧒','👦','👧','🧓','👴','👵','🧑‍💻','👨‍💻','👩‍💻','🧑‍🎓','👨‍🎓','👩‍🎓','🧑‍🏫','👨‍🏫','👩‍🏫',
                 '🧑‍🔧','👨‍🔧','👩‍🔧','🧑‍🍳','👨‍🍳','👩‍🍳','🧑‍🎨','👨‍🎨','👩‍🎨','🧑‍🚀','👨‍🚀','👩‍🚀','🧑‍🚒','👨‍🚒','👩‍🚒','🧑‍⚕️','👨‍⚕️','👩‍⚕️',
                 '🧘','🏃','🚶','🧍','🧎','🧗','🏋️','🤹','🤸',
             ] },
-            { name: '动物自然', items: [
+            { name: __tt("emoji.animalsNature"), items: [
                 '🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🐔','🐧','🐦','🦆','🦅','🦉','🐴','🦄',
                 '🐝','🐛','🦋','🐢','🐍','🦖','🦕','🐙','🦑','🦀','🐟','🐠','🐡','🐳','🐬','🦈','🐊','🦜','🦢','🦩','🦚',
                 '🌱','🌿','🌳','🌲','🌵','🌸','🌼','🌻','🌺','🍀','🍁','🍂','🍃','🌙','☀️','⭐','🌈','🌧️','⛈️','❄️','☔','🌪️','🌊','🔥',
             ] },
-            { name: '食物', items: [
+            { name: __tt("emoji.food"), items: [
                 '🍎','🍐','🍊','🍋','🍌','🍉','🍇','🍓','🫐','🍒','🥝','🍍','🥭','🍅','🥥','🥑','🥦','🥬','🥒','🌶️','🫑','🌽','🥕','🧄','🧅','🥔',
                 '🍞','🥐','🥯','🥨','🥞','🧇','🧀','🥚','🍳','🥓','🥩','🍗','🍖','🌭','🍔','🍟','🍕','🥪','🌮','🌯','🥗','🍜','🍝','🍣','🍱','🍛','🍲','🥟',
                 '🍰','🧁','🍫','🍪','🍩','🍦','🍨','🍧','🍡','🍿','☕','🍵','🥤','🧋',
             ] },
-            { name: '活动', items: [
+            { name: __tt("emoji.activities"), items: [
                 '🎯','🎮','🕹️','🎲','🧩','🎼','🎹','🥁','🎸','🎻','🎺','🎷','🎤','🎧','🎬','🎨','🧵','🧶',
                 '⚽','🏀','🏈','⚾','🎾','🏐','🏓','🏸','⛳','🥊','🥋','🎽','🏃','🚴','🏊','🧘','🏕️','🎉','🎊','🎁','🎂','🎈','🏆','🥇','🥈','🥉',
             ] },
-            { name: '出行', items: [
+            { name: __tt("emoji.travel"), items: [
                 '🚗','🚕','🚌','🚎','🚓','🚑','🚒','🚚','🚛','🚲','🛴','🏍️','🚆','🚄','🚅','🚇','🚉','✈️','🛫','🛬','🚀','🛰️','⛵','🚤','🚢',
                 '🗺️','📍','🏠','🏡','🏢','🏫','🏥','🏦','🏪','🏨','🏟️','🏝️','🗻','🌋','🏔️','🏜️','🏖️','🏞️',
             ] },
-            { name: '物品', items: [
+            { name: __tt("emoji.objects"), items: [
                 '💻','🖥️','⌨️','🖱️','🧠','📱','☎️','📷','📸','🎥','📺','🔋','🔌','💡','🔦','🕯️','🧯','🧰','🔧','🪛','🔨','🪚','🧲','🧪','🧫','🧬',
                 '📚','📖','📒','📓','📔','📕','📗','📘','📙','🗂️','🗃️','📎','🖇️','✂️','🖊️','✏️','🖍️','🧾','📦','🗑️','🔑','🔒','🔓','🔔','🔕',
                 '⏰','⌛','⏳','🧭','🧳','🎒','👓','🧤','🧢','👕','👖','👟',
             ] },
-            { name: '符号', items: [
+            { name: __tt("emoji.symbols"), items: [
                 '✅','☑️','❌','⭕','⚠️','ℹ️','❓','❗','🔁','🔄','🔃','⏸️','▶️','⏹️','⏺️','⏭️','⏮️','⏩','⏪',
                 '⬆️','⬇️','⬅️','➡️','↩️','↪️','↔️','↕️','➕','➖','✖️','➗','#️⃣','*️⃣',
                 '⭐','🌟','✨','🟢','🟡','🟠','🔴','⚫','⚪','🟣','🟤','🔷','🔶','🔺','🔻','🧿',
             ] },
-            { name: '旗帜', items: [
+            { name: __tt("emoji.flags"), items: [
                 '🏳️','🏴','🏁','🚩','🏳️‍🌈','🏳️‍⚧️','🇨🇳','🇭🇰','🇹🇼','🇯🇵','🇰🇷','🇺🇸','🇬🇧','🇫🇷','🇩🇪','🇪🇸','🇮🇹','🇨🇦','🇦🇺','🇧🇷','🇮🇳','🇸🇬',
             ] },
-            { name: '时间天气', items: [
+            { name: __tt("emoji.timeWeather"), items: [
                 '🌞','🌝','🌚','🌛','🌜','🌙','☀️','🌤️','⛅','🌥️','☁️','🌦️','🌧️','⛈️','🌩️','🌨️','❄️','☔','🌪️','🌫️','🌈',
                 '🕐','🕑','🕒','🕓','🕔','🕕','🕖','🕗','🕘','🕙','🕚','🕛',
             ] },
@@ -13567,7 +13568,7 @@
                     continue;
                 }
                 if (isImage(name)) {
-                    groups.push({ name: '自定义', items: [{ type: 'custom', label: name, path }] });
+                    groups.push({ name: __tt("emoji.custom"), items: [{ type: 'custom', label: name, path }] });
                 }
             }
             return groups;
@@ -13594,8 +13595,8 @@
             
             panel.innerHTML = `
                 <div class="emoji-picker-header" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--b3-theme-border,#e0e0e0);">
-                    <input class="emoji-picker-search" placeholder="搜索（支持文件名/分组）" style="flex:1;padding:8px 10px;border:1px solid var(--b3-theme-border,#d9d9d9);border-radius:8px;font-size:13px;"/>
-                    <button class="emoji-picker-close" style="padding:6px 10px;border:1px solid var(--b3-theme-border,#d9d9d9);border-radius:8px;background:var(--b3-theme-background-light,#f5f5f5);cursor:pointer;">关闭</button>
+                    <input class="emoji-picker-search" placeholder="${globalThis.__dockTomatoI18n.html("timer.searchByFilenameOrGroup")}" style="flex:1;padding:8px 10px;border:1px solid var(--b3-theme-border,#d9d9d9);border-radius:8px;font-size:13px;"/>
+                    <button class="emoji-picker-close" style="padding:6px 10px;border:1px solid var(--b3-theme-border,#d9d9d9);border-radius:8px;background:var(--b3-theme-background-light,#f5f5f5);cursor:pointer;">${__tt("common.close")}</button>
                 </div>
                 <div class="emoji-picker-tabs" style="display:flex;gap:6px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--b3-theme-border,#e0e0e0);overflow:auto;white-space:nowrap;"></div>
                 <div class="emoji-picker-body" style="height:calc(100% - 92px);overflow:auto;padding:10px;">
@@ -13652,12 +13653,12 @@
                 if (/^([0-9a-f]{4,})(-[0-9a-f]{4,})*$/i.test(v)) return { type: 'hex', value: v };
                 return { type: 'unicode', value: v };
             };
-            if (recent.length) groups.push({ name: '最近', items: recent.map(classifyRecent).filter(Boolean) });
+            if (recent.length) groups.push({ name: __tt("emoji.recent"), items: recent.map(classifyRecent).filter(Boolean) });
             if (builtinGroups.length) groups.push(...builtinGroups.map(g => ({ name: g.name, items: g.items || [] })));
             groups.push(...(unicodeGroups || []).map(g => ({ name: g.name, items: (g.items || []).map(e => ({ type: 'unicode', value: e })) })));
-            if (customGroups.length) groups.push({ name: '自定义表情', items: customGroups.flatMap(g => g.items.map(i => ({ ...i }))) });
+            if (customGroups.length) groups.push({ name: __tt("emoji.customEmoji"), items: customGroups.flatMap(g => g.items.map(i => ({ ...i }))) });
             __emojiGroups = groups;
-            __activeGroupName = groups[0]?.name || '最近';
+            __activeGroupName = groups[0]?.name || __tt("timer.recent");
             return groups;
         };
         
@@ -13706,7 +13707,7 @@
             
             if (!filtered.length) {
                 const empty = document.createElement('div');
-                empty.textContent = '没有匹配的表情';
+                empty.textContent = __tt("timer.noMatchingEmoji");
                 empty.style.cssText = 'grid-column:1/-1;color:var(--b3-theme-on-surface-light,#888);font-size:13px;padding:10px;';
                 gridEl.appendChild(empty);
                 return;
@@ -13770,7 +13771,7 @@
 
             if (filtered.length > MAX_RENDER) {
                 const more = document.createElement('button');
-                more.textContent = `加载更多（${MAX_RENDER}/${filtered.length}）`;
+                more.textContent = __tt("timer.loadMore", { MAX_RENDER: MAX_RENDER, length: filtered.length });
                 more.style.cssText = `
                     grid-column: 1 / -1;
                     height: 38px;
@@ -13785,7 +13786,7 @@
                     const start = MAX_RENDER;
                     let idx = start;
                     more.disabled = true;
-                    more.textContent = '加载中...';
+                    more.textContent = __tt("timer.loading");
                     for (; idx < filtered.length; idx += 1) {
                         const item = filtered[idx];
                         const btn = document.createElement('button');
@@ -13904,7 +13905,7 @@
                 box-sizing: border-box;
                 font-family: monospace;
             `;
-            const picker = createMobileColorPickerButton('背景颜色', routineColorInput.value, (c) => { routineColorInput.value = c; }, { defaultColor: '#4CAF50', showHexText: false });
+            const picker = createMobileColorPickerButton(__tt("timer.backgroundcolor"), routineColorInput.value, (c) => { routineColorInput.value = c; }, { defaultColor: '#4CAF50', showHexText: false });
             if (wrapper) {
                 const row = document.createElement('div');
                 row.style.cssText = 'display:flex;align-items:center;gap:8px;';
@@ -13970,7 +13971,7 @@
             const isPomodoro = timerTypeSelect.value === 'pomodoro';
             tomatoDurationGroup.style.display = isPomodoro ? 'block' : 'none';
             if (durationLabel) {
-                durationLabel.textContent = useBreakSwitch.checked ? '休息时长（分钟）' : '番茄时长（分钟）';
+                durationLabel.textContent = useBreakSwitch.checked ? __tt("timer.restdurationMinutes2") : __tt("timer.pomodorodurationMinutes");
             }
         };
         timerTypeSelect.onchange = updateDurationGroup;
@@ -14007,7 +14008,7 @@
                     if (!id) return;
                     const opt = document.createElement('option');
                     opt.value = id;
-                    opt.textContent = String(g?.name || '分组');
+                    opt.textContent = String(g?.name || __tt("kernel.group"));
                     groupSelect.appendChild(opt);
                 });
                 const currentGroupId = String(config?.groupId || '').trim();
@@ -14019,15 +14020,15 @@
         dialog.querySelector('.btn-get-name').onclick = async () => {
             const blockId = dialog.querySelector('.input-block-id').value.trim();
             if (!blockId) {
-                showToast('请先输入块ID', 2000);
+                showToast(__tt("timer.enterABlockIdFirst"), 2000);
                 return;
             }
             const name = await getBlockContent(blockId);
             if (name && name !== '未命名任务') {
                 dialog.querySelector('.input-name').value = name;
-                showToast('已获取块名称', 1500);
+                showToast(__tt("timer.blockNameFetched"), 1500);
             } else {
-                showToast('未找到块内容', 2000);
+                showToast(__tt("timer.blockContentNotFound"), 2000);
             }
         };
         
@@ -14064,7 +14065,7 @@
                 }
             }
             if (!newConfig.name || newConfig.name === '未命名任务') {
-                showToast('请输入按钮名称（或填写块ID后点“获取”）', 2200);
+                showToast(__tt("timer.enterAButtonNameOrEnterABlockId"), 2200);
                 return;
             }
             
@@ -14073,7 +14074,7 @@
             } else {
                 // 检查是否已达上限
                 if ((userSettings.routineButtons || []).length >= 50) {
-                    alert('最多只能添加50个日常事务按钮');
+                    alert(__tt("timer.youCanAddUpToRoutineButtons"));
                     return;
                 }
                 if (!userSettings.routineButtons) userSettings.routineButtons = [];
@@ -14291,7 +14292,7 @@
         const addButton = document.createElement('div');
         addButton.className = 'tomato-routine-add-btn';
         addButton.innerHTML = '+';
-        addButton.title = '添加日常事务按钮';
+        addButton.title = __tt("timer.addRoutineButton");
         addButton.style.cssText = `
             display: inline-flex;
             align-items: center;
@@ -14363,7 +14364,7 @@
             // 检查点击是否在 routineToolbar 的日常事务按钮上
             const routineBtnEl = topmostElement?.closest?.('.tomato-routine-btn');
             if (routineBtnEl) {
-                if (!__tomatoTimerReady) { showMiniToast('计时状态正在恢复，请稍后再试'); return; }
+                if (!__tomatoTimerReady) { showMiniToast(__tt("timer.timerStateIsBeingRestoredPleaseTryAgainShortly")); return; }
                 e.preventDefault();
                 e.stopImmediatePropagation();
                 e.stopPropagation();
@@ -14379,7 +14380,7 @@
                     ? Promise.resolve().then(() => getBlockContent(blockId)).catch(() => '')
                     : Promise.resolve(taskName);
                 if (!taskName && !blockId) {
-                    showToast('请先设置按钮名称', 2000);
+                    showToast(__tt("timer.setAButtonNameFirst"), 2000);
                     return;
                 }
 
@@ -14402,7 +14403,7 @@
                                 pendingRoutineButtonIndex = null;
                                 pendingRoutineButtonBlockId = null;
                                 updateRoutineButtonRunningHighlight(true);
-                                showToast('请先设置按钮名称', 2000);
+                                showToast(__tt("timer.setAButtonNameFirst"), 2000);
                             }
                             return;
                         }
@@ -14443,7 +14444,7 @@
                                     setTimeout(() => { highlightTaskBlock(blockId); }, 100);
                                     startHighlightKeepAlive();
                                 }
-                                showToast(`开始休息倒计时: ${resolvedTaskName} (${duration}分钟)`, 2000);
+                                showToast(__tt("timer.startrestcountdownMinutes", { resolvedTaskName: resolvedTaskName, duration: duration }), 2000);
                             } else {
                                 await startStopwatchBreakMode({ confirm: false });
                                 if (blockId && hasRestorableFocusSource()) {
@@ -14451,17 +14452,17 @@
                                     setTimeout(() => { highlightTaskBlock(blockId); }, 100);
                                     startHighlightKeepAlive();
                                 }
-                                showToast(`开始休息正计时: ${resolvedTaskName}`, 2000);
+                                showToast(__tt("timer.startreststopwatch", { resolvedTaskName: resolvedTaskName }), 2000);
                             }
                         } else if (config.timerType === 'pomodoro') {
                             const duration = config.tomatoDuration || 30;
                             if (blockId) await switchToCountdownAndStartWithTask(duration, blockId, resolvedTaskName, { associationAlreadySet: true, confirm: false });
                             else await switchToCountdownAndStart(duration, { confirm: false });
-                            showToast(`开始番茄计时: ${resolvedTaskName} (${duration}分钟)`, 2000);
+                            showToast(__tt("timer.startpomodorotimerMinutes", { resolvedTaskName: resolvedTaskName, duration: duration }), 2000);
                         } else {
                             if (blockId) await switchToStopwatchAndStartWithTask(blockId, resolvedTaskName, { associationAlreadySet: true, confirm: false });
                             else await switchToStopwatchAndStart({ confirm: false });
-                            showToast(`开始专注正计时: ${resolvedTaskName}`, 2000);
+                            showToast(__tt("timer.startFocusstopwatch", { resolvedTaskName: resolvedTaskName }), 2000);
                         }
                         if (transitionToken === routineButtonTransitionToken) {
                             routineButtonTransitionPending = false;
@@ -14477,7 +14478,7 @@
                             pendingRoutineButtonBlockId = null;
                             clearRoutineButtonRunningHighlight(true);
                             updateRoutineButtonRunningHighlight(true);
-                            showMiniToast('计时切换失败，请重试');
+                            showMiniToast(__tt("timer.couldNotSwitchTimersPleaseTryAgain"));
                         }
                     }
                 };
@@ -15010,7 +15011,7 @@
             longPressTimer = setTimeout(() => {
                 Promise.resolve(completeCurrentTimer()).catch((error) => {
                     Logger.error('完成计时失败:', error);
-                    try { showMiniToast('计时保存失败，请稍后重试'); } catch (e) {}
+                    try { showMiniToast(__tt("timer.timersavefailedPleaseTryAgainLater")); } catch (e) {}
                 });
                 isRightClick = false;
             }, 500);
@@ -15834,7 +15835,7 @@
         // 当前计时分心按钮
         if (isRunning && segEl.dataset.isCurrent === 'true' && (timerMode === 'countdown' || timerMode === 'stopwatch')) {
             const willExtend = timerMode === 'countdown' && userSettings?.main?.extendTomatoOnDistraction !== false;
-            const label = willExtend ? '😵 记录分心（+1分钟）' : '😵 记录分心';
+            const label = willExtend ? __tt("timer.recordDistractionMinute2") : __tt("timer.recordDistraction2");
             html += `<div style="margin-top: 8px;">
                 <button data-action="record-distraction" style="padding: 6px 10px; border: 1px solid var(--b3-theme-surface-light); border-radius: 6px; background: var(--b3-theme-background); color: var(--b3-theme-on-background); cursor: pointer;">
                     ${escapeHtml(label)}
@@ -15842,7 +15843,7 @@
             </div>`;
         }
         
-        timelineTooltip.innerHTML = html || '<div>时间段</div>';
+        timelineTooltip.innerHTML = html || `<div>${__tt("timer.timeRange")}</div>`;
         setupTimelineTooltipLinkListener();
 
         const padding = 10;
@@ -16298,7 +16299,7 @@
 
             let color = '#9E9E9E';
             let opacity = 0.8;
-            let label = '记录';
+            let label = __tt("timer.record");
 
             // 优先使用记录中保存的按钮颜色
             let buttonColor = null;
@@ -16317,13 +16318,13 @@
                 color = buttonColor;
             } else if (record.mode === 'countdown') {
                 color = tomatoColor;
-                label = '🍅 番茄钟';
+                label = __tt("timer.pomodoro2");
             } else if (record.mode === 'stopwatch') {
                 color = stopwatchColor;
-                label = '⏱️ 专注正计时';
+                label = __tt("timer.focusstopwatch2");
             } else if (record.mode === 'break' || record.mode === 'stopwatch-break') {
                 color = breakColor;
-                label = '☕ 休息';
+                label = __tt("timer.rest2");
                 opacity = 0.75;
             }
 
@@ -16658,7 +16659,7 @@
                 const elapsedSeconds = durationMin * 60 - remainingSeconds;
                 currentTs = startTs + Math.max(0, elapsedSeconds) * 1000;
             }
-            drawActiveRange(startTs, endTs, tomatoColor, 0.25, '🍅 计划中', {
+            drawActiveRange(startTs, endTs, tomatoColor, 0.25, __tt("timer.planned"), {
                 taskBlockId: currentTaskBlockId,
                 taskBlockName: currentTaskBlockName,
                 databaseBlockId: currentDatabaseBlockId,
@@ -16666,7 +16667,7 @@
                 isActive: true,
                 timelineActiveKey: 'countdown-planned'
             });
-            drawActiveRange(startTs, currentTs, tomatoColor, 0.85, '🍅 已专注', {
+            drawActiveRange(startTs, currentTs, tomatoColor, 0.85, __tt("timer.focused"), {
                 taskBlockId: currentTaskBlockId,
                 taskBlockName: currentTaskBlockName,
                 databaseBlockId: currentDatabaseBlockId,
@@ -16684,7 +16685,7 @@
                 ? (syncState?.stopwatchStartTimeMs || syncState?.startTime || activeTimerSnapshot?.startedAtMs || 0)
                 : (stopwatchStartTimeMs || startTime || 0));
             if (!startTs) return;
-            drawActiveRange(startTs, Math.max(nowTs, startTs), stopwatchColor, 0.8, '⏱️ 专注正计时', {
+            drawActiveRange(startTs, Math.max(nowTs, startTs), stopwatchColor, 0.8, __tt("timer.focusstopwatch2"), {
                 taskBlockId: currentTaskBlockId,
                 taskBlockName: currentTaskBlockName,
                 databaseBlockId: currentDatabaseBlockId,
@@ -16720,8 +16721,8 @@
             // 🔧 修复：传递任务块信息到时间轴，使休息模式也能显示任务名称
             // 🔧 修复：如果有活跃的日常按钮，使用按钮名称作为标签
             const breakLabel = (activeRoutineButtonIndex !== null && activeRoutineButtonIndex !== undefined && activeRoutineButtonIndex !== '') 
-                ? (userSettings?.routineButtons?.[activeRoutineButtonIndex]?.name || '☕ 休息') 
-                : '☕ 休息';
+                ? (userSettings?.routineButtons?.[activeRoutineButtonIndex]?.name || __tt("timer.rest2"))
+                : __tt("timer.rest2");
             drawActiveRange(startTs, Math.min(currentTs, endTs), breakColor, 0.75, breakLabel, {
                 taskBlockId: syncState?.taskBlockId || currentTaskBlockId,
                 taskBlockName: syncState?.taskBlockName || currentTaskBlockName,
@@ -16745,8 +16746,8 @@
             const breakSegmentColor = buttonColor || breakColor;
             // 🔧 修复：如果有活跃的日常按钮，使用按钮名称作为标签
             const stopwatchBreakLabel = (activeRoutineButtonIndex !== null && activeRoutineButtonIndex !== undefined && activeRoutineButtonIndex !== '') 
-                ? (userSettings?.routineButtons?.[activeRoutineButtonIndex]?.name || '☕ 休息') 
-                : '☕ 休息';
+                ? (userSettings?.routineButtons?.[activeRoutineButtonIndex]?.name || __tt("timer.rest2"))
+                : __tt("timer.rest2");
             // 🔧 修复：传递任务块信息到时间轴，使休息模式也能显示任务名称
             drawActiveRange(startTs, currentTs, breakSegmentColor, 0.75, stopwatchBreakLabel, {
                 taskBlockId: syncState?.taskBlockId || currentTaskBlockId,
@@ -16948,18 +16949,18 @@
 
     function formatFocusTime(minutes) {
         const roundedMinutes = Math.max(0, Math.round(Number(minutes) || 0));
-        if (roundedMinutes < 60) return `${roundedMinutes}分钟`;
-        return `${Math.round(roundedMinutes / 60)}小时`;
+        if (roundedMinutes < 60) return __tt("timer.minutes4", { roundedMinutes: roundedMinutes });
+        return __tt("timer.h2", { value1: Math.round(roundedMinutes / 60) });
     }
 
     function formatFocusTimeForTable(minutes) {
         const roundedMinutes = Math.max(0, Math.round(Number(minutes) || 0));
-        if (roundedMinutes < 60) return `${roundedMinutes}分`;
-        return `${Math.round(roundedMinutes / 60)}小时`;
+        if (roundedMinutes < 60) return __tt("timer.min2", { roundedMinutes: roundedMinutes });
+        return __tt("timer.h2", { value1: Math.round(roundedMinutes / 60) });
     }
 
     function formatDate(date) {
-        return `${(date.getMonth() + 1).toString().padStart(2, '0')}月${date.getDate().toString().padStart(2, '0')}日`;
+        return __tt("date.monthDay", { value1: (date.getMonth() + 1).toString().padStart(2, '0'), value2: date.getDate().toString().padStart(2, '0') });
     }
 
     function getDefaultTimerPrefix(mode) {
@@ -16997,7 +16998,7 @@
 
     function getTimerTaskTextForDisplay() {
         return String(currentTaskBlockName || syncState?.taskBlockName || '').trim()
-            || (currentTaskBlockId ? '关联任务' : (currentDatabaseBlockId ? '关联数据库' : '未关联任务'));
+            || (currentTaskBlockId ? __tt("timer.linkedTask") : (currentDatabaseBlockId ? __tt("timer.linkDatabase") : __tt("timer.noLinkedTask")));
     }
 
     function getCircularTimerAccentColor(mode) {
@@ -17306,12 +17307,12 @@
             </span>
             <span class="tomato-circular-actions">
                 <span class="tomato-circular-action-buttons">
-                    <button class="tomato-circular-action-btn tomato-circular-toggle" type="button" title="暂停" aria-label="暂停">${getTimerUiIconSvg('pause')}</button>
-                    <button class="tomato-circular-action-btn tomato-circular-more" type="button" title="更多" aria-label="更多">⋯</button>
+                    <button class="tomato-circular-action-btn tomato-circular-toggle" type="button" title="${globalThis.__dockTomatoI18n.html("timer.paused")}" aria-label="${globalThis.__dockTomatoI18n.html("timer.paused")}">${getTimerUiIconSvg('pause')}</button>
+                    <button class="tomato-circular-action-btn tomato-circular-more" type="button" title="${globalThis.__dockTomatoI18n.html("timer.more")}" aria-label="${globalThis.__dockTomatoI18n.html("timer.more")}">⋯</button>
                 </span>
-                <span class="tomato-circular-action-task" title="未关联任务">
+                <span class="tomato-circular-action-task" title="${globalThis.__dockTomatoI18n.html("timer.noLinkedTask")}">
                     <span class="tomato-circular-task-icon">${getTimerUiIconSvg('association')}</span>
-                    <span class="tomato-circular-task-text">未关联任务</span>
+                    <span class="tomato-circular-task-text">${__tt("timer.noLinkedTask")}</span>
                 </span>
             </span>
         `;
@@ -17431,8 +17432,8 @@
         if (ringProgress) ringProgress.style.strokeDashoffset = String(circumference * (1 - progress));
         if (timeEl) timeEl.textContent = data.timeText || '00:00';
         setTimerUiIcon(iconEl, data.iconName, data.iconName ? '' : (data.prefix || ''));
-        if (taskEl) taskEl.textContent = data.taskText || '未关联任务';
-        if (taskWrap) taskWrap.title = data.taskText || '未关联任务';
+        if (taskEl) taskEl.textContent = data.taskText || __tt("timer.noLinkedTask");
+        if (taskWrap) taskWrap.title = data.taskText || __tt("timer.noLinkedTask");
         if (toggle) {
             setTimerToggleIcon(toggle, data.running, data.paused);
         }
@@ -17755,7 +17756,7 @@
                     restoredFocus = await finishBreakFromContinuation();
                 } catch (restoreError) {
                     Logger.warn('🍅 休息已结束，恢复专注进度失败:', restoreError);
-                    try { showMiniToast('休息已结束，请点击“结束休息”重试恢复专注'); } catch (e) {}
+                    try { showMiniToast(__tt("timer.yourBreakHasEndedClickEndBreakToTry")); } catch (e) {}
                 }
             }
 
@@ -17790,13 +17791,13 @@
 
                 try {
                     if (isBreakMode) {
-                        showToastDialog('⏰ 休息结束', restoredFocus ? '原专注已暂停，准备好后继续。' : '继续你的计时吧！', 'break-end', currentTaskBlockId, currentTaskBlockName);
+                        showToastDialog(__tt("timer.restend"), restoredFocus ? __tt("timer.yourPreviousFocusSessionIsPausedResumeWhenReady") : __tt("timer.keepYourTimerGoing"), 'break-end', currentTaskBlockId, currentTaskBlockName);
                     } else {
-                        showToastDialog('🍅 时间到！', '该休息一下了～', 'tomato-end', currentTaskBlockId, currentTaskBlockName);
+                        showToastDialog(__tt("timer.timeSUp"), __tt("timer.timeForABreak"), 'tomato-end', currentTaskBlockId, currentTaskBlockName);
                     }
                 } catch (dialogError) {
                     Logger.warn('🍅 计时完成弹窗显示失败:', dialogError);
-                    try { showMiniToast('计时已完成'); } catch (e) {}
+                    try { showMiniToast(__tt("timer.timercompleted")); } catch (e) {}
                 }
             }
         });
@@ -17958,7 +17959,7 @@
 
     function assertTimerReady() {
         if (__tomatoTimerReady && !__tomatoDestroyed) return;
-        try { showMiniToast('计时状态正在恢复，请稍后再试'); } catch (error) {}
+        try { showMiniToast(__tt("timer.timerStateIsBeingRestoredPleaseTryAgainShortly")); } catch (error) {}
         throw new Error('TIMER_NOT_READY');
     }
 
@@ -18211,21 +18212,21 @@
                     if (scheduled) {
                         const entry = getCurrentDeviceNotificationSchedule(syncState);
                         const secs = Math.max(1, Math.round(Number(entry?.delayInSeconds) || Number(remainingSeconds) || 0));
-                        showMiniToast(`已预约通知（${secs}秒后）`);
+                        showMiniToast(__tt("timer.notificationScheduledInSeconds", { secs: secs }));
                     } else {
                         const reason = String(sendDeviceNotificationCompat._lastFailureReason || '').trim();
                         if (reason === 'send-returned-minus-one') {
-                            showMiniToast('预约通知失败(-1)');
+                            showMiniToast(__tt("timer.couldNotScheduleTheNotification"));
                         } else if (reason === 'send-no-numeric-return') {
-                            showMiniToast('预约通知失败(无返回id)');
+                            showMiniToast(__tt("timer.couldNotScheduleTheNotificationNoIdReturned"));
                         } else if (reason === 'webkit-no-numeric-return') {
-                            showMiniToast('通知已发出但无返回id');
+                            showMiniToast(__tt("timer.notificationSentButNoIdWasReturned"));
                         } else {
-                            showMiniToast('预约通知失败');
+                            showMiniToast(__tt("timer.couldNotScheduleTheNotification2"));
                         }
                     }
                 } catch (e) {
-                    showMiniToast('预约通知异常');
+                    showMiniToast(__tt("timer.anErrorOccurredWhileSchedulingTheNotification"));
                 }
             }
 
@@ -18252,7 +18253,7 @@
             }
         } catch (e) {
             Logger.error('startTimer失败:', e);
-            showMiniToast('启动计时失败');
+            showMiniToast(__tt("timer.couldNotStartTheTimer"));
             await rollbackFailedTimerStart(false);
             throw e;
         } finally {
@@ -18545,7 +18546,7 @@
         const timer = setTimeout(() => {
             try {
                 Logger.warn(`${label} 仍在保存，等待同一事务完成`);
-                showMiniToast('计时正在保存，请稍候');
+                showMiniToast(__tt("timer.theTimerIsBeingSavedPleaseWait"));
             } catch (error) {}
         }, Math.max(1000, Number(timeoutMs) || 8000));
         return Promise.resolve(promise).catch(error => {
@@ -19260,7 +19261,8 @@
         return text === '任务'
             || text === '未命名任务'
             || text === '未知任务'
-            || text === '数据库任务';
+            || text === '数据库任务'
+            || ['Task', 'Unnamed task', 'Unknown task', 'Database task'].includes(text);
     }
 
     async function __resolveTaskAssociationName(taskBlockId, taskBlockName) {
@@ -19514,7 +19516,7 @@
             await startTimer({ confirm });
         } catch (e) {
             Logger.error('startTimer失败:', e);
-            showMiniToast('启动计时失败');
+            showMiniToast(__tt("timer.couldNotStartTheTimer"));
             await rollbackFailedTimerStart(false);
         }
     }
@@ -19556,7 +19558,7 @@
             await startTimer({ confirm });
         } catch (e) {
             Logger.error('startTimer失败:', e);
-            showMiniToast('启动计时失败');
+            showMiniToast(__tt("timer.couldNotStartTheTimer"));
             await rollbackFailedTimerStart(true);
             return;
         }
@@ -19612,7 +19614,7 @@
             await startTimer({ confirm });
         } catch (e) {
             Logger.error('startTimer失败:', e);
-            showMiniToast('启动计时失败');
+            showMiniToast(__tt("timer.couldNotStartTheTimer"));
             await rollbackFailedTimerStart(false);
         }
     }
@@ -19664,7 +19666,7 @@
             await startTimer({ confirm });
         } catch (e) {
             Logger.error('startTimer失败:', e);
-            showMiniToast('启动计时失败');
+            showMiniToast(__tt("timer.couldNotStartTheTimer"));
             await rollbackFailedTimerStart(true);
             return;
         }
@@ -19906,7 +19908,7 @@
             await startTimer({ confirm });
         } catch (e) {
             Logger.error('startTimer失败:', e);
-            showMiniToast('启动计时失败');
+            showMiniToast(__tt("timer.couldNotStartTheTimer"));
             await rollbackFailedTimerStart(false);
         }
     }
@@ -20142,7 +20144,7 @@
                 try { updateDisplay(true); } catch (e) {}
             }
             endTimerFocus('abandon-current-tomato');
-            showToast('已放弃番茄钟', 1600);
+            showToast(__tt("timer.pomodoroAbandoned"), 1600);
             return true;
         });
     }
@@ -20469,7 +20471,7 @@
                 try { updateDisplay(true); } catch (e) {}
             }
             endTimerFocus('complete-current-tomato');
-            if (opts.suppressToast !== true) showToast(isStopwatchMode ? '✅ 已完成专注正计时' : '✅ 已完成番茄', 1600);
+            if (opts.suppressToast !== true) showToast(isStopwatchMode ? __tt("timer.donefocusstopwatch") : __tt("timer.donepomodoro"), 1600);
         });
     }
 
@@ -20566,7 +20568,7 @@
             button.dataset.duration = String(val);
             button.textContent = String(val);
             button.setAttribute('aria-pressed', String(val === currentValue));
-            button.title = val + '分钟';
+            button.title = val + __tt("timer.minutes5");
             button.onclick = event => {
                 event.stopPropagation();
                 runTimerMenuAction(() => onClick(val));
@@ -20618,7 +20620,7 @@
                     updateDisplay();
                 });
                 clear.classList.add('tomato-menu-clear');
-                clear.title = '清除关联任务';
+                clear.title = __tt("timer.clearlinkedTask");
                 clear.setAttribute('aria-label', clear.title);
                 taskRow.appendChild(clear);
             }
@@ -20701,9 +20703,9 @@
             heading.className = 'tomato-menu-heading';
             const title = document.createElement('span');
             setTimerUiIcon(title, iconName, label);
-            const shortcut = createTimerMenuItem('正计时', 'timer', stopwatch);
+            const shortcut = createTimerMenuItem(__tt("timer.stopwatch"), 'timer', stopwatch);
             shortcut.className = 'tomato-menu-stopwatch tomato-ui-icon-label';
-            shortcut.setAttribute('aria-label', label === '休息' ? '开始正计时休息' : '开始专注正计时');
+            shortcut.setAttribute('aria-label', mode === 'break' ? __tt("timer.startstopwatchrest") : __tt("timer.startFocusstopwatch2"));
             heading.append(title, shortcut);
             const presets = createButtonGroup(values, timerMode === mode ? currentDuration : null, start);
             presets.dataset.timerMode = mode;
@@ -20711,7 +20713,7 @@
             scroll.appendChild(section);
             return section;
         };
-        const focusGroup = appendGroup('专注', 'tomato', getTomatoDurations(), 'countdown',
+        const focusGroup = appendGroup(__tt("timer.focus"), 'tomato', getTomatoDurations(), 'countdown',
             async val => { await switchToCountdownAndStart(val); },
             async () => { await startStopwatchForCurrentPhase(); });
         const hasActiveDuration = hasUnfinishedTimerState();
@@ -20734,17 +20736,17 @@
             durationSlider.step = '5';
             durationSlider.value = String(getNextFocusCountdownDuration());
             durationSlider.setAttribute('aria-label', isBreakDurationControl
-                ? '点击结束休息并开始专注，拖动调整专注时长'
+                ? __tt("timer.clickToEndTheBreakAndFocusDragTo")
                 : (hasActiveDuration
-                    ? '点击结束当前计时并开始新计时，拖动调整当前时长'
-                    : '点击开始，拖动调整当前时长'));
+                    ? __tt("timer.clickToFinishThisTimerAndStartAnotherDrag")
+                    : __tt("timer.clickToStartDragToAdjustTheDuration")));
             durationSlider.style.cssText = 'width:auto;min-width:0;flex:1;height:22px;margin:0;cursor:pointer;';
             let durationSliderDragged = false;
             let durationSliderPointerDownX = null;
             let durationSliderPressTimer = null;
             let durationSliderInteraction = 'none';
             const updateDurationValue = () => {
-                durationValue.textContent = `${durationSlider.value} 分`;
+                durationValue.textContent = __tt("timer.min3", { value: durationSlider.value });
             };
             updateDurationValue();
             durationSlider.oninput = updateDurationValue;
@@ -20765,7 +20767,7 @@
             };
             const handleDurationActionError = (error) => {
                 Logger.error('计时操作失败:', error);
-                try { showMiniToast('计时保存失败，请稍后重试'); } catch (e) {}
+                try { showMiniToast(__tt("timer.timersavefailedPleaseTryAgainLater")); } catch (e) {}
             };
             const startDurationFromControl = async event => {
                 event.stopPropagation();
@@ -20819,7 +20821,7 @@
             focusGroup.appendChild(durationControl);
         }
 
-        appendGroup('休息', 'coffee', getBreakDurations(), 'break',
+        appendGroup(__tt("timer.rest"), 'coffee', getBreakDurations(), 'break',
             async val => { await startBreakMode(val); },
             async () => { await startStopwatchBreakMode(); });
         const currentAudioSettings = getAudioSettings();
@@ -20827,7 +20829,7 @@
         if (currentAudioSettings.backgroundEnabled !== false && hasBackgroundAudio) {
             const audioRow = document.createElement('div');
             audioRow.className = 'tomato-menu-audio';
-            const audio = createTimerMenuItem('背景音', 'audio', () => showBackgroundPlaylistDialog());
+            const audio = createTimerMenuItem(__tt("timer.backgroundAudio"), 'audio', () => showBackgroundPlaylistDialog());
             const status = document.createElement('span');
             status.className = 'tomato-menu-tail';
             status.setAttribute('data-audio-status', '');
@@ -20839,7 +20841,7 @@
             scroll.appendChild(audioRow);
         }
         if (!isMobileDevice() && desktopFloatWindowState.dismissed) {
-            scroll.appendChild(createTimerMenuItem('开启悬浮窗', '', () => {
+            scroll.appendChild(createTimerMenuItem(__tt("timer.openFloatingWindow"), '', () => {
                 desktopFloatWindowState.dismissed = false;
                 installDesktopMinimizedFloatWindowMonitor();
                 scheduleDesktopMinimizedFloatWindowSync('bottom-menu-open-desktop-float');
@@ -20847,16 +20849,16 @@
         }
         const footer = document.createElement('div');
         footer.className = 'tomato-menu-footer';
-        const distraction = createTimerMenuItem('记录分心', 'distraction', () => recordDistraction());
+        const distraction = createTimerMenuItem(__tt("timer.recordDistraction"), 'distraction', () => recordDistraction());
         distraction.dataset.action = 'distraction';
         const count = document.createElement('span');
         count.className = 'tomato-menu-tail';
         distraction.appendChild(count);
-        const history = createTimerMenuItem('查看历史', 'history', () => showHistoryDialog());
+        const history = createTimerMenuItem(__tt("timer.viewHistory"), 'history', () => showHistoryDialog());
         history.setAttribute('aria-haspopup', 'dialog');
         footer.append(distraction, history);
         if (isMobileDevice() && isUsingFloatBar) {
-            const closeFloat = createTimerMenuItem('关闭悬浮窗', 'close', () => {
+            const closeFloat = createTimerMenuItem(__tt("timer.closeFloatingWindow"), 'close', () => {
                 cleanupFloatBarEvents();
                 document.getElementById('siyuan-tomato-float-bar')?.remove();
                 isUsingFloatBar = false;
@@ -20864,23 +20866,23 @@
                 controlButton = null;
                 floatBarHiddenByUser = true;
             });
-            closeFloat.title = '关闭悬浮窗，计时继续';
+            closeFloat.title = __tt("timer.closeTheFloatingWindowAndKeepTiming");
             footer.appendChild(closeFloat);
         }
         const controls = document.createElement('div');
         controls.className = 'tomato-menu-controls';
-        const toggle = createTimerMenuItem('暂停', 'pause', async () => {
+        const toggle = createTimerMenuItem(__tt("timer.paused"), 'pause', async () => {
             if (isRunning) await pauseTimer();
             else await startTimer();
         }, true);
         toggle.dataset.action = 'toggle';
-        const complete = createTimerMenuItem('完成', 'complete', async () => { await completeCurrentTimer(); });
+        const complete = createTimerMenuItem(__tt("timer.done"), 'complete', async () => { await completeCurrentTimer(); });
         complete.dataset.action = 'complete';
-        const abandon = createTimerMenuItem('放弃', 'close', async () => {
+        const abandon = createTimerMenuItem(__tt("timer.abandoned"), 'close', async () => {
             if (timerMode === 'countdown') await abandonCurrentTomato();
         });
         abandon.dataset.action = 'abandon';
-        abandon.title = '放弃番茄钟';
+        abandon.title = __tt("timer.abandonedpomodoro");
         for (const button of [toggle, complete, abandon]) button.className = 'tomato-menu-control tomato-ui-icon-label';
         controls.append(toggle, complete, abandon);
         footer.appendChild(controls);
@@ -20932,7 +20934,7 @@
 
     function formatMonth(dateStr) {
         const date = new Date(dateStr);
-        return `${date.getFullYear()}年${(date.getMonth() + 1).toString().padStart(2, '0')}月`;
+        return __tt("date.yearMonth", { value1: date.getFullYear(), value2: (date.getMonth() + 1).toString().padStart(2, '0') });
     }
 
     function formatWeek(startDateStr, endDateStr) {
@@ -21207,7 +21209,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         `;
         
         const title = document.createElement('div');
-        title.textContent = '📈 近30天专注时长波动';
+        title.textContent = __tt("timer.focusDurationOverTheLastDays");
         title.style.cssText = `
             font-weight: bold;
             font-size: 16px;
@@ -21427,7 +21429,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const dateRange = `${thirtyDaysAgo.getFullYear()}/${(thirtyDaysAgo.getMonth() + 1)}/${thirtyDaysAgo.getDate()} - ${today.getFullYear()}/${(today.getMonth() + 1)}/${today.getDate()}`;
         
         const rangeLabel = document.createElement('div');
-        rangeLabel.textContent = `日期范围: ${dateRange}`;
+        rangeLabel.textContent = __tt("timer.datescope", { dateRange: dateRange });
         rangeLabel.style.cssText = `font-size: 11px; color: var(--b3-theme-on-surface-light);`;
         legend.appendChild(rangeLabel);
         
@@ -21542,17 +21544,17 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
 
         const clearBtn = document.createElement('button');
-        clearBtn.textContent = '🗑️ 清除';
+        clearBtn.textContent = __tt("timer.clear");
         clearBtn.style.cssText = `
             padding: 6px 10px; background: var(--b3-theme-error); color: white;
             border: none; border-radius: 4px; cursor: pointer; font-size: 12px;
             min-width: 60px; font-weight: normal; height: 32px;
         `;
         clearBtn.onclick = async () => {
-            if (confirm('确定要清除所有历史记录吗？此操作不可恢复。')) {
+            if (confirm(__tt("timer.clearAllHistoryRecordsThisCannotBeUndone"))) {
                 const success = await replaceAllHistoryRecords([]);
                 if (success) {
-                    showToastDialog('清除成功', '所有历史记录已清除', 'info');
+                    showToastDialog(__tt("timer.clearsuccess"), __tt("timer.allHistoryRecordsCleared"), 'info');
                     dialog.remove();
                     backdrop.remove();
                 }
@@ -21562,7 +21564,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         // 添加音频设置按钮
         const audioSettingsBtn = document.createElement('button');
-        audioSettingsBtn.innerHTML = '⚙️ 设置';
+        audioSettingsBtn.innerHTML = __tt("timer.settings");
         audioSettingsBtn.style.cssText = `
             padding: 6px 10px; background: var(--b3-theme-surface-light); color: var(--b3-theme-on-background);
             border: 1px solid var(--b3-theme-surface); border-radius: 4px; cursor: pointer;
@@ -21574,7 +21576,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         titleBar.appendChild(audioSettingsBtn);
 
         const title = document.createElement('div');
-        setTimerUiIcon(title, 'tomato', '番茄钟历史记录');
+        setTimerUiIcon(title, 'tomato', __tt("timer.pomodorohistory"));
         // 移动端适配：更小的字体
         if (isMobile) {
             title.style.cssText = `
@@ -21608,7 +21610,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         };
 
         const closeBtn = document.createElement('button');
-        closeBtn.textContent = '关闭';
+        closeBtn.textContent = __tt("common.close");
         closeBtn.style.cssText = `
             padding: 6px 12px; background: var(--b3-theme-surface-light); color: var(--b3-theme-on-background);
             border: 1px solid var(--b3-theme-surface); border-radius: 4px; cursor: pointer;
@@ -21643,7 +21645,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             } catch (err) {}
         };
         editorLabel.appendChild(editorToggle);
-        editorLabel.appendChild(document.createTextNode('编辑模式'));
+        editorLabel.appendChild(document.createTextNode(__tt("timer.editmode")));
         editorRow.appendChild(editorLabel);
         topBar.appendChild(editorRow);
 
@@ -21707,27 +21709,27 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         const { dateList, currentPage } = historyState;
 
-        const summaryBtn = createPageButton('🎯 专注统计', 'summary', currentPage === 'summary');
+        const summaryBtn = createPageButton(__tt("timer.focusStatistics"), 'summary', currentPage === 'summary');
         pageButtons.appendChild(summaryBtn);
 
-        const routineSummaryBtn = createPageButton('📌 日常统计', 'routine', currentPage === 'routine');
+        const routineSummaryBtn = createPageButton(__tt("timer.routineStatistics"), 'routine', currentPage === 'routine');
         pageButtons.appendChild(routineSummaryBtn);
 
         const today = formatDateKey(new Date());
         if (dateList.includes(today)) {
-            const todayBtn = createPageButton('📅 今天', 'today', currentPage === 'today');
+            const todayBtn = createPageButton(__tt("timer.today"), 'today', currentPage === 'today');
             pageButtons.appendChild(todayBtn);
         }
 
         const yesterday = formatDateKey(new Date(Date.now() - 86400000));
         if (dateList.includes(yesterday)) {
-            const yesterdayBtn = createPageButton('📅 昨天', 'yesterday', currentPage === 'yesterday');
+            const yesterdayBtn = createPageButton(__tt("timer.yesterday"), 'yesterday', currentPage === 'yesterday');
             pageButtons.appendChild(yesterdayBtn);
         }
 
         const dayBeforeYesterday = formatDateKey(new Date(Date.now() - 172800000));
         if (dateList.includes(dayBeforeYesterday)) {
-            const dayBeforeBtn = createPageButton('📅 前天', 'day-before-yesterday', currentPage === 'day-before-yesterday');
+            const dayBeforeBtn = createPageButton(__tt("timer.twoDaysAgo"), 'day-before-yesterday', currentPage === 'day-before-yesterday');
             pageButtons.appendChild(dayBeforeBtn);
         }
 
@@ -21771,7 +21773,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         dateInput.value = '';
                     }
                     if (selectedDate && !dateList.includes(selectedDate)) {
-                        showToastDialog('提示', `该日期 (${selectedDate}) 没有番茄钟记录`, 'info');
+                        showToastDialog(__tt("timer.notice"), __tt("timer.noPomodoroRecordsOn", { selectedDate: selectedDate }), 'info');
                     }
                 }
             };
@@ -21968,7 +21970,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             showHistoryDialog();
         };
         showBreakLabel.appendChild(showBreakCheckbox);
-        showBreakLabel.appendChild(document.createTextNode('显示休息记录'));
+        showBreakLabel.appendChild(document.createTextNode(__tt("timer.showBreakRecords")));
         configContainer.appendChild(showBreakLabel);
         
         const groupLabel = document.createElement('label');
@@ -21990,7 +21992,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             showHistoryDialog();
         };
         groupLabel.appendChild(groupCheckbox);
-        groupLabel.appendChild(document.createTextNode('按时间段分组'));
+        groupLabel.appendChild(document.createTextNode(__tt("timer.groupByTimeOfDay")));
         configContainer.appendChild(groupLabel);
         
         // 删除无需确认设置
@@ -22008,8 +22010,8 @@ function calculateWeeklyStats(dailyStatsArray) {
             await saveUserSettings();
         };
         deleteConfirmLabel.appendChild(deleteConfirmCheckbox);
-        deleteConfirmLabel.appendChild(document.createTextNode('删除无需确认'));
-        deleteConfirmLabel.title = '删除历史记录时无需二次确认';
+        deleteConfirmLabel.appendChild(document.createTextNode(__tt("timer.deleteWithoutConfirmation")));
+        deleteConfirmLabel.title = __tt("timer.deleteHistoryRecordsWithoutAskingAgain");
         configContainer.appendChild(deleteConfirmLabel);
         
         const hideShortLabel = document.createElement('label');
@@ -22031,7 +22033,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             showHistoryDialog();
         };
         hideShortLabel.appendChild(hideShortCheckbox);
-        hideShortLabel.appendChild(document.createTextNode('不记录1分钟以下计时'));
+        hideShortLabel.appendChild(document.createTextNode(__tt("timer.doNotRecordSessionsShorterThanMinute")));
         configContainer.appendChild(hideShortLabel);
         
         const nextButton = document.createElement('button');
@@ -22060,7 +22062,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         if (filteredRecords.length === 0) {
             const empty = document.createElement('div');
-            empty.textContent = '暂无计时记录，开始你的第一个番茄吧！';
+            empty.textContent = __tt("timer.noSessionsYetStartYourFirstPomodoro");
             empty.style.textAlign = 'center';
             empty.style.opacity = '0.6';
             empty.style.padding = '40px 0';
@@ -22127,8 +22129,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                 color: var(--b3-theme-on-surface-light);
             `;
             noDataMsg.innerHTML = `
-                <p>📊 <strong>当前专注时间组内暂无记录</strong></p>
-                <p style="font-size: 14px; margin-top: 8px;">请选择"全部时间"查看所有记录</p>
+                <p>📊 <strong>${__tt("timer.noRecordsInThisFocusPeriodGroup")}</strong></p>
+                <p style="font-size: 14px; margin-top: 8px;">${__tt("timer.selectAllTimeToViewEveryRecord")}</p>
             `;
             container.appendChild(noDataMsg);
         }
@@ -22139,22 +22141,22 @@ function calculateWeeklyStats(dailyStatsArray) {
     function getRoutineStatsDateRange(rangeKey) {
         const today = new Date();
         const todayStr = formatDateKey(today);
-        if (rangeKey === 'today') return { start: todayStr, end: todayStr, label: '今天' };
+        if (rangeKey === 'today') return { start: todayStr, end: todayStr, label: __tt("common.today") };
         if (rangeKey === 'week') {
             const start = getWeekStartDate(today);
-            return { start: formatDateKey(start), end: todayStr, label: '本周' };
+            return { start: formatDateKey(start), end: todayStr, label: __tt("timer.thisWeek") };
         }
         if (rangeKey === 'month') {
             const start = getMonthStartDate(today);
             start.setHours(0, 0, 0, 0);
-            return { start: formatDateKey(start), end: todayStr, label: '本月' };
+            return { start: formatDateKey(start), end: todayStr, label: __tt("timer.thisMonth") };
         }
         if (rangeKey === 'year') {
             const start = new Date(today.getFullYear(), 0, 1);
             start.setHours(0, 0, 0, 0);
-            return { start: formatDateKey(start), end: todayStr, label: '本年' };
+            return { start: formatDateKey(start), end: todayStr, label: __tt("timer.thisYear") };
         }
-        return { start: todayStr, end: todayStr, label: '今天' };
+        return { start: todayStr, end: todayStr, label: __tt("common.today") };
     }
 
     function getRoutineStatsMsRange(rangeKey) {
@@ -22164,25 +22166,25 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (rangeKey === 'today') {
             const start = new Date(now);
             start.setHours(0, 0, 0, 0);
-            return { startMs: start.getTime(), endMs, start: formatDateKey(start), end: todayStr, label: '今天' };
+            return { startMs: start.getTime(), endMs, start: formatDateKey(start), end: todayStr, label: __tt("common.today") };
         }
         if (rangeKey === 'week') {
             const start = getWeekStartDate(now);
-            return { startMs: start.getTime(), endMs, start: formatDateKey(start), end: todayStr, label: '本周' };
+            return { startMs: start.getTime(), endMs, start: formatDateKey(start), end: todayStr, label: __tt("timer.thisWeek") };
         }
         if (rangeKey === 'month') {
             const start = getMonthStartDate(now);
             start.setHours(0, 0, 0, 0);
-            return { startMs: start.getTime(), endMs, start: formatDateKey(start), end: todayStr, label: '本月' };
+            return { startMs: start.getTime(), endMs, start: formatDateKey(start), end: todayStr, label: __tt("timer.thisMonth") };
         }
         if (rangeKey === 'year') {
             const start = new Date(now.getFullYear(), 0, 1);
             start.setHours(0, 0, 0, 0);
-            return { startMs: start.getTime(), endMs, start: formatDateKey(start), end: todayStr, label: '本年' };
+            return { startMs: start.getTime(), endMs, start: formatDateKey(start), end: todayStr, label: __tt("timer.thisYear") };
         }
         const start = new Date(now);
         start.setHours(0, 0, 0, 0);
-        return { startMs: start.getTime(), endMs, start: formatDateKey(start), end: todayStr, label: '今天' };
+        return { startMs: start.getTime(), endMs, start: formatDateKey(start), end: todayStr, label: __tt("common.today") };
     }
 
     function getRoutineStatsSelectedRange() {
@@ -22232,7 +22234,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const b = endDate || startDate;
                 const start = a.getTime() <= b.getTime() ? a : b;
                 const end = a.getTime() <= b.getTime() ? b : a;
-                return toRange('日期范围', start, endOfDay(end));
+                return toRange(__tt("timer.datescope2"), start, endOfDay(end));
             }
         }
 
@@ -22282,7 +22284,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const totalAll = totalFocus + totalBreak;
                 const unrecordedMinutes = includeUnrecorded === false ? 0 : result.totals.unrecordedSec / 60;
                 if (unrecordedMinutes > 0) {
-                    list.push({ id: '__unrecorded', label: '无记录时间', focus: 0, break: 0, total: unrecordedMinutes, buttons: [], color: '#BDBDBD' });
+                    list.push({ id: '__unrecorded', label: __tt("timer.unrecordedTime"), focus: 0, break: 0, total: unrecordedMinutes, buttons: [], color: '#BDBDBD' });
                 }
                 const toPieItems = (kind) => list
                     .filter((item) => (kind === 'focus' ? item.focus : item.break) > 0)
@@ -22306,7 +22308,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         groups.forEach(g => {
             const id = String(g?.id || '').trim();
             if (!id) return;
-            groupNameById.set(id, String(g?.name || '分组'));
+            groupNameById.set(id, String(g?.name || __tt("kernel.group")));
         });
 
         const buttonMetas = buttons.map((btn, idx) => getRoutineButtonRecordMeta(btn, idx)).filter(Boolean);
@@ -22333,7 +22335,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 return {
                     groupId: String(record?.routineButtonGroupId || '').trim() || null,
                     blockId: blockId || null,
-                    name: name || '按钮',
+                    name: name || __tt("timer.button"),
                     icon: String(record?.routineButtonIcon || '').trim(),
                     key: routineButtonId ? `routine:${routineButtonId}` : (name ? `name:${name}` : `record:${record?.timestamp || record?.start || ''}`)
                 };
@@ -22370,7 +22372,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (!g.buttons.has(key)) {
                 g.buttons.set(key, {
                     key,
-                    name: String(meta.name || '').trim() || '按钮',
+                    name: String(meta.name || '').trim() || __tt("timer.button"),
                     icon: String(meta.icon || '').trim(),
                     focus: 0,
                     break: 0,
@@ -22406,12 +22408,12 @@ function calculateWeeklyStats(dailyStatsArray) {
 
             if (matchedMeta) {
                 const gid = matchedGroupId ? String(matchedGroupId) : '__ungrouped';
-                const label = matchedGroupId ? (groupNameById.get(String(matchedGroupId)) || '分组') : '未分组';
+                const label = matchedGroupId ? (groupNameById.get(String(matchedGroupId)) || __tt("kernel.group")) : __tt("kernel.ungrouped");
                 add(gid, label, isFocus ? 'focus' : 'break', minutes);
                 addButton(gid, matchedMeta, isFocus ? 'focus' : 'break', minutes);
             } else {
                 const id = isFocus ? '__other_focus' : '__other_break';
-                const label = isFocus ? '其他专注' : '其他休息';
+                const label = isFocus ? __tt("kernel.otherFocus") : __tt("kernel.otherBreaks");
                 add(id, label, isFocus ? 'focus' : 'break', minutes);
             }
         });
@@ -22445,7 +22447,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (unrecordedMinutes > 0) {
             list.push({
                 id: '__unrecorded',
-                label: '无记录时间',
+                label: __tt("timer.unrecordedTime"),
                 focus: 0,
                 break: 0,
                 total: unrecordedMinutes,
@@ -22474,7 +22476,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             const restValue = rest.reduce((s, x) => s + x.value, 0);
             keep.push({
                 id: kind + '__rest',
-                label: '其余分组',
+                label: __tt("timer.otherGroups"),
                 value: restValue,
                 color: '#9E9E9E'
             });
@@ -22511,7 +22513,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (!totalMinutes || totalMinutes <= 0) {
             const empty = document.createElement('div');
             empty.style.cssText = 'padding:14px 0;color:var(--b3-theme-on-surface-light);font-size:13px;';
-            empty.textContent = '暂无数据';
+            empty.textContent = __tt("timer.noDataYet");
             card.appendChild(empty);
             return card;
         }
@@ -22593,8 +22595,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         const header = document.createElement('div');
         header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;';
         const title = document.createElement('div');
-        title.innerHTML = `<div style="font-weight:700;font-size:16px;color:var(--b3-theme-on-background);">📌 日常统计</div>
-<div style="font-size:12px;color:var(--b3-theme-on-surface-light);margin-top:2px;">按日常按钮分组统计耗时（未匹配按钮的计时归入“其他专注/其他休息”）</div>`;
+        title.innerHTML = `<div style="font-weight:700;font-size:16px;color:var(--b3-theme-on-background);">${__tt("timer.routineStatistics")}</div>
+<div style="font-size:12px;color:var(--b3-theme-on-surface-light);margin-top:2px;">${__tt("timer.timeByRoutineButtonUnmatchedSessionsAppearUnderOther")}</div>`;
         header.appendChild(title);
 
         const rangeBar = document.createElement('div');
@@ -22621,10 +22623,10 @@ function calculateWeeklyStats(dailyStatsArray) {
             };
             return b;
         };
-        rangeBar.appendChild(mkRangeBtn('today', '今天'));
-        rangeBar.appendChild(mkRangeBtn('week', '本周'));
-        rangeBar.appendChild(mkRangeBtn('month', '本月'));
-        rangeBar.appendChild(mkRangeBtn('year', '本年'));
+        rangeBar.appendChild(mkRangeBtn('today', __tt("common.today")));
+        rangeBar.appendChild(mkRangeBtn('week', __tt("timer.thisWeek")));
+        rangeBar.appendChild(mkRangeBtn('month', __tt("timer.thisMonth")));
+        rangeBar.appendChild(mkRangeBtn('year', __tt("timer.thisYear")));
         header.appendChild(rangeBar);
 
         container.appendChild(header);
@@ -22675,7 +22677,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const rangeEndValue = rangeModeActive
             ? String(routineStatsState?.selectedRangeEnd || range.end || '').trim()
             : range.end;
-        const rangeLabel = mkLabel('日期范围');
+        const rangeLabel = mkLabel(__tt("timer.datescope2"));
         const rangeInputs = document.createElement('div');
         rangeInputs.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
         const rangeStartInput = mkInput('date', rangeStartValue);
@@ -22685,10 +22687,10 @@ function calculateWeeklyStats(dailyStatsArray) {
         rangeEndInput.max = todayForRange;
         rangeStartInput.style.minWidth = '128px';
         rangeEndInput.style.minWidth = '128px';
-        rangeStartInput.setAttribute('aria-label', '开始日期');
-        rangeEndInput.setAttribute('aria-label', '结束日期');
+        rangeStartInput.setAttribute('aria-label', __tt("timer.startDate"));
+        rangeEndInput.setAttribute('aria-label', __tt("timer.endDate"));
         const rangeSep = document.createElement('span');
-        rangeSep.textContent = '至';
+        rangeSep.textContent = __tt("timer.to");
         rangeSep.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);';
         const applyDateRange = (changedSide) => {
             let startValue = String(rangeStartInput.value || '').trim();
@@ -22729,7 +22731,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         rangeInputs.appendChild(rangeEndInput);
 
         const resetBtn = document.createElement('button');
-        resetBtn.textContent = '使用快捷范围';
+        resetBtn.textContent = __tt("timer.useAPresetRange");
         resetBtn.style.cssText = `
             padding: 6px 10px;
             background: var(--b3-theme-surface);
@@ -22758,7 +22760,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (contentArea) showPage('routine');
         };
         const toggleText = document.createElement('span');
-        toggleText.textContent = '显示无记录时间';
+        toggleText.textContent = __tt("timer.showUnrecordedTime");
         toggleLabel.appendChild(toggle);
         toggleLabel.appendChild(toggleText);
 
@@ -22770,7 +22772,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         const sub = document.createElement('div');
         sub.style.cssText = 'margin-bottom:12px;color:var(--b3-theme-on-surface-light);font-size:12px;';
-        sub.textContent = `统计范围：${range.label}（${range.start}${range.end !== range.start ? ' ~ ' + range.end : ''}）`;
+        sub.textContent = __tt("timer.range", { label: range.label, start: range.start, value3: range.end !== range.start ? ' ~ ' + range.end : '' });
         container.appendChild(sub);
 
         const stats = calculateRoutineGroupStats(filteredRecords, range.start, range.end, rangeTotalMinutes, includeUnrecorded);
@@ -22784,24 +22786,24 @@ function calculateWeeklyStats(dailyStatsArray) {
 <div style="font-size:18px;font-weight:700;color:var(--b3-theme-on-background);margin-top:4px;">${formatFocusTime(minutes)}</div>`;
             return c;
         };
-        cardsRow.appendChild(mkCard('专注总时长', stats.totalFocus));
-        cardsRow.appendChild(mkCard('休息总时长', stats.totalBreak));
-        cardsRow.appendChild(mkCard('合计', stats.totalAll));
+        cardsRow.appendChild(mkCard(__tt("timer.totalFocusTime"), stats.totalFocus));
+        cardsRow.appendChild(mkCard(__tt("timer.totalBreakTime"), stats.totalBreak));
+        cardsRow.appendChild(mkCard(__tt("timer.total"), stats.totalAll));
         if (includeUnrecorded) {
-            cardsRow.appendChild(mkCard('无记录时间', stats.unrecordedMinutes));
-            cardsRow.appendChild(mkCard('统计区间总时长', stats.rangeTotalMinutes));
+            cardsRow.appendChild(mkCard(__tt("timer.unrecordedTime"), stats.unrecordedMinutes));
+            cardsRow.appendChild(mkCard(__tt("timer.totalTimeInRange"), stats.rangeTotalMinutes));
         }
         container.appendChild(cardsRow);
 
         const charts = document.createElement('div');
         charts.style.cssText = `display:grid;grid-template-columns:repeat(auto-fit,minmax(${isMobile ? 260 : 320}px,1fr));gap:12px;margin-bottom:12px;`;
-        charts.appendChild(createRoutinePieChartCard('专注分布（番茄+专注正计时）', stats.focusPie, stats.totalFocus));
-        charts.appendChild(createRoutinePieChartCard('休息分布（倒计时+专注正计时）', stats.breakPie, stats.totalBreak));
+        charts.appendChild(createRoutinePieChartCard(__tt("timer.focusdistributionPomodoroFocusstopwatch"), stats.focusPie, stats.totalFocus));
+        charts.appendChild(createRoutinePieChartCard(__tt("timer.restdistributionCountdownFocusstopwatch"), stats.breakPie, stats.totalBreak));
         if (includeUnrecorded) {
-            charts.appendChild(createRoutinePieChartCard('时间占用（含无记录）', [
-                { id: 'focus_total', label: '专注', value: stats.totalFocus, color: '#43A047' },
-                { id: 'break_total', label: '休息', value: stats.totalBreak, color: '#1E88E5' },
-                { id: 'unrecorded', label: '无记录时间', value: stats.unrecordedMinutes, color: '#BDBDBD' }
+            charts.appendChild(createRoutinePieChartCard(__tt("timer.timeBreakdownIncludingUnrecordedTime"), [
+                { id: 'focus_total', label: __tt("timer.focus"), value: stats.totalFocus, color: '#43A047' },
+                { id: 'break_total', label: __tt("timer.rest"), value: stats.totalBreak, color: '#1E88E5' },
+                { id: 'unrecorded', label: __tt("timer.unrecordedTime"), value: stats.unrecordedMinutes, color: '#BDBDBD' }
             ], stats.rangeTotalMinutes));
         }
         container.appendChild(charts);
@@ -22809,19 +22811,19 @@ function calculateWeeklyStats(dailyStatsArray) {
         const table = document.createElement('div');
         table.style.cssText = `padding:${isMobile ? 12 : 14}px;background:var(--b3-theme-surface);border:1px solid var(--b3-theme-surface-light);border-radius:10px;${isMobile ? 'overflow-x:hidden;' : ''}`;
         const tableTitle = document.createElement('div');
-        tableTitle.textContent = '分组明细';
+        tableTitle.textContent = __tt("timer.groupDetails");
         tableTitle.style.cssText = 'font-weight:600;color:var(--b3-theme-on-background);margin-bottom:10px;';
         table.appendChild(tableTitle);
 
         if (!stats.list.length) {
             const empty = document.createElement('div');
             empty.style.cssText = 'padding:10px 0;color:var(--b3-theme-on-surface-light);font-size:13px;';
-            empty.textContent = '暂无记录';
+            empty.textContent = __tt("timer.noRecords");
             table.appendChild(empty);
         } else {
             const headerRow = document.createElement('div');
             headerRow.style.cssText = `display:grid;grid-template-columns:minmax(${isMobile ? 80 : 140}px,1fr) ${isMobile ? 48 : 86}px ${isMobile ? 48 : 86}px ${isMobile ? 48 : 86}px ${isMobile ? 40 : 66}px;gap:${isMobile ? 4 : 8}px;padding:8px 0;border-bottom:1px solid var(--b3-theme-surface-light);font-size:${isMobile ? 10 : 12}px;color:var(--b3-theme-on-surface-light);`;
-            headerRow.innerHTML = `<div>分组</div><div style="text-align:right;">专注</div><div style="text-align:right;">休息</div><div style="text-align:right;">合计</div><div style="text-align:right;">占比</div>`;
+            headerRow.innerHTML = `<div>${__tt("kernel.group")}</div><div style="text-align:right;">${__tt("timer.focus")}</div><div style="text-align:right;">${__tt("timer.rest")}</div><div style="text-align:right;">${__tt("timer.total")}</div><div style="text-align:right;">${__tt("timer.share")}</div>`;
             table.appendChild(headerRow);
 
             const sortedGroupRows = [...stats.list].sort((a, b) => {
@@ -22890,7 +22892,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                     inner.appendChild(groupTitle);
                     const h = document.createElement('div');
                     h.style.cssText = `display:grid;grid-template-columns:minmax(${isMobile ? 80 : 140}px,1fr) ${isMobile ? 48 : 78}px ${isMobile ? 48 : 78}px ${isMobile ? 48 : 78}px ${isMobile ? 40 : 58}px;gap:${isMobile ? 4 : 8}px;font-size:${isMobile ? 10 : 12}px;color:var(--b3-theme-on-surface-light);padding-bottom:8px;border-bottom:1px solid var(--b3-theme-surface-light);`;
-                    h.innerHTML = '<div>按钮</div><div style="text-align:right;">专注</div><div style="text-align:right;">休息</div><div style="text-align:right;">合计</div><div style="text-align:right;">占比</div>';
+                    h.innerHTML = `<div>${__tt("timer.button")}</div><div style="text-align:right;">${__tt("timer.focus")}</div><div style="text-align:right;">${__tt("timer.rest")}</div><div style="text-align:right;">${__tt("timer.total")}</div><div style="text-align:right;">${__tt("timer.share")}</div>`;
                     inner.appendChild(h);
 
                     const toIcon = (val) => {
@@ -22968,7 +22970,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         `;
         
         const filterLabel = document.createElement('div');
-        filterLabel.textContent = '时间范围筛选：';
+        filterLabel.textContent = __tt("timer.timeRangeFilter");
         filterLabel.style.cssText = `font-weight: bold; margin-bottom: 8px; color: var(--b3-theme-on-background);`;
         filterContainer.appendChild(filterLabel);
         
@@ -22985,7 +22987,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         const allTimeOption = document.createElement('option');
         allTimeOption.value = 'all';
-        allTimeOption.textContent = '⏰ 全部时间';
+        allTimeOption.textContent = __tt("timer.allTime");
         allTimeOption.selected = statsState.currentFilter === 'all';
         filterSelect.appendChild(allTimeOption);
         
@@ -23001,7 +23003,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         } else {
             const noGroupOption = document.createElement('option');
             noGroupOption.value = '';
-            noGroupOption.textContent = '⚠️ 暂无专注时间组';
+            noGroupOption.textContent = __tt("timer.noFocusPeriodGroupsYet");
             noGroupOption.disabled = true;
             filterSelect.appendChild(noGroupOption);
         }
@@ -23030,7 +23032,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         filterSelectContainer.appendChild(filterSelect);
         
         const focusSettingsBtn = document.createElement('button');
-        focusSettingsBtn.textContent = '⚙️ 时间范围设置';
+        focusSettingsBtn.textContent = __tt("timer.timescopesettings");
         focusSettingsBtn.style.cssText = `
             padding: 6px 12px; background: var(--b3-theme-surface); color: var(--b3-theme-on-background);
             border: 1px solid var(--b3-theme-surface-light); border-radius: 4px; cursor: pointer;
@@ -23055,7 +23057,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         `;
         
         const targetLabel = document.createElement('label');
-        targetLabel.textContent = '🎯专注目标：';
+        targetLabel.textContent = __tt("timer.focustarget");
         targetLabel.style.cssText = `
             font-weight: bold;
             color: var(--b3-theme-on-background);
@@ -23089,10 +23091,10 @@ function calculateWeeklyStats(dailyStatsArray) {
             font-size: 13px;
             outline: none;
         `;
-        targetInput.title = '输入小时数，支持小数如 4.5';
+        targetInput.title = __tt("timer.enterHoursDecimalsSuchAsAreSupported");
         
         const targetUnit = document.createElement('span');
-        targetUnit.textContent = '小时';
+        targetUnit.textContent = __tt("timer.h3");
         targetUnit.style.cssText = `
             padding: 6px 10px;
             background: var(--b3-theme-surface);
@@ -23156,8 +23158,8 @@ function calculateWeeklyStats(dailyStatsArray) {
         targetContainer.appendChild(inputWrapper);
 
         const timelineBtn = document.createElement('button');
-        timelineBtn.innerHTML = '📅 时间轴设置';
-        timelineBtn.title = '配置底部全天时间轴模式';
+        timelineBtn.innerHTML = __tt("timer.timelinesettings");
+        timelineBtn.title = __tt("timer.configureTheFullDayTimelineAtTheBottom");
         timelineBtn.style.cssText = `
             margin-left: 8px;
             padding: 6px 12px;
@@ -23205,7 +23207,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         `;
 
         const title = document.createElement('div');
-        title.textContent = '📅 月统计';
+        title.textContent = __tt("timer.monthlyStatistics");
         title.style.cssText = `
             font-weight: bold;
             font-size: 16px;
@@ -23217,7 +23219,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         // 折叠按钮
         const toggleBtn = document.createElement('button');
         toggleBtn.innerHTML = '▼';
-        toggleBtn.title = '折叠/展开';
+        toggleBtn.title = __tt("timer.collapseExpand");
         toggleBtn.style.cssText = `
             background: transparent;
             border: none;
@@ -23253,7 +23255,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         if (monthlyStats.length === 0) {
             const empty = document.createElement('div');
-            empty.textContent = '暂无月统计数据';
+            empty.textContent = __tt("timer.noMonthlyStatisticsYet");
             empty.style.textAlign = 'center';
             empty.style.opacity = '0.6';
             empty.style.padding = '20px 0';
@@ -23270,16 +23272,16 @@ function calculateWeeklyStats(dailyStatsArray) {
             
             let tableHTML = `
                 <div style="display: grid; grid-template-columns: 80px repeat(9, 1fr); gap: 5px; margin-bottom: 5px; padding: 8px; background: var(--b3-theme-surface-light); border-radius: 5px; min-width: 880px; font-weight: bold; position: sticky; top: 0; z-index: 1;">
-                    <div style="text-align: left;">月份</div>
-                    <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 数量</div>
-                    <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 实际</div>
-                    <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 计划</div>
-                    <div style="text-align: center;">⏱️ 数量</div>
-                    <div style="text-align: center;">⏱️ 时长</div>
-                    <div style="text-align: center;">☕ 时长</div>
-                    <div style="text-align: center;">🎯 专注</div>
-                    <div style="text-align: center;">😵 分心</div>
-                    <div style="text-align: center;">📊 完成度</div>
+                    <div style="text-align: left;">${__tt("timer.month")}</div>
+                    <div style="text-align: center;">${__tt("timer.count", { value1: getTimerUiIconSvg('tomato') })}</div>
+                    <div style="text-align: center;">${__tt("timer.actual", { value1: getTimerUiIconSvg('tomato') })}</div>
+                    <div style="text-align: center;">${__tt("timer.planned2", { value1: getTimerUiIconSvg('tomato') })}</div>
+                    <div style="text-align: center;">${__tt("timer.count2")}</div>
+                    <div style="text-align: center;">${__tt("timer.duration")}</div>
+                    <div style="text-align: center;">${__tt("timer.duration2")}</div>
+                    <div style="text-align: center;">${__tt("timer.focus3")}</div>
+                    <div style="text-align: center;">${__tt("timer.distractions2")}</div>
+                    <div style="text-align: center;">${__tt("timer.progress")}</div>
                 </div>
             `;
             
@@ -23293,11 +23295,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                     <div style="display: grid; grid-template-columns: 80px repeat(9, 1fr); gap: 5px; padding: 8px; background: ${bgColor}; border-bottom: 1px solid var(--b3-theme-surface-light); min-width: 880px;">
                         <div style="text-align: left; font-weight: bold;">${formatMonth(month.monthStart)}</div>
                         <div style="text-align: center;">${month.tomatoCount}</div>
-                        <div style="text-align: center; color: ${actualColor};">${formatHistoryStatNumber(month.tomatoActual)}分</div>
-                        <div style="text-align: center;">${formatHistoryStatNumber(month.tomatoPlanned)}分</div>
+                        <div style="text-align: center; color: ${actualColor};">${__tt("timer.min4", { value1: formatHistoryStatNumber(month.tomatoActual) })}</div>
+                        <div style="text-align: center;">${__tt("timer.min4", { value1: formatHistoryStatNumber(month.tomatoPlanned) })}</div>
                         <div style="text-align: center;">${month.stopwatchCount}</div>
-                        <div style="text-align: center;">${formatHistoryStatNumber(month.stopwatchActual)}分</div>
-                        <div style="text-align: center;">${formatHistoryStatNumber(month.breakActual)}分</div>
+                        <div style="text-align: center;">${__tt("timer.min4", { value1: formatHistoryStatNumber(month.stopwatchActual) })}</div>
+                        <div style="text-align: center;">${__tt("timer.min4", { value1: formatHistoryStatNumber(month.breakActual) })}</div>
                         <div style="text-align: center; color: ${focusColor}; font-weight: bold;">${formatFocusTimeForTable(month.focusTime)}</div>
                         <div style="text-align: center;">${month.distractionCount || 0}</div>
                         <div style="text-align: center; color: ${actualColor}; font-weight: bold;">${completionRate}%</div>
@@ -23339,7 +23341,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         `;
 
         const title = document.createElement('div');
-        title.textContent = '📅 周统计（周一到周日）';
+        title.textContent = __tt("timer.weeklyStatisticsMondaySunday");
         title.style.cssText = `
             font-weight: bold;
             font-size: 16px;
@@ -23351,7 +23353,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         // 折叠按钮
         const toggleBtn = document.createElement('button');
         toggleBtn.innerHTML = '▼';
-        toggleBtn.title = '折叠/展开';
+        toggleBtn.title = __tt("timer.collapseExpand");
         toggleBtn.style.cssText = `
             background: transparent;
             border: none;
@@ -23387,7 +23389,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         if (weeklyStats.length === 0) {
             const empty = document.createElement('div');
-            empty.textContent = '暂无周统计数据';
+            empty.textContent = __tt("timer.noWeeklyStatisticsYet");
             empty.style.textAlign = 'center';
             empty.style.opacity = '0.6';
             empty.style.padding = '20px 0';
@@ -23470,16 +23472,16 @@ function calculateWeeklyStats(dailyStatsArray) {
                 // 每次都重新生成表头，避免翻页时累积旧数据
                 let currentTableHTML = `
                     <div style="display: grid; grid-template-columns: 120px repeat(9, 1fr); gap: 5px; margin-bottom: 5px; padding: 8px; background: var(--b3-theme-surface-light); border-radius: 5px; min-width: 880px; font-weight: bold; position: sticky; top: 0; z-index: 1;">
-                        <div style="text-align: left;">周次</div>
-                        <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 数量</div>
-                        <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 实际</div>
-                        <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 计划</div>
-                        <div style="text-align: center;">⏱️ 数量</div>
-                        <div style="text-align: center;">⏱️ 时长</div>
-                        <div style="text-align: center;">☕ 时长</div>
-                        <div style="text-align: center;">🎯 专注</div>
-                        <div style="text-align: center;">😵 分心</div>
-                        <div style="text-align: center;">📊 完成度</div>
+                        <div style="text-align: left;">${__tt("timer.week2")}</div>
+                        <div style="text-align: center;">${__tt("timer.count", { value1: getTimerUiIconSvg('tomato') })}</div>
+                        <div style="text-align: center;">${__tt("timer.actual", { value1: getTimerUiIconSvg('tomato') })}</div>
+                        <div style="text-align: center;">${__tt("timer.planned2", { value1: getTimerUiIconSvg('tomato') })}</div>
+                        <div style="text-align: center;">${__tt("timer.count2")}</div>
+                        <div style="text-align: center;">${__tt("timer.duration")}</div>
+                        <div style="text-align: center;">${__tt("timer.duration2")}</div>
+                        <div style="text-align: center;">${__tt("timer.focus3")}</div>
+                        <div style="text-align: center;">${__tt("timer.distractions2")}</div>
+                        <div style="text-align: center;">${__tt("timer.progress")}</div>
                     </div>
                 `;
                 
@@ -23494,11 +23496,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                         <div style="display: grid; grid-template-columns: 120px repeat(9, 1fr); gap: 5px; padding: 8px; background: ${bgColor}; border-bottom: 1px solid var(--b3-theme-surface-light); min-width: 880px;">
                             <div style="text-align: left; font-weight: bold;">${week.displayDate || formatWeek(week.weekStart, week.weekEnd)}</div>
                             <div style="text-align: center;">${week.tomatoCount}</div>
-                            <div style="text-align: center; color: ${actualColor};">${formatHistoryStatNumber(week.tomatoActual)}分</div>
-                            <div style="text-align: center;">${formatHistoryStatNumber(week.tomatoPlanned)}分</div>
+                            <div style="text-align: center; color: ${actualColor};">${__tt("timer.min4", { value1: formatHistoryStatNumber(week.tomatoActual) })}</div>
+                            <div style="text-align: center;">${__tt("timer.min4", { value1: formatHistoryStatNumber(week.tomatoPlanned) })}</div>
                             <div style="text-align: center;">${week.stopwatchCount}</div>
-                            <div style="text-align: center;">${formatHistoryStatNumber(week.stopwatchActual)}分</div>
-                            <div style="text-align: center;">${formatHistoryStatNumber(week.breakActual)}分</div>
+                            <div style="text-align: center;">${__tt("timer.min4", { value1: formatHistoryStatNumber(week.stopwatchActual) })}</div>
+                            <div style="text-align: center;">${__tt("timer.min4", { value1: formatHistoryStatNumber(week.breakActual) })}</div>
                             <div style="text-align: center; color: ${focusColor}; font-weight: bold;">${formatFocusTimeForTable(week.focusTime)}</div>
                             <div style="text-align: center;">${week.distractionCount || 0}</div>
                             <div style="text-align: center; color: ${actualColor}; font-weight: bold;">${completionRate}%</div>
@@ -23507,7 +23509,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 });
                 
                 tableContainer.innerHTML = currentTableHTML;
-                pageInfo.textContent = `第 ${currentPage} / ${totalPages} 页 (${weeklyStats.length} 周)`;
+                pageInfo.textContent = __tt("timer.pageWeeks", { currentPage: currentPage, totalPages: totalPages, length: weeklyStats.length });
                 prevBtn.disabled = currentPage <= 1;
                 nextBtn.disabled = currentPage >= totalPages;
             };
@@ -23564,7 +23566,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         `;
 
         const title = document.createElement('div');
-        title.textContent = '📊 每日详细统计';
+        title.textContent = __tt("timer.dailyDetails");
         title.style.cssText = `
             font-weight: bold;
             font-size: 16px;
@@ -23576,7 +23578,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         // 折叠按钮
         const toggleBtn = document.createElement('button');
         toggleBtn.innerHTML = '▼';
-        toggleBtn.title = '折叠/展开';
+        toggleBtn.title = __tt("timer.collapseExpand");
         toggleBtn.style.cssText = `
             background: transparent;
             border: none;
@@ -23687,16 +23689,16 @@ function calculateWeeklyStats(dailyStatsArray) {
             // 每次都重新生成表头，避免翻页时累积旧数据
             let currentTableHTML = `
                 <div style="display: grid; grid-template-columns: 90px repeat(9, 1fr); gap: 5px; margin-bottom: 5px; padding: 8px; background: var(--b3-theme-surface-light); border-radius: 5px; min-width: 980px; font-weight: bold; position: sticky; top: 0; z-index: 1;">
-                    <div style="text-align: left;">日期</div>
-                    <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 数量</div>
-                    <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 实际</div>
-                    <div style="text-align: center;">${getTimerUiIconSvg('tomato')} 计划</div>
-                    <div style="text-align: center;">⏱️ 数量</div>
-                    <div style="text-align: center;">⏱️ 时长</div>
-                    <div style="text-align: center;">☕ 时长</div>
-                    <div style="text-align: center;">🎯 专注</div>
-                    <div style="text-align: center;">😵 分心</div>
-                    <div style="text-align: center;">📊 完成度</div>
+                    <div style="text-align: left;">${__tt("timer.date")}</div>
+                    <div style="text-align: center;">${__tt("timer.count", { value1: getTimerUiIconSvg('tomato') })}</div>
+                    <div style="text-align: center;">${__tt("timer.actual", { value1: getTimerUiIconSvg('tomato') })}</div>
+                    <div style="text-align: center;">${__tt("timer.planned2", { value1: getTimerUiIconSvg('tomato') })}</div>
+                    <div style="text-align: center;">${__tt("timer.count2")}</div>
+                    <div style="text-align: center;">${__tt("timer.duration")}</div>
+                    <div style="text-align: center;">${__tt("timer.duration2")}</div>
+                    <div style="text-align: center;">${__tt("timer.focus3")}</div>
+                    <div style="text-align: center;">${__tt("timer.distractions2")}</div>
+                    <div style="text-align: center;">${__tt("timer.progress")}</div>
                 </div>
             `;
             
@@ -23718,11 +23720,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                                   }">
                         <div style="text-align: left; font-weight: bold;">${day.date}</div>
                         <div style="text-align: center;">${day.tomatoCount}</div>
-                        <div style="text-align: center; color: ${actualColor};">${formatHistoryStatNumber(day.tomatoActual)}分</div>
-                        <div style="text-align: center;">${formatHistoryStatNumber(day.tomatoPlanned)}分</div>
+                        <div style="text-align: center; color: ${actualColor};">${__tt("timer.min4", { value1: formatHistoryStatNumber(day.tomatoActual) })}</div>
+                        <div style="text-align: center;">${__tt("timer.min4", { value1: formatHistoryStatNumber(day.tomatoPlanned) })}</div>
                         <div style="text-align: center;">${day.stopwatchCount}</div>
-                        <div style="text-align: center;">${formatHistoryStatNumber(day.stopwatchActual)}分</div>
-                        <div style="text-align: center;">${formatHistoryStatNumber(day.breakActual)}分</div>
+                        <div style="text-align: center;">${__tt("timer.min4", { value1: formatHistoryStatNumber(day.stopwatchActual) })}</div>
+                        <div style="text-align: center;">${__tt("timer.min4", { value1: formatHistoryStatNumber(day.breakActual) })}</div>
                         <div style="text-align: center; color: ${focusColor}; font-weight: bold;">${formatFocusTimeForTable(day.focusTime)}</div>
                         <div style="text-align: center;">${day.distractionCount || 0}</div>
                         <div style="text-align: center; color: ${actualColor}; font-weight: bold;">${completionRate}%</div>
@@ -23731,7 +23733,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             });
             
             tableContainer.innerHTML = currentTableHTML;
-            pageInfo.textContent = `第 ${currentPage} / ${totalPages} 页 (${dailyStatsArray.length} 天)`;
+            pageInfo.textContent = __tt("timer.pageDays", { currentPage: currentPage, totalPages: totalPages, length: dailyStatsArray.length });
             prevBtn.disabled = currentPage <= 1;
             nextBtn.disabled = currentPage >= totalPages;
         };
@@ -23895,12 +23897,12 @@ function calculateWeeklyStats(dailyStatsArray) {
         const right = document.createElement('div');
         right.style.cssText = 'display:flex; align-items:center; gap:8px; flex-wrap: wrap; justify-content:flex-end;';
         const tip = document.createElement('div');
-        tip.textContent = '选中日常事务后，点击下方时间轴空白处即可补录';
+        tip.textContent = __tt("timer.selectARoutineThenClickAnEmptyTimelineArea");
         tip.style.cssText = 'font-size: 12px; opacity: 0.75;';
         right.appendChild(tip);
         undoBtn = document.createElement('button');
         undoBtn.type = 'button';
-        undoBtn.textContent = '撤销';
+        undoBtn.textContent = __tt("timer.undo");
         undoBtn.style.cssText = 'padding: 6px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background); font-size: 12px;';
         right.appendChild(undoBtn);
         header.appendChild(right);
@@ -23920,7 +23922,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const dayRange = getDayRange(selectedDate);
         if (!dayRange) {
             const err = document.createElement('div');
-            err.textContent = '日期无效';
+            err.textContent = __tt("timer.invalidDate");
             err.style.cssText = 'opacity: 0.75;';
             main.appendChild(err);
             return;
@@ -23939,7 +23941,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const sideCard = document.createElement('div');
         sideCard.style.cssText = 'border: 1px solid var(--b3-theme-surface-light); border-radius: 10px; padding: 10px; background: var(--b3-theme-background);';
         const sideTitle = document.createElement('div');
-        sideTitle.textContent = '日常事务';
+        sideTitle.textContent = __tt("timer.routines");
         sideTitle.style.cssText = 'font-size: 13px; font-weight: 600; margin-bottom: 8px;';
         sideCard.appendChild(sideTitle);
 
@@ -23966,9 +23968,9 @@ function calculateWeeklyStats(dailyStatsArray) {
         const groups = Array.isArray(userSettings?.routineGroups) ? userSettings.routineGroups : [];
         const getGroupName = (id) => {
             const gid = normalizeGroupId(id);
-            if (!gid) return '未分组';
+            if (!gid) return __tt("kernel.ungrouped");
             const g = groups.find(x => x && x.id === gid);
-            return String(g?.name || '分组');
+            return String(g?.name || __tt("kernel.group"));
         };
         const orderGroups = () => {
             const ids = groups.map(g => g?.id).filter(Boolean);
@@ -24031,9 +24033,9 @@ function calculateWeeklyStats(dailyStatsArray) {
 
             const label = document.createElement('span');
             if (isBlank) {
-                label.textContent = '空白（不计入统计）';
+                label.textContent = __tt("timer.emptyExcludedFromStatistics");
             } else {
-                const name = (typeof cfg?.name === 'string' && cfg.name.trim()) ? cfg.name.trim() : `任务 ${Number(idx) + 1}`;
+                const name = (typeof cfg?.name === 'string' && cfg.name.trim()) ? cfg.name.trim() : __tt("timer.task2", { value1: Number(idx) + 1 });
                 label.textContent = name;
             }
             label.style.cssText = 'flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
@@ -24087,7 +24089,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         if (!routineButtons.length) {
             const empty = document.createElement('div');
-            empty.textContent = '暂无日常事务按钮，请先在时间轴或设置中添加';
+            empty.textContent = __tt("timer.noRoutineButtonsYetAddOneFromTheTimeline");
             empty.style.cssText = 'font-size: 12px; opacity: 0.7; padding: 6px 2px;';
             buttonList.appendChild(empty);
         }
@@ -24097,7 +24099,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const fillRow = document.createElement('div');
         fillRow.style.cssText = 'margin-top: 10px;';
         const fillLabel = document.createElement('div');
-        fillLabel.textContent = `补录时长：${fillMinutes} 分钟`;
+        fillLabel.textContent = __tt("timer.recordDurationMinutes", { fillMinutes: fillMinutes });
         fillLabel.style.cssText = 'font-size: 12px; opacity: 0.85; margin-bottom: 6px;';
         const fillSlider = document.createElement('input');
         fillSlider.type = 'range';
@@ -24108,7 +24110,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         fillSlider.oninput = (e) => {
             const v = Math.max(1, Math.min(180, Math.round(Number(e.target.value) || fillMinutes)));
             historyState.editorFillMinutes = v;
-            fillLabel.textContent = `补录时长：${v} 分钟`;
+            fillLabel.textContent = __tt("timer.recordDurationMinutes2", { v: v });
         };
         fillSlider.onchange = async () => {
             try {
@@ -24128,7 +24130,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const timelineCard = document.createElement('div');
         timelineCard.style.cssText = `border: 1px solid var(--b3-theme-surface-light); border-radius: 10px; padding: ${isMobile ? 8 : 10}px; background: var(--b3-theme-background); width: 100%; box-sizing: border-box;`;
         const timelineTitle = document.createElement('div');
-        timelineTitle.textContent = isMobile ? '日历时间轴（长按块后拖动调整，点击空白补录）' : '日历时间轴（拖动块调整，点击空白补录）';
+        timelineTitle.textContent = isMobile ? __tt("timer.calendarTimelineHoldAndDragRecordsToAdjustTap") : __tt("timer.calendarTimelineDragRecordsToAdjustClickEmptySpace");
         timelineTitle.style.cssText = 'font-size: 12px; opacity: 0.85; margin-bottom: 8px;';
         timelineCard.appendChild(timelineTitle);
         const timelineScroll = document.createElement('div');
@@ -24175,7 +24177,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 dialog.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2147483648; background: var(--b3-theme-background); color: var(--b3-theme-on-background); border: 1px solid var(--b3-theme-surface-light); border-radius: 10px; width: 92vw; max-width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); padding: 14px;';
 
                 const title = document.createElement('div');
-                title.textContent = '调整起止时间';
+                title.textContent = __tt("timer.adjustStartAndEndTimes");
                 title.style.cssText = 'font-size: 14px; font-weight: 600; margin-bottom: 10px;';
                 dialog.appendChild(title);
 
@@ -24201,10 +24203,10 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const footer = document.createElement('div');
                 footer.style.cssText = 'display:flex; justify-content:flex-end; gap: 8px;';
                 const cancel = document.createElement('button');
-                cancel.textContent = '取消';
+                cancel.textContent = __tt("common.cancel");
                 cancel.style.cssText = 'padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background); cursor:pointer;';
                 const ok = document.createElement('button');
-                ok.textContent = '保存';
+                ok.textContent = __tt("common.save");
                 ok.style.cssText = 'padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-primary); background: var(--b3-theme-primary); color: white; cursor:pointer;';
 
                 const close = () => { try { dialog.remove(); backdrop.remove(); } catch (e) {} };
@@ -24218,7 +24220,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         const startMs = ns?.getTime?.();
                         const endMs = ne?.getTime?.();
                         if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
-                            showToastDialog('提示', '开始/结束时间不合法', 'info');
+                            showToastDialog(__tt("timer.notice"), __tt("timer.startEndinvalidTime"), 'info');
                             return;
                         }
                         let committedRecord = null;
@@ -24232,7 +24234,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                             return true;
                         }, { record });
                         if (!recordFound) {
-                            showToastDialog('提示', '未找到对应记录（可能已被刷新）', 'info');
+                            showToastDialog(__tt("timer.notice"), __tt("timer.recordNotFoundItMayHaveBeenRefreshed"), 'info');
                             close();
                             return;
                         }
@@ -24244,11 +24246,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                             close();
                             showPage(historyState?.currentPage || selectedDate);
                         } else {
-                            showToastDialog('提示', '保存失败', 'error');
+                            showToastDialog(__tt("timer.notice"), __tt("timer.savefailed"), 'error');
                         }
                     } catch (err) {
                         Logger.warn('历史记录时间保存失败:', err);
-                        showToastDialog('提示', getHistoryMutationErrorMessage(err), 'error');
+                        showToastDialog(__tt("timer.notice"), getHistoryMutationErrorMessage(err), 'error');
                     }
                 };
 
@@ -24266,11 +24268,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const startD = toDateSafe(record?.start);
                 const endD = toDateSafe(record?.end);
                 if (isNaN(startD.getTime()) || isNaN(endD.getTime()) || endD.getTime() <= startD.getTime()) {
-                    showToastDialog('提示', '记录时间无效', 'info');
+                    showToastDialog(__tt("timer.notice"), __tt("timer.invalidRecordTime"), 'info');
                     return;
                 }
                 if (formatDateKey(startD) !== formatDateKey(endD)) {
-                    showToastDialog('提示', '跨天记录暂不支持拆分（请先调整为单日范围）', 'info');
+                    showToastDialog(__tt("timer.notice"), __tt("timer.recordsSpanningMultipleDaysCannotBeSplitYetAdjust"), 'info');
                     return;
                 }
 
@@ -24288,7 +24290,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 dialog.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2147483648; background: var(--b3-theme-background); color: var(--b3-theme-on-background); border: 1px solid var(--b3-theme-surface-light); border-radius: 10px; width: 92vw; max-width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); padding: 14px;';
 
                 const title = document.createElement('div');
-                title.textContent = '拆分记录';
+                title.textContent = __tt("timer.splitRecord");
                 title.style.cssText = 'font-size: 14px; font-weight: 600; margin-bottom: 10px;';
                 dialog.appendChild(title);
 
@@ -24302,10 +24304,10 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const footer = document.createElement('div');
                 footer.style.cssText = 'display:flex; justify-content:flex-end; gap: 8px;';
                 const cancel = document.createElement('button');
-                cancel.textContent = '取消';
+                cancel.textContent = __tt("common.cancel");
                 cancel.style.cssText = 'padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background); cursor:pointer;';
                 const ok = document.createElement('button');
-                ok.textContent = '拆分';
+                ok.textContent = __tt("timer.split");
                 ok.style.cssText = 'padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-primary); background: var(--b3-theme-primary); color: white; cursor:pointer;';
                 const close = () => { try { dialog.remove(); backdrop.remove(); } catch (e) {} };
                 cancel.onclick = close;
@@ -24316,7 +24318,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         const sp = new Date(splitInput.value);
                         const splitMs = sp?.getTime?.();
                         if (!Number.isFinite(splitMs) || splitMs <= startD.getTime() || splitMs >= endD.getTime()) {
-                            showToastDialog('提示', '拆分点不在记录范围内', 'info');
+                            showToastDialog(__tt("timer.notice"), __tt("timer.theSplitPointIsOutsideTheRecordSTime"), 'info');
                             return;
                         }
                         let splitRecords = null;
@@ -24324,18 +24326,18 @@ function calculateWeeklyStats(dailyStatsArray) {
                         const success = await mutateHistoryRecords(yearRecords => {
                             const idx = findRecordIndex(yearRecords, record);
                             if (idx < 0) {
-                                validationMessage = '未找到对应记录（可能已被刷新）';
+                                validationMessage = __tt("timer.recordNotFoundItMayHaveBeenRefreshed");
                                 return false;
                             }
                             const original = yearRecords[idx];
                             const origStartMs = toDateSafe(original?.start)?.getTime?.() || 0;
                             const origEndMs = toDateSafe(original?.end)?.getTime?.() || 0;
                             if (!Number.isFinite(origStartMs) || !Number.isFinite(origEndMs) || origEndMs <= origStartMs) {
-                                validationMessage = '记录时间无效';
+                                validationMessage = __tt("timer.invalidRecordTime");
                                 return false;
                             }
                             if (formatDateKey(new Date(origStartMs)) !== formatDateKey(new Date(origEndMs))) {
-                                validationMessage = '跨天记录暂不支持拆分';
+                                validationMessage = __tt("timer.recordsSpanningMultipleDaysCannotBeSplitYet");
                                 return false;
                             }
                             const recA = { ...original };
@@ -24354,7 +24356,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                             return true;
                         }, { record });
                         if (validationMessage) {
-                            showToastDialog('提示', validationMessage, 'info');
+                            showToastDialog(__tt("timer.notice"), validationMessage, 'info');
                             close();
                             return;
                         }
@@ -24367,11 +24369,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                             close();
                             showPage(historyState?.currentPage || selectedDate);
                         } else {
-                            showToastDialog('提示', '保存失败', 'error');
+                            showToastDialog(__tt("timer.notice"), __tt("timer.savefailed"), 'error');
                         }
                     } catch (err) {
                         Logger.warn('历史记录拆分失败:', err);
-                        showToastDialog('提示', getHistoryMutationErrorMessage(err), 'error');
+                        showToastDialog(__tt("timer.notice"), getHistoryMutationErrorMessage(err), 'error');
                     }
                 };
 
@@ -24409,16 +24411,16 @@ function calculateWeeklyStats(dailyStatsArray) {
             try {
                 const mode = String(record?.mode || '');
                 const modeText = mode === 'countdown'
-                    ? '🍅 番茄'
+                    ? __tt("timer.pomodoro3")
                     : (mode === 'stopwatch'
-                        ? '⏱️ 专注正计时'
+                        ? __tt("timer.focusstopwatch2")
                         : (mode === 'break' || mode === 'stopwatch-break'
-                            ? '☕ 休息'
-                            : (mode === 'idle' ? '🕳️ 空白' : '记录')));
+                            ? __tt("timer.rest2")
+                            : (mode === 'idle' ? __tt("timer.empty") : __tt("timer.record"))));
                 const name = getRecordDisplayTaskName(record, routineButtons);
                 return name ? `${modeText} / ${name}` : modeText;
             } catch (e) {
-                return '记录';
+                return __tt("timer.record");
             }
         };
 
@@ -24501,7 +24503,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const createEditorRecordAtMinute = async (startMinuteRaw) => {
             const sel = Number(historyState?.editorSelectedRoutineIndex);
             if (!Number.isFinite(sel)) {
-                showToast('请先选择一个日常事务（或空白）', 2000);
+                showToast(__tt("timer.selectARoutineOrEmptyFirst"), 2000);
                 return;
             }
             let durationMin = Number(historyState?.editorFillMinutes);
@@ -24516,7 +24518,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             const endLimit = Number.isFinite(nextStart) ? nextStart : 1440;
             const endMin = Math.max(startMin, Math.min(1440, Math.min(startMin + durationMin, endLimit)));
             if (endMin - startMin < 1) {
-                showToast('该位置没有足够的空白可补录', 2000);
+                showToast(__tt("timer.thereIsNotEnoughEmptyTimeHereToAdd"), 2000);
                 return;
             }
 
@@ -24585,7 +24587,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 try { renderEditorTimelineWithDrag(); } catch (e) {}
                 try { updatePageButtons(); } catch (e) {}
             } else {
-                showToastDialog('提示', '保存失败', 'error');
+                showToastDialog(__tt("timer.notice"), __tt("timer.savefailed"), 'error');
             }
         };
 
@@ -25026,7 +25028,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const timeSection = document.createElement('div');
                 timeSection.style.cssText = 'margin-bottom: 10px;';
                 const timeTitle = document.createElement('div');
-                timeTitle.textContent = '调整时间';
+                timeTitle.textContent = __tt("timer.adjustTime");
                 timeTitle.style.cssText = 'font-size: 12px; opacity: 0.8; margin-bottom: 6px;';
                 timeSection.appendChild(timeTitle);
 
@@ -25042,7 +25044,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 timeSection.appendChild(endInput);
 
                 const saveTimeBtn = document.createElement('button');
-                saveTimeBtn.textContent = '保存时间';
+                saveTimeBtn.textContent = __tt("timer.savetime");
                 saveTimeBtn.style.cssText = 'width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background); cursor: pointer; font-size: 12px;';
                 saveTimeBtn.onclick = async () => {
                     saveTimeBtn.disabled = true;
@@ -25053,11 +25055,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                         const startMs = ns?.getTime?.();
                         const endMs = ne?.getTime?.();
                         if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
-                            showToast('开始/结束时间不合法', 2000);
+                            showToast(__tt("timer.startEndinvalidTime"), 2000);
                             return;
                         }
                         if (formatDateKey(ns) !== selectedDate || formatDateKey(ne) !== selectedDate) {
-                            showToast('仅支持同一天内调整', 2000);
+                            showToast(__tt("timer.timesMustFallOnTheSameDay"), 2000);
                             return;
                         }
                         const range = getDayRange(selectedDate);
@@ -25071,7 +25073,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         const newStartMs = range.startMs + Math.round(startMin) * 60000;
                         const newEndMs = Math.round(endMin) >= 1440 ? (range.endMs - 1) : (range.startMs + Math.round(endMin) * 60000);
                         if (!(newEndMs > newStartMs)) {
-                            showToast('开始/结束时间不合法', 2000);
+                            showToast(__tt("timer.startEndinvalidTime"), 2000);
                             return;
                         }
 
@@ -25086,11 +25088,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                             return true;
                         }, { record });
                         if (!recordFound) {
-                            showToast('未找到对应记录（可能已被刷新）', 2000);
+                            showToast(__tt("timer.recordNotFoundItMayHaveBeenRefreshed"), 2000);
                             return;
                         }
                         if (!ok) {
-                            showToast('保存失败', 2000);
+                            showToast(__tt("timer.savefailed"), 2000);
                             return;
                         }
                         markTimelineHistoryDirty();
@@ -25140,7 +25142,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 menu.appendChild(timeSection);
 
                 const assocTitle = document.createElement('div');
-                assocTitle.textContent = '更换关联任务';
+                assocTitle.textContent = __tt("timer.replacelinkedTask");
                 assocTitle.style.cssText = 'font-size: 12px; opacity: 0.8; margin-bottom: 6px;';
                 menu.appendChild(assocTitle);
 
@@ -25148,12 +25150,12 @@ function calculateWeeklyStats(dailyStatsArray) {
                 assocSelect.style.cssText = 'width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--b3-theme-surface-light); background: var(--b3-theme-surface); color: var(--b3-theme-on-background); font-size: 12px;';
                 const optClear = document.createElement('option');
                 optClear.value = '__clear__';
-                optClear.textContent = '清空关联';
+                optClear.textContent = __tt("timer.clearLink");
                 assocSelect.appendChild(optClear);
                 routineButtons.forEach((b, idx) => {
                     const opt = document.createElement('option');
                     const icon = (typeof b?.icon === 'string' && b.icon.trim()) ? b.icon.trim() : '📌';
-                    const name = (typeof b?.name === 'string' && b.name.trim()) ? b.name.trim() : `按钮 ${idx + 1}`;
+                    const name = (typeof b?.name === 'string' && b.name.trim()) ? b.name.trim() : __tt("kernel.button", { value1: idx + 1 });
                     opt.value = String(idx);
                     opt.textContent = `${icon} ${name}`;
                     assocSelect.appendChild(opt);
@@ -25196,11 +25198,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                             return true;
                         }, { record });
                         if (!recordFound) {
-                            showToast('未找到对应记录（可能已被刷新）', 2000);
+                            showToast(__tt("timer.recordNotFoundItMayHaveBeenRefreshed"), 2000);
                             return;
                         }
                         if (!ok) {
-                            showToast('更新失败', 2000);
+                            showToast(__tt("timer.updateFailed"), 2000);
                             return;
                         }
                         markTimelineHistoryDirty();
@@ -25240,7 +25242,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         try { renderEditorTimelineWithDrag(); } catch (e) {}
                         try { updatePageButtons(); } catch (e) {}
                     } catch (e) {
-                        showToast('更新失败', 2000);
+                        showToast(__tt("timer.updateFailed"), 2000);
                     } finally {
                         assocSelect.disabled = false;
                     }
@@ -25250,7 +25252,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 footerRow.style.cssText = 'display:flex; gap: 8px; margin-top: 8px;';
 
                 const delRecordBtn = document.createElement('button');
-                delRecordBtn.textContent = '删除记录';
+                delRecordBtn.textContent = __tt("timer.deleteRecord");
                 delRecordBtn.style.cssText = 'width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(244,67,54,0.35); background: rgba(244,67,54,0.12); color: var(--b3-theme-on-background); cursor: pointer; font-size: 12px;';
                 delRecordBtn.onclick = async () => {
                     closeEditorContextMenu();
@@ -25397,7 +25399,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             segEl.addEventListener('pointerdown', (e) => {
                 try {
                     if (!canDragRecord(record)) {
-                        showToast('跨天记录请用“调整”弹窗修改', 2000);
+                        showToast(__tt("timer.useTheAdjustDialogForRecordsSpanningMultipleDays"), 2000);
                         return;
                     }
                     const handle = e.target?.dataset?.handle || '';
@@ -25542,11 +25544,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                 const minute = getMinuteFromPointer(e.clientY);
                 void createEditorRecordAtMinute(minute).catch((err) => {
                     Logger.warn('历史记录空白处补录失败:', err);
-                    showToastDialog('提示', getHistoryMutationErrorMessage(err), 'error');
+                    showToastDialog(__tt("timer.notice"), getHistoryMutationErrorMessage(err), 'error');
                 });
             } catch (err) {
                 Logger.warn('历史记录空白处点击失败:', err);
-                showToastDialog('提示', getHistoryMutationErrorMessage(err), 'error');
+                showToastDialog(__tt("timer.notice"), getHistoryMutationErrorMessage(err), 'error');
             }
         }, {}, 'history-editor-timeline');
 
@@ -25642,7 +25644,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         if (dateRecords.length === 0) {
             const empty = document.createElement('div');
-            empty.textContent = '该日无计时记录';
+            empty.textContent = __tt("timer.noSessionsOnThisDay");
             empty.style.textAlign = 'center';
             empty.style.opacity = '0.6';
             empty.style.padding = '30px 0';
@@ -25741,7 +25743,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
         // 添加删除当天记录按钮
         const deleteBtn = document.createElement('button');
-        deleteBtn.innerHTML = '🗑️ 删除当天记录';
+        deleteBtn.innerHTML = __tt("timer.deleteThisDaySRecords");
         deleteBtn.style.cssText = `
             padding: ${isMobile ? '8px 12px' : '6px 12px'}; 
             background: #F44336; color: white; border: none; border-radius: 4px; 
@@ -25770,19 +25772,11 @@ function calculateWeeklyStats(dailyStatsArray) {
                 `;
                 
                 confirmDialog.innerHTML = `
-                    <div style="font-size: 16px; font-weight: bold; margin-bottom: 12px; color: var(--b3-theme-on-background);">
-                        ⚠️ 确认删除
-                    </div>
-                    <div style="font-size: 14px; margin-bottom: 20px; color: var(--b3-theme-on-surface); line-height: 1.5;">
-                        确定要删除 ${date} 的所有 ${recordCount} 条记录吗？<br>此操作不可恢复。
-                    </div>
+                    <div style="font-size: 16px; font-weight: bold; margin-bottom: 12px; color: var(--b3-theme-on-background);">${__tt("timer.confirmdelete")}</div>
+                    <div style="font-size: 14px; margin-bottom: 20px; color: var(--b3-theme-on-surface); line-height: 1.5;">${__tt("timer.deleteAllRecordsOn", { date: date, recordCount: recordCount })}<br>${__tt("timer.thisCannotBeUndone")}</div>
                     <div style="display: flex; gap: 10px; justify-content: flex-end;">
-                        <button id="confirm-cancel-btn" style="padding: 8px 16px; background: var(--b3-theme-surface); color: var(--b3-theme-on-surface); border: 1px solid var(--b3-theme-surface-light); border-radius: 4px; cursor: pointer;">
-                            取消
-                        </button>
-                        <button id="confirm-delete-btn" style="padding: 8px 16px; background: #F44336; color: white; border: none; border-radius: 4px; cursor: pointer;">
-                            删除
-                        </button>
+                        <button id="confirm-cancel-btn" style="padding: 8px 16px; background: var(--b3-theme-surface); color: var(--b3-theme-on-surface); border: 1px solid var(--b3-theme-surface-light); border-radius: 4px; cursor: pointer;">${__tt("timer.cancel")}</button>
+                        <button id="confirm-delete-btn" style="padding: 8px 16px; background: #F44336; color: white; border: none; border-radius: 4px; cursor: pointer;">${__tt("timer.delete")}</button>
                     </div>
                 `;
                 
@@ -25829,7 +25823,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         z-index: 2147483648;
                         font-size: 14px;
                     `;
-                    successToast.textContent = '✅ 已删除当天记录';
+                    successToast.textContent = __tt("timer.thisDaySRecordsWereDeleted");
                     document.body.appendChild(successToast);
                     setTimeout(() => successToast.remove(), 1000);
                     
@@ -25855,7 +25849,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                         z-index: 2147483648;
                         font-size: 14px;
                     `;
-                    errorToast.textContent = '❌ 删除失败';
+                    errorToast.textContent = __tt("timer.deleteFailed");
                     document.body.appendChild(errorToast);
                     setTimeout(() => errorToast.remove(), 2000);
                 }
@@ -25873,7 +25867,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                     z-index: 2147483648;
                     font-size: 14px;
                 `;
-                errorToast.textContent = '❌ 删除失败: ' + e.message;
+                errorToast.textContent = __tt("timer.deleteFailed2") + e.message;
                 document.body.appendChild(errorToast);
                 setTimeout(() => errorToast.remove(), 2000);
             }
@@ -25907,12 +25901,12 @@ function calculateWeeklyStats(dailyStatsArray) {
             text-align: center; border-left: 3px solid var(--b3-theme-primary);
         `;
         
-        let statsHTML = `<strong>📊 ${date} 统计</strong><br>`;
+        let statsHTML = `<strong>${__tt("timer.statistics", { date: date })}</strong><br>`;
         
         if (dailyFocusTime > 0) {
             statsHTML += `
                 <div style="margin: 6px 0; padding-bottom: 8px;">
-                    <span style="font-weight: bold; color: var(--b3-theme-primary);">🎯 专注时长:</span><br>
+                    <span style="font-weight: bold; color: var(--b3-theme-primary);">${__tt("timer.focusTime")}</span><br>
                     ${formatFocusTime(dailyFocusTime)}
                 </div>
             `;
@@ -25920,8 +25914,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         if (dailyDistractionCount > 0) {
             statsHTML += `
-                <div style="margin: 6px 0;">
-                    😵 分心次数: <strong>${dailyDistractionCount}</strong>
+                <div style="margin: 6px 0;">${__tt("timer.distractions3")}<strong>${dailyDistractionCount}</strong>
                 </div>
             `;
         }
@@ -25931,29 +25924,20 @@ function calculateWeeklyStats(dailyStatsArray) {
             const rateColor = completionRate >= 100 ? '#4CAF50' : (completionRate >= 80 ? '#FF9800' : '#F44336');
             
             statsHTML += `
-                <div style="margin: 6px 0;">
-                    ${getTimerUiIconSvg('tomato')} ${dailyTomatoCount} 个番茄<br>
-                    实际: ${formatHistoryStatNumber(dailyTomatoActual)}分钟 | 计划: ${formatHistoryStatNumber(dailyTomatoPlanned)}分钟<br>
-                    完成度: <span style="color:${rateColor}; font-weight:bold">${completionRate}%</span>
+                <div style="margin: 6px 0;">${__tt("timer.pomodoros", { value1: getTimerUiIconSvg('tomato'), dailyTomatoCount: dailyTomatoCount })}<br>${__tt("timer.actualMinutesPlannedMinutes", { value1: formatHistoryStatNumber(dailyTomatoActual), value2: formatHistoryStatNumber(dailyTomatoPlanned) })}<br>${__tt("timer.progress2")}<span style="color:${rateColor}; font-weight:bold">${completionRate}%</span>
                 </div>
             `;
         }
         
         if (dailyStopwatchCount > 0) {
             statsHTML += `
-                <div style="margin-top: 6px;">
-            ⏱️ ${dailyStopwatchCount} 次专注正计时<br>
-                    总时长: ${formatHistoryStatNumber(dailyStopwatchActual)}分钟
-                </div>
+                <div style="margin-top: 6px;">${__tt("timer.focusStopwatchSessions", { dailyStopwatchCount: dailyStopwatchCount })}<br>${__tt("timer.totalMinutes", { value1: formatHistoryStatNumber(dailyStopwatchActual) })}</div>
             `;
         }
         
         if (dailyBreakCount > 0 && userSettings.showBreakRecords) {
             statsHTML += `
-                <div style="margin-top: 6px;">
-                    ☕ ${dailyBreakCount} 次休息<br>
-                    总时长: ${formatHistoryStatNumber(dailyBreakActual)}分钟
-                </div>
+                <div style="margin-top: 6px;">${__tt("timer.breaks", { dailyBreakCount: dailyBreakCount })}<br>${__tt("timer.totalMinutes", { value1: formatHistoryStatNumber(dailyBreakActual) })}</div>
             `;
         }
         
@@ -25962,9 +25946,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (taskRecords.length > 0) {
             const uniqueTasks = [...new Set(taskRecords.map(r => r.taskBlockId))];
             statsHTML += `
-                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--b3-theme-surface-light);">
-                    📋 关联任务: ${uniqueTasks.length} 个
-                </div>
+                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--b3-theme-surface-light);">${__tt("timer.linkedTasks", { length: uniqueTasks.length })}</div>
             `;
         }
         
@@ -26020,25 +26002,25 @@ function calculateWeeklyStats(dailyStatsArray) {
             const fallbackSeconds = Number(min) * 60;
             const roundedSeconds = Math.max(0, Math.round(Number.isFinite(rawSeconds) ? rawSeconds : fallbackSeconds));
             if (roundedSeconds < 60) {
-                return `${roundedSeconds}秒`;
+                return __tt("timer.s2", { roundedSeconds: roundedSeconds });
             }
             // 超过60分钟显示"X小时Y分"格式
             if (roundedSeconds >= 3600) {
                 const hours = Math.floor(roundedSeconds / 3600);
                 const mins = Math.floor((roundedSeconds % 3600) / 60);
-                return `${hours}小时${mins}分`;
+                return __tt("timer.hM", { hours: hours, mins: mins });
             }
-            return `${Math.round(Number(min) || roundedSeconds / 60)}分钟`;
+            return __tt("timer.minutes6", { value1: Math.round(Number(min) || roundedSeconds / 60) });
         };
         durationText = record.mode === 'lumina-note'
-            ? '文字记录'
+            ? __tt("timer.textEntry")
             : formatDuration(record.durationSec, record.durationMin);
         
-        const resetText = (record.wasReset && record.mode !== 'stopwatch' && record.mode !== 'stopwatch-break') ? '<span style="color:#FF9800; font-weight:bold">🔄重置</span> ' : '';
+        const resetText = (record.wasReset && record.mode !== 'stopwatch' && record.mode !== 'stopwatch-break') ? `<span style="color:#FF9800; font-weight:bold">${__tt("timer.reset")}</span> ` : '';
         const roundedPlannedMinutes = Math.max(0, Math.round(Number(record.plannedDuration) || 0));
         const roundedActualMinutes = Math.max(0, Math.round(Number(record.durationMin) || 0));
         const plannedText = record.mode === 'countdown' && roundedPlannedMinutes > 0 && roundedPlannedMinutes !== roundedActualMinutes
-            ? ` (预设${roundedPlannedMinutes}分)` : '';
+            ? __tt("timer.minPreset", { roundedPlannedMinutes: roundedPlannedMinutes }) : '';
         
         // 🔧 新增：任务块/日常按钮信息 - 添加点击跳转功能
         const displayTaskName = getRecordDisplayTaskName(record);
@@ -26077,9 +26059,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             if (todaySameTaskRecords.length > 1) {
                 const totalDuration = todaySameTaskRecords.reduce((sum, r) => sum + (r.durationMin || 0), 0);
                 const totalCount = todaySameTaskRecords.length;
-                mergedDurationText = `<div style="font-size: 11px; margin-top: 2px; color: var(--b3-theme-primary);">
-                    📊 本日合计: ${formatHistoryStatNumber(totalDuration)}分钟 (${totalCount}次)
-                </div>`;
+                mergedDurationText = `<div style="font-size: 11px; margin-top: 2px; color: var(--b3-theme-primary);">${__tt("timer.dailyTotalMinutesSessions", { value1: formatHistoryStatNumber(totalDuration), totalCount: totalCount })}</div>`;
             }
         }
 
@@ -26097,8 +26077,8 @@ function calculateWeeklyStats(dailyStatsArray) {
                 return `<div class="tomato-lumina-record-link" data-block-id="${escapeHtml(blockId)}" style="
                     font-size: 11px; line-height: 1.45; ${clickableStyle}
                     display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
-                " title="${blockId ? '跳转到轻语记录' : ''}">
-                    <span>📝 ${escapeHtml(shortPreview || '轻语记录')}</span>
+                " title="${blockId ? __tt("timer.openLuminaEntry") : ''}">
+                    <span>📝 ${escapeHtml(shortPreview || __tt("timer.luminaEntry"))}</span>
                 </div>`;
             }).join('')}</div>`
             : '';
@@ -26143,7 +26123,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         
         const deleteBtn = document.createElement('button');
         deleteBtn.innerHTML = '🗑️';
-        deleteBtn.title = '删除记录';
+        deleteBtn.title = __tt("timer.deleteRecord");
         deleteBtn.style.cssText = `
             background: transparent;
             border: 1px solid var(--b3-theme-surface-light);
@@ -27141,7 +27121,7 @@ function calculateWeeklyStats(dailyStatsArray) {
 
     function getDesktopFloatWindowDistractionLabel() {
         const willExtend = timerMode === 'countdown' && userSettings?.main?.extendTomatoOnDistraction !== false;
-        return willExtend ? '记录分心（+1分钟）' : '记录分心';
+        return willExtend ? __tt("timer.recordDistractionMinute") : __tt("timer.recordDistraction");
     }
 
     function buildDesktopFloatWindowMenuTemplate(win) {
@@ -27161,18 +27141,18 @@ function calculateWeeklyStats(dailyStatsArray) {
         if (currentAudioSettings.backgroundEnabled !== false && hasBackgroundAudio) {
             const isMuted = currentAudioSettings.backgroundMuted === true;
             template.push({
-                label: isMuted ? '取消静音' : '静音背景音',
+                label: isMuted ? __tt("timer.unmute") : __tt("timer.muteBackgroundAudio"),
                 iconName: isMuted ? 'muted' : 'audio',
                 click: () => runAction(async () => { await setBackgroundAudioMuted(!isMuted); })
             });
             const workBackgroundItems = getWorkBackgroundMenuItems();
             if (workBackgroundItems.length) {
                 template.push({
-                    label: '背景音',
+                    label: __tt("timer.backgroundAudio"),
                     iconName: 'audio',
                     submenu: [
-                        { label: '顺序循环', type: 'radio', checked: currentAudioSettings.workBackgroundPlayMode !== 'single', click: () => runAction(() => setWorkBackgroundPlayMode('sequence')) },
-                        { label: '单曲循环', type: 'radio', checked: currentAudioSettings.workBackgroundPlayMode === 'single', click: () => runAction(() => setWorkBackgroundPlayMode('single')) },
+                        { label: __tt("timer.repeatPlaylist"), type: 'radio', checked: currentAudioSettings.workBackgroundPlayMode !== 'single', click: () => runAction(() => setWorkBackgroundPlayMode('sequence')) },
+                        { label: __tt("timer.repeatOne"), type: 'radio', checked: currentAudioSettings.workBackgroundPlayMode === 'single', click: () => runAction(() => setWorkBackgroundPlayMode('single')) },
                         { type: 'separator' },
                         ...workBackgroundItems.map(item => ({
                         label: item.label,
@@ -27197,17 +27177,17 @@ function calculateWeeklyStats(dailyStatsArray) {
             pushSeparator();
         }
 
-        template.push({ label: '番茄', iconName: 'tomato', enabled: false });
+        template.push({ label: __tt("timer.pomodoro"), iconName: 'tomato', enabled: false });
         if (currentTaskBlockName || currentDatabaseBlockId) {
             template.push({
-                label: `关联: ${getTimerTaskTextForDisplay()}`,
+                label: __tt("timer.linked", { value1: getTimerTaskTextForDisplay() }),
                 iconName: 'association',
                 enabled: false
             });
         }
         if (currentTaskBlockId || currentDatabaseBlockId) {
             template.push({
-                label: '清除关联任务',
+                label: __tt("timer.clearlinkedTask"),
                 iconName: 'close',
                 click: () => runAction(async () => {
                     await clearCurrentRecordAssociation();
@@ -27221,7 +27201,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
         if (timerMode === 'countdown' && (isRunning || isTimerPaused)) {
             template.push({
-                label: '完成番茄',
+                label: __tt("timer.donepomodoro2"),
                 iconName: 'complete',
                 click: () => runAction(async () => { await completeCurrentTomato(); })
             });
@@ -27230,9 +27210,9 @@ function calculateWeeklyStats(dailyStatsArray) {
         const tomatoDurations = getTomatoDurations();
         if (Array.isArray(tomatoDurations) && tomatoDurations.length) {
             template.push({
-                label: '番茄时长',
+                label: __tt("timer.pomodoroduration"),
                 submenu: tomatoDurations.map((duration) => ({
-                    label: `${duration} 分钟`,
+                    label: __tt("timer.min5", { duration: duration }),
                     type: 'radio',
                     checked: timerMode === 'countdown' && Number(currentDuration) === Number(duration),
                     click: () => runAction(async () => { await switchToCountdownAndStart(duration); })
@@ -27243,27 +27223,27 @@ function calculateWeeklyStats(dailyStatsArray) {
         const breakDurations = getBreakDurations();
         const breakSubmenu = Array.isArray(breakDurations)
             ? breakDurations.map((duration) => ({
-                label: `${duration} 分钟`,
+                label: __tt("timer.min5", { duration: duration }),
                 type: 'radio',
                 checked: timerMode === 'break' && Number(currentDuration) === Number(duration),
                 click: () => runAction(async () => { await startBreakMode(duration); })
             }))
             : [];
         breakSubmenu.push({
-            label: '正计时休息',
+            label: __tt("timer.stopwatchrest"),
             type: 'radio',
             checked: timerMode === 'stopwatch-break',
             click: () => runAction(async () => { await startStopwatchBreakMode(); })
         });
-        template.push({ label: '休息', iconName: 'coffee', submenu: breakSubmenu });
+        template.push({ label: __tt("timer.rest"), iconName: 'coffee', submenu: breakSubmenu });
         pushSeparator();
 
         template.push({
-            label: '专注正计时',
+            label: __tt("timer.focusstopwatch"),
             iconName: 'timer',
             click: () => runAction(async () => { await startStopwatchForCurrentPhase(); })
         }, {
-            label: isRunning ? '暂停' : '继续',
+            label: isRunning ? __tt("timer.paused") : __tt("timer.continue"),
             iconName: isRunning ? 'pause' : 'play',
             enabled: hasUnfinishedTimerState(),
             click: () => runAction(async () => {
@@ -27272,8 +27252,8 @@ function calculateWeeklyStats(dailyStatsArray) {
             })
         }, {
             label: (timerMode === 'break' || timerMode === 'stopwatch-break')
-                ? '结束休息'
-                : ((timerMode === 'stopwatch') ? '完成专注正计时' : '放弃番茄钟'),
+                ? __tt("timer.endrest")
+                : ((timerMode === 'stopwatch') ? __tt("timer.donefocusstopwatch2") : __tt("timer.abandonedpomodoro")),
             iconName: timerMode === 'stopwatch' ? 'complete' : (timerMode.includes('break') ? 'coffee' : 'close'),
             click: () => runAction(async () => {
                 if (timerMode === 'break' || timerMode === 'stopwatch-break') {
@@ -27285,14 +27265,14 @@ function calculateWeeklyStats(dailyStatsArray) {
                 }
             })
         }, {
-            label: '查看历史',
+            label: __tt("timer.viewHistory"),
             iconName: 'history',
             click: () => runAction(async () => { await showHistoryDialog(); })
         });
         pushSeparator();
 
         template.push({
-            label: desktopFloatWindowState.alwaysOnTop !== false ? '取消置顶' : '置顶',
+            label: desktopFloatWindowState.alwaysOnTop !== false ? __tt("timer.unpin") : __tt("timer.pin"),
             click: () => {
                 const next = !(desktopFloatWindowState.alwaysOnTop !== false);
                 desktopFloatWindowState.alwaysOnTop = next;
@@ -27306,7 +27286,7 @@ function calculateWeeklyStats(dailyStatsArray) {
                 Promise.resolve().then(() => refreshDesktopMinimizedFloatWindow()).catch(() => {});
             }
         }, {
-            label: '关闭悬浮窗',
+            label: __tt("timer.closeFloatingWindow"),
             click: () => {
                 desktopFloatWindowState.dismissed = true;
                 try { win?.hide?.(); } catch (e) {}
@@ -27390,13 +27370,13 @@ function calculateWeeklyStats(dailyStatsArray) {
         const displayModel = getTimerDisplayModel();
         const { running, paused } = getEffectiveTimerActivity();
         const prefix = displayModel.prefix;
-        let statusText = '待开始';
-        if (running) statusText = '进行中';
-        else if (paused) statusText = '已暂停';
-        let modeText = '番茄钟';
-        if (timerMode === 'break') modeText = '休息';
-        else if (timerMode === 'stopwatch') modeText = '专注正计时';
-        else if (timerMode === 'stopwatch-break') modeText = '正计时休息';
+        let statusText = __tt("timer.notStarted");
+        if (running) statusText = __tt("timer.inProgress");
+        else if (paused) statusText = __tt("timer.paused2");
+        let modeText = __tt("timer.pomodoro4");
+        if (timerMode === 'break') modeText = __tt("timer.rest");
+        else if (timerMode === 'stopwatch') modeText = __tt("timer.focusstopwatch");
+        else if (timerMode === 'stopwatch-break') modeText = __tt("timer.stopwatchrest");
         const hideModeText = true;
         const routineName = (running || paused)
             ? String(getActiveRoutineButtonRecordMeta()?.name || syncState?.routineButtonName || '').trim()
@@ -27445,6 +27425,11 @@ function calculateWeeklyStats(dailyStatsArray) {
     }
 
     function buildDesktopFloatWindowHtml() {
+        const floatLabels = {
+            pin: __tt('settings.pinWindow'), unpin: __tt('settings.unpinWindow'),
+            pomodoro: __tt('timer.pomodoro4'), unlinked: __tt('timer.noLinkedTask'),
+            messages: { 'timer.paused': __tt('timer.paused'), 'timer.continue': __tt('timer.continue'), 'timer.start': __tt('timer.start') },
+        };
         const colors = getDesktopFloatWindowColors();
         const circularWindow = isDesktopFloatWindowCircularTimerStyleEnabled();
         const pageBackground = 'transparent';
@@ -27465,7 +27450,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const circularTimeColor = colors.mode === 'light' ? '#171b20' : '#f4f7fb';
         desktopFloatWindowLastResolvedColorMode = colors.mode;
         return `<!DOCTYPE html>
-<html lang="zh-CN" data-theme-mode="${colors.mode}">
+<html lang="${globalThis.__dockTomatoI18n.locale}" data-theme-mode="${colors.mode}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -27869,12 +27854,12 @@ body {
 <div id="shell" class="shell" data-actions-side="${desktopFloatWindowState.circularExpandedLeft ? 'left' : 'right'}">
     <div class="topline">
         <div class="leftbox">
-            <button id="toggle-run" class="toolbtn" title="暂停">${getTimerUiIconSvg('pause')}</button>
-            <button id="pin" class="toolbtn active" title="切换置顶">📌</button>
-            <button id="close" class="toolbtn closebtn" title="关闭">✕</button>
+            <button id="toggle-run" class="toolbtn" title="${globalThis.__dockTomatoI18n.html("timer.paused")}">${getTimerUiIconSvg('pause')}</button>
+            <button id="pin" class="toolbtn active" title="${globalThis.__dockTomatoI18n.html("timer.toggleAlwaysOnTop")}">📌</button>
+            <button id="close" class="toolbtn closebtn" title="${globalThis.__dockTomatoI18n.html("common.close")}">✕</button>
         </div>
         <div class="rightbox">
-            <div id="mode" class="mode">番茄钟</div>
+            <div id="mode" class="mode">${__tt("timer.pomodoro4")}</div>
         </div>
     </div>
     <div class="content">
@@ -27882,7 +27867,7 @@ body {
             <span id="icon" class="icon">${getTimerUiIconSvg('tomato')}</span>
             <span id="time">00:00</span>
         </div>
-        <div class="task"><span id="task-association">${getTimerUiIconSvg('association')}</span> <span id="task">未关联任务</span></div>
+        <div class="task"><span id="task-association">${getTimerUiIconSvg('association')}</span> <span id="task">${__tt("timer.noLinkedTask")}</span></div>
         <div id="circular" class="circular" data-mode="countdown" data-actions-side="${desktopFloatWindowState.circularExpandedLeft ? 'left' : 'right'}">
             <svg class="circular-ring" viewBox="0 0 48 48" aria-hidden="true">
                 <circle class="circular-ring-track" cx="24" cy="24" r="20"></circle>
@@ -27892,14 +27877,16 @@ body {
             <span class="circular-face"><span id="circular-time" class="circular-time">00:00</span></span>
             <span class="circular-actions">
                 <span class="circular-action-buttons">
-                    <button id="circular-toggle-run" class="toolbtn" title="暂停">${getTimerUiIconSvg('pause')}</button>
-                    <button id="circular-more" class="toolbtn" title="更多">⋯</button>
+                    <button id="circular-toggle-run" class="toolbtn" title="${globalThis.__dockTomatoI18n.html("timer.paused")}">${getTimerUiIconSvg('pause')}</button>
+                    <button id="circular-more" class="toolbtn" title="${globalThis.__dockTomatoI18n.html("timer.more")}">⋯</button>
                 </span>
             </span>
         </div>
     </div>
 </div>
 <script>
+var __labels = ${JSON.stringify(floatLabels).replace(/</g, '\u003c')};
+var __tt = function (key) { return __labels.messages[key] || key; };
 var TIMER_UI_ICON_SVGS = ${JSON.stringify(TIMER_UI_ICON_SVGS)};
 function ensureTimerUiIconStyles() {}
 ${getTimerUiIconSvg.toString()}
@@ -28027,7 +28014,7 @@ function __renderLiveTime() {
     time.textContent = staticText;
     __renderCircularFromPayload(staticText);
     if (__payloadState.liveTimerKind === 'static') {
-        var hhmmss = /^\d{2}:\d{2}:\d{2}$/;
+        var hhmmss = /^d{2}:d{2}:d{2}$/;
         __syncDesiredWidth(hhmmss.test(staticText) ? 3600 : 0);
     }
 }
@@ -28085,7 +28072,7 @@ function __syncPinState() {
     var pinned = !!(shell && shell.dataset && shell.dataset.alwaysOnTop === 'true');
     pin.classList.toggle('active', pinned);
     pin.textContent = pinned ? '📌' : '📍';
-    pin.title = pinned ? '解除置顶' : '设为置顶';
+    pin.title = pinned ? __labels.unpin : __labels.pin;
 }
 
 function __syncRunButtonState(payload) {
@@ -28119,14 +28106,14 @@ window.__setTomatoFloatState = function (payload) {
     var circularToggleButton = document.getElementById('circular-toggle-run');
     if (circularToggleButton) circularToggleButton.dataset.running = payload.running ? 'true' : 'false';
     if (mode) {
-        mode.textContent = payload.hideModeText ? '' : (payload.modeText || '番茄钟');
+        mode.textContent = payload.hideModeText ? '' : (payload.modeText || __labels.pomodoro);
         mode.style.display = payload.hideModeText ? 'none' : '';
     }
     setTimerUiIcon(icon, payload.iconName, payload.iconName ? '' : (payload.prefix || ''));
     var association = document.getElementById('task-association');
-    if (association) association.style.display = payload.taskText && payload.taskText !== '未关联任务' ? '' : 'none';
+    if (association) association.style.display = payload.taskText && payload.taskText !== __labels.unlinked ? '' : 'none';
     if (time) time.textContent = payload.timeText || '00:00';
-    if (task) task.textContent = payload.taskText || '未关联任务';
+    if (task) task.textContent = payload.taskText || __labels.unlinked;
     if (circular) __renderCircularFromPayload(payload.timeText || '00:00');
     if (shell) {
         shell.classList.toggle('running', !!payload.running);
@@ -29969,7 +29956,7 @@ window.__setTomatoFloatState = function (payload) {
                     padding: 2px 8px; font-size: 11px; align-self: flex-start;
                     background: var(--b3-theme-error); color: white;
                     border: none; border-radius: 3px; cursor: pointer;
-                ">清除</button>
+                ">${__tt("timer.clear2")}</button>
                 <span id="tomy-tooltip-task-name" style="
                     word-break: break-word;
                     line-height: 1.3;
@@ -30043,7 +30030,7 @@ window.__setTomatoFloatState = function (payload) {
             position: relative;
             transition: transform 0.2s;
         `;
-        taskBlockIcon.title = '查看关联任务';
+        taskBlockIcon.title = __tt("timer.viewlinkedTask");
         container.appendChild(taskBlockIcon);
 
         // 任务块信息提示框（挂到 body，避免被 status overflow 裁剪）
@@ -30146,7 +30133,7 @@ window.__setTomatoFloatState = function (payload) {
                 const targetMinutes = userSettings.dailyFocusTargetMinutes || 180;
                 const completedHours = formatHistoryStatNumber(completedMinutes / 60);
                 const targetHours = formatHistoryStatNumber(targetMinutes / 60);
-                tooltip.innerHTML = `已专注${completedHours}小时/目标${targetHours}小时`;
+                tooltip.innerHTML = __tt("timer.focusedHGoalH", { completedHours: completedHours, targetHours: targetHours });
             };
 
             // 🔧 修复：悬浮提示框逻辑优化
@@ -30223,7 +30210,7 @@ window.__setTomatoFloatState = function (payload) {
             longPressTimer = setTimeout(() => {
                 Promise.resolve(completeCurrentTimer()).catch((error) => {
                     Logger.error('完成计时失败:', error);
-                    try { showMiniToast('计时保存失败，请稍后重试'); } catch (e) {}
+                    try { showMiniToast(__tt("timer.timersavefailedPleaseTryAgainLater")); } catch (e) {}
                 });
                 isRightClick = false;
             }, 500);
@@ -30258,14 +30245,14 @@ window.__setTomatoFloatState = function (payload) {
         
         // 使用全局变量或局部变量
         const blockId = window.currentTaskBlockId || currentTaskBlockId;
-        const blockName = String(window.currentTaskBlockName || currentTaskBlockName || '').trim() || '未命名任务';
+        const blockName = String(window.currentTaskBlockName || currentTaskBlockName || '').trim() || __tt("timer.untitledTask");
         
         if (tooltip && taskName && blockId) {
             // 使用 data-block-id 属性存储块ID，和历史记录完全一致
             taskName.setAttribute('data-block-id', blockId);
             taskName.className = 'tomato-task-link'; // 使用和历史记录相同的类名
             setTimerUiIcon(taskName, 'association', blockName);
-            taskName.title = '点击跳转到任务块位置';
+            taskName.title = __tt("timer.goToTheTaskBlock");
 
             // 添加悬浮效果样式
             taskName.onmouseenter = () => {
@@ -30566,7 +30553,7 @@ window.__setTomatoFloatState = function (payload) {
             const docTitle = String(titleInput?.value ?? titleInput?.textContent ?? titleInput?.innerText ?? docTitleEl?.textContent ?? '').trim();
             return [{
                 dataset: { nodeId: docId },
-                textContent: docTitle || '未命名文档',
+                textContent: docTitle || __tt("timer.untitledDocument"),
             }];
         } else {
             const now = Date.now();
@@ -31920,7 +31907,7 @@ window.__setTomatoFloatState = function (payload) {
                 if (!useCache) sharedReadUnavailable = true;
             }
             if (sharedReadUnavailable) {
-                const error = new Error('共享计账账本读取失败');
+                const error = new Error(__tt("timer.couldNotReadTheSharedTimeLedger"));
                 error.code = 'ACCOUNTING_LEDGER_READ_FAILED';
                 throw error;
             }
@@ -32890,7 +32877,7 @@ window.__setTomatoFloatState = function (payload) {
         // 当右键点击文档标题时，block是一个模拟对象：{ dataset: { nodeId: docId }, textContent: docTitle }
         let taskBlock = null;
         let isDocTitleBlock = false;
-        let blockName = '未知任务';
+        let blockName = __tt("timer.unknowntask");
         let finalBlockId = null;
 
         if (!block.classList && !block.matches && block.dataset && block.dataset.nodeId) {
@@ -32898,7 +32885,7 @@ window.__setTomatoFloatState = function (payload) {
             isDocTitleBlock = true;
             taskBlock = block; // 直接使用这个对象
             finalBlockId = block.dataset.nodeId;
-            blockName = block.textContent || '未知任务';
+            blockName = block.textContent || __tt("timer.unknowntask");
 
             Logger.info('🔍 检测到文档标题块');
             Logger.info('🔍 finalBlockId:', finalBlockId);
@@ -32994,24 +32981,24 @@ window.__setTomatoFloatState = function (payload) {
                 blockName = taskBlock.querySelector(':scope > .p')?.textContent?.trim()
                     || block?.textContent?.trim()
                     || block?.querySelector?.('.p')?.textContent?.trim()
-                    || '未知任务';
+                    || __tt("timer.unknowntask");
             } else if (taskBlock.matches('[class*="h"], [data-type*="Heading"]')) {
                 // 标题块：直接获取文本内容（标题块没有子 .p 元素）
-                blockName = taskBlock.textContent?.trim() || block?.textContent?.trim() || '未知任务';
+                blockName = taskBlock.textContent?.trim() || block?.textContent?.trim() || __tt("timer.unknowntask");
             } else if (taskBlock.classList?.contains('p') || taskBlock.dataset?.type === 'NodeParagraph') {
                 // 段落块：直接获取文本内容
-                blockName = taskBlock.textContent?.trim() || block?.textContent?.trim() || '未知任务';
+                blockName = taskBlock.textContent?.trim() || block?.textContent?.trim() || __tt("timer.unknowntask");
             } else {
                 // 其他类型：使用通用逻辑
                 blockName = taskBlock.querySelector(':scope > .p')?.textContent?.trim()
                     || block?.textContent?.trim()
                     || block?.querySelector?.('.p')?.textContent?.trim()
-                    || '未知任务';
+                    || __tt("timer.unknowntask");
             }
         }
 
         Logger.info('🔍 最终获取的finalBlockId:', finalBlockId);
-        blockName = String(blockName ?? '').trim() || '未命名任务';
+        blockName = String(blockName ?? '').trim() || __tt("timer.untitledTask");
         Logger.info('🔍 最终获取的blockName:', blockName);
         Logger.info('🔍 isDocTitleBlock:', isDocTitleBlock);
 
@@ -33219,7 +33206,7 @@ window.__setTomatoFloatState = function (payload) {
         const blockId = block.dataset?.nodeId;
         if (!blockId) return null;
         
-        let blockName = '未知任务';
+        let blockName = __tt("timer.unknowntask");
         if (block.textContent) {
             // 清理文本内容，移除图标和多余空白
             blockName = block.textContent.trim().substring(0, 50);
@@ -33253,7 +33240,7 @@ window.__setTomatoFloatState = function (payload) {
         getTomatoDurations().forEach(min => {
             const item = document.createElement('button');
             item.className = 'b3-menu__item';
-            item.innerHTML = `<span class="b3-menu__icon">${getTimerUiIconSvg('tomato')}</span><span class="b3-menu__label">${min}分钟</span>`;
+            item.innerHTML = `<span class="b3-menu__icon">${getTimerUiIconSvg('tomato')}</span><span class="b3-menu__label">${__tt("timer.minutes3", { min: min })}</span>`;
             item.style.cssText = 'width:100%;box-sizing:border-box;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
             item.onclick = () => onItemClick(min, 'countdown');
             // 🔧 修复：添加 hover 样式
@@ -33265,7 +33252,7 @@ window.__setTomatoFloatState = function (payload) {
         // 添加正计时选项
         const stopwatchItem = document.createElement('button');
         stopwatchItem.className = 'b3-menu__item';
-        stopwatchItem.innerHTML = `<span class="b3-menu__icon">${getTimerUiIconSvg('timer')}</span><span class="b3-menu__label">专注正计时</span>`;
+        stopwatchItem.innerHTML = `<span class="b3-menu__icon">${getTimerUiIconSvg('timer')}</span><span class="b3-menu__label">${__tt("timer.focusstopwatch")}</span>`;
         stopwatchItem.style.cssText = 'width:100%;box-sizing:border-box;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
         stopwatchItem.onclick = () => onItemClick(null, 'stopwatch');
         // 🔧 修复：添加 hover 样式
@@ -33283,7 +33270,7 @@ window.__setTomatoFloatState = function (payload) {
             // 添加提醒按钮
             const reminderBtn = document.createElement('button');
             reminderBtn.className = 'b3-menu__item';
-            reminderBtn.innerHTML = `<span class="b3-menu__icon">${getTimerUiIconSvg('reminder')}</span><span class="b3-menu__label">添加提醒</span>`;
+            reminderBtn.innerHTML = `<span class="b3-menu__icon">${getTimerUiIconSvg('reminder')}</span><span class="b3-menu__label">${__tt("timer.addReminder")}</span>`;
             reminderBtn.style.cssText = 'width:100%;box-sizing:border-box;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
             reminderBtn.onmouseenter = () => reminderBtn.style.backgroundColor = 'var(--b3-menu-background-hover, var(--b3-theme-surface-light))';
             reminderBtn.onmouseleave = () => reminderBtn.style.backgroundColor = 'transparent';
@@ -33397,7 +33384,7 @@ window.__setTomatoFloatState = function (payload) {
         // 标题
         const title = document.createElement('div');
         title.className = 'tomato-bottomsheet-title';
-        title.textContent = '选择番茄钟时长';
+        title.textContent = __tt("timer.choosePomodoroDuration");
         dialog.appendChild(title);
 
         // 番茄钟时长选项
@@ -33425,7 +33412,7 @@ window.__setTomatoFloatState = function (payload) {
                 align-items: center;
                 gap: 4px;
             `;
-            option.innerHTML = `<span style="font-size:20px;">${getTimerUiIconSvg('tomato')}</span><span>${min}分钟</span>`;
+            option.innerHTML = `<span style="font-size:20px;">${getTimerUiIconSvg('tomato')}</span><span>${__tt("timer.minutes3", { min: min })}</span>`;
             // 悬停效果
             option.onmouseenter = () => {
                 option.style.background = 'var(--b3-theme-surface-light)';
@@ -33461,7 +33448,7 @@ window.__setTomatoFloatState = function (payload) {
             justify-content: center;
             gap: 8px;
         `;
-        stopwatchOption.innerHTML = `<span style="font-size:20px;">${getTimerUiIconSvg('timer')}</span><span>专注正计时（不限时）</span>`;
+        stopwatchOption.innerHTML = `<span style="font-size:20px;">${getTimerUiIconSvg('timer')}</span><span>${__tt("timer.focusStopwatchNoTimeLimit")}</span>`;
         // 悬停效果
         stopwatchOption.onmouseenter = () => {
             stopwatchOption.style.background = 'var(--b3-theme-surface-light)';
@@ -33495,7 +33482,7 @@ window.__setTomatoFloatState = function (payload) {
                 justify-content: center;
                 gap: 8px;
             `;
-            reminderOption.innerHTML = `<span style="font-size:20px;">${getTimerUiIconSvg('reminder')}</span><span>添加提醒</span>`;
+            reminderOption.innerHTML = `<span style="font-size:20px;">${getTimerUiIconSvg('reminder')}</span><span>${__tt("timer.addReminder")}</span>`;
             reminderOption.onmouseenter = () => {
                 reminderOption.style.background = 'var(--b3-theme-surface-light)';
                 reminderOption.style.borderColor = 'var(--b3-theme-primary)';
@@ -33506,7 +33493,7 @@ window.__setTomatoFloatState = function (payload) {
             };
             reminderOption.onclick = async () => {
                 closeDialog();
-                try { globalThis.__tomatoReminder?.showDialog?.(blockInfo.id, blockInfo?.name || '任务'); } catch (e) {}
+                try { globalThis.__tomatoReminder?.showDialog?.(blockInfo.id, blockInfo?.name || __tt("timer.task")); } catch (e) {}
             };
             dialog.appendChild(reminderOption);
         }
@@ -33525,7 +33512,7 @@ window.__setTomatoFloatState = function (payload) {
             cursor: pointer;
             transition: all 0.2s;
         `;
-        cancelBtn.textContent = '取消';
+        cancelBtn.textContent = __tt("common.cancel");
         cancelBtn.onclick = closeDialog;
         dialog.appendChild(cancelBtn);
 
@@ -33572,7 +33559,7 @@ window.__setTomatoFloatState = function (payload) {
         tomatoMenu.setAttribute('data-id', 'tomatoTimer');
         tomatoMenu.innerHTML = `
             <span class="b3-menu__icon">${getTimerUiIconSvg('tomato')}</span>
-            <span class="b3-menu__label">番茄钟</span>
+            <span class="b3-menu__label">${__tt("timer.pomodoro4")}</span>
             <svg class="b3-menu__icon" style="margin-left: auto;"><use xlink:href="#iconRight"></use></svg>
         `;
         divider.after(tomatoMenu);
@@ -33672,20 +33659,20 @@ window.__setTomatoFloatState = function (payload) {
         const items = getTomatoDurations().map((minutes) => ({
             id: `tomatoTimer${minutes}`,
             iconHTML: getTimerUiIconSvg('tomato'),
-            label: `${minutes}分钟`,
+            label: __tt("timer.minutes7", { minutes: minutes }),
             click: start(minutes, 'countdown'),
         }));
         items.push({
             id: 'tomatoTimerStopwatch',
             iconHTML: getTimerUiIconSvg('timer'),
-            label: '专注正计时',
+            label: __tt("timer.focusstopwatch"),
             click: start(null, 'stopwatch'),
         });
         items.push({type: 'separator'});
         items.push({
             id: 'tomatoTimerReminder',
             iconHTML: getTimerUiIconSvg('reminder'),
-            label: '添加提醒',
+            label: __tt("timer.addReminder"),
             click: () => {
                 window.siyuan?.menus?.menu?.remove();
                 globalThis.__tomatoReminder?.showDialog?.(blockInfo.id, blockInfo.name);
@@ -33724,7 +33711,7 @@ window.__setTomatoFloatState = function (payload) {
         menu.addItem({
             id: 'tomatoTimer',
             iconHTML: getTimerUiIconSvg('tomato'),
-            label: '番茄钟',
+            label: __tt("timer.pomodoro4"),
             type: 'submenu',
             submenu: items,
         });
@@ -33752,7 +33739,7 @@ window.__setTomatoFloatState = function (payload) {
             if (!docId || !menu || typeof menu.addItem !== 'function') return;
             const block = {
                 dataset: {nodeId: docId},
-                textContent: String(detail?.data?.name || '未命名文档'),
+                textContent: String(detail?.data?.name || __tt("timer.untitledDocument")),
             };
             addNativePluginMenuItems(event, block);
         };
@@ -33767,7 +33754,7 @@ window.__setTomatoFloatState = function (payload) {
             if (!docId || !menu || typeof menu.addItem !== 'function') return;
             const block = {
                 dataset: {nodeId: docId},
-                textContent: String(item?.name || element?.querySelector?.('.b3-list-item__text')?.textContent || '未命名文档'),
+                textContent: String(item?.name || element?.querySelector?.('.b3-list-item__text')?.textContent || __tt("timer.untitledDocument")),
             };
             addNativePluginMenuItems(event, block);
         };
@@ -34328,7 +34315,7 @@ window.__setTomatoFloatState = function (payload) {
 
             if (!clickedBlockId) {
                 Logger.error('❌ 无法确定要计时的任务块');
-                showToastDialog('提示', '无法确定要计时的任务块，请确保选中了一个有效的数据库单元格');
+                showToastDialog(__tt("timer.notice"), __tt("timer.cannotIdentifyTheTaskBlockToTimeSelectA"));
                 return;
             }
 
@@ -34349,7 +34336,7 @@ window.__setTomatoFloatState = function (payload) {
         tomatoMenu.setAttribute('data-id', 'tomatoTimerFromDB');
         tomatoMenu.innerHTML = `
             <span class="b3-menu__icon">${getTimerUiIconSvg('tomato')}</span>
-            <span class="b3-menu__label">番茄钟</span>
+            <span class="b3-menu__label">${__tt("timer.pomodoro4")}</span>
             <svg class="b3-menu__icon" style="margin-left: auto;"><use xlink:href="#iconRight"></use></svg>
         `;
 
@@ -34361,7 +34348,7 @@ window.__setTomatoFloatState = function (payload) {
         }
 
         // 创建并添加子菜单（使用通用函数）
-        const dbBlockInfo = cachedBlockId ? { id: cachedBlockId, name: cachedTaskName || '数据库任务' } : null;
+        const dbBlockInfo = cachedBlockId ? { id: cachedBlockId, name: cachedTaskName || __tt("timer.databaseTask") } : null;
         const subMenu = createTomatoSubMenu(dbCallback, dbBlockInfo);
         subMenu.id = 'tomato-db-submenu';
         document.body.appendChild(subMenu);
@@ -34403,7 +34390,7 @@ window.__setTomatoFloatState = function (payload) {
         // ✅ 关键修复：直接使用传入的 databaseBlockId 作为任务块ID
         // 不再调用 getDatabaseBlockBoundBlockId 重新查询
         let taskBlockId = databaseBlockId;
-        let blockName = taskName || '数据库任务';  // ✅ 优先使用传入的 taskName
+        let blockName = taskName || __tt("timer.databaseTask");  // ✅ 优先使用传入的 taskName
         let blockElement = null;
 
         // 🔧 修复：如果传入的 databaseBlockId 为空，尝试从多个来源获取
@@ -34474,7 +34461,7 @@ window.__setTomatoFloatState = function (payload) {
                     const last = s.split('/').filter(Boolean).pop() || '';
                     return last.replace(/\.(sy|md)$/i, '').trim();
                 };
-                blockName = blockInfo.name || fromPath(blockInfo.hPath) || blockInfo.content || '数据库任务';
+                blockName = blockInfo.name || fromPath(blockInfo.hPath) || blockInfo.content || __tt("timer.databaseTask");
                 Logger.info('🔍 任务块信息:', blockInfo);
 
                 // 尝试在当前文档中查找该块元素（使用缓存的编辑器查询）
@@ -34500,9 +34487,9 @@ window.__setTomatoFloatState = function (payload) {
                 // 获取选中块的名称
                 const contentElement = selectedBlock.querySelector('.p, h1, h2, h3, h4, h5, h6');
                 if (contentElement) {
-                    blockName = contentElement.textContent?.trim() || '未知任务';
+                    blockName = contentElement.textContent?.trim() || __tt("timer.unknowntask");
                 } else {
-                    blockName = selectedBlock.textContent?.trim() || '未知任务';
+                    blockName = selectedBlock.textContent?.trim() || __tt("timer.unknowntask");
                 }
 
                 Logger.info('🔍 使用当前选中块:', taskBlockId, blockName);
@@ -34512,7 +34499,7 @@ window.__setTomatoFloatState = function (payload) {
         // 验证最终的块ID
         if (!taskBlockId) {
             Logger.error('❌ 无法确定目标块ID，无法开始计时');
-            showToastDialog('提示', '无法确定要计时的任务块，请确保选中了一个有效的块');
+            showToastDialog(__tt("timer.notice"), __tt("timer.cannotIdentifyTheTaskBlockToTimeSelectA2"));
             return;
         }
 
@@ -34747,7 +34734,7 @@ window.__setTomatoFloatState = function (payload) {
         const settings = ensureAudioSettingsDefaults();
         if (!settings.workBackgroundPlaylist.length) return [];
         return [
-            { label: '下一首', action: () => nextWorkBackgroundSound() },
+            { label: __tt("timer.nextTrack"), action: () => nextWorkBackgroundSound() },
             ...settings.workBackgroundPlaylist.map(track => ({
                 label: track.name,
                 selected: track.filename === settings.workBackgroundSound,
@@ -34848,12 +34835,12 @@ window.__setTomatoFloatState = function (payload) {
             const blob = await Promise.race([
                 (async () => {
                     const fileResponse = await readAudioFileFromStorage(cleanFilename, controller?.signal);
-                    if (!fileResponse?.ok || fileResponse.status === 202) throw new Error(`无法读取音频文件: ${cleanFilename}`);
+                    if (!fileResponse?.ok || fileResponse.status === 202) throw new Error(__tt("timer.couldNotReadAudioFile", { cleanFilename: cleanFilename }));
                     return await fileResponse.blob();
                 })(),
                 new Promise((resolve, reject) => {
                     timeoutId = setTimeout(() => {
-                        reject(new Error(`读取音频文件超时: ${cleanFilename}`));
+                        reject(new Error(__tt("timer.audioFileReadTimedOut", { cleanFilename: cleanFilename })));
                         controller?.abort();
                     }, 15000);
                 })
@@ -34962,7 +34949,7 @@ window.__setTomatoFloatState = function (payload) {
         if (error?.name === 'NotAllowedError') {
             if (audio) audio._tomatoBackgroundBlocked = true;
             pauseBackgroundAudio(false);
-            showMiniToast('请点击曲目或重新开始计时以播放背景音');
+            showMiniToast(__tt("timer.selectATrackOrRestartTheTimerToPlay"));
             return;
         }
         if (audio) {
@@ -34976,7 +34963,7 @@ window.__setTomatoFloatState = function (payload) {
         } else {
             pauseBackgroundAudio(false);
             showMiniToast(settings.workBackgroundPlayMode === 'sequence'
-                ? '专注背景音均无法播放，请检查音频文件' : '专注背景音无法播放，请检查音频文件');
+                ? __tt("timer.noneOfTheFocusTracksCanBePlayedCheck") : __tt("timer.cannotPlayFocusBackgroundAudioCheckTheAudioFile"));
         }
     }
 
@@ -35078,7 +35065,7 @@ window.__setTomatoFloatState = function (payload) {
             workBackgroundAudioFailureCount = 0;
             await nextWorkBackgroundSound(true);
         } else if (stalled && !audio.ended && (!audio.paused || audio._tomatoPlayPending) && !isBreakAudioMode()) {
-            await handleWorkBackgroundAudioFailure(audio, new Error('背景音播放超时'));
+            await handleWorkBackgroundAudioFailure(audio, new Error(__tt("timer.backgroundAudioPlaybackTimedOut")));
         } else {
             await playBackgroundAudioForCurrentMode();
         }
@@ -35105,7 +35092,7 @@ window.__setTomatoFloatState = function (payload) {
             if (workBackgroundAudio) {
                 try { workBackgroundAudio.pause(); } catch (e) {}
             }
-            const loadedWork = await loadAudioFromStorage(workBackgroundPath, '工作背景音', {
+            const loadedWork = await loadAudioFromStorage(workBackgroundPath, __tt("timer.focusBackgroundAudio2"), {
                 loop: audioSettings.workBackgroundPlayMode === 'single',
                 volume: audioSettings.backgroundVolume
             });
@@ -35156,7 +35143,7 @@ window.__setTomatoFloatState = function (payload) {
             if (breakBackgroundAudio) {
                 try { breakBackgroundAudio.pause(); } catch (e) {}
             }
-            const loadedBreak = await loadAudioFromStorage(breakBackgroundPath, '休息背景音', {
+            const loadedBreak = await loadAudioFromStorage(breakBackgroundPath, __tt("timer.breakBackgroundAudio"), {
                 loop: true,
                 volume: audioSettings.backgroundVolume
             });
@@ -35187,7 +35174,7 @@ window.__setTomatoFloatState = function (payload) {
         const existingObjectUrl = matchesLoaded ? (isBreak ? breakBackgroundAudioObjectUrl : workBackgroundAudioObjectUrl) : null;
 
         if (!filename) {
-            showMiniToast('请先选择背景音文件');
+            showMiniToast(__tt("timer.selectABackgroundAudioFileFirst"));
             return;
         }
 
@@ -35196,7 +35183,7 @@ window.__setTomatoFloatState = function (payload) {
 
         let previewSrc = existingAudio?.src || '';
         if (!previewSrc) {
-            const loaded = await loadAudioFromStorage(filename, isBreak ? '休息背景音预览' : '工作背景音预览', {
+            const loaded = await loadAudioFromStorage(filename, isBreak ? __tt("timer.breakBackgroundAudioPreview") : __tt("timer.focusBackgroundAudioPreview"), {
                 loop: false,
                 volume: audioSettings.backgroundVolume
             });
@@ -35216,7 +35203,7 @@ window.__setTomatoFloatState = function (payload) {
         }
 
         if (!previewSrc) {
-            showMiniToast('背景音读取失败');
+            showMiniToast(__tt("timer.couldNotReadBackgroundAudio"));
             return;
         }
 
@@ -35242,7 +35229,7 @@ window.__setTomatoFloatState = function (payload) {
         } catch (e) {
             if (backgroundAudioPreview === preview) stopBackgroundAudioPreview();
             Logger.warn('⚠️ 背景音预览失败:', e?.name || e, e?.message || '');
-            showMiniToast('背景音预览失败');
+            showMiniToast(__tt("timer.couldNotPreviewBackgroundAudio"));
         }
     }
 
@@ -35261,7 +35248,7 @@ window.__setTomatoFloatState = function (payload) {
         let playlistSaved = true;
         if (options.playlistChanged) {
             playlistSaved = await saveWorkBackgroundPlaylist(userSettings.audioSettings.workBackgroundPlaylist);
-            if (!playlistSaved) showMiniToast('背景音列表暂存本机，恢复后自动重试');
+            if (!playlistSaved) showMiniToast(__tt("timer.playlistSavedLocallySavingWillRetryWhenTheConnection"));
         }
         const settingsSaved = await saveUserSettings();
         return options.playlistChanged ? playlistSaved : settingsSaved;
@@ -35661,7 +35648,7 @@ window.__setTomatoFloatState = function (payload) {
         const tabContainer = document.createElement('div');
         tabContainer.style.cssText = `
             display: flex; border-bottom: 1px solid var(--b3-theme-surface-light);
-            padding: 12px 16px 0 16px;
+            padding: 12px 16px 0 16px; overflow-x: auto; flex-shrink: 0;
         `;
 
         const createTab = (id, label, icon) => {
@@ -35672,7 +35659,7 @@ window.__setTomatoFloatState = function (payload) {
                 <span style="font-size: 12px; line-height: 1.1; white-space: nowrap;">${label}</span>
             `;
             tab.style.cssText = `
-                flex: 1; padding: 10px; background: transparent; border: none;
+                flex: 1 0 auto; padding: 10px; background: transparent; border: none;
                 border-bottom: 2px solid transparent; cursor: pointer;
                 color: var(--b3-theme-on-surface);
                 transition: color 0.2s, border-bottom-color 0.2s;
@@ -35683,11 +35670,11 @@ window.__setTomatoFloatState = function (payload) {
             return tab;
         };
 
-        const mainTab = createTab('main', '主设置', '⚙️');
-        const syncTab = createTab('sync', '同步', '☁️');
-        const audioTab = createTab('audio', '音频', '🔊');
-        const appearanceTab = createTab('appearance', '外观', '✨');
-        const taskBlockTab = createTab('taskblock', '任务块', '📋');
+        const mainTab = createTab('main', __tt("timer.general"), '⚙️');
+        const syncTab = createTab('sync', __tt("timer.sync"), '☁️');
+        const audioTab = createTab('audio', __tt("timer.audio"), '🔊');
+        const appearanceTab = createTab('appearance', __tt("timer.appearance"), '✨');
+        const taskBlockTab = createTab('taskblock', __tt("timer.taskBlocks"), '📋');
 
         tabContainer.appendChild(mainTab);
         tabContainer.appendChild(syncTab);
@@ -35705,7 +35692,7 @@ window.__setTomatoFloatState = function (payload) {
 
         // 关闭按钮
         const closeBtn = document.createElement('button');
-        closeBtn.textContent = '关闭';
+        closeBtn.textContent = __tt("common.close");
         closeBtn.style.cssText = `
             padding: 12px; background: var(--b3-theme-surface-light);
             border: none; border-radius: 0; cursor: pointer;
@@ -35769,8 +35756,53 @@ window.__setTomatoFloatState = function (payload) {
         };
     }
 
+    function renderLanguageSetting(container) {
+        const section = document.createElement('section');
+        section.style.cssText = 'padding:12px;margin-bottom:12px;background:var(--b3-theme-surface-light);border-radius:6px;';
+        const label = document.createElement('label');
+        label.htmlFor = 'tomato-ui-language';
+        label.textContent = __tt('settings.uiLanguage');
+        label.style.cssText = 'display:block;font-weight:600;margin-bottom:8px;';
+        const select = document.createElement('select');
+        select.id = label.htmlFor;
+        select.style.cssText = 'width:100%;padding:8px;box-sizing:border-box;border-radius:6px;border:1px solid var(--b3-border-color);color:var(--b3-theme-on-surface);background:var(--b3-theme-surface);';
+        for (const [value, title] of [['system', __tt('settings.followSiyuan')], ['zh-CN', '简体中文'], ['en', 'English']]) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = title;
+            select.appendChild(option);
+        }
+        let saved = globalThis.__dockTomatoMainSettings?.uiLanguage || 'system';
+        select.value = saved;
+        const note = document.createElement('p');
+        note.textContent = __tt('settings.languageHelp');
+        note.style.cssText = 'font-size:12px;line-height:1.6;margin:8px 0;';
+        const reload = document.createElement('button');
+        reload.type = 'button';
+        reload.textContent = __tt('settings.reloadInterface');
+        reload.className = 'b3-button b3-button--outline';
+        reload.disabled = saved === globalThis.__dockTomatoI18n.preference;
+        reload.onclick = () => window.location.reload();
+        select.onchange = async () => {
+            select.disabled = true;
+            reload.disabled = true;
+            try {
+                saved = await globalThis.__dockTomatoSetLanguage(select.value);
+            } catch (error) {
+                select.value = saved;
+                showMiniToast(error?.message || __tt('settings.languageSaveFailed'));
+            } finally {
+                select.disabled = false;
+                reload.disabled = saved === globalThis.__dockTomatoI18n.preference;
+            }
+        };
+        section.append(label, select, note, reload);
+        container.appendChild(section);
+    }
+
     function renderMainSettings(container) {
         try { ensureUserSettings(); } catch (e) {}
+        renderLanguageSetting(container);
 
         const makeSection = (title) => {
             const section = document.createElement('div');
@@ -35786,13 +35818,13 @@ window.__setTomatoFloatState = function (payload) {
             return section;
         };
 
-        const durationsSection = makeSection('番茄钟时长与休息间隔（分钟）');
+        const durationsSection = makeSection(__tt("timer.pomodoroBreakDurationsMinutes"));
         
         // 默认番茄时间输入框
         const defaultTimeContainer = document.createElement('div');
         defaultTimeContainer.style.cssText = 'margin-bottom: 12px;';
         const defaultTimeLabel = document.createElement('div');
-        defaultTimeLabel.textContent = '默认番茄时间（分钟）';
+        defaultTimeLabel.textContent = __tt("timer.defaultpomodorotimeMinutes");
         defaultTimeLabel.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
         const defaultTimeInput = document.createElement('input');
         defaultTimeInput.type = 'number';
@@ -35830,16 +35862,16 @@ window.__setTomatoFloatState = function (payload) {
         
         // 番茄预置时长标注
         const tomatoLabel = document.createElement('div');
-        tomatoLabel.textContent = '番茄预置时长(可增减)';
+        tomatoLabel.textContent = __tt("timer.pomodoroDurationPresetsAddOrRemoveValues");
         tomatoLabel.style.cssText = 'font-size: 12px; color: var(--b3-theme-on-surface-light); margin-bottom: 4px;';
         durationsSection.appendChild(tomatoLabel);
         
         const tomatoInput = document.createElement('input');
         tomatoInput.type = 'text';
-        tomatoInput.placeholder = '例如：5,15,30,60';
+        tomatoInput.placeholder = __tt("timer.forExample");
         tomatoInput.value = getTomatoDurations().join(',');
         tomatoInput.style.cssText = 'width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px; border: 1px solid var(--b3-border-color); background: var(--b3-theme-surface); color: var(--b3-theme-on-surface); margin-bottom: 8px;';
-        tomatoInput.title = '设置快捷选择列表中的番茄时长，多个值用逗号分隔';
+        tomatoInput.title = __tt("timer.setPomodoroDurationsInTheQuickSelectionListSeparated");
         tomatoInput.onchange = async (e) => {
             userSettings.main.tomatoDurations = normalizeMinuteList(e.target.value, DEFAULT_TOMATO_DURATIONS);
             await saveUserSettings();
@@ -35848,13 +35880,13 @@ window.__setTomatoFloatState = function (payload) {
 
         // 休息预置时长标注
         const breakLabel = document.createElement('div');
-        breakLabel.textContent = '休息预置时长(可增减)';
+        breakLabel.textContent = __tt("timer.breakDurationPresetsAddOrRemoveValues");
         breakLabel.style.cssText = 'font-size: 12px; color: var(--b3-theme-on-surface-light); margin-bottom: 4px;';
         durationsSection.appendChild(breakLabel);
         
         const breakInput = document.createElement('input');
         breakInput.type = 'text';
-        breakInput.placeholder = '例如：5,10,15,30';
+        breakInput.placeholder = __tt("timer.forExample2");
         breakInput.value = getBreakDurations().join(',');
         breakInput.style.cssText = 'width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px; border: 1px solid var(--b3-border-color); background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);';
         breakInput.onchange = async (e) => {
@@ -35863,7 +35895,7 @@ window.__setTomatoFloatState = function (payload) {
         };
         durationsSection.appendChild(breakInput);
 
-        const togglesSection = makeSection('开关');
+        const togglesSection = makeSection(__tt("timer.options"));
         const mkToggleRow = (text, checked, onChange) => {
             const row = document.createElement('div');
             row.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding: 10px 0;';
@@ -35881,47 +35913,47 @@ window.__setTomatoFloatState = function (payload) {
             return sw;
         };
 
-        mkToggleRow('调试模式（输出日志）', isDebugMode(), async (e) => {
+        mkToggleRow(__tt("timer.debugModeWriteLogs"), isDebugMode(), async (e) => {
             userSettings.main.debugMode = e.target.checked;
             try { Logger.setDebugEnabled(isDebugMode()); } catch (e) {}
             await saveUserSettings();
         });
 
-        mkToggleRow('第三方专注联动（小驴打卡等）', userSettings.main.enableFocusIntegration === true, async (e) => {
+        mkToggleRow(__tt("timer.thirdPartyFocusIntegration"), userSettings.main.enableFocusIntegration === true, async (e) => {
             userSettings.main.enableFocusIntegration = e.target.checked === true;
             await saveUserSettings();
         });
         {
             const hint = document.createElement('div');
-            hint.textContent = '默认关闭。开启后允许其他插件启动、暂停专注并接收完成记录；关闭不会停止当前计时。';
+            hint.textContent = __tt("timer.offByDefaultAllowOtherPluginsToStartOr");
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
             togglesSection.appendChild(hint);
         }
 
-        mkToggleRow('显示桌面底栏番茄钟', isDesktopStatusBarTimerEnabled(), async (e) => {
+        mkToggleRow(__tt("timer.showDesktopStatusBarTimer"), isDesktopStatusBarTimerEnabled(), async (e) => {
             userSettings.main.showDesktopStatusBarTimer = e.target.checked;
             applyDesktopStatusBarTimerVisibility();
             await saveUserSettings();
         });
         {
             const hint = document.createElement('div');
-            hint.textContent = '关闭后仅隐藏底栏组件，计时、时间轴和悬浮窗不受影响';
+            hint.textContent = __tt("timer.hideOnlyTheStatusBarComponentTheTimerTimeline");
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
             togglesSection.appendChild(hint);
         }
 
-        mkToggleRow('将块/文档菜单放入思源“插件”菜单', isNativePluginMenuEnabled(), async (e) => {
+        mkToggleRow(__tt("timer.placeBlockAndDocumentActionsUnderSiyuanSPlugins"), isNativePluginMenuEnabled(), async (e) => {
             userSettings.main.enableNativePluginMenu = e.target.checked;
             await saveUserSettings();
         });
         {
             const hint = document.createElement('div');
-            hint.textContent = '开启后，块菜单和文档标题菜单中的番茄钟选项会显示在思源“插件”二级菜单内，重载插件后生效';
+            hint.textContent = __tt("timer.placePomodoroActionsInThePluginsSubmenuOfBlock");
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
             togglesSection.appendChild(hint);
         }
 
-        mkToggleRow('启用移动端支持', isMobileSupportEnabled(), async (e) => {
+        mkToggleRow(__tt("timer.enableMobileSupport"), isMobileSupportEnabled(), async (e) => {
             userSettings.main.enableMobileSupport = e.target.checked;
             await saveUserSettings();
             try { Logger.setDebugEnabled(isDebugMode()); } catch (e) {}
@@ -35940,7 +35972,7 @@ window.__setTomatoFloatState = function (payload) {
             } catch (e) {}
         });
 
-        mkToggleRow('显示移动端文档顶栏番茄按钮', userSettings?.main?.showMobileBreadcrumbButton !== false, async (e) => {
+        mkToggleRow(__tt("timer.showPomodoroButtonInMobileDocumentHeader"), userSettings?.main?.showMobileBreadcrumbButton !== false, async (e) => {
             userSettings.main.showMobileBreadcrumbButton = e.target.checked;
             await saveUserSettings();
             try {
@@ -35954,12 +35986,12 @@ window.__setTomatoFloatState = function (payload) {
         });
         {
             const hint = document.createElement('div');
-            hint.textContent = '关闭后，移动端文档顶栏不再显示用于切换番茄悬浮条的按钮';
+            hint.textContent = __tt("timer.showAButtonInTheMobileDocumentHeaderTo");
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
             togglesSection.appendChild(hint);
         }
 
-        mkToggleRow('计时中自动显示移动端悬浮窗', isMobileFloatBarAutoShowEnabled(), async (e) => {
+        mkToggleRow(__tt("timer.automaticallyShowMobileFloatingTimerWhileTiming"), isMobileFloatBarAutoShowEnabled(), async (e) => {
             userSettings.main.enableMobileFloatBarAutoShow = e.target.checked;
             await saveUserSettings();
             try {
@@ -35979,7 +36011,7 @@ window.__setTomatoFloatState = function (payload) {
         });
         {
             const hint = document.createElement('div');
-            hint.textContent = '关闭后，移动端计时开始、恢复或同步到未完成计时时都不自动弹出；仍可用顶栏番茄按钮手动打开';
+            hint.textContent = __tt("timer.showTheFloatingTimerWhenStartingResumingOrSyncing");
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
             togglesSection.appendChild(hint);
         }
@@ -35988,7 +36020,7 @@ window.__setTomatoFloatState = function (payload) {
             const row = document.createElement('div');
             row.style.cssText = 'padding: 10px 0;';
             const label = document.createElement('div');
-            label.textContent = '桌面悬浮窗显示模式';
+            label.textContent = __tt("timer.desktopFloatingWindowDisplay");
             label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
             const select = document.createElement('select');
             select.style.cssText = `
@@ -35997,9 +36029,9 @@ window.__setTomatoFloatState = function (payload) {
                 background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
             `;
             [
-                ['minimized', '思源最小化后显示'],
-                ['always', '常驻显示'],
-                ['off', '关闭']
+                ['minimized', __tt("timer.showWhenSiyuanIsMinimized")],
+                ['always', __tt("timer.alwaysVisible")],
+                ['off', __tt("common.close")]
             ].forEach(([value, text]) => {
                 const option = document.createElement('option');
                 option.value = value;
@@ -36024,7 +36056,7 @@ window.__setTomatoFloatState = function (payload) {
                 } catch (err) {}
             };
             const hint = document.createElement('div');
-            hint.textContent = '关闭悬浮窗后，只能从底栏菜单重新开启。';
+            hint.textContent = __tt("timer.afterClosingTheFloatingWindowReopenItFromThe");
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:6px 0 0 0;line-height:1.35;';
             row.appendChild(label);
             row.appendChild(select);
@@ -36036,7 +36068,7 @@ window.__setTomatoFloatState = function (payload) {
             const row = document.createElement('div');
             row.style.cssText = 'padding: 10px 0;';
             const label = document.createElement('div');
-            label.textContent = '桌面悬浮窗计时样式';
+            label.textContent = __tt("timer.desktopFloatingTimerStyle");
             label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
             const select = document.createElement('select');
             select.style.cssText = `
@@ -36045,8 +36077,8 @@ window.__setTomatoFloatState = function (payload) {
                 background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
             `;
             [
-                [DEFAULT_TIMER_STYLE, '方形样式'],
-                [TIMER_STYLE_CIRCULAR, '圆形样式']
+                [DEFAULT_TIMER_STYLE, __tt("timer.square")],
+                [TIMER_STYLE_CIRCULAR, __tt("timer.circle")]
             ].forEach(([value, text]) => {
                 const option = document.createElement('option');
                 option.value = value;
@@ -36066,7 +36098,7 @@ window.__setTomatoFloatState = function (payload) {
                 } catch (err) {}
             };
             const hint = document.createElement('div');
-            hint.textContent = '仅影响桌面独立悬浮窗；底栏和移动悬浮条保持原来的文本样式。';
+            hint.textContent = __tt("timer.appliesToTheStandaloneDesktopWindowTheStatusBar");
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:6px 0 0 0;line-height:1.35;';
             row.appendChild(label);
             row.appendChild(select);
@@ -36074,14 +36106,14 @@ window.__setTomatoFloatState = function (payload) {
             togglesSection.appendChild(row);
         }
 
-        mkToggleRow('暂停或休息时也显示桌面悬浮窗', isDesktopMinimizedFloatWindowPausedOrBreakEnabled(), async (e) => {
+        mkToggleRow(__tt("timer.showDesktopFloatingWindowWhenPausedOrOnA"), isDesktopMinimizedFloatWindowPausedOrBreakEnabled(), async (e) => {
             userSettings.main.enableDesktopMinimizedFloatWindowPausedOrBreak = e.target.checked;
             await saveUserSettings();
             try { scheduleDesktopMinimizedFloatWindowSync('settings-desktop-float-paused-break-toggle'); } catch (err) {}
         });
         {
             const hint = document.createElement('div');
-            hint.textContent = '关闭时，仅番茄/专注正计时运行中会弹出桌面悬浮窗';
+            hint.textContent = __tt("timer.whenOffShowTheDesktopFloatingWindowOnlyDuring");
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
             togglesSection.appendChild(hint);
         }
@@ -36090,7 +36122,7 @@ window.__setTomatoFloatState = function (payload) {
             const row = document.createElement('div');
             row.style.cssText = 'padding: 10px 0;';
             const label = document.createElement('div');
-            label.textContent = '桌面悬浮窗颜色模式';
+            label.textContent = __tt("timer.desktopFloatingWindowColorMode");
             label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
             const select = document.createElement('select');
             select.style.cssText = `
@@ -36099,9 +36131,9 @@ window.__setTomatoFloatState = function (payload) {
                 background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
             `;
             [
-                ['follow', '跟随思源'],
-                ['dark', '固定深色'],
-                ['light', '固定浅色']
+                ['follow', __tt("timer.followSiyuan")],
+                ['dark', __tt("timer.alwaysDark")],
+                ['light', __tt("timer.alwaysLight")]
             ].forEach(([value, text]) => {
                 const option = document.createElement('option');
                 option.value = value;
@@ -36120,7 +36152,7 @@ window.__setTomatoFloatState = function (payload) {
                 } catch (err) {}
             };
             const hint = document.createElement('div');
-            hint.textContent = '固定浅色为白底黑字；跟随思源会根据当前思源深浅色切换。';
+            hint.textContent = __tt("timer.alwaysLightUsesDarkTextOnALightBackground");
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:6px 0 0 0;line-height:1.35;';
             row.appendChild(label);
             row.appendChild(select);
@@ -36134,7 +36166,7 @@ window.__setTomatoFloatState = function (payload) {
             const labelRow = document.createElement('div');
             labelRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;';
             const label = document.createElement('div');
-            label.textContent = '桌面悬浮窗透明度';
+            label.textContent = __tt("timer.desktopFloatingWindowOpacity");
             label.style.cssText = 'font-size: 13px;';
             const valueLabel = document.createElement('div');
             valueLabel.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);font-variant-numeric:tabular-nums;';
@@ -36162,7 +36194,7 @@ window.__setTomatoFloatState = function (payload) {
                 try { applyDesktopFloatWindowOpacity(); } catch (err) {}
             };
             const hint = document.createElement('div');
-            hint.textContent = '仅影响桌面独立悬浮窗，方形样式和圆形样式都会生效。';
+            hint.textContent = __tt("timer.appliesToBothSquareAndCircularStandaloneDesktopWindows");
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:6px 0 0 0;line-height:1.35;';
             labelRow.appendChild(label);
             labelRow.appendChild(valueLabel);
@@ -36177,7 +36209,7 @@ window.__setTomatoFloatState = function (payload) {
             const row = document.createElement('div');
             row.style.cssText = 'padding: 10px 0;';
             const label = document.createElement('div');
-            label.textContent = '桌面悬浮窗默认宽度（px）';
+            label.textContent = __tt("timer.desktopFloatingWindowDefaultWidthPx");
             label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
             const input = document.createElement('input');
             input.type = 'number';
@@ -36201,7 +36233,7 @@ window.__setTomatoFloatState = function (payload) {
                 } catch (err) {}
             };
             const hint = document.createElement('div');
-            hint.textContent = `默认 ${DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH}px，可在 ${MIN_DESKTOP_FLOAT_WINDOW_WIDTH}-${MAX_DESKTOP_FLOAT_WINDOW_WIDTH}px 调整；超过 1 小时时会在此基础上自动加宽。`;
+            hint.textContent = __tt("timer.defaultPxRangePxTheWindowWidensAutomaticallyAfter", { DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH: DEFAULT_DESKTOP_FLOAT_WINDOW_WIDTH, MIN_DESKTOP_FLOAT_WINDOW_WIDTH: MIN_DESKTOP_FLOAT_WINDOW_WIDTH, MAX_DESKTOP_FLOAT_WINDOW_WIDTH: MAX_DESKTOP_FLOAT_WINDOW_WIDTH });
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:6px 0 0 0;line-height:1.35;';
             row.appendChild(label);
             row.appendChild(input);
@@ -36213,7 +36245,7 @@ window.__setTomatoFloatState = function (payload) {
             const row = document.createElement('div');
             row.style.cssText = 'padding: 10px 0;';
             const label = document.createElement('div');
-            label.textContent = '桌面悬浮窗上边距（px）';
+            label.textContent = __tt("timer.desktopFloatingWindowTopPaddingPx");
             label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
             const input = document.createElement('input');
             input.type = 'number';
@@ -36237,7 +36269,7 @@ window.__setTomatoFloatState = function (payload) {
                 } catch (err) {}
             };
             const hint = document.createElement('div');
-            hint.textContent = `默认 ${DEFAULT_DESKTOP_FLOAT_WINDOW_TOP_PADDING}px，可在 ${MIN_DESKTOP_FLOAT_WINDOW_TOP_PADDING}-${MAX_DESKTOP_FLOAT_WINDOW_TOP_PADDING}px 调整；调大后悬浮窗会向上补一点高度。`;
+            hint.textContent = __tt("timer.defaultPxRangePxIncreasingThisAddsSpaceAt", { DEFAULT_DESKTOP_FLOAT_WINDOW_TOP_PADDING: DEFAULT_DESKTOP_FLOAT_WINDOW_TOP_PADDING, MIN_DESKTOP_FLOAT_WINDOW_TOP_PADDING: MIN_DESKTOP_FLOAT_WINDOW_TOP_PADDING, MAX_DESKTOP_FLOAT_WINDOW_TOP_PADDING: MAX_DESKTOP_FLOAT_WINDOW_TOP_PADDING });
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:6px 0 0 0;line-height:1.35;';
             row.appendChild(label);
             row.appendChild(input);
@@ -36245,7 +36277,7 @@ window.__setTomatoFloatState = function (payload) {
             togglesSection.appendChild(row);
         }
 
-        mkToggleRow('聚焦模式（高亮任务/数据库时淡化其它内容）', userSettings?.main?.enableFocusMode !== false, async (e) => {
+        mkToggleRow(__tt("timer.focusModeDimContentAroundTheHighlightedTaskOr"), userSettings?.main?.enableFocusMode !== false, async (e) => {
             userSettings.main.enableFocusMode = e.target.checked;
             await saveUserSettings();
             try {
@@ -36263,7 +36295,7 @@ window.__setTomatoFloatState = function (payload) {
             const row = document.createElement('div');
             row.style.cssText = 'padding: 10px 0;';
             const label = document.createElement('div');
-            label.textContent = '聚焦模式淡化透明度（0-1）';
+            label.textContent = __tt("timer.focusModeDimmingOpacity");
             label.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
             const input = document.createElement('input');
             input.type = 'number';
@@ -36298,7 +36330,7 @@ window.__setTomatoFloatState = function (payload) {
             togglesSection.appendChild(row);
         }
 
-        mkToggleRow('分心记录延长番茄时间（每次+1分钟）', userSettings?.main?.extendTomatoOnDistraction !== false, async (e) => {
+        mkToggleRow(__tt("timer.extendThePomodoroWhenRecordingADistractionMinuteEach"), userSettings?.main?.extendTomatoOnDistraction !== false, async (e) => {
             userSettings.main.extendTomatoOnDistraction = e.target.checked;
             await saveUserSettings();
         });
@@ -36306,26 +36338,30 @@ window.__setTomatoFloatState = function (payload) {
         const distractionToastContainer = document.createElement('div');
         distractionToastContainer.style.cssText = 'padding: 10px 0;';
         const distractionToastLabel = document.createElement('div');
-        distractionToastLabel.textContent = '分心提示文本（支持 {count} 占位符）';
+        distractionToastLabel.textContent = __tt("timer.distractionNoticeTextSupports", { count: '{count}' });
         distractionToastLabel.style.cssText = 'font-size: 13px; margin-bottom: 6px;';
         const distractionToastInput = document.createElement('input');
         distractionToastInput.type = 'text';
-        distractionToastInput.value = String(userSettings?.main?.distractionToastText ?? '已记录一次分心（{count} 次）');
-        distractionToastInput.placeholder = '例如：已记录一次分心（{count} 次）';
+        const savedDistractionText = userSettings?.main?.distractionToastText;
+        const defaultDistractionText = __tt('timer.distractionRecordedTotal', { count: '{count}' });
+        distractionToastInput.value = savedDistractionText == null || savedDistractionText === '已记录一次分心（{count} 次）'
+            ? defaultDistractionText : savedDistractionText;
+        distractionToastInput.placeholder = __tt("timer.exampleDistractionRecordedTotal", { count: '{count}' });
         distractionToastInput.style.cssText = `
             width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px;
             border: 1px solid var(--b3-border-color); font-size: 13px;
             background: var(--b3-theme-surface); color: var(--b3-theme-on-surface);
         `;
         distractionToastInput.onchange = async (e) => {
-            userSettings.main.distractionToastText = String(e.target.value ?? '');
+            userSettings.main.distractionToastText = e.target.value === defaultDistractionText
+                ? '已记录一次分心（{count} 次）' : String(e.target.value ?? '');
             await saveUserSettings();
         };
         distractionToastContainer.appendChild(distractionToastLabel);
         distractionToastContainer.appendChild(distractionToastInput);
         togglesSection.appendChild(distractionToastContainer);
 
-        mkToggleRow('超过60分钟后计时显示为 H:MM:SS 格式', userSettings?.main?.showHoursInTimerFormat === true, async (e) => {
+        mkToggleRow(__tt("timer.showHMmSsAfterMinutes"), userSettings?.main?.showHoursInTimerFormat === true, async (e) => {
             userSettings.main.showHoursInTimerFormat = e.target.checked;
             await saveUserSettings();
             // 立即更新显示
@@ -36338,7 +36374,7 @@ window.__setTomatoFloatState = function (payload) {
         stopwatchLimitContainer.style.cssText = 'padding: 10px 0;';
         const stopwatchLimitLabel = document.createElement('label');
         stopwatchLimitLabel.htmlFor = 'tomato-stopwatch-max-duration-hours';
-        stopwatchLimitLabel.textContent = '正计时最长时长（小时）';
+        stopwatchLimitLabel.textContent = __tt("timer.maximumStopwatchDurationHours");
         stopwatchLimitLabel.style.cssText = 'display: block; font-size: 13px; margin-bottom: 6px;';
         const stopwatchLimitInput = document.createElement('input');
         stopwatchLimitInput.id = stopwatchLimitLabel.htmlFor;
@@ -36361,33 +36397,33 @@ window.__setTomatoFloatState = function (payload) {
         stopwatchLimitContainer.appendChild(stopwatchLimitInput);
         const stopwatchLimitHint = document.createElement('div');
         stopwatchLimitHint.id = 'tomato-stopwatch-max-duration-hint';
-        stopwatchLimitHint.textContent = '0 表示不限制；输入整小时，适用于专注和休息正计时。达到上限后自动结束并保存记录。修改对新计时生效，暂停后继续保留原上限。';
+        stopwatchLimitHint.textContent = __tt("timer.useForNoLimitOrEnterWholeHoursApplies");
         stopwatchLimitHint.style.cssText = 'font-size: 12px; color: var(--b3-theme-on-surface-light); margin-top: 6px; line-height: 1.4;';
         stopwatchLimitInput.setAttribute('aria-describedby', stopwatchLimitHint.id);
         stopwatchLimitContainer.appendChild(stopwatchLimitHint);
         togglesSection.appendChild(stopwatchLimitContainer);
 
-        const stopwatchHourlyReminderToggle = mkToggleRow('正计时每小时提醒', isStopwatchHourlyReminderEnabled(), async (event) => {
+        const stopwatchHourlyReminderToggle = mkToggleRow(__tt("timer.hourlyStopwatchReminder"), isStopwatchHourlyReminderEnabled(), async (event) => {
             userSettings.main.stopwatchHourlyReminderEnabled = event.target.checked;
             await saveUserSettings();
         });
-        stopwatchHourlyReminderToggle.setAttribute('aria-label', '正计时每小时提醒');
+        stopwatchHourlyReminderToggle.setAttribute('aria-label', __tt("timer.hourlyStopwatchReminder"));
         {
             const hint = document.createElement('div');
             hint.id = 'tomato-stopwatch-hourly-reminder-hint';
-            hint.textContent = '仅桌面端专注正计时。每累计满1小时发送桌面通知和思源内轻提示，自动消失，无需确认；暂停不计时，重启后最多补一次提醒。';
+            hint.textContent = __tt("timer.forDesktopFocusStopwatchesOnlyShowADesktopNotification");
             hint.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);margin:-2px 0 8px 0;line-height:1.35;';
             stopwatchHourlyReminderToggle.setAttribute('aria-describedby', hint.id);
             togglesSection.appendChild(hint);
         }
 
         // 导出 ICS 文件区域
-        const exportSection = makeSection('数据导出');
+        const exportSection = makeSection(__tt("timer.dataexport"));
         const exportBtnRow = document.createElement('div');
         exportBtnRow.style.cssText = 'display: flex; gap: 10px; padding: 10px 0;';
         
         const exportIcsBtn = document.createElement('button');
-        exportIcsBtn.textContent = '📅 导出为 ICS (日历文件)';
+        exportIcsBtn.textContent = __tt("timer.exportAsIcsCalendarFile");
         exportIcsBtn.style.cssText = `
             flex: 1; padding: 10px; background: var(--b3-theme-primary);
             color: white; border: none; border-radius: 6px; cursor: pointer;
@@ -36397,12 +36433,12 @@ window.__setTomatoFloatState = function (payload) {
         exportIcsBtn.onmouseout = () => { exportIcsBtn.style.opacity = '1'; };
         exportIcsBtn.onclick = async () => {
             exportIcsBtn.disabled = true;
-            exportIcsBtn.textContent = '⏳ 导出中...';
+            exportIcsBtn.textContent = __tt("timer.exporting");
             try {
                 await exportHistoryToICS();
             } finally {
                 exportIcsBtn.disabled = false;
-                exportIcsBtn.textContent = '📅 导出为 ICS (日历文件)';
+                exportIcsBtn.textContent = __tt("timer.exportAsIcsCalendarFile");
             }
         };
         
@@ -36410,7 +36446,7 @@ window.__setTomatoFloatState = function (payload) {
         exportSection.appendChild(exportBtnRow);
         
         const exportDesc = document.createElement('div');
-        exportDesc.textContent = '将历史记录导出为 ICS 格式，可导入 Google Calendar、Outlook、Apple Calendar 等日历应用';
+        exportDesc.textContent = __tt("timer.exportHistoryAsIcsForGoogleCalendarOutlookApple");
         exportDesc.style.cssText = 'font-size: 11px; color: var(--b3-theme-on-surface-light); line-height: 1.4;';
         exportSection.appendChild(exportDesc);
     }
@@ -36425,12 +36461,12 @@ window.__setTomatoFloatState = function (payload) {
         const row = document.createElement('div');
         row.style.cssText = 'display: flex; gap: 6px;';
         const select = document.createElement('select');
-        select.setAttribute('aria-label', label + '：已上传音频');
+        select.setAttribute('aria-label', label + __tt("timer.uploadedAudio"));
         select.style.cssText = 'flex: 1; min-width: 0; max-width: 100%; padding: 8px; border: 1px solid var(--b3-theme-surface); border-radius: 4px; font-size: 13px; background: var(--b3-theme-background); color: var(--b3-theme-on-background);';
         const refreshButton = document.createElement('button');
         refreshButton.type = 'button';
-        refreshButton.textContent = '刷新';
-        refreshButton.setAttribute('aria-label', '刷新' + label + '的已上传音频');
+        refreshButton.textContent = __tt("timer.refresh");
+        refreshButton.setAttribute('aria-label', __tt("timer.refresh") + label + __tt("timer.uploadedAudio2"));
         refreshButton.style.cssText = 'flex: 0 0 auto; padding: 8px; border: 1px solid var(--b3-theme-surface); border-radius: 4px; cursor: pointer; background: var(--b3-theme-surface); color: var(--b3-theme-on-background);';
         const status = document.createElement('div');
         status.setAttribute('role', 'status');
@@ -36453,13 +36489,13 @@ window.__setTomatoFloatState = function (payload) {
             const currentGeneration = ++generation;
             select.disabled = true;
             refreshButton.disabled = true;
-            placeholder('正在读取已上传音频…');
+            placeholder(__tt("timer.readingUploadedAudio"));
             status.textContent = '';
             try {
                 const loaded = await loadFiles();
                 if (generation !== currentGeneration) return;
                 files = loaded;
-                placeholder(files.length ? '选择已上传音频' : '暂无已上传音频，请先上传');
+                placeholder(files.length ? __tt("timer.selectUploadedAudio") : __tt("timer.noUploadedAudioYetUploadAFileFirst"));
                 for (const file of files) {
                     const option = document.createElement('option');
                     option.value = file.filename;
@@ -36472,7 +36508,7 @@ window.__setTomatoFloatState = function (payload) {
             } catch (error) {
                 if (generation !== currentGeneration) return;
                 files = [];
-                placeholder('读取失败，请刷新重试');
+                placeholder(__tt("timer.couldNotLoadContentRefreshAndTryAgain"));
                 Logger.warn('读取已上传音频失败:', error);
             } finally {
                 if (generation === currentGeneration) refreshButton.disabled = false;
@@ -36482,12 +36518,12 @@ window.__setTomatoFloatState = function (payload) {
             const file = files.find(file => file.filename === select.value);
             if (!file) return;
             select.disabled = true;
-            status.textContent = '正在保存…';
+            status.textContent = __tt("timer.saving2");
             try {
                 const saved = await onSelect(file);
-                status.textContent = saved === false ? '设置暂存本机，请稍后重试保存' : '';
+                status.textContent = saved === false ? __tt("timer.settingsSavedLocallyPleaseRetrySavingShortly") : '';
             } catch (error) {
-                status.textContent = '选择音频失败，请重试';
+                status.textContent = __tt("timer.couldNotSelectAudioPleaseTryAgain");
                 Logger.warn('选择已上传音频失败:', error);
             } finally {
                 select.disabled = !files.length;
@@ -36510,16 +36546,16 @@ window.__setTomatoFloatState = function (payload) {
         section.id = 'tomato-work-background-section';
         section.style.cssText = 'margin-top: 12px; font-size: 13px;';
         const title = document.createElement('div');
-        title.textContent = '专注背景音';
+        title.textContent = __tt("timer.focusBackgroundAudio");
         title.style.cssText = 'margin-bottom: 8px;';
         section.appendChild(title);
 
         const modeLabel = document.createElement('label');
-        modeLabel.textContent = '默认播放模式 ';
+        modeLabel.textContent = __tt("timer.defaultPlaybackMode");
         const modeSelect = document.createElement('select');
-        modeSelect.setAttribute('aria-label', '专注背景音默认播放模式');
+        modeSelect.setAttribute('aria-label', __tt("timer.defaultFocusAudioPlaybackMode"));
         modeSelect.style.cssText = 'padding: 6px; background: var(--b3-theme-background); color: var(--b3-theme-on-background); border: 1px solid var(--b3-theme-surface); border-radius: 4px;';
-        for (const [value, text] of [['sequence', '顺序循环'], ['single', '单曲循环']]) {
+        for (const [value, text] of [['sequence', __tt("timer.repeatPlaylist")], ['single', __tt("timer.repeatOne")]]) {
             const option = document.createElement('option');
             option.value = value;
             option.textContent = text;
@@ -36539,7 +36575,7 @@ window.__setTomatoFloatState = function (payload) {
             modeSelect.value = settings.workBackgroundPlayMode;
             list.replaceChildren();
             if (!settings.workBackgroundPlaylist.length) {
-                list.textContent = '上传多个音频，或从已上传音频中选择添加。';
+                list.textContent = __tt("timer.uploadMultipleTracksOrAddFilesFromPreviouslyUploaded");
                 list.style.color = 'var(--b3-theme-on-surface-light)';
             } else {
                 list.style.color = 'var(--b3-theme-on-background)';
@@ -36549,7 +36585,7 @@ window.__setTomatoFloatState = function (payload) {
                 row.style.cssText = 'padding: 8px 0; border-bottom: 1px solid var(--b3-theme-surface);';
                 const selected = track.filename === settings.workBackgroundSound;
                 const name = document.createElement('div');
-                name.textContent = (index + 1) + '. ' + track.name + (selected ? ' ✓ 当前曲目' : '');
+                name.textContent = (index + 1) + '. ' + track.name + (selected ? __tt("timer.currentTrack") : '');
                 name.title = track.name;
                 name.style.cssText = 'overflow-wrap: anywhere; margin-bottom: 6px;';
                 if (selected) name.style.color = 'var(--b3-theme-primary)';
@@ -36567,14 +36603,14 @@ window.__setTomatoFloatState = function (payload) {
                     button.setAttribute('aria-label', text + ' ' + track.name);
                     button.onclick = () => Promise.resolve(action()).catch(error => {
                         Logger.warn('更新专注背景音失败:', error);
-                        status.textContent = '操作失败，请重试';
+                        status.textContent = __tt("timer.operationFailedTryAgain");
                     });
                     actions.appendChild(button);
                     return button;
                 };
-                const useButton = addButton('使用', () => selectWorkBackgroundSound(track.filename));
+                const useButton = addButton(__tt("timer.use"), () => selectWorkBackgroundSound(track.filename));
                 useButton.setAttribute('aria-pressed', String(selected));
-                addButton('预览', () => playBackgroundAudioPreview('work', track.filename));
+                addButton(__tt("timer.preview"), () => playBackgroundAudioPreview('work', track.filename));
                 const move = (offset) => {
                     const tracks = [...ensureAudioSettingsDefaults().workBackgroundPlaylist];
                     const position = tracks.findIndex(item => item.filename === track.filename);
@@ -36583,9 +36619,9 @@ window.__setTomatoFloatState = function (payload) {
                     [tracks[position], tracks[target]] = [tracks[target], tracks[position]];
                     return setWorkBackgroundPlaylist(tracks);
                 };
-                addButton('上移', () => move(-1), index === 0);
-                addButton('下移', () => move(1), index === playlist.length - 1);
-                addButton('移除', () => {
+                addButton(__tt("timer.moveUp"), () => move(-1), index === 0);
+                addButton(__tt("timer.moveDown"), () => move(1), index === playlist.length - 1);
+                addButton(__tt("timer.remove"), () => {
                     const settings = ensureAudioSettingsDefaults();
                     const position = settings.workBackgroundPlaylist.findIndex(item => item.filename === track.filename);
                     const tracks = settings.workBackgroundPlaylist.filter(item => item.filename !== track.filename);
@@ -36599,7 +36635,7 @@ window.__setTomatoFloatState = function (payload) {
         };
         section.addEventListener('tomato-background-change', refresh);
         section.appendChild(list);
-        section.appendChild(createUploadedPicker('添加专注背景音', async file => {
+        section.appendChild(createUploadedPicker(__tt("timer.addFocusBackgroundAudio"), async file => {
             const tracks = ensureAudioSettingsDefaults().workBackgroundPlaylist;
             if (tracks.some(track => track.filename === file.filename)) {
                 await selectWorkBackgroundSound(file.filename);
@@ -36612,17 +36648,17 @@ window.__setTomatoFloatState = function (payload) {
         addRow.style.cssText = 'display: flex; gap: 6px; margin-bottom: 8px;';
         const input = document.createElement('input');
         input.type = 'text';
-        input.placeholder = '已有音频文件名，如 rain.mp3';
-        input.setAttribute('aria-label', '添加已有专注音频文件名');
+        input.placeholder = __tt("timer.existingAudioFilenameSuchAsRainMp3");
+        input.setAttribute('aria-label', __tt("timer.addAnExistingFocusAudioFilename"));
         input.style.cssText = 'flex: 1; min-width: 0; padding: 8px; border: 1px solid var(--b3-theme-surface); border-radius: 4px; background: var(--b3-theme-background); color: var(--b3-theme-on-background);';
-        const addButton = createAudioButton('添加');
+        const addButton = createAudioButton(__tt("timer.add"));
         addButton.style.flex = '0 0 auto';
         addButton.onclick = async () => {
             const filename = input.value.trim();
             if (!filename) return;
             const tracks = ensureAudioSettingsDefaults().workBackgroundPlaylist;
             if (tracks.some(track => track.filename === filename)) {
-                status.textContent = '该文件已在列表中';
+                status.textContent = __tt("timer.thisFileIsAlreadyInTheList");
                 return;
             }
             await setWorkBackgroundPlaylist([...tracks, { name: filename, filename }]);
@@ -36641,30 +36677,30 @@ window.__setTomatoFloatState = function (payload) {
         fileInput.accept = 'audio/*,.mp3,.wav,.ogg,.aac,.m4a,.flac';
         fileInput.multiple = true;
         fileInput.style.display = 'none';
-        const uploadButton = createAudioButton('上传多个音频', true);
+        const uploadButton = createAudioButton(__tt("timer.uploadMultipleAudioFiles"), true);
         uploadButton.onclick = () => fileInput.click();
         fileInput.onchange = async () => {
             const files = Array.from(fileInput.files || []);
             if (!files.length) return;
             uploadButton.disabled = true;
-            status.textContent = '上传中 0/' + files.length;
+            status.textContent = __tt("timer.uploading") + files.length;
             try {
                 const result = await uploadWorkBackgroundFiles(files, (done, total) => {
-                    status.textContent = '上传中 ' + done + '/' + total;
+                    status.textContent = __tt("timer.uploading2") + done + '/' + total;
                 });
                 refreshUploadedPickers();
-                status.textContent = '已添加 ' + result.tracks.length + ' 个音频'
-                    + (result.failures.length ? '；上传失败：' + result.failures.join('、') : '')
-                    + (result.playlistSaved ? '' : '；列表暂存本机，恢复后自动重试');
+                status.textContent = __tt("timer.added") + result.tracks.length + __tt("timer.audioFiles")
+                    + (result.failures.length ? __tt("timer.uploadFailed") + result.failures.join('、') : '')
+                    + (result.playlistSaved ? '' : __tt("timer.playlistSavedLocallyAndWillRetryWhenTheConnection"));
             } catch (error) {
                 Logger.warn('保存专注背景音列表失败:', error);
-                status.textContent = '保存列表失败，请重试';
+                status.textContent = __tt("timer.savelistfailedTryAgain");
             } finally {
                 uploadButton.disabled = false;
                 fileInput.value = '';
             }
         };
-        const clearButton = createAudioButton('清空列表');
+        const clearButton = createAudioButton(__tt("timer.clearlist"));
         clearButton.onclick = () => setWorkBackgroundPlaylist([], '');
         uploadRow.appendChild(uploadButton);
         uploadRow.appendChild(clearButton);
@@ -36698,10 +36734,10 @@ window.__setTomatoFloatState = function (payload) {
         });
 
         const presetOptions = [
-            { value: '', label: '不使用预置（自定义文件/浏览器默认）' },
-            { value: 'crisp', label: '清脆双响' },
-            { value: 'soft', label: '柔和三响' },
-            { value: 'alarm', label: '警报四响' },
+            { value: '', label: __tt("timer.noPresetCustomFileOrBrowserDefault") },
+            { value: 'crisp', label: __tt("timer.clearDoubleChime") },
+            { value: 'soft', label: __tt("timer.softTripleChime") },
+            { value: 'alarm', label: __tt("timer.fourToneAlarm") },
         ];
         let workPresetSelect = null;
         let breakPresetSelect = null;
@@ -36739,9 +36775,9 @@ window.__setTomatoFloatState = function (payload) {
 
             const btns = document.createElement('div');
             btns.style.cssText = 'display: flex; gap: 8px; margin-bottom: 8px;';
-            const testBtn = createAudioButton('🔊 预览', true);
+            const testBtn = createAudioButton(__tt("timer.preview2"), true);
             testBtn.onclick = () => playBackgroundAudioPreview(type);
-            const clearBtn = createAudioButton('清除');
+            const clearBtn = createAudioButton(__tt("timer.clear2"));
             clearBtn.onclick = async () => {
                 input.value = '';
                 await setBackgroundAudioFile(type, '');
@@ -36756,7 +36792,7 @@ window.__setTomatoFloatState = function (payload) {
             fileInput.type = 'file';
             fileInput.accept = 'audio/*';
             fileInput.style.cssText = 'display: none;';
-            const uploadBtn = createAudioButton('📤 上传背景音', true);
+            const uploadBtn = createAudioButton(__tt("timer.uploadBackgroundAudio"), true);
             const uploadStatus = document.createElement('span');
             uploadStatus.style.cssText = 'font-size: 11px; color: var(--b3-theme-on-surface-light);';
 
@@ -36765,7 +36801,7 @@ window.__setTomatoFloatState = function (payload) {
                 const file = e.target.files[0];
                 if (!file) return;
 
-                uploadStatus.textContent = '上传中...';
+                uploadStatus.textContent = __tt("timer.uploading3");
                 try {
                     uploadBtn.disabled = true;
                     uploadBtn.style.opacity = '0.7';
@@ -36773,7 +36809,7 @@ window.__setTomatoFloatState = function (payload) {
                     input.value = filename;
                     await setBackgroundAudioFile(type, filename);
                     refreshUploadedAudioPickers();
-                    uploadStatus.textContent = '✅ 上传成功';
+                    uploadStatus.textContent = __tt("timer.uploaded");
                     setTimeout(() => {
                         playBackgroundAudioPreview(type).catch(() => {});
                     }, 300);
@@ -36781,7 +36817,7 @@ window.__setTomatoFloatState = function (payload) {
                         uploadStatus.textContent = '';
                     }, 3000);
                 } catch (error) {
-                    uploadStatus.textContent = '❌ 上传失败';
+                    uploadStatus.textContent = __tt("timer.uploadFailed2");
                     Logger.error('上传背景音失败:', error);
                 } finally {
                     try { e.target.value = ''; } catch (err) {}
@@ -36819,7 +36855,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const enableLabel = document.createElement('span');
-        enableLabel.textContent = '启用提示音';
+        enableLabel.textContent = __tt("timer.enableNotificationSound");
         enableLabel.style.cssText = 'font-size: 14px;';
         const enableSwitch = document.createElement('input');
         enableSwitch.type = 'checkbox';
@@ -36841,7 +36877,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const volumeLabel = document.createElement('div');
-        volumeLabel.textContent = `音量: ${Math.round(audioSettings.volume * 100)}%`;
+        volumeLabel.textContent = __tt("timer.volume", { value1: Math.round(audioSettings.volume * 100) });
         volumeLabel.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
         const volumeSlider = document.createElement('input');
         volumeSlider.type = 'range';
@@ -36850,7 +36886,7 @@ window.__setTomatoFloatState = function (payload) {
         volumeSlider.value = Math.round(audioSettings.volume * 100);
         volumeSlider.style.cssText = 'width: 100%; cursor: pointer;';
         volumeSlider.oninput = (e) => {
-            volumeLabel.textContent = `音量: ${e.target.value}%`;
+            volumeLabel.textContent = __tt("timer.volume2", { value: e.target.value });
         };
         volumeSlider.onchange = async (e) => {
             audioSettings.volume = parseInt(e.target.value) / 100;
@@ -36868,13 +36904,13 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const backgroundTitle = document.createElement('div');
-        backgroundTitle.textContent = '背景音';
+        backgroundTitle.textContent = __tt("timer.backgroundAudio");
         backgroundTitle.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
 
         const backgroundEnableRow = document.createElement('div');
         backgroundEnableRow.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;';
         const backgroundEnableLabel = document.createElement('span');
-        backgroundEnableLabel.textContent = '启用背景音';
+        backgroundEnableLabel.textContent = __tt("timer.enableBackgroundAudio");
         backgroundEnableLabel.style.cssText = 'font-size: 13px;';
         const backgroundEnableSwitch = document.createElement('input');
         backgroundEnableSwitch.type = 'checkbox';
@@ -36889,7 +36925,7 @@ window.__setTomatoFloatState = function (payload) {
         backgroundEnableRow.appendChild(backgroundEnableSwitch);
 
         const backgroundVolumeLabel = document.createElement('div');
-        backgroundVolumeLabel.textContent = `背景音量: ${Math.round(audioSettings.backgroundVolume * 100)}%`;
+        backgroundVolumeLabel.textContent = __tt("timer.backgroundVolume", { value1: Math.round(audioSettings.backgroundVolume * 100) });
         backgroundVolumeLabel.style.cssText = 'font-size: 13px; margin-bottom: 8px;';
         const backgroundVolumeSlider = document.createElement('input');
         backgroundVolumeSlider.type = 'range';
@@ -36898,7 +36934,7 @@ window.__setTomatoFloatState = function (payload) {
         backgroundVolumeSlider.value = Math.round(audioSettings.backgroundVolume * 100);
         backgroundVolumeSlider.style.cssText = 'width: 100%; cursor: pointer; margin-bottom: 4px;';
         backgroundVolumeSlider.oninput = (e) => {
-            backgroundVolumeLabel.textContent = `背景音量: ${e.target.value}%`;
+            backgroundVolumeLabel.textContent = __tt("timer.backgroundVolume2", { value: e.target.value });
             audioSettings.backgroundVolume = parseInt(e.target.value) / 100;
             updateBackgroundAudioVolume();
         };
@@ -36913,10 +36949,10 @@ window.__setTomatoFloatState = function (payload) {
         backgroundContainer.appendChild(backgroundVolumeLabel);
         backgroundContainer.appendChild(backgroundVolumeSlider);
         backgroundContainer.appendChild(createWorkBackgroundPlaylistSection(createAudioButton, createUploadedPicker, refreshUploadedAudioPickers));
-        backgroundContainer.appendChild(createBackgroundSoundSection('break', '休息背景音', 'breakBackgroundSound', '输入音频文件名，如 forest.mp3'));
+        backgroundContainer.appendChild(createBackgroundSoundSection('break', __tt("timer.breakBackgroundAudio"), 'breakBackgroundSound', __tt("timer.enterAnAudioFilenameSuchAsForestMp3")));
 
         const backgroundHint = document.createElement('div');
-        backgroundHint.innerHTML = `💡 背景音会在计时运行时循环播放<br>💡 音频将保存到: ${AUDIO_STORAGE_PATH}`;
+        backgroundHint.innerHTML = `${__tt("timer.backgroundAudioRepeatsWhileTheTimerIsRunning")}<br>${__tt("timer.audioWillBeSavedTo", { AUDIO_STORAGE_PATH: AUDIO_STORAGE_PATH })}`;
         backgroundHint.style.cssText = 'font-size: 11px; color: var(--b3-theme-on-surface-light); margin-top: 8px; line-height: 1.5;';
         backgroundContainer.appendChild(backgroundHint);
 
@@ -36929,13 +36965,13 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const workSoundLabel = document.createElement('div');
-        workSoundLabel.textContent = '工作结束提示音';
+        workSoundLabel.textContent = __tt("timer.focusCompletionSound");
         workSoundLabel.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
 
         const workPresetRow = document.createElement('div');
         workPresetRow.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 8px;';
         const workPresetLabel = document.createElement('div');
-        workPresetLabel.textContent = '预置';
+        workPresetLabel.textContent = __tt("timer.preset");
         workPresetLabel.style.cssText = 'width: 40px; font-size: 12px; opacity: 0.85;';
         workPresetSelect = document.createElement('select');
         workPresetSelect.style.cssText = `
@@ -36966,7 +37002,7 @@ window.__setTomatoFloatState = function (payload) {
 
         const workSoundInput = document.createElement('input');
         workSoundInput.type = 'text';
-        workSoundInput.placeholder = '输入音频文件名，如 work.mp3';
+        workSoundInput.placeholder = __tt("timer.enterAnAudioFilenameSuchAsWorkMp3");
         workSoundInput.value = audioSettings.workEndSound || '';
         workSoundInput.style.cssText = `
             width: 100%; padding: 8px; border: 1px solid var(--b3-theme-surface);
@@ -36976,14 +37012,14 @@ window.__setTomatoFloatState = function (payload) {
         const workSoundBtns = document.createElement('div');
         workSoundBtns.style.cssText = 'display: flex; gap: 8px; margin-bottom: 8px;';
         const workTestBtn = document.createElement('button');
-        workTestBtn.textContent = '🔊 测试';
+        workTestBtn.textContent = __tt("timer.test");
         workTestBtn.style.cssText = `
             flex: 1; padding: 8px; background: var(--b3-theme-primary);
             color: white; border: none; border-radius: 4px; cursor: pointer;
         `;
         workTestBtn.onclick = () => playEndSound('work-end');
         const workClearBtn = document.createElement('button');
-        workClearBtn.textContent = '清除';
+        workClearBtn.textContent = __tt("timer.clear2");
         workClearBtn.style.cssText = `
             flex: 1; padding: 8px; background: var(--b3-theme-surface);
             border: 1px solid var(--b3-theme-surface); border-radius: 4px; cursor: pointer;
@@ -36999,7 +37035,7 @@ window.__setTomatoFloatState = function (payload) {
         workSoundBtns.appendChild(workClearBtn);
         workSoundContainer.appendChild(workSoundLabel);
         workSoundContainer.appendChild(workPresetRow);
-        workSoundContainer.appendChild(createUploadedPicker('工作结束提示音', async file => {
+        workSoundContainer.appendChild(createUploadedPicker(__tt("timer.focusCompletionSound"), async file => {
             workSoundInput.value = file.filename;
             return workSoundInput.onchange();
         }, () => getAudioSettings().workEndSound));
@@ -37014,7 +37050,7 @@ window.__setTomatoFloatState = function (payload) {
         workFileInput.accept = 'audio/*';
         workFileInput.style.cssText = 'display: none;';
         const workUploadBtn = document.createElement('button');
-        workUploadBtn.textContent = '📤 上传音频文件';
+        workUploadBtn.textContent = __tt("timer.uploadAudioFile");
         workUploadBtn.style.cssText = `
             flex: 1; padding: 8px; background: var(--b3-theme-primary);
             color: white; border: none; border-radius: 4px; cursor: pointer;
@@ -37028,7 +37064,7 @@ window.__setTomatoFloatState = function (payload) {
             const file = e.target.files[0];
             if (!file) return;
 
-            workUploadStatus.textContent = '上传中...';
+            workUploadStatus.textContent = __tt("timer.uploading3");
             const filename = file.name;
             let uploaded = false;
             let settingsSaved = false;
@@ -37062,7 +37098,7 @@ window.__setTomatoFloatState = function (payload) {
                     settingsSaved = await saveUserSettings();
                     workSoundInput.value = filename;
                     refreshUploadedAudioPickers();
-                    workUploadStatus.textContent = settingsSaved ? '✅ 上传成功' : '⚠️ 音频已上传，设置暂存本机';
+                    workUploadStatus.textContent = settingsSaved ? __tt("timer.uploaded") : __tt("timer.audioUploadedSettingsSavedLocally");
                     releaseAudio(workEndAudio, workEndAudioObjectUrl);
                     workEndAudio = null;
                     workEndAudioObjectUrl = null;
@@ -37081,7 +37117,7 @@ window.__setTomatoFloatState = function (payload) {
                         newAudio.volume = audioSettings?.volume || 0.8;
                         newAudio.addEventListener('error', (e) => {
                             Logger.error('🍅 音频播放错误:', e);
-                            workUploadStatus.textContent = '⚠️ 播放失败';
+                            workUploadStatus.textContent = __tt("timer.playbackFailed");
                         });
 
                         workEndAudio = newAudio;
@@ -37097,15 +37133,15 @@ window.__setTomatoFloatState = function (payload) {
                         }, 3000);
                     } else {
                         workUploadStatus.textContent = settingsSaved
-                            ? '⚠️ 音频已上传，预览读取失败' : '⚠️ 音频已上传，设置暂存本机，预览读取失败';
+                            ? __tt("timer.audioUploadedCouldNotLoadPreview") : __tt("timer.audioUploadedSettingsSavedLocallyCouldNotLoadPreview");
                     }
                 } else {
-                    workUploadStatus.textContent = '❌ 上传失败';
+                    workUploadStatus.textContent = __tt("timer.uploadFailed2");
                 }
             } catch (error) {
                 workUploadStatus.textContent = uploaded
-                    ? (settingsSaved ? '⚠️ 音频已上传，预览失败' : '⚠️ 音频已上传，设置暂存本机，预览失败')
-                    : '❌ 上传失败';
+                    ? (settingsSaved ? __tt("timer.audioUploadedPreviewFailed") : __tt("timer.audioUploadedSettingsSavedLocallyPreviewFailed"))
+                    : __tt("timer.uploadFailed2");
                 Logger.error('上传或预览音频文件失败:', error);
             } finally {
                 try { e.target.value = ''; } catch (e) {}
@@ -37120,7 +37156,7 @@ window.__setTomatoFloatState = function (payload) {
         workSoundContainer.appendChild(workUploadContainer);
 
         const workUploadHint = document.createElement('div');
-        workUploadHint.innerHTML = `💡 音频将保存到: ${AUDIO_STORAGE_PATH}<br>💡 支持格式: MP3, WAV, OGG, AAC, M4A, FLAC`;
+        workUploadHint.innerHTML = `${__tt("timer.audioWillBeSavedTo", { AUDIO_STORAGE_PATH: AUDIO_STORAGE_PATH })}<br>${__tt("timer.formatsMp3WavOggAacM4aFlac")}`;
         workUploadHint.style.cssText = 'font-size: 11px; color: var(--b3-theme-on-surface-light); margin-top: 6px; line-height: 1.5;';
         workSoundContainer.appendChild(workUploadHint);
 
@@ -37133,13 +37169,13 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const breakSoundLabel = document.createElement('div');
-        breakSoundLabel.textContent = '休息结束提示音';
+        breakSoundLabel.textContent = __tt("timer.breakCompletionSound");
         breakSoundLabel.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
 
         const breakPresetRow = document.createElement('div');
         breakPresetRow.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 8px;';
         const breakPresetLabel = document.createElement('div');
-        breakPresetLabel.textContent = '预置';
+        breakPresetLabel.textContent = __tt("timer.preset");
         breakPresetLabel.style.cssText = workPresetLabel.style.cssText;
         breakPresetSelect = document.createElement('select');
         breakPresetSelect.style.cssText = workPresetSelect.style.cssText;
@@ -37166,7 +37202,7 @@ window.__setTomatoFloatState = function (payload) {
 
         const breakSoundInput = document.createElement('input');
         breakSoundInput.type = 'text';
-        breakSoundInput.placeholder = '输入音频文件名，如 break.mp3';
+        breakSoundInput.placeholder = __tt("timer.enterAnAudioFilenameSuchAsBreakMp3");
         breakSoundInput.value = audioSettings.breakEndSound || '';
         breakSoundInput.style.cssText = `
             width: 100%; padding: 8px; border: 1px solid var(--b3-theme-surface);
@@ -37176,14 +37212,14 @@ window.__setTomatoFloatState = function (payload) {
         const breakSoundBtns = document.createElement('div');
         breakSoundBtns.style.cssText = 'display: flex; gap: 8px; margin-bottom: 8px;';
         const breakTestBtn = document.createElement('button');
-        breakTestBtn.textContent = '🔊 测试';
+        breakTestBtn.textContent = __tt("timer.test");
         breakTestBtn.style.cssText = `
             flex: 1; padding: 8px; background: var(--b3-theme-primary);
             color: white; border: none; border-radius: 4px; cursor: pointer;
         `;
         breakTestBtn.onclick = () => playEndSound('break-end');
         const breakClearBtn = document.createElement('button');
-        breakClearBtn.textContent = '清除';
+        breakClearBtn.textContent = __tt("timer.clear2");
         breakClearBtn.style.cssText = `
             flex: 1; padding: 8px; background: var(--b3-theme-surface);
             border: 1px solid var(--b3-theme-surface); border-radius: 4px; cursor: pointer;
@@ -37199,7 +37235,7 @@ window.__setTomatoFloatState = function (payload) {
         breakSoundBtns.appendChild(breakClearBtn);
         breakSoundContainer.appendChild(breakSoundLabel);
         breakSoundContainer.appendChild(breakPresetRow);
-        breakSoundContainer.appendChild(createUploadedPicker('休息结束提示音', async file => {
+        breakSoundContainer.appendChild(createUploadedPicker(__tt("timer.breakCompletionSound"), async file => {
             breakSoundInput.value = file.filename;
             return breakSoundInput.onchange();
         }, () => getAudioSettings().breakEndSound));
@@ -37214,7 +37250,7 @@ window.__setTomatoFloatState = function (payload) {
         breakFileInput.accept = 'audio/*';
         breakFileInput.style.cssText = 'display: none;';
         const breakUploadBtn = document.createElement('button');
-        breakUploadBtn.textContent = '📤 上传音频文件';
+        breakUploadBtn.textContent = __tt("timer.uploadAudioFile");
         breakUploadBtn.style.cssText = `
             flex: 1; padding: 8px; background: var(--b3-theme-primary);
             color: white; border: none; border-radius: 4px; cursor: pointer;
@@ -37228,7 +37264,7 @@ window.__setTomatoFloatState = function (payload) {
             const file = e.target.files[0];
             if (!file) return;
 
-            breakUploadStatus.textContent = '上传中...';
+            breakUploadStatus.textContent = __tt("timer.uploading3");
             const filename = file.name;
             let uploaded = false;
             let settingsSaved = false;
@@ -37262,7 +37298,7 @@ window.__setTomatoFloatState = function (payload) {
                     settingsSaved = await saveUserSettings();
                     breakSoundInput.value = filename;
                     refreshUploadedAudioPickers();
-                    breakUploadStatus.textContent = settingsSaved ? '✅ 上传成功' : '⚠️ 音频已上传，设置暂存本机';
+                    breakUploadStatus.textContent = settingsSaved ? __tt("timer.uploaded") : __tt("timer.audioUploadedSettingsSavedLocally");
                     releaseAudio(breakEndAudio, breakEndAudioObjectUrl);
                     breakEndAudio = null;
                     breakEndAudioObjectUrl = null;
@@ -37281,7 +37317,7 @@ window.__setTomatoFloatState = function (payload) {
                         newAudio.volume = audioSettings?.volume || 0.8;
                         newAudio.addEventListener('error', (e) => {
                             Logger.error('🍅 音频播放错误:', e);
-                            breakUploadStatus.textContent = '⚠️ 播放失败';
+                            breakUploadStatus.textContent = __tt("timer.playbackFailed");
                         });
 
                         breakEndAudio = newAudio;
@@ -37297,15 +37333,15 @@ window.__setTomatoFloatState = function (payload) {
                         }, 3000);
                     } else {
                         breakUploadStatus.textContent = settingsSaved
-                            ? '⚠️ 音频已上传，预览读取失败' : '⚠️ 音频已上传，设置暂存本机，预览读取失败';
+                            ? __tt("timer.audioUploadedCouldNotLoadPreview") : __tt("timer.audioUploadedSettingsSavedLocallyCouldNotLoadPreview");
                     }
                 } else {
-                    breakUploadStatus.textContent = '❌ 上传失败';
+                    breakUploadStatus.textContent = __tt("timer.uploadFailed2");
                 }
             } catch (error) {
                 breakUploadStatus.textContent = uploaded
-                    ? (settingsSaved ? '⚠️ 音频已上传，预览失败' : '⚠️ 音频已上传，设置暂存本机，预览失败')
-                    : '❌ 上传失败';
+                    ? (settingsSaved ? __tt("timer.audioUploadedPreviewFailed") : __tt("timer.audioUploadedSettingsSavedLocallyPreviewFailed"))
+                    : __tt("timer.uploadFailed2");
                 Logger.error('上传或预览音频文件失败:', error);
             } finally {
                 try { e.target.value = ''; } catch (e) {}
@@ -37320,7 +37356,7 @@ window.__setTomatoFloatState = function (payload) {
         breakSoundContainer.appendChild(breakUploadContainer);
 
         const breakUploadHint = document.createElement('div');
-        breakUploadHint.innerHTML = `💡 音频将保存到: ${AUDIO_STORAGE_PATH}<br>💡 支持格式: MP3, WAV, OGG, AAC, M4A, FLAC`;
+        breakUploadHint.innerHTML = `${__tt("timer.audioWillBeSavedTo", { AUDIO_STORAGE_PATH: AUDIO_STORAGE_PATH })}<br>${__tt("timer.formatsMp3WavOggAacM4aFlac")}`;
         breakUploadHint.style.cssText = 'font-size: 11px; color: var(--b3-theme-on-surface-light); margin-top: 6px; line-height: 1.5;';
         breakSoundContainer.appendChild(breakUploadHint);
 
@@ -37357,7 +37393,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const enableLabel = document.createElement('span');
-        enableLabel.textContent = '启用任务块番茄时间累加';
+        enableLabel.textContent = __tt("timer.accumulateFocusTimeOnTaskBlocks");
         enableLabel.style.cssText = 'font-size: 14px;';
         const enableSwitch = document.createElement('input');
         enableSwitch.type = 'checkbox';
@@ -37380,7 +37416,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const hourEnableLabel = document.createElement('span');
-        hourEnableLabel.textContent = '启用小时格式';
+        hourEnableLabel.textContent = __tt("timer.enableHoursFormat");
         hourEnableLabel.style.cssText = 'font-size: 14px;';
         const hourEnableSwitch = document.createElement('input');
         hourEnableSwitch.type = 'checkbox';
@@ -37404,7 +37440,7 @@ window.__setTomatoFloatState = function (payload) {
                 border-radius: 6px; margin-bottom: 12px; margin-left: 12px;
             `;
             const hourAttrLabel = document.createElement('div');
-            hourAttrLabel.textContent = '小时格式属性名称';
+            hourAttrLabel.textContent = __tt("timer.hoursAttributeName");
             hourAttrLabel.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
             const hourAttrInput = document.createElement('input');
             hourAttrInput.type = 'text';
@@ -37432,7 +37468,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const minuteEnableLabel = document.createElement('span');
-        minuteEnableLabel.textContent = '启用分钟格式';
+        minuteEnableLabel.textContent = __tt("timer.enableMinutesFormat");
         minuteEnableLabel.style.cssText = 'font-size: 14px;';
         const minuteEnableSwitch = document.createElement('input');
         minuteEnableSwitch.type = 'checkbox';
@@ -37456,7 +37492,7 @@ window.__setTomatoFloatState = function (payload) {
                 border-radius: 6px; margin-bottom: 12px;
             `;
             const minuteAttrLabel = document.createElement('div');
-            minuteAttrLabel.textContent = '分钟格式属性名称';
+            minuteAttrLabel.textContent = __tt("timer.minutesAttributeName");
             minuteAttrLabel.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
             const minuteAttrInput = document.createElement('input');
             minuteAttrInput.type = 'text';
@@ -37484,7 +37520,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const countEnableLabel = document.createElement('span');
-        countEnableLabel.textContent = '启用实际番茄数累计';
+        countEnableLabel.textContent = __tt("timer.accumulateActualPomodoroCount");
         countEnableLabel.style.cssText = 'font-size: 14px;';
         const countEnableSwitch = document.createElement('input');
         countEnableSwitch.type = 'checkbox';
@@ -37507,7 +37543,7 @@ window.__setTomatoFloatState = function (payload) {
                 border-radius: 6px; margin-bottom: 12px;
             `;
             const countAttrLabel = document.createElement('div');
-            countAttrLabel.textContent = '实际番茄数属性名称';
+            countAttrLabel.textContent = __tt("timer.actualPomodoroCountAttributeName");
             countAttrLabel.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
             const countAttrInput = document.createElement('input');
             countAttrInput.type = 'text';
@@ -37535,7 +37571,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const estimateEnableLabel = document.createElement('span');
-        estimateEnableLabel.textContent = '启用预计番茄数属性';
+        estimateEnableLabel.textContent = __tt("timer.enableEstimatedPomodoroCountAttribute");
         estimateEnableLabel.style.cssText = 'font-size: 14px;';
         const estimateEnableSwitch = document.createElement('input');
         estimateEnableSwitch.type = 'checkbox';
@@ -37558,7 +37594,7 @@ window.__setTomatoFloatState = function (payload) {
                 border-radius: 6px; margin-bottom: 12px;
             `;
             const estimateAttrLabel = document.createElement('div');
-            estimateAttrLabel.textContent = '预计番茄数属性名称';
+            estimateAttrLabel.textContent = __tt("timer.estimatedPomodoroCountAttributeName");
             estimateAttrLabel.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
             const estimateAttrInput = document.createElement('input');
             estimateAttrInput.type = 'text';
@@ -37603,7 +37639,7 @@ window.__setTomatoFloatState = function (payload) {
 
         // 标题
         const title = document.createElement('div');
-        title.innerHTML = '<strong>✨ 霓虹发光进度条</strong>';
+        title.innerHTML = `<strong>${__tt("timer.neonProgressBar")}</strong>`;
         title.style.cssText = 'margin-bottom: 12px; font-size: 15px;';
         container.appendChild(title);
 
@@ -37615,17 +37651,15 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; font-size: 12px; line-height: 1.6;
             color: var(--b3-theme-on-surface-light);
         `;
-        desc.innerHTML = `
-            酷炫的霓虹发光效果，适合夜间使用。提供两种预设配色和自定义颜色：<br>
-            • <strong>经典霓虹粉紫</strong> - 浪漫温柔的霓虹粉紫渐变<br>
-            • <strong>未来科技蓝绿</strong> - 科技感十足的蓝绿冷色调<br>
-            • <strong>自定义颜色</strong> - 设置你自己的专属配色
-        `;
+        desc.innerHTML = `${__tt("timer.aNeonGlowForUseAtNightChooseFrom")}<br>
+            • <strong>${__tt("timer.classicPinkPurpleNeon")}</strong>${__tt("timer.aSoftPinkAndPurpleNeonGradient2")}<br>
+            • <strong>${__tt("timer.futuristicBlueGreen")}</strong>${__tt("timer.coolBlueAndGreenTones2")}<br>
+            • <strong>${__tt("timer.customColor")}</strong>${__tt("timer.setYourOwnColorScheme")}`;
         container.appendChild(desc);
 
         // 主题选择
         const themeLabel = document.createElement('div');
-        themeLabel.textContent = '主题风格';
+        themeLabel.textContent = __tt("timer.theme");
         themeLabel.style.cssText = 'font-size: 14px; margin-bottom: 8px; font-weight: 500;';
         container.appendChild(themeLabel);
 
@@ -37676,7 +37710,7 @@ window.__setTomatoFloatState = function (payload) {
                 NeonStyleManager.refresh(); // 立即应用设置
                 addNeonStyles();
                 updateThemeCardSelection();
-                showToastDialog('🍅 主题已切换', `已切换到「${config.name}」主题`, 'success');
+                showToastDialog(__tt("timer.themeChanged"), __tt("timer.switchedToTheTheme", { name: config.name }), 'success');
             };
             themeCardsContainer.appendChild(card);
         });
@@ -37689,8 +37723,8 @@ window.__setTomatoFloatState = function (payload) {
         customCard.innerHTML = `
             <div class="tomato-theme-preview" style="background: linear-gradient(135deg, ${appearance.customColors?.start ? appearance.customColors.start : '#ff6b9d'}, ${appearance.customColors?.end ? appearance.customColors.end : '#c44569'});"></div>
             <div class="tomato-theme-info">
-                <span class="tomato-theme-name">自定义颜色</span>
-                <span class="tomato-theme-desc">设置专属配色方案</span>
+                <span class="tomato-theme-name">${__tt("timer.customColor")}</span>
+                <span class="tomato-theme-desc">${__tt("timer.setYourOwnColorScheme2")}</span>
             </div>
         `;
         customCard.onclick = async () => {
@@ -37701,7 +37735,7 @@ window.__setTomatoFloatState = function (payload) {
             NeonStyleManager.refresh();
             addNeonStyles();
             updateThemeCardSelection();
-            showToastDialog('🍅 已选择', '请在下方设置自定义颜色', 'success');
+            showToastDialog(__tt("timer.selected"), __tt("timer.setCustomColorsBelow"), 'success');
             
             // 聚焦到自定义颜色输入框
             setTimeout(() => {
@@ -37721,7 +37755,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const customColorLabel = document.createElement('div');
-        customColorLabel.textContent = '自定义颜色设置';
+        customColorLabel.textContent = __tt("timer.customColorsettings");
         customColorLabel.style.cssText = 'font-size: 14px; margin-bottom: 12px;';
         customColorContainer.appendChild(customColorLabel);
 
@@ -37729,7 +37763,7 @@ window.__setTomatoFloatState = function (payload) {
         const startRow = document.createElement('div');
         startRow.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 8px;';
         const startLabel = document.createElement('span');
-        startLabel.textContent = '起始颜色:';
+        startLabel.textContent = __tt("timer.startColor");
         startLabel.style.cssText = 'font-size: 13px; width: 70px;';
         const startTextInput = document.createElement('input');
         startTextInput.type = 'text';
@@ -37739,7 +37773,7 @@ window.__setTomatoFloatState = function (payload) {
         let startPicker = null;
         let startInput = null;
         if (isMobile) {
-            startPicker = createMobileColorPickerButton('起始颜色', startTextInput.value, (c) => { startTextInput.value = c; }, { defaultColor: '#FF6B9D', showHexText: false });
+            startPicker = createMobileColorPickerButton(__tt("timer.startColor2"), startTextInput.value, (c) => { startTextInput.value = c; }, { defaultColor: '#FF6B9D', showHexText: false });
             startRow.appendChild(startPicker.element);
         } else {
             startInput = document.createElement('input');
@@ -37756,7 +37790,7 @@ window.__setTomatoFloatState = function (payload) {
         const endRow = document.createElement('div');
         endRow.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 8px;';
         const endLabel = document.createElement('span');
-        endLabel.textContent = '结束颜色:';
+        endLabel.textContent = __tt("timer.endcolor");
         endLabel.style.cssText = 'font-size: 13px; width: 70px;';
         const endTextInput = document.createElement('input');
         endTextInput.type = 'text';
@@ -37766,7 +37800,7 @@ window.__setTomatoFloatState = function (payload) {
         let endPicker = null;
         let endInput = null;
         if (isMobile) {
-            endPicker = createMobileColorPickerButton('结束颜色', endTextInput.value, (c) => { endTextInput.value = c; }, { defaultColor: '#FF6B9D', showHexText: false });
+            endPicker = createMobileColorPickerButton(__tt("timer.endcolor2"), endTextInput.value, (c) => { endTextInput.value = c; }, { defaultColor: '#FF6B9D', showHexText: false });
             endRow.appendChild(endPicker.element);
         } else {
             endInput = document.createElement('input');
@@ -37783,7 +37817,7 @@ window.__setTomatoFloatState = function (payload) {
         const glowRow = document.createElement('div');
         glowRow.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 12px;';
         const glowLabel = document.createElement('span');
-        glowLabel.textContent = '发光颜色:';
+        glowLabel.textContent = __tt("timer.glowColor2");
         glowLabel.style.cssText = 'font-size: 13px; width: 70px;';
         const glowTextInput = document.createElement('input');
         glowTextInput.type = 'text';
@@ -37793,7 +37827,7 @@ window.__setTomatoFloatState = function (payload) {
         let glowPicker = null;
         let glowInput = null;
         if (isMobile) {
-            glowPicker = createMobileColorPickerButton('发光颜色', glowTextInput.value, (c) => { glowTextInput.value = c; }, { defaultColor: '#FF6B9D', showHexText: false });
+            glowPicker = createMobileColorPickerButton(__tt("timer.glowColor3"), glowTextInput.value, (c) => { glowTextInput.value = c; }, { defaultColor: '#FF6B9D', showHexText: false });
             glowRow.appendChild(glowPicker.element);
         } else {
             glowInput = document.createElement('input');
@@ -37808,7 +37842,7 @@ window.__setTomatoFloatState = function (payload) {
 
         // 保存自定义颜色按钮
         const saveCustomBtn = document.createElement('button');
-        saveCustomBtn.textContent = '💾 保存自定义颜色';
+        saveCustomBtn.textContent = __tt("timer.savecustomColor");
         saveCustomBtn.style.cssText = `
             width: 100%; padding: 8px; margin-top: 8px;
             background: var(--b3-theme-primary); color: white;
@@ -37822,7 +37856,7 @@ window.__setTomatoFloatState = function (payload) {
             // 验证颜色格式
             const colorRegex = /^#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{3})$/;
             if (!colorRegex.test(customStart) || !colorRegex.test(customEnd) || !colorRegex.test(customGlow)) {
-                showToastDialog('格式错误', '请输入有效的十六进制颜色值（如 #ff6b9d）', 'error');
+                showToastDialog(__tt("timer.invalidFormat"), __tt("timer.enterAValidHexColorSuchAsFf6b9d"), 'error');
                 return;
             }
 
@@ -37837,7 +37871,7 @@ window.__setTomatoFloatState = function (payload) {
             NeonStyleManager.refresh(); // 立即应用设置
             addNeonStyles();
             updateThemeCardSelection();
-            showToastDialog('保存成功', '自定义颜色已应用', 'success');
+            showToastDialog(__tt("timer.savesuccess"), __tt("timer.customColorapplied"), 'success');
         };
         customColorContainer.appendChild(saveCustomBtn);
 
@@ -37870,7 +37904,7 @@ window.__setTomatoFloatState = function (payload) {
 
         // 功能开关
         const featuresTitle = document.createElement('div');
-        featuresTitle.innerHTML = '<strong style="font-size: 15px;">🎛️ 功能开关</strong>';
+        featuresTitle.innerHTML = `<strong style="font-size: 15px;">${__tt("timer.options2")}</strong>`;
         featuresTitle.style.cssText = 'margin: 20px 0 12px;';
         container.appendChild(featuresTitle);
 
@@ -37882,7 +37916,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const neonLabel = document.createElement('span');
-        neonLabel.textContent = '启用霓虹发光效果';
+        neonLabel.textContent = __tt("timer.enableNeonGlow");
         neonLabel.style.cssText = 'font-size: 14px;';
         const neonSwitch = document.createElement('input');
         neonSwitch.type = 'checkbox';
@@ -37906,7 +37940,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const breathingLabel = document.createElement('span');
-        breathingLabel.innerHTML = '启用呼吸动画 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(计时运行时才呼吸)</span>';
+        breathingLabel.innerHTML = `${__tt("timer.enableBreathingAnimation")}<span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">${__tt("timer.onlyWhileTheTimerIsRunning")}</span>`;
         breathingLabel.style.cssText = 'font-size: 14px;';
         const breathingSwitch = document.createElement('input');
         breathingSwitch.type = 'checkbox';
@@ -37931,14 +37965,14 @@ window.__setTomatoFloatState = function (payload) {
             pointer-events: ${appearance.enableBreathing !== false ? 'auto' : 'none'};
         `;
         const breathingSpeedLabel = document.createElement('div');
-        breathingSpeedLabel.innerHTML = '呼吸速度 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(呼吸明暗变化的速度)</span>';
+        breathingSpeedLabel.innerHTML = `${__tt("timer.breathingSpeed")}<span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">${__tt("timer.speedOfBrightnessChanges")}</span>`;
         breathingSpeedLabel.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
         breathingSpeedContainer.appendChild(breathingSpeedLabel);
         
         const speedOptions = [
-            { value: 'slow', label: '慢 (4秒)', duration: '4s' },
-            { value: 'normal', label: '正常 (3秒)', duration: '3s' },
-            { value: 'fast', label: '快 (2秒)', duration: '2s' }
+            { value: 'slow', label: __tt("timer.slowS"), duration: '4s' },
+            { value: 'normal', label: __tt("timer.normalS"), duration: '3s' },
+            { value: 'fast', label: __tt("timer.fastS"), duration: '2s' }
         ];
 
         const updateBreathingSpeedStyles = () => {
@@ -37962,7 +37996,7 @@ window.__setTomatoFloatState = function (payload) {
             await saveUserSettings();
             NeonStyleManager.refresh();
             updateBreathingSpeedStyles();
-            if (labelText) showToastDialog('🍅 已设置', `呼吸速度: ${labelText}`, 'success');
+            if (labelText) showToastDialog(__tt("timer.set"), __tt("timer.breathingSpeed2", { labelText: labelText }), 'success');
         };
         
         speedOptions.forEach(opt => {
@@ -38017,7 +38051,7 @@ window.__setTomatoFloatState = function (payload) {
             pointer-events: ${appearance.enableBreathing !== false ? 'auto' : 'none'};
         `;
         const breathingOpacityTitle = document.createElement('div');
-        breathingOpacityTitle.innerHTML = '呼吸透明度 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(控制呼吸明暗范围)</span>';
+        breathingOpacityTitle.innerHTML = `${__tt("timer.breathingOpacity")}<span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">${__tt("timer.rangeOfBrightnessChanges")}</span>`;
         breathingOpacityTitle.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
         breathingOpacityContainer.appendChild(breathingOpacityTitle);
 
@@ -38025,7 +38059,7 @@ window.__setTomatoFloatState = function (payload) {
         minRow.style.cssText = 'display: flex; align-items: center; gap: 10px; margin-bottom: 10px;';
         const minLabel = document.createElement('div');
         minLabel.style.cssText = 'width: 64px; font-size: 13px; opacity: 0.85;';
-        minLabel.textContent = '最低';
+        minLabel.textContent = __tt("timer.minimum");
         const minValue = document.createElement('div');
         minValue.style.cssText = 'width: 44px; font-size: 12px; opacity: 0.75; text-align: right;';
         const minSlider = document.createElement('input');
@@ -38044,7 +38078,7 @@ window.__setTomatoFloatState = function (payload) {
         maxRow.style.cssText = 'display: flex; align-items: center; gap: 10px;';
         const maxLabel = document.createElement('div');
         maxLabel.style.cssText = minLabel.style.cssText;
-        maxLabel.textContent = '最高';
+        maxLabel.textContent = __tt("timer.maximum");
         const maxValue = document.createElement('div');
         maxValue.style.cssText = minValue.style.cssText;
         const maxSlider = document.createElement('input');
@@ -38103,7 +38137,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const indicatorLabel = document.createElement('span');
-        indicatorLabel.innerHTML = '显示进度指示器 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(进度条顶端的三角形箭头)</span>';
+        indicatorLabel.innerHTML = `${__tt("timer.showProgressIndicator")}<span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">${__tt("timer.triangleAtTheEndOfTheProgressBar")}</span>`;
         indicatorLabel.style.cssText = 'font-size: 14px;';
         const indicatorSwitch = document.createElement('input');
         indicatorSwitch.type = 'checkbox';
@@ -38128,7 +38162,7 @@ window.__setTomatoFloatState = function (payload) {
             gap: 10px;
         `;
         const timelineIndicatorColorLabel = document.createElement('span');
-        timelineIndicatorColorLabel.innerHTML = '时间轴指示器颜色 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(竖线+三角)</span>';
+        timelineIndicatorColorLabel.innerHTML = `${__tt("timer.timelineIndicatorColor")}<span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">${__tt("timer.lineAndTriangle")}</span>`;
         timelineIndicatorColorLabel.style.cssText = 'font-size: 14px; flex: 1;';
         const timelineIndicatorColorText = document.createElement('input');
         timelineIndicatorColorText.type = 'text';
@@ -38137,7 +38171,7 @@ window.__setTomatoFloatState = function (payload) {
         let timelineIndicatorPicker = null;
         let timelineIndicatorColorInput = null;
         if (isMobile) {
-            timelineIndicatorPicker = createMobileColorPickerButton('时间轴指示器颜色', timelineIndicatorColorText.value, (c) => {
+            timelineIndicatorPicker = createMobileColorPickerButton(__tt("timer.timelineIndicatorColor2"), timelineIndicatorColorText.value, (c) => {
                 timelineIndicatorColorText.value = c;
                 setTimeout(() => { try { commitTimelineIndicatorColor(); } catch (e) {} }, 0);
             }, { defaultColor: '#FF1744', showHexText: false });
@@ -38202,7 +38236,7 @@ window.__setTomatoFloatState = function (payload) {
             gap: 10px;
         `;
         const axisLabelPositionLabel = document.createElement('span');
-        axisLabelPositionLabel.innerHTML = '时间轴刻度时间位置 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(上/中/下)</span>';
+        axisLabelPositionLabel.innerHTML = `${__tt("timer.timelineLabelPosition")}<span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">${__tt("timer.topCenterBottom")}</span>`;
         axisLabelPositionLabel.style.cssText = 'font-size: 14px; flex: 1;';
         const axisLabelPositionSelect = document.createElement('select');
         axisLabelPositionSelect.style.cssText = `
@@ -38211,9 +38245,9 @@ window.__setTomatoFloatState = function (payload) {
             background: var(--b3-theme-background); color: var(--b3-theme-on-background);
         `;
         const axisPosOptions = [
-            { value: 'top', label: '上' },
-            { value: 'middle', label: '中' },
-            { value: 'bottom', label: '下' },
+            { value: 'top', label: __tt("timer.top") },
+            { value: 'middle', label: __tt("common.center") },
+            { value: 'bottom', label: __tt("timer.bottom") },
         ];
         axisPosOptions.forEach(opt => {
             const option = document.createElement('option');
@@ -38239,7 +38273,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const axisLabelHourOnlyLabel = document.createElement('span');
-        axisLabelHourOnlyLabel.innerHTML = '时间轴刻度仅显示小时 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(隐藏分钟)</span>';
+        axisLabelHourOnlyLabel.innerHTML = `${__tt("timer.showOnlyHoursOnTimelineLabels")}<span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">${__tt("timer.hideminutes")}</span>`;
         axisLabelHourOnlyLabel.style.cssText = 'font-size: 14px;';
         const axisLabelHourOnlySwitch = document.createElement('input');
         axisLabelHourOnlySwitch.type = 'checkbox';
@@ -38285,7 +38319,7 @@ window.__setTomatoFloatState = function (payload) {
         };
 
         const initialAxisDesktopFontSize = Math.max(8, Math.min(18, Number(userSettings?.timeline?.axisLabelFontSizeDesktopPx) || 10));
-        container.appendChild(createAxisFontSizeSlider('时间轴刻度字体大小（桌面端）', initialAxisDesktopFontSize, async (v) => {
+        container.appendChild(createAxisFontSizeSlider(__tt("timer.timelineLabelFontSizeDesktop"), initialAxisDesktopFontSize, async (v) => {
             ensureTimelineSettings();
             userSettings.timeline.axisLabelFontSizeDesktopPx = v;
             await saveUserSettings();
@@ -38293,7 +38327,7 @@ window.__setTomatoFloatState = function (payload) {
         }));
 
         const initialAxisMobileFontSize = Math.max(8, Math.min(18, Number(userSettings?.timeline?.axisLabelFontSizeMobilePx) || 8));
-        container.appendChild(createAxisFontSizeSlider('时间轴刻度字体大小（移动端）', initialAxisMobileFontSize, async (v) => {
+        container.appendChild(createAxisFontSizeSlider(__tt("timer.timelineLabelFontSizeMobile"), initialAxisMobileFontSize, async (v) => {
             ensureTimelineSettings();
             userSettings.timeline.axisLabelFontSizeMobilePx = v;
             await saveUserSettings();
@@ -38328,7 +38362,7 @@ window.__setTomatoFloatState = function (payload) {
             if (isMobile) {
                 const initRaw = String(textEl.value || '').trim();
                 const initHex = initRaw.match(/^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/) ? (initRaw.startsWith('#') ? initRaw : `#${initRaw}`) : defaultColor;
-                pickerEl = createMobileColorPickerButton(labelEl.textContent || '颜色', initHex, (c) => {
+                pickerEl = createMobileColorPickerButton(labelEl.textContent || __tt("timer.color"), initHex, (c) => {
                     textEl.value = c;
                     setTimeout(() => { try { onCommit(); } catch (e) {} }, 0);
                 }, { defaultColor, showHexText: false });
@@ -38356,7 +38390,7 @@ window.__setTomatoFloatState = function (payload) {
         };
 
         const axisTickRow = createAxisColorRow(
-            '时间轴刻度线颜色 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(刻度线)</span>',
+            `${__tt("timer.timelineTickColor")}<span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">${__tt("timer.tickMarks")}</span>`,
             () => (userSettings?.timeline?.axisTickColor || 'rgba(0,0,0,0.3)'),
             async () => {
                 ensureTimelineSettings();
@@ -38371,7 +38405,7 @@ window.__setTomatoFloatState = function (payload) {
         container.appendChild(axisTickRow.rowEl);
 
         const axisLabelRow = createAxisColorRow(
-            '时间轴刻度时间颜色 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(数字)</span>',
+            `${__tt("timer.timelineLabelColor")}<span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">${__tt("timer.numbers")}</span>`,
             () => (userSettings?.timeline?.axisLabelColor || 'rgba(0,0,0,0.6)'),
             async () => {
                 ensureTimelineSettings();
@@ -38393,7 +38427,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const smoothLabel = document.createElement('span');
-        smoothLabel.innerHTML = '启用平滑动画 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(关闭可减少性能消耗)</span>';
+        smoothLabel.innerHTML = `${__tt("timer.enableSmoothAnimation")}<span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">${__tt("timer.turnOffToReduceResourceUse")}</span>`;
         smoothLabel.style.cssText = 'font-size: 14px;';
         const smoothSwitch = document.createElement('input');
         smoothSwitch.type = 'checkbox';
@@ -38417,7 +38451,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const autoSwitchLabel = document.createElement('span');
-        autoSwitchLabel.innerHTML = '根据时间自动切换主题 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(6-12点粉色、12-18点蓝色、18-22点粉色、22-6点深蓝)</span>';
+        autoSwitchLabel.innerHTML = `${__tt("timer.switchThemesByTimeOfDay")}<span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">${__tt("timer.pinkBluePinkDarkBlue")}</span>`;
         autoSwitchLabel.style.cssText = 'font-size: 14px;';
         const autoSwitchSwitch = document.createElement('input');
         autoSwitchSwitch.type = 'checkbox';
@@ -38441,7 +38475,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const stopwatchBarLabel = document.createElement('span');
-        stopwatchBarLabel.innerHTML = '专注正计时进度条 <span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">(默认绿色，进行时呼吸)</span>';
+        stopwatchBarLabel.innerHTML = `${__tt("timer.focusStopwatchProgressBar")}<span style="font-size: 11px; color: var(--b3-theme-on-surface-light);">${__tt("timer.greenByDefaultBreathingWhileRunning")}</span>`;
         stopwatchBarLabel.style.cssText = 'font-size: 14px;';
         const stopwatchBarSwitch = document.createElement('input');
         stopwatchBarSwitch.type = 'checkbox';
@@ -38459,7 +38493,7 @@ window.__setTomatoFloatState = function (payload) {
 
         // 霓虹强度调节
         const intensityTitle = document.createElement('div');
-        intensityTitle.innerHTML = '<strong style="font-size: 15px;">💡 效果强度</strong>';
+        intensityTitle.innerHTML = `<strong style="font-size: 15px;">${__tt("timer.effectIntensity")}</strong>`;
         intensityTitle.style.cssText = 'margin: 20px 0 12px;';
         container.appendChild(intensityTitle);
 
@@ -38469,7 +38503,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const intensityLabel = document.createElement('div');
-        intensityLabel.textContent = `霓虹发光强度: ${Math.round((appearance.neonIntensity || 0.8) * 100)}%`;
+        intensityLabel.textContent = __tt("timer.neonIntensity", { value1: Math.round((appearance.neonIntensity || 0.8) * 100) });
         intensityLabel.style.cssText = 'font-size: 14px; margin-bottom: 8px;';
         const intensitySlider = document.createElement('input');
         intensitySlider.type = 'range';
@@ -38478,7 +38512,7 @@ window.__setTomatoFloatState = function (payload) {
         intensitySlider.value = Math.round((appearance.neonIntensity || 0.8) * 100);
         intensitySlider.style.cssText = 'width: 100%; cursor: pointer;';
         intensitySlider.oninput = (e) => {
-            intensityLabel.textContent = `霓虹发光强度: ${e.target.value}%`;
+            intensityLabel.textContent = __tt("timer.neonIntensity2", { value: e.target.value });
         };
         intensitySlider.onchange = async (e) => {
             appearance.neonIntensity = parseInt(e.target.value) / 100;
@@ -38492,7 +38526,7 @@ window.__setTomatoFloatState = function (payload) {
 
         // 效果预览
         const previewTitle = document.createElement('div');
-        previewTitle.innerHTML = '<strong style="font-size: 15px;">👀 效果预览</strong>';
+        previewTitle.innerHTML = `<strong style="font-size: 15px;">${__tt("timer.preview3")}</strong>`;
         previewTitle.style.cssText = 'margin: 20px 0 12px;';
         container.appendChild(previewTitle);
 
@@ -38521,11 +38555,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; font-size: 12px; line-height: 1.6;
         `;
         intro.innerHTML = `
-            <strong>☁️ 多端同步说明</strong><br>
-            • 开启后，计时状态可在多个设备间自动同步<br>
-            • 状态保存到云端，刷新页面或切换设备可继续计时<br>
-            • 序列号用于冲突解决，保证数据一致性
-        `;
+            <strong>${__tt("timer.aboutDeviceSynchronization")}</strong><br>${__tt("timer.syncTimerStateAutomaticallyAcrossDevicesWhenEnabled")}<br>${__tt("timer.stateIsSavedToSharedStorageReloadOrSwitch")}<br>${__tt("timer.sequenceNumbersResolveConflictingUpdatesAndKeepDataConsistent")}`;
         container.appendChild(intro);
 
         const syncEnableContainer = document.createElement('div');
@@ -38535,7 +38565,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const syncEnableLabel = document.createElement('span');
-        syncEnableLabel.textContent = '启用多端同步';
+        syncEnableLabel.textContent = __tt("timer.enableDeviceSynchronization");
         syncEnableLabel.style.cssText = 'font-size: 14px;';
         const syncEnableSwitch = document.createElement('input');
         syncEnableSwitch.type = 'checkbox';
@@ -38553,12 +38583,12 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const syncStatusLabel = document.createElement('span');
-        syncStatusLabel.textContent = '同步功能状态';
+        syncStatusLabel.textContent = __tt("timer.syncStatus");
         syncStatusLabel.style.cssText = 'font-size: 14px;';
         const syncStatusValue = document.createElement('span');
         const refreshSyncStatus = () => {
             const enabled = isSyncEnabled();
-            syncStatusValue.textContent = enabled ? '✅ 已开启' : '❌ 未开启';
+            syncStatusValue.textContent = enabled ? __tt("timer.enabled") : __tt("timer.disabled");
             syncStatusValue.style.cssText = `font-size: 14px; color: ${enabled ? 'var(--b3-theme-primary)' : 'var(--b3-theme-on-surface-light)'};`;
         };
         refreshSyncStatus();
@@ -38591,23 +38621,18 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         
-        let currentStatus = '空闲';
+        let currentStatus = __tt("timer.idle2");
         if (syncState.status === 'RUNNING') {
-            currentStatus = '运行中';
+            currentStatus = __tt("timer.running");
         } else if (syncState.status === 'PAUSED') {
-            currentStatus = '已暂停';
+            currentStatus = __tt("timer.paused2");
         } else if (syncState.status === 'COMPLETED') {
-            currentStatus = '已完成';
+            currentStatus = __tt("timer.completed");
         }
         
         statusContainer.innerHTML = `
-            <div style="font-size: 14px; margin-bottom: 8px;"><strong>当前状态</strong></div>
-            <div style="font-size: 13px; color: var(--b3-theme-on-surface);">
-                模式: ${syncState.mode === 'countdown' ? '倒计时' : syncState.mode === 'stopwatch' ? '专注正计时' : '休息'}\<br>
-                状态: ${currentStatus}\<br>
-                序列号: ${syncState.sequenceId || 0}\<br>
-                设备ID: ${SYNC_DEVICE_ID}
-            </div>
+            <div style="font-size: 14px; margin-bottom: 8px;"><strong>${__tt("timer.currentstatus")}</strong></div>
+            <div style="font-size: 13px; color: var(--b3-theme-on-surface);">${__tt("timer.mode", { value1: syncState.mode === 'countdown' ? __tt("timer.countdown") : syncState.mode === 'stopwatch' ? __tt("timer.focusstopwatch") : __tt("timer.rest") })}<br>${__tt("timer.status", { currentStatus: currentStatus })}<br>${__tt("timer.sequence", { value1: syncState.sequenceId || 0 })}<br>${__tt("timer.deviceId", { SYNC_DEVICE_ID: SYNC_DEVICE_ID })}</div>
         `;
         container.appendChild(statusContainer);
 
@@ -38619,7 +38644,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const autoSyncLabel = document.createElement('span');
-        autoSyncLabel.textContent = '状态切换自动触发思源同步';
+        autoSyncLabel.textContent = __tt("timer.triggerSiyuanSyncWhenTimerStateChanges");
         autoSyncLabel.style.cssText = 'font-size: 14px;';
         
         const autoSyncSwitch = document.createElement('input');
@@ -38646,7 +38671,7 @@ window.__setTomatoFloatState = function (payload) {
             border-radius: 6px; margin-bottom: 12px;
         `;
         const assocSyncLabel = document.createElement('span');
-        assocSyncLabel.textContent = '同步任务关联';
+        assocSyncLabel.textContent = __tt("timer.syncTaskLinks");
         assocSyncLabel.style.cssText = 'font-size: 14px;';
         const assocSyncSwitch = document.createElement('input');
         assocSyncSwitch.type = 'checkbox';
@@ -38684,7 +38709,7 @@ window.__setTomatoFloatState = function (payload) {
 
         // 手动同步按钮
         const syncBtn = document.createElement('button');
-        syncBtn.innerHTML = '🔄 立即同步';
+        syncBtn.innerHTML = __tt("timer.syncNow");
         syncBtn.style.cssText = `
             width: 100%; padding: 10px; margin-top: 12px;
             background: var(--b3-theme-primary); color: white;
@@ -38693,17 +38718,17 @@ window.__setTomatoFloatState = function (payload) {
         `;
         syncBtn.onclick = async () => {
             syncBtn.disabled = true;
-            syncBtn.textContent = '同步中...';
+            syncBtn.textContent = __tt("timer.syncing");
             try {
                 if (window.tomatoSync && window.tomatoSync.forceSync) {
                     await window.tomatoSync.forceSync();
-                    showToastDialog('同步成功', '状态已更新', 'success');
+                    showToastDialog(__tt("timer.synced"), __tt("timer.stateUpdated"), 'success');
                 }
             } catch (e) {
-                showToastDialog('同步失败', e.message, 'error');
+                showToastDialog(__tt("timer.syncFailed"), e.message, 'error');
             }
             syncBtn.disabled = false;
-            syncBtn.textContent = '🔄 立即同步';
+            syncBtn.textContent = __tt("timer.syncNow");
         };
         container.appendChild(syncBtn);
 
@@ -38715,10 +38740,8 @@ window.__setTomatoFloatState = function (payload) {
                 border-radius: 6px; margin-top: 12px; font-size: 12px;
             `;
             pausedContainer.innerHTML = `
-                <div style="margin-bottom: 8px;"><strong>暂停记录</strong></div>
-                <div style="color: var(--b3-theme-on-surface);">
-                    暂停次数: ${syncState.pausedIntervals.length}次
-                </div>
+                <div style="margin-bottom: 8px;"><strong>${__tt("timer.pauseHistory")}</strong></div>
+                <div style="color: var(--b3-theme-on-surface);">${__tt("timer.pauses", { length: syncState.pausedIntervals.length })}</div>
             `;
             container.appendChild(pausedContainer);
         }
@@ -38750,8 +38773,8 @@ window.__setTomatoFloatState = function (payload) {
             if (!(tomatoBtn instanceof HTMLElement)) return;
             tomatoBtn.type = 'button';
             tomatoBtn.className = 'block__icon fn__flex-center ariaLabel';
-            tomatoBtn.title = '打开番茄钟';
-            tomatoBtn.setAttribute('aria-label', '打开番茄钟');
+            tomatoBtn.title = __tt("timer.openpomodoro");
+            tomatoBtn.setAttribute('aria-label', __tt("timer.openpomodoro"));
             setTimerUiIcon(tomatoBtn, 'tomato');
             tomatoBtn.style.cssText = `
                 margin: 0 4px;
@@ -40150,12 +40173,12 @@ window.__setTomatoFloatState = function (payload) {
     let __wechatReminderRegistry = {};
     
     const REMINDER_INTERVAL_TYPES = {
-        once: { label: '仅一次', value: 'once' },
-        daily: { label: '每天', value: 'daily' },
-        workday: { label: '工作日', value: 'workday' },
-        weekly: { label: '每周', value: 'weekly' },
-        monthly: { label: '每月', value: 'monthly' },
-        yearly: { label: '每年', value: 'yearly' },
+        once: { label: __tt("timer.onceOnly"), value: 'once' },
+        daily: { label: __tt("timer.daily"), value: 'daily' },
+        workday: { label: __tt("timer.workdays"), value: 'workday' },
+        weekly: { label: __tt("timer.weekly"), value: 'weekly' },
+        monthly: { label: __tt("timer.monthly"), value: 'monthly' },
+        yearly: { label: __tt("timer.yearly"), value: 'yearly' },
     };
     const REMINDER_REPEAT_MODE_MANUAL = 'manual';
     const REMINDER_REPEAT_MODE_FOLLOW_TASK = 'followTaskRepeat';
@@ -40270,7 +40293,7 @@ window.__setTomatoFloatState = function (payload) {
     const __getReminderWeekdaysLabel = (weekdays) => {
         const normalized = __normalizeReminderWeekdays(weekdays);
         if (!normalized.length) return '';
-        const labels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+        const labels = [__tt("timer.sunday"), __tt("timer.monday"), __tt("timer.tuesday"), __tt("timer.wednesday"), __tt("timer.thursday"), __tt("timer.friday"), __tt("timer.saturday")];
         return [1, 2, 3, 4, 5, 6, 0]
             .filter((weekday) => normalized.includes(weekday))
             .map((weekday) => labels[weekday])
@@ -40370,11 +40393,14 @@ window.__setTomatoFloatState = function (payload) {
 
     const __formatReminderLunarDateText = (dateLike) => {
         const info = __getReminderLunarDateInfo(dateLike);
+        if (info && globalThis.__dockTomatoI18n.locale === 'en') return __tt('date.lunarNumeric', {
+            leap: info.isLeap ? __tt('timer.leap') : '', month: info.month, day: info.day,
+        });
         if (!info) return '';
-        const monthText = __REMINDER_LUNAR_MONTH_LABELS[info.month] || `${info.month}月`;
+        const monthText = __REMINDER_LUNAR_MONTH_LABELS[info.month] || __tt("date.monthNumber", { month: info.month });
         const dayText = __REMINDER_LUNAR_DAY_LABELS[info.day] || '';
         if (!monthText || !dayText) return '';
-        return `农历${info.isLeap ? '闰' : ''}${monthText}${dayText}`;
+        return __tt("timer.lunar", { value1: info.isLeap ? __tt("timer.leap") : '', monthText: monthText, dayText: dayText });
     };
 
     const __getReminderLunarMonthIndex = (info) => {
@@ -40620,7 +40646,7 @@ window.__setTomatoFloatState = function (payload) {
         const scheduleUnchanged = __normalizeReminderDateKey(existing.taskCompletionTime || '') === completionTime
             && JSON.stringify(__parseReminderTaskRepeatRule(existing.taskRepeatRule) || null) === JSON.stringify(repeatRule?.enabled ? repeatRule : null)
             && JSON.stringify(previousTimes) === JSON.stringify(times);
-        const taskTitle = String(canonical.taskTitle || draft.blockName || draft.blockContent || '任务').trim() || '任务';
+        const taskTitle = String(canonical.taskTitle || draft.blockName || draft.blockContent || __tt("timer.task")).trim() || __tt("timer.task");
         return {
             ...draft,
             blockId: String(canonical.attrHostId || draft.blockId || '').trim(),
@@ -40667,7 +40693,7 @@ window.__setTomatoFloatState = function (payload) {
         const draft = (draftInput && typeof draftInput === 'object') ? draftInput : {};
         const bridge = getTaskHorizonSharedApi()?.reminderBridge;
         if (Number(bridge?.version) < 2 || typeof bridge?.applyFollowDraft !== 'function') {
-            throw new Error('任务提醒联动接口未就绪，请更新并重载任务管理器');
+            throw new Error(__tt("timer.theTaskReminderIntegrationIsNotReadyUpdateAnd"));
         }
         const result = await bridge.applyFollowDraft({
             taskId: String(draft.taskId || blockId || '').trim(),
@@ -40675,7 +40701,7 @@ window.__setTomatoFloatState = function (payload) {
             completionTime: draft.completionTime,
             source: String(draft.source || 'tomato-reminder-follow-draft').trim() || 'tomato-reminder-follow-draft',
         });
-        if (!result?.ok) throw new Error(result?.message || '任务字段更新失败');
+        if (!result?.ok) throw new Error(result?.message || __tt("timer.taskFieldsupdateFailed"));
         return result;
     };
 
@@ -40686,7 +40712,7 @@ window.__setTomatoFloatState = function (payload) {
         }
         const bridge = getTaskHorizonSharedApi()?.reminderBridge;
         if (Number(bridge?.version) < 2 || typeof bridge?.clearFollowDraft !== 'function') {
-            throw new Error('任务提醒联动接口未就绪，请更新并重载任务管理器');
+            throw new Error(__tt("timer.theTaskReminderIntegrationIsNotReadyUpdateAnd"));
         }
         const result = await bridge.clearFollowDraft({
             taskId: String(reminder.taskId || blockId || '').trim(),
@@ -40694,7 +40720,7 @@ window.__setTomatoFloatState = function (payload) {
             attrHostId: String(reminder.blockId || '').trim(),
             source: 'tomato-reminder-follow-delete',
         });
-        if (!result?.ok) throw new Error(result?.message || '任务字段清理失败');
+        if (!result?.ok) throw new Error(result?.message || __tt("timer.couldNotClearTaskFields"));
         return result;
     };
 
@@ -40783,17 +40809,17 @@ window.__setTomatoFloatState = function (payload) {
         if (!__isRecurringReminder(reminder)) return 'all';
         const followsTask = __getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK;
         const detail = followsTask
-            ? '删除全部会同时清空任务截止日和循环规则。'
-            : '删除全部会移除整个循环。';
+            ? __tt("timer.deleteAllAlsoClearsTheTaskSDueDate")
+            : __tt("timer.deleteAllRemovesTheEntireRepeatingSeries");
         return await showMobileConfirmDialog(
             `${String(dateKey || '').trim()} ${String(timeKey || '').trim()}\n${detail}`,
-            '删除循环提醒',
+            __tt("timer.deleterepeatwarnings"),
             {
                 dismissValue: null,
                 choices: [
-                    { label: '取消', value: null, tone: 'cancel' },
-                    { label: '仅删除当前', value: 'current', tone: 'confirm' },
-                    { label: '删除全部', value: 'all', tone: 'danger' },
+                    { label: __tt("common.cancel"), value: null, tone: 'cancel' },
+                    { label: __tt("timer.deleteThisOccurrenceOnly"), value: 'current', tone: 'confirm' },
+                    { label: __tt("timer.deleteall"), value: 'all', tone: 'danger' },
                 ],
             }
         );
@@ -40977,13 +41003,13 @@ window.__setTomatoFloatState = function (payload) {
         const interval = __normalizeReminderInterval(reminder?.interval || 'daily');
         const every = __getReminderEvery(reminder);
         if (reminder?.trigger === 'complete' && interval !== 'once') {
-            const unit = { daily: '天', workday: '个工作日', weekly: '周', monthly: '个月', yearly: '年' }[interval];
-            if (unit) return `完成后 ${every} ${unit}`;
+            const unit = { daily: __tt("timer.days"), workday: __tt("timer.workdays2"), weekly: __tt("timer.week"), monthly: __tt("timer.months"), yearly: __tt("timer.year") }[interval];
+            if (unit) return __tt("timer.afterCompletion", { every: every, unit: unit });
         }
-        if (interval === 'daily') return every > 1 ? `每${every}天` : '每天';
-        if (interval === 'workday') return every > 1 ? `每${every}个工作日` : '每个工作日';
+        if (interval === 'daily') return every > 1 ? __tt("timer.everyDays", { every: every }) : __tt("timer.daily");
+        if (interval === 'workday') return every > 1 ? __tt("timer.everyWorkdays", { every: every }) : __tt("timer.everyWorkday");
         if (interval === 'weekly') {
-            const base = every > 1 ? `每${every}周` : '每周';
+            const base = every > 1 ? __tt("timer.everyWeeks", { every: every }) : __tt("timer.weekly");
             const weekdays = __getReminderWeekdaysLabel(__normalizeReminderWeekdays(
                 reminder?.weekdays ?? reminder?.taskRepeatRule?.weekdays,
                 reminder?.startDate || reminder?.taskRepeatRule?.anchorDate || ''
@@ -40994,9 +41020,9 @@ window.__setTomatoFloatState = function (payload) {
             const monthDays = reminder?.monthDays ?? reminder?.taskRepeatRule?.monthDays;
             const suffix = __getReminderMonthlyMode(reminder) === 'weekday' ? `（${__monthRepeatCore.weekdayLabel(reminder?.monthWeek ?? reminder?.taskRepeatRule?.monthWeek, reminder?.startDate)}）`
                 : Array.isArray(monthDays) ? `（${__monthRepeatCore.label(monthDays)}）` : '';
-            return `${every > 1 ? `每${every}月` : '每月'}${suffix}`;
+            return `${every > 1 ? __tt("timer.everyMonths", { every: every }) : __tt("timer.monthly")}${suffix}`;
         }
-        if (interval === 'yearly') return every > 1 ? `每${every}年` : '每年';
+        if (interval === 'yearly') return every > 1 ? __tt("timer.everyYears", { every: every }) : __tt("timer.yearly");
         return REMINDER_INTERVAL_TYPES[interval]?.label || interval;
     };
 
@@ -41006,9 +41032,9 @@ window.__setTomatoFloatState = function (payload) {
     const REMINDER_DEVICE_SCHEDULE_RECORD_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
     const REMINDER_DEVICE_SCHEDULE_RECORD_FILE = `${PLUGIN_STORAGE_DIR}/reminder-device-schedule-records.json`;
 
-    const __getReminderNotificationTitle = () => '⏰ 任务提醒';
+    const __getReminderNotificationTitle = () => __tt("timer.taskReminder");
     const __getReminderNotificationBody = (reminder) => {
-        const content = reminder?.blockName || reminder?.blockContent || '未命名任务';
+        const content = reminder?.blockName || reminder?.blockContent || __tt("timer.untitledTask");
         const note = reminder?.note ? '\n' + reminder.note : '';
         return content + note;
     };
@@ -41256,15 +41282,15 @@ window.__setTomatoFloatState = function (payload) {
             || ''
         ).trim().toLowerCase();
         if (clientKind === 'mobile' || clientKind === 'android' || clientKind === 'ios' || clientKind === 'harmony') {
-            return '移动端';
+            return __tt("timer.mobile");
         }
         if (clientKind === 'desktop' || clientKind === 'pc') {
-            return '桌面端';
+            return __tt("timer.desktop");
         }
         if (safeDeviceId && safeDeviceId === String(SYNC_DEVICE_ID || '').trim()) {
-            return isOfficialMobileNotificationRuntime() ? '移动端' : '桌面端';
+            return isOfficialMobileNotificationRuntime() ? __tt("timer.mobile") : __tt("timer.desktop");
         }
-        return '未知端';
+        return __tt("timer.unknownDevice");
     };
     const __setReminderDeviceSchedule = (reminder, entry, deviceId = SYNC_DEVICE_ID) => {
         const key = String(deviceId || '').trim();
@@ -41418,8 +41444,8 @@ window.__setTomatoFloatState = function (payload) {
     }
 
     async function getWechatReminderEligibility() {
-        if (Number(globalThis?.siyuan?.config?.cloudRegion) !== 0) return { ok: false, reason: '当前云端区域不支持微信提醒' };
-        if (globalThis?.siyuan?.config?.readonly === true) return { ok: false, reason: '只读模式下无法同步微信提醒' };
+        if (Number(globalThis?.siyuan?.config?.cloudRegion) !== 0) return { ok: false, reason: __tt("timer.wechatRemindersAreNotSupportedInTheCurrentCloud") };
+        if (globalThis?.siyuan?.config?.readonly === true) return { ok: false, reason: __tt("timer.cannotSyncWechatRemindersInReadOnlyMode") };
         let user = globalThis?.siyuan?.user || null;
         if (!user) {
             try {
@@ -41433,7 +41459,7 @@ window.__setTomatoFloatState = function (payload) {
         const subscribed = !!user
             && (Number(user.userSiYuanProExpireTime) === -1 || Number(user.userSiYuanProExpireTime) > 0)
             && Number(user.userSiYuanSubscriptionStatus) === 0;
-        return subscribed ? { ok: true, reason: '' } : { ok: false, reason: '微信提醒需要有效的思源订阅' };
+        return subscribed ? { ok: true, reason: '' } : { ok: false, reason: __tt("timer.wechatRemindersRequireAnActiveSiyuanSubscription") };
     }
 
     async function setCloudWechatReminder(target, cancel = false) {
@@ -41443,7 +41469,7 @@ window.__setTomatoFloatState = function (payload) {
             timed: cancel ? '0' : target.timed,
         });
         if (!response.ok || response.data?.code !== 0) {
-            throw new Error(String(response.data?.msg || `HTTP ${response.status}` || '微信提醒同步失败'));
+            throw new Error(String(response.data?.msg || `HTTP ${response.status}` || __tt("timer.wechatReminderSyncFailed")));
         }
         return true;
     }
@@ -41456,7 +41482,7 @@ window.__setTomatoFloatState = function (payload) {
         for (const reminder of (Array.isArray(reminders) ? reminders : [])) {
             const blockId = String(reminder?.blockId || '').trim();
             if (!blockId || reminder?.enabled === false) continue;
-            const title = String(reminder?.blockName || reminder?.blockContent || '').trim() || '未命名任务';
+            const title = String(reminder?.blockName || reminder?.blockContent || '').trim() || __tt("timer.untitledTask");
             for (const occurrence of __collectReminderScheduleTargets(reminder, new Date())) {
                 const atMs = Number(occurrence?.atMs);
                 if (!Number.isFinite(atMs) || atMs <= nowMs || atMs > horizonMs) continue;
@@ -41465,7 +41491,7 @@ window.__setTomatoFloatState = function (payload) {
                     'dock-tomato',
                     ownerKey,
                     atMs,
-                    `任务提醒：${title}（${formatWechatReminderDisplayTime(atMs)}）`,
+                    __tt("timer.taskReminder2", { title: title, value2: formatWechatReminderDisplayTime(atMs) }),
                 );
                 if (target) desired.set(target.dataId, target);
             }
@@ -41558,9 +41584,9 @@ window.__setTomatoFloatState = function (payload) {
             const interactive = /settings|manual|enable|disable|agent-reminder/.test(String(reason || ''));
             if (errors.length > 0) {
                 Logger.warn('微信提醒同步失败:', errors);
-                if (interactive) showMiniToast(`微信提醒同步失败：${errors[0]}`);
+                if (interactive) showMiniToast(__tt("timer.wechatReminderSyncFailed2", { value1: errors[0] }));
             } else if (interactive) {
-                showMiniToast(`微信提醒已同步 ${upserts.length} 项，取消 ${removals.length} 项`);
+                showMiniToast(__tt("timer.wechatRemindersSyncedRemoved", { length: upserts.length, length2: removals.length }));
             }
         } finally {
             __wechatReminderRunning = false;
@@ -42598,12 +42624,12 @@ window.__setTomatoFloatState = function (payload) {
         const titleSpacer = document.createElement('div');
         titleSpacer.style.cssText = 'width:32px;height:32px;flex:0 0 32px;';
         const title = document.createElement('div');
-        title.textContent = existingReminder ? '编辑提醒' : '添加提醒';
+        title.textContent = existingReminder ? __tt("timer.editwarnings") : __tt("timer.addReminder");
         title.style.cssText = 'flex:1 1 auto;font-size:18px;font-weight:600;text-align:center;';
         const closeBtn = document.createElement('button');
         closeBtn.type = 'button';
         closeBtn.textContent = '×';
-        closeBtn.setAttribute('aria-label', '关闭');
+        closeBtn.setAttribute('aria-label', __tt("common.close"));
         closeBtn.style.cssText = 'width:32px;height:32px;flex:0 0 32px;border:none;border-radius:8px;background:transparent;color:var(--b3-theme-on-background);cursor:pointer;font-size:22px;line-height:32px;padding:0;';
         closeBtn.onclick = () => closeDialog();
         titleRow.appendChild(titleSpacer);
@@ -42617,12 +42643,12 @@ window.__setTomatoFloatState = function (payload) {
         const nameSection = document.createElement('div');
         nameSection.style.cssText = 'margin-bottom:16px;';
         const nameLabel = document.createElement('div');
-        nameLabel.textContent = '任务名称';
+        nameLabel.textContent = __tt("timer.taskName");
         nameLabel.style.cssText = 'font-size:14px;font-weight:500;margin-bottom:8px;';
         nameSection.appendChild(nameLabel);
         const nameInput = document.createElement('input');
         nameInput.type = 'text';
-        nameInput.placeholder = '例如：完成每日复习';
+        nameInput.placeholder = __tt("timer.forExampleCompleteDailyReview");
         nameInput.value = String(existingReminder?.blockName || blockName || '').trim();
         nameInput.style.cssText = 'width:100%;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
         nameSection.appendChild(nameInput);
@@ -42641,7 +42667,7 @@ window.__setTomatoFloatState = function (payload) {
             : null;
         let repeatMode = __resolveReminderDialogRepeatMode(existingReminder, dialogOptions);
         if (repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK) {
-            nameInput.value = String(blockName || existingReminder?.blockContent || nameInput.value || '任务').trim() || '任务';
+            nameInput.value = String(blockName || existingReminder?.blockContent || nameInput.value || __tt("timer.task")).trim() || __tt("timer.task");
         }
         const rawInitialInterval = __normalizeReminderInterval(existingReminder?.interval || __semanticTitleSuggestion?.interval || 'once');
         const initialInterval = repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK && hasTaskRepeat
@@ -42651,14 +42677,14 @@ window.__setTomatoFloatState = function (payload) {
         const repeatModeSection = document.createElement('div');
         repeatModeSection.style.cssText = 'margin-bottom:16px;';
         const repeatModeLabel = document.createElement('div');
-        repeatModeLabel.textContent = '重复来源';
+        repeatModeLabel.textContent = __tt("timer.repeatSource");
         repeatModeLabel.style.cssText = 'font-size:14px;font-weight:500;margin-bottom:8px;';
         repeatModeSection.appendChild(repeatModeLabel);
         const repeatModeSelect = document.createElement('select');
         repeatModeSelect.style.cssText = 'width:100%;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:10px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
         repeatModeSelect.innerHTML = `
-            <option value="${REMINDER_REPEAT_MODE_MANUAL}" ${repeatMode === REMINDER_REPEAT_MODE_MANUAL ? 'selected' : ''}>独立提醒循环</option>
-            <option value="${REMINDER_REPEAT_MODE_FOLLOW_TASK}" ${repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK ? 'selected' : ''}>${hasTaskRepeat ? '跟随任务循环' : '跟随任务'}</option>
+            <option value="${REMINDER_REPEAT_MODE_MANUAL}" ${repeatMode === REMINDER_REPEAT_MODE_MANUAL ? 'selected' : ''}>${__tt("timer.standaloneReminderrepeat")}</option>
+            <option value="${REMINDER_REPEAT_MODE_FOLLOW_TASK}" ${repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK ? 'selected' : ''}>${hasTaskRepeat ? __tt("timer.followTaskrepeat") : __tt("timer.followTask")}</option>
         `;
         repeatModeSelect.onchange = () => {
             const previousMode = repeatMode;
@@ -42676,7 +42702,7 @@ window.__setTomatoFloatState = function (payload) {
         const intervalSection = document.createElement('div');
         intervalSection.style.cssText = 'margin-bottom:20px;';
         const intervalLabel = document.createElement('div');
-        intervalLabel.textContent = '提醒间隔';
+        intervalLabel.textContent = __tt("timer.warningsinterval");
         intervalLabel.style.cssText = 'font-size:14px;font-weight:500;margin-bottom:10px;';
         intervalSection.appendChild(intervalLabel);
         
@@ -42707,7 +42733,7 @@ window.__setTomatoFloatState = function (payload) {
         const syncRepeatModeOptions = () => {
             const followOption = repeatModeSelect.querySelector(`option[value="${REMINDER_REPEAT_MODE_FOLLOW_TASK}"]`);
             if (followOption) {
-                followOption.textContent = hasTaskRepeat ? '跟随任务循环' : '跟随任务';
+                followOption.textContent = hasTaskRepeat ? __tt("timer.followTaskrepeat") : __tt("timer.followTask");
             }
             repeatModeSelect.value = repeatMode;
         };
@@ -42742,7 +42768,7 @@ window.__setTomatoFloatState = function (payload) {
         const everySection = document.createElement('div');
         everySection.style.cssText = 'margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;';
         const everyLabel = document.createElement('div');
-        everyLabel.textContent = '每隔';
+        everyLabel.textContent = __tt("timer.every");
         everyLabel.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);';
         const everyInput = document.createElement('input');
         everyInput.type = 'number';
@@ -42759,7 +42785,7 @@ window.__setTomatoFloatState = function (payload) {
             try { syncEndDateConstraints(); } catch (e) {}
             try { syncMonthlyModeVisibility(); } catch (e) {}
             if (!show) return;
-            const unit = selectedInterval === 'daily' ? '天' : selectedInterval === 'workday' ? '个工作日' : selectedInterval === 'weekly' ? '周' : selectedInterval === 'monthly' ? '月' : selectedInterval === 'yearly' ? '年' : '';
+            const unit = selectedInterval === 'daily' ? __tt("timer.days") : selectedInterval === 'workday' ? __tt("timer.workdays2") : selectedInterval === 'weekly' ? __tt("timer.week") : selectedInterval === 'monthly' ? __tt("timer.month2") : selectedInterval === 'yearly' ? __tt("timer.year") : '';
             everyUnit.textContent = unit || '';
         };
         everyInput.oninput = () => {
@@ -42775,11 +42801,11 @@ window.__setTomatoFloatState = function (payload) {
         const weeklyWeekdaysSection = document.createElement('div');
         weeklyWeekdaysSection.style.cssText = 'margin-top:10px;display:none;flex-direction:column;gap:8px;';
         const weeklyWeekdaysLabel = document.createElement('div');
-        weeklyWeekdaysLabel.textContent = '每周日期';
+        weeklyWeekdaysLabel.textContent = __tt("timer.weekdays2");
         weeklyWeekdaysLabel.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);';
         const weeklyWeekdaysGrid = document.createElement('div');
         weeklyWeekdaysGrid.setAttribute('role', 'group');
-        weeklyWeekdaysGrid.setAttribute('aria-label', '每周日期');
+        weeklyWeekdaysGrid.setAttribute('aria-label', __tt("timer.weekdays2"));
         weeklyWeekdaysGrid.style.cssText = 'display:grid;grid-template-columns:repeat(7,minmax(36px,1fr));gap:6px;';
         const syncWeeklyWeekdayButtons = () => {
             Array.from(weeklyWeekdaysGrid.children).forEach((child) => {
@@ -42792,7 +42818,7 @@ window.__setTomatoFloatState = function (payload) {
                 child.setAttribute('aria-pressed', selected ? 'true' : 'false');
             });
         };
-        [[1, '一'], [2, '二'], [3, '三'], [4, '四'], [5, '五'], [6, '六'], [0, '日']].forEach(([weekday, label]) => {
+        [[1, __tt("timer.m")], [2, __tt("timer.t")], [3, __tt("timer.w")], [4, __tt("timer.t2")], [5, __tt("timer.f")], [6, __tt("timer.s")], [0, __tt("timer.day")]].forEach(([weekday, label]) => {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.textContent = label;
@@ -42820,7 +42846,7 @@ window.__setTomatoFloatState = function (payload) {
         const monthlyModeSection = document.createElement('div');
         monthlyModeSection.style.cssText = 'margin-top:10px;display:none;flex-direction:column;gap:8px;';
         const monthlyModeLabel = document.createElement('div');
-        monthlyModeLabel.textContent = '每月规则';
+        monthlyModeLabel.textContent = __tt("timer.monthlyRule");
         monthlyModeLabel.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);';
         const monthlyModeGrid = document.createElement('div');
         monthlyModeGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:8px;';
@@ -42833,7 +42859,7 @@ window.__setTomatoFloatState = function (payload) {
                 child.style.fontWeight = sel ? '600' : '400';
             });
         };
-        [['date', '按日期'], ['weekday', '按星期']].forEach(([value, label]) => {
+        [['date', __tt("timer.byDate")], ['weekday', __tt("timer.byWeekday")]].forEach(([value, label]) => {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.textContent = label;
@@ -42880,7 +42906,7 @@ window.__setTomatoFloatState = function (payload) {
         const calendarModeSection = document.createElement('div');
         calendarModeSection.style.cssText = 'margin-top:10px;display:none;flex-direction:column;gap:8px;';
         const calendarModeLabel = document.createElement('div');
-        calendarModeLabel.textContent = '历法';
+        calendarModeLabel.textContent = __tt("timer.calendar");
         calendarModeLabel.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);';
         const calendarModeGrid = document.createElement('div');
         calendarModeGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:8px;';
@@ -42893,7 +42919,7 @@ window.__setTomatoFloatState = function (payload) {
                 child.style.fontWeight = sel ? '600' : '400';
             });
         };
-        [['solar', '公历'], ['lunar', '农历']].forEach(([value, label]) => {
+        [['solar', __tt("timer.gregorian")], ['lunar', __tt("timer.lunar2")]].forEach(([value, label]) => {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.textContent = label;
@@ -42924,7 +42950,7 @@ window.__setTomatoFloatState = function (payload) {
         const taskRepeatTriggerSection = document.createElement('div');
         taskRepeatTriggerSection.style.cssText = 'margin-top:10px;display:none;flex-direction:column;gap:8px;';
         const taskRepeatTriggerLabel = document.createElement('div');
-        taskRepeatTriggerLabel.textContent = '重复方式';
+        taskRepeatTriggerLabel.textContent = __tt("timer.recurrence");
         taskRepeatTriggerLabel.style.cssText = 'font-size:12px;color:var(--b3-theme-on-surface-light);';
         const taskRepeatTriggerGrid = document.createElement('div');
         taskRepeatTriggerGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:8px;';
@@ -42938,7 +42964,7 @@ window.__setTomatoFloatState = function (payload) {
                 child.style.fontWeight = sel ? '600' : '400';
             });
         };
-        [['due', '到期重复'], ['complete', '完成重复']].forEach(([value, label]) => {
+        [['due', __tt("timer.repeatOnDueDate")], ['complete', __tt("timer.donerepeat")]].forEach(([value, label]) => {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.textContent = label;
@@ -42960,7 +42986,7 @@ window.__setTomatoFloatState = function (payload) {
         taskRepeatTriggerSection.appendChild(taskRepeatTriggerLabel);
         taskRepeatTriggerSection.appendChild(taskRepeatTriggerGrid);
         const completionRepeatHint = document.createElement('div');
-        completionRepeatHint.textContent = '从实际完成日期起按间隔安排下一期，不支持指定周几、月内日期或农历。独立提醒须完成本期全部时间后推进。';
+        completionRepeatHint.textContent = __tt("timer.scheduleTheNextOccurrenceAtAnIntervalFromThe");
         completionRepeatHint.style.cssText = 'font-size:12px;line-height:1.6;color:var(--b3-theme-on-surface-light);';
         taskRepeatTriggerSection.appendChild(completionRepeatHint);
         intervalSection.insertBefore(taskRepeatTriggerSection, intervalSection.firstChild);
@@ -42975,7 +43001,7 @@ window.__setTomatoFloatState = function (payload) {
         const dateSection = document.createElement('div');
         dateSection.style.cssText = 'margin-bottom:20px;';
         const dateLabel = document.createElement('div');
-        dateLabel.textContent = '开始日期';
+        dateLabel.textContent = __tt("timer.startDate");
         dateLabel.style.cssText = 'font-size:14px;font-weight:500;margin-bottom:8px;';
         dateSection.appendChild(dateLabel);
         const dateInput = document.createElement('input');
@@ -42996,14 +43022,14 @@ window.__setTomatoFloatState = function (payload) {
             monthDayAnchorKey = dateInput.value;
             syncMonthlyModeVisibility();
             const lunarText = selectedCalendarMode === 'lunar' ? __formatReminderLunarDateText(dateInput.value) : '';
-            const baseLabel = checkin ? '打卡计划起点' : (repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK ? '任务截止日' : '开始日期');
+            const baseLabel = checkin ? __tt("timer.checkInScheduleStart") : (repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK ? __tt("timer.taskdueDate") : __tt("timer.startDate"));
             dateLabel.textContent = lunarText ? `${baseLabel}（${lunarText}）` : baseLabel;
         };
         syncDateLabel();
         const dateHint = document.createElement('div');
         dateHint.textContent = repeatMode === REMINDER_REPEAT_MODE_FOLLOW_TASK
-            ? '修改后会同步回填任务截止日，并作为任务循环基准。'
-            : '支持设置未来日期作为独立提醒循环起点。';
+            ? __tt("timer.changesAlsoUpdateTheTaskSDueDateAnd")
+            : __tt("timer.aFutureDateCanBeTheStartOfA");
         dateHint.style.cssText = 'margin-top:6px;font-size:11px;color:var(--b3-theme-on-surface-light);line-height:1.4;';
         dateSection.appendChild(dateHint);
         content.appendChild(dateSection);
@@ -43011,7 +43037,7 @@ window.__setTomatoFloatState = function (payload) {
         const timeSection = document.createElement('div');
         timeSection.style.cssText = 'margin-bottom:20px;';
         const timeLabel = document.createElement('div');
-        timeLabel.textContent = '提醒时间（可添加多个）';
+        timeLabel.textContent = __tt("timer.reminderTimesMultipleAllowed");
         timeLabel.style.cssText = 'font-size:14px;font-weight:500;margin-bottom:10px;';
         timeSection.appendChild(timeLabel);
 
@@ -43085,14 +43111,14 @@ window.__setTomatoFloatState = function (payload) {
                 const nextAt = getNextReminderDateTime(reminderPreview, new Date());
                 if (nextAt) {
                     const lunarText = selectedCalendarMode === 'lunar' ? __formatReminderLunarDateText(nextAt) : '';
-                    nextInfo.textContent = '下次提醒：' + formatDateTimeKey(nextAt) + (lunarText ? `（${lunarText}）` : '');
+                    nextInfo.textContent = __tt("timer.nextReminder") + formatDateTimeKey(nextAt) + (lunarText ? `（${lunarText}）` : '');
                 } else {
                     nextInfo.textContent = selectedTaskRepeatTrigger === 'complete'
-                        ? '下次提醒：本期完成后安排；达到截止日期或次数后停止'
-                        : '下次提醒：无（可能已过期或未设置时间）';
+                        ? __tt("timer.nextReminderScheduledAfterThisOccurrenceIsCompletedStops")
+                        : __tt("timer.nextReminderNoneMayHaveExpiredOrHaveNo");
                 }
             } catch (e) {
-                nextInfo.textContent = '下次提醒：—';
+                nextInfo.textContent = __tt("timer.nextReminder2");
             }
         };
         dateInput.onchange = () => {
@@ -43112,7 +43138,7 @@ window.__setTomatoFloatState = function (payload) {
                 timeInput.style.cssText = 'flex:1 1 160px;min-width:0;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
                 timeInput.onchange = (e) => { reminderTimes[index] = e.target.value; updateNextInfo(); };
                 const deleteBtn = document.createElement('button');
-                deleteBtn.textContent = '删除';
+                deleteBtn.textContent = __tt("common.delete");
                 deleteBtn.style.cssText = 'padding:8px 12px;border:none;border-radius:6px;background:rgba(244,67,54,0.1);cursor:pointer;font-size:12px;color:#f44336;flex:0 0 auto;';
                 deleteBtn.onclick = () => {
                     if (reminderTimes.length > 1) {
@@ -43130,7 +43156,7 @@ window.__setTomatoFloatState = function (payload) {
         timeSection.appendChild(timeListContainer);
 
         const addTimeBtn = document.createElement('button');
-        addTimeBtn.textContent = '+ 添加提醒时间';
+        addTimeBtn.textContent = __tt("timer.addwarningstime");
         addTimeBtn.style.cssText = 'width:100%;padding:10px;border:1px dashed var(--b3-theme-surface-light);border-radius:6px;background:transparent;color:var(--b3-theme-primary);cursor:pointer;font-size:13px;';
         addTimeBtn.onclick = () => { reminderTimes.push('12:00'); renderTimeInputs(); updateNextInfo(); };
         timeSection.appendChild(addTimeBtn);
@@ -43144,15 +43170,15 @@ window.__setTomatoFloatState = function (payload) {
         const endDateSection = document.createElement('div');
         endDateSection.style.cssText = 'margin-bottom:20px;display:none;'; // 默认隐藏
         const endDateLabel = document.createElement('div');
-        endDateLabel.textContent = '结束方式';
+        endDateLabel.textContent = __tt("timer.endMode");
         endDateLabel.style.cssText = 'font-size:14px;font-weight:500;margin-bottom:8px;';
         endDateSection.appendChild(endDateLabel);
         const endModeSelect = document.createElement('select');
         endModeSelect.style.cssText = 'width:100%;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;margin-bottom:8px;';
         endModeSelect.innerHTML = `
-            <option value="never" ${selectedEndMode === 'never' ? 'selected' : ''}>永不结束</option>
-            <option value="date" ${selectedEndMode === 'date' ? 'selected' : ''}>按日期结束</option>
-            <option value="count" ${selectedEndMode === 'count' ? 'selected' : ''}>按次数结束</option>
+            <option value="never" ${selectedEndMode === 'never' ? 'selected' : ''}>${__tt("timer.neverEnds")}</option>
+            <option value="date" ${selectedEndMode === 'date' ? 'selected' : ''}>${__tt("timer.endsOnDate")}</option>
+            <option value="count" ${selectedEndMode === 'count' ? 'selected' : ''}>${__tt("timer.endsAfterCount")}</option>
         `;
         endDateSection.appendChild(endModeSelect);
         const endDateInput = document.createElement('input');
@@ -43163,7 +43189,7 @@ window.__setTomatoFloatState = function (payload) {
         const endCountRow = document.createElement('div');
         endCountRow.style.cssText = 'display:none;align-items:center;gap:8px;';
         const endCountPrefix = document.createElement('span');
-        endCountPrefix.textContent = '共';
+        endCountPrefix.textContent = __tt("timer.total2");
         endCountPrefix.style.cssText = 'font-size:13px;color:var(--b3-theme-on-surface-light);';
         const endCountInput = document.createElement('input');
         endCountInput.type = 'number';
@@ -43173,7 +43199,7 @@ window.__setTomatoFloatState = function (payload) {
         endCountInput.value = String(selectedMaxOccurrences);
         endCountInput.style.cssText = 'width:96px;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
         const endCountSuffix = document.createElement('span');
-        endCountSuffix.textContent = '次（含本次，最多 200 次）';
+        endCountSuffix.textContent = __tt("timer.occurrencesIncludingThisOneUpTo");
         endCountSuffix.style.cssText = 'font-size:13px;color:var(--b3-theme-on-surface-light);';
         endCountRow.appendChild(endCountPrefix);
         endCountRow.appendChild(endCountInput);
@@ -43205,7 +43231,7 @@ window.__setTomatoFloatState = function (payload) {
             try { updateNextInfo(); } catch (e) {}
         };
         const endDateHint = document.createElement('div');
-        endDateHint.textContent = '按次数结束时，同一天的多个提醒时间只算一次。';
+        endDateHint.textContent = __tt("timer.whenEndingByCountMultipleReminderTimesOnOne");
         endDateHint.style.cssText = 'margin-top:6px;font-size:11px;color:var(--b3-theme-on-surface-light);';
         endDateSection.appendChild(endDateHint);
         content.appendChild(endDateSection);
@@ -43252,33 +43278,33 @@ window.__setTomatoFloatState = function (payload) {
             endDateSection.style.display = !follow && selectedInterval !== 'once' ? 'block' : 'none';
             nameInput.readOnly = follow;
             nameInput.style.opacity = follow ? '0.72' : '1';
-            nameLabel.textContent = follow ? '任务名称' : '提醒名称';
-            intervalLabel.textContent = follow ? '任务循环' : '提醒间隔';
-            endDateLabel.textContent = follow ? '任务循环结束' : '结束方式';
+            nameLabel.textContent = follow ? __tt("timer.taskName") : __tt("timer.warningsname");
+            intervalLabel.textContent = follow ? __tt("timer.taskrepeat") : __tt("timer.warningsinterval");
+            endDateLabel.textContent = follow ? __tt("timer.taskrepeatend") : __tt("timer.endMode");
             dateHint.textContent = follow
                 ? (taskContext.taskRepeatRule?.enabled === true && taskContext.taskRepeatRule.trigger === 'checkin'
-                    ? '打卡日期由任务循环计划决定，请在任务循环设置中调整。'
-                    : '可调整当前任务截止日；循环规则由任务管理器维护。')
-                : '支持设置未来日期作为独立提醒循环起点。';
+                    ? __tt("timer.checkInDatesFollowTheTaskSRepeatSchedule")
+                    : __tt("timer.youCanAdjustTheCurrentDueDateTaskHorizon"))
+                : __tt("timer.aFutureDateCanBeTheStartOfA");
             try { syncDateLabel(); } catch (e) {}
             try { syncTaskRepeatTriggerVisibility(); } catch (e) {}
             repeatModeHint.textContent = follow
-                ? '任务负责日期和循环；提醒只负责时间、渠道和启用状态。'
+                ? __tt("timer.theTaskControlsDatesAndRepeatsTheReminderControls")
                 : (hasTaskRepeat
-                    ? '独立提醒不会修改任务的截止日或循环。'
-                    : '当前提醒独立运行，不修改任务字段。');
+                    ? __tt("timer.standaloneRemindersDoNotChangeTheTaskSDue")
+                    : __tt("timer.thisReminderRunsIndependentlyAndDoesNotChangeTask"));
         };
         syncRepeatModeVisibility();
 
         const noteSection = document.createElement('div');
         noteSection.style.cssText = 'margin-bottom:20px;';
         const noteLabel = document.createElement('div');
-        noteLabel.textContent = '备注（可选）';
+        noteLabel.textContent = __tt("timer.noteOptional");
         noteLabel.style.cssText = 'font-size:14px;font-weight:500;margin-bottom:8px;';
         noteSection.appendChild(noteLabel);
         const noteInput = document.createElement('input');
         noteInput.type = 'text';
-        noteInput.placeholder = '例如：完成每日复习';
+        noteInput.placeholder = __tt("timer.forExampleCompleteDailyReview");
         noteInput.value = existingReminder?.note || '';
         noteInput.style.cssText = 'width:100%;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:6px;background:var(--b3-theme-surface);color:var(--b3-theme-on-background);font-size:14px;box-sizing:border-box;';
         noteSection.appendChild(noteInput);
@@ -43291,7 +43317,7 @@ window.__setTomatoFloatState = function (payload) {
         if (existingReminder) {
             deleteBtn = document.createElement('button');
             deleteBtn.type = 'button';
-            deleteBtn.textContent = '删除提醒';
+            deleteBtn.textContent = __tt("timer.deletewarnings");
             deleteBtn.style.cssText = 'flex:1;padding:12px;border:1px solid rgba(244,67,54,0.22);border-radius:8px;background:rgba(244,67,54,0.08);color:#f44336;cursor:pointer;font-size:14px;font-weight:500;';
             deleteBtn.onclick = async () => {
                 if (isDraftMode) {
@@ -43316,11 +43342,11 @@ window.__setTomatoFloatState = function (payload) {
                     ? await __deleteReminderOccurrence(blockId, occurrenceDateKey, occurrenceTimeKey, { occurrenceNumber: existingReminder?.trigger === 'complete' ? __normalizeReminderTaskRepeatState(existingReminder.repeatState).occurrenceCount : null })
                     : await deleteBlockReminder(blockId);
                 if (success) {
-                    showMiniToast(deleteScope === 'current' ? '当前提醒已删除' : '提醒已删除');
+                    showMiniToast(deleteScope === 'current' ? __tt("timer.thisReminderHasBeenDeleted") : __tt("timer.reminderDeleted"));
                     closeDialog();
                     try { refreshReminderDockPanel(); } catch (e) {}
                 } else {
-                    showMiniToast('删除失败');
+                    showMiniToast(__tt("timer.deleteFailed3"));
                     try { deleteBtn.disabled = false; } catch (e) {}
                     try { saveBtn.disabled = false; } catch (e) {}
                 }
@@ -43328,7 +43354,7 @@ window.__setTomatoFloatState = function (payload) {
         }
         const saveBtn = document.createElement('button');
         saveBtn.type = 'button';
-        saveBtn.textContent = existingReminder ? '保存修改' : '添加提醒';
+        saveBtn.textContent = existingReminder ? __tt("timer.saveChanges") : __tt("timer.addReminder");
         saveBtn.style.cssText = 'flex:1;padding:12px;border:none;border-radius:8px;background:var(--b3-theme-primary);color:white;cursor:pointer;font-size:14px;font-weight:500;';
         let reminderSaveRunning = false;
         saveBtn.onclick = async () => {
@@ -43348,7 +43374,7 @@ window.__setTomatoFloatState = function (payload) {
             const startDate = String(dateInput.value || '').trim() || formatDateKey(new Date());
             const monthRule = { trigger: selectedTaskRepeatTrigger, type: selectedInterval, every: intervalEvery, monthlyMode: selectedTaskRepeatTrigger === 'complete' ? 'date' : selectedMonthlyMode, calendarMode: selectedCalendarMode, monthDays: getSelectedMonthDays(), monthWeek: getSelectedMonthWeek(), anchorDate: startDate };
             if (__monthRepeatCore.isExplicit(monthRule) && !__monthRepeatCore.nextDateKey(monthRule, startDate, true)) {
-                showMiniToast('请选择至少一个有效的月日期');
+                showMiniToast(__tt("timer.selectAtLeastOneValidDayOfTheMonth"));
                 resetSaveBusy();
                 return;
             }
@@ -43372,13 +43398,13 @@ window.__setTomatoFloatState = function (payload) {
                         startDate,
                     }, maxOccurrences) : ''));
             if (repeatMode === REMINDER_REPEAT_MODE_MANUAL && selectedTaskRepeatTrigger !== 'complete' && maxOccurrences > 0 && !endDate) {
-                showMiniToast('无法计算结束日期，请检查循环设置');
+                showMiniToast(__tt("timer.cannotCalculateTheEndDateCheckTheRepeatSettings"));
                 try { endCountInput.focus(); } catch (e) {}
                 resetSaveBusy();
                 return;
             }
             if (selectedInterval !== 'once' && endDate && endDate < startDate) {
-                showMiniToast('截止日期不能早于开始日期');
+                showMiniToast(__tt("timer.theEndDateCannotBeEarlierThanTheStart"));
                 try { endDateInput.focus(); } catch (e) {}
                 resetSaveBusy();
                 return;
@@ -43469,17 +43495,17 @@ window.__setTomatoFloatState = function (payload) {
                     source: 'tomato-reminder-dialog',
                 }, { existingReminder });
             } catch (e) {
-                showMiniToast(String(e?.message || '任务字段更新失败'));
+                showMiniToast(String(e?.message || __tt("timer.taskFieldsupdateFailed")));
                 resetSaveBusy();
                 return;
             }
             const success = saveResult?.ok === true;
             if (success) {
-                showMiniToast(existingReminder ? '提醒已更新' : '提醒已添加');
+                showMiniToast(existingReminder ? __tt("timer.reminderUpdated") : __tt("timer.warningsadded"));
                 closeDialog();
                 try { refreshReminderDockPanel(); } catch (e) {}
             } else {
-                showMiniToast(saveResult?.taskChanged ? '任务已更新，提醒保存失败，请重试' : '保存失败');
+                showMiniToast(saveResult?.taskChanged ? __tt("timer.theTaskWasUpdatedButTheReminderCouldNot") : __tt("timer.savefailed"));
                 resetSaveBusy();
             }
         };
@@ -43797,7 +43823,7 @@ window.__setTomatoFloatState = function (payload) {
         const nowIso = new Date().toISOString();
         const baseDraft = {
             blockId: String(blockId),
-            blockName: String(blockName || '').trim() || '未命名任务',
+            blockName: String(blockName || '').trim() || __tt("timer.untitledTask"),
             interval,
             every,
             times,
@@ -43833,7 +43859,7 @@ window.__setTomatoFloatState = function (payload) {
         }
         const ok = saveResult?.ok === true;
         if (ok) {
-            try { showMiniToast('已自动添加提醒'); } catch (e) {}
+            try { showMiniToast(__tt("timer.reminderAddedAutomatically")); } catch (e) {}
         }
         return !!ok;
     }
@@ -44536,7 +44562,7 @@ window.__setTomatoFloatState = function (payload) {
         const endAt = Number(options?.endAt);
         const limit = Math.max(1, Math.min(20000, Number.parseInt(options?.limit, 10) || 20000));
         if (!Number.isFinite(startAt) || !Number.isFinite(endAt) || endAt <= startAt) {
-            throw new Error('提醒订阅时间范围无效');
+            throw new Error(__tt("timer.invalidReminderSubscriptionTimeRange"));
         }
         const docIds = Array.isArray(options.docIds) ? Array.from(new Set(options.docIds.map(id => String(id || '').trim()).filter(Boolean))) : null;
         const docIdSet = docIds ? new Set(docIds) : null;
@@ -44597,7 +44623,7 @@ window.__setTomatoFloatState = function (payload) {
                         stableIdentity,
                         blockId,
                         docId,
-                        title: String(reminder.blockName || reminder.blockContent || '').trim() || '任务提醒',
+                        title: String(reminder.blockName || reminder.blockContent || '').trim() || __tt("plugin.taskReminder"),
                         startAt: occurrenceAt,
                         ...(checkin ? { checkin: true, completed: checkedOccurrences.has(occurrenceKey) } : {}),
                     });
@@ -45004,8 +45030,8 @@ window.__setTomatoFloatState = function (payload) {
     }
     
     function showReminderNotification(reminder, time, currentDate) {
-        const title = '⏰ 任务提醒';
-        const content = reminder.blockName || reminder.blockContent || '未命名任务';
+        const title = __tt("timer.taskReminder");
+        const content = reminder.blockName || reminder.blockContent || __tt("timer.untitledTask");
         const note = reminder.note ? '\n' + reminder.note : '';
         const fullMessage = content + note;
         
@@ -45228,7 +45254,7 @@ window.__setTomatoFloatState = function (payload) {
             const dialogOptions = (options && typeof options === 'object') ? options : {};
             if (dialogOptions.draft === true) {
                 return Promise.resolve().then(async () => {
-                    const name = String(blockName || '').trim() || '任务';
+                    const name = String(blockName || '').trim() || __tt("timer.task");
                     const existing = dialogOptions.draftReminder && typeof dialogOptions.draftReminder === 'object'
                         ? { ...dialogOptions.draftReminder }
                         : null;
@@ -45241,7 +45267,7 @@ window.__setTomatoFloatState = function (payload) {
             Promise.resolve().then(async () => {
                 const id = String(blockId || '').trim();
                 if (!id) return;
-                const name = String(blockName || '').trim() || '任务';
+                const name = String(blockName || '').trim() || __tt("timer.task");
                 const taskContext = await __getReminderTaskContext(id);
                 const existing = await getBlockReminder(id);
                 if (!existing) {
@@ -45277,7 +45303,7 @@ window.__setTomatoFloatState = function (payload) {
         listOccurrences: __listReminderOccurrencesForSubscription,
         get: async (taskRef, options = {}) => {
             const requestedId = String(taskRef || '').trim();
-            if (!requestedId) return { ok: false, code: 'INVALID_ARGUMENT', message: '任务 ID 为空' };
+            if (!requestedId) return { ok: false, code: 'INVALID_ARGUMENT', message: __tt("timer.taskIdIsEmpty") };
             const resolved = await resolveReminderBlockAttrContext(requestedId);
             const reminder = await readReminderFromResolvedContext(resolved);
             return {
@@ -45291,13 +45317,13 @@ window.__setTomatoFloatState = function (payload) {
         upsert: async (taskRef, patch, options = {}) => {
             const requestedId = String(taskRef || '').trim();
             if (!requestedId || !patch || typeof patch !== 'object' || Array.isArray(patch)) {
-                return { ok: false, code: 'INVALID_ARGUMENT', message: '提醒参数无效' };
+                return { ok: false, code: 'INVALID_ARGUMENT', message: __tt("timer.invalidReminderParameters") };
             }
             const resolved = await resolveReminderBlockAttrContext(requestedId);
             const attrHostId = String(resolved?.reminderBlockId || requestedId).trim() || requestedId;
             const existing = await readReminderFromResolvedContext(resolved);
             if (existing && options?.overwrite !== true) {
-                return { ok: false, code: 'REMINDER_EXISTS', message: '已有提醒，已跳过', taskId: resolved?.attrContext?.taskId, attrHostId };
+                return { ok: false, code: 'REMINDER_EXISTS', message: __tt("timer.aReminderAlreadyExistsSkipped"), taskId: resolved?.attrContext?.taskId, attrHostId };
             }
             const ok = await saveBlockReminder(requestedId, { ...patch, blockId: attrHostId }, {
                 taskAttrEventExtra: {
@@ -45305,7 +45331,7 @@ window.__setTomatoFloatState = function (payload) {
                     source: String(options?.source || 'tomato-reminder-bridge').trim() || 'tomato-reminder-bridge',
                 },
             });
-            if (!ok) return { ok: false, code: 'SAVE_FAILED', message: '保存提醒失败', attrHostId };
+            if (!ok) return { ok: false, code: 'SAVE_FAILED', message: __tt("timer.failedToSaveTheReminder"), attrHostId };
             const reminder = await getBlockReminder(requestedId);
             return {
                 ok: true,
@@ -45317,13 +45343,13 @@ window.__setTomatoFloatState = function (payload) {
         upsertDraft: async (taskRef, draft, options = {}) => {
             const requestedId = String(taskRef || '').trim();
             if (!requestedId || !draft || typeof draft !== 'object' || Array.isArray(draft)) {
-                return { ok: false, code: 'INVALID_ARGUMENT', message: '提醒草稿无效' };
+                return { ok: false, code: 'INVALID_ARGUMENT', message: __tt("timer.invalidReminderDraft") };
             }
             const resolved = await resolveReminderBlockAttrContext(requestedId);
             const attrHostId = String(resolved?.reminderBlockId || requestedId).trim() || requestedId;
             const existing = await readReminderFromResolvedContext(resolved);
             if (existing && options?.overwrite !== true) {
-                return { ok: false, code: 'REMINDER_EXISTS', message: '已有提醒，已跳过', taskId: resolved?.attrContext?.taskId, attrHostId };
+                return { ok: false, code: 'REMINDER_EXISTS', message: __tt("timer.aReminderAlreadyExistsSkipped"), taskId: resolved?.attrContext?.taskId, attrHostId };
             }
             const source = String(options?.source || 'tomato-reminder-draft').trim() || 'tomato-reminder-draft';
             let saveResult = null;
@@ -45343,25 +45369,25 @@ window.__setTomatoFloatState = function (payload) {
                     },
                 });
             } catch (e) {
-                return { ok: false, code: 'SAVE_FAILED', message: String(e?.message || '保存提醒失败'), attrHostId };
+                return { ok: false, code: 'SAVE_FAILED', message: String(e?.message || __tt("timer.failedToSaveTheReminder")), attrHostId };
             }
             if (saveResult?.ok !== true) {
                 return {
                     ok: false,
                     code: 'SAVE_FAILED',
-                    message: saveResult?.taskChanged ? '任务字段已更新，但提醒保存失败' : '保存提醒失败',
+                    message: saveResult?.taskChanged ? __tt("timer.taskFieldsWereUpdatedButTheReminderCouldNot") : __tt("timer.failedToSaveTheReminder"),
                     attrHostId,
                 };
             }
             const reminder = await getBlockReminder(requestedId);
             if (!reminder || !String(reminder.blockId || '').trim() || !Array.isArray(reminder.times) || reminder.times.length === 0 || !String(reminder.startDate || '').trim()) {
-                return { ok: false, code: 'SAVE_FAILED', message: '提醒保存后校验失败', attrHostId };
+                return { ok: false, code: 'SAVE_FAILED', message: __tt("timer.reminderVerificationFailedAfterSaving"), attrHostId };
             }
             if (__getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK) {
                 const canonicalCompletion = __normalizeReminderDateKey(saveResult?.canonicalTask?.completionTime || '');
                 const savedCompletion = __normalizeReminderDateKey(reminder.taskCompletionTime || '');
                 if (canonicalCompletion && savedCompletion && canonicalCompletion !== savedCompletion) {
-                    return { ok: false, code: 'SAVE_FAILED', message: '提醒与任务截止日不一致', attrHostId };
+                    return { ok: false, code: 'SAVE_FAILED', message: __tt("timer.theReminderDoesNotMatchTheTaskSDue"), attrHostId };
                 }
             }
             return {
@@ -45373,14 +45399,14 @@ window.__setTomatoFloatState = function (payload) {
         },
         remove: async (taskRef, options = {}) => {
             const requestedId = String(taskRef || '').trim();
-            if (!requestedId) return { ok: false, code: 'INVALID_ARGUMENT', message: '任务 ID 为空' };
+            if (!requestedId) return { ok: false, code: 'INVALID_ARGUMENT', message: __tt("timer.taskIdIsEmpty") };
             const resolved = await resolveReminderBlockAttrContext(requestedId);
             const attrHostId = String(resolved?.reminderBlockId || requestedId).trim() || requestedId;
             const ok = await deleteBlockReminder(requestedId);
             return {
                 ok,
                 code: ok ? '' : 'DELETE_FAILED',
-                message: ok ? '' : '删除提醒失败',
+                message: ok ? '' : __tt("timer.deletewarningsfailed"),
                 taskId: String(resolved?.attrContext?.taskId || requestedId).trim() || requestedId,
                 attrHostId,
             };
@@ -45484,13 +45510,13 @@ window.__setTomatoFloatState = function (payload) {
         const requestedId = String(blockId || '').trim();
         if (!requestedId) return null;
         const target = await resolveTomatoTaskTarget(requestedId);
-        if (!target) throw new Error('无法确定提醒属性宿主');
+        if (!target) throw new Error(__tt("timer.cannotIdentifyTheReminderAttributeHost"));
         if (target.kind === 'task') {
             const attrContext = target.context;
-            if (!await ensureTomatoTaskAttrsMigrated(attrContext)) throw new Error('任务提醒旧属性迁移失败');
+            if (!await ensureTomatoTaskAttrsMigrated(attrContext)) throw new Error(__tt("timer.couldNotMigrateLegacyTaskReminderAttributes"));
             const reminderBlockId = String(attrContext.attrHostId || '').trim();
             const attrs = await getTomatoBlockAttrs(reminderBlockId);
-            if (!attrs) throw new Error('无法读取任务提醒属性');
+            if (!attrs) throw new Error(__tt("timer.couldNotReadTaskReminderAttributes"));
             return {
                 kind: 'task',
                 attrContext,
@@ -45500,7 +45526,7 @@ window.__setTomatoFloatState = function (payload) {
             };
         }
         const attrs = await getTomatoBlockAttrs(requestedId);
-        if (!attrs) throw new Error('无法读取普通块提醒属性');
+        if (!attrs) throw new Error(__tt("timer.couldNotReadBlockReminderAttributes"));
         return {
             kind: 'block',
             attrContext: {
@@ -45540,7 +45566,7 @@ window.__setTomatoFloatState = function (payload) {
         startFromTaskBlock: async (blockId, taskName, durationMin, mode, options = null) => {
             const id = String(blockId || '').trim();
             if (!id) return false;
-            const name = String(taskName || '').trim() || '任务';
+            const name = String(taskName || '').trim() || __tt("timer.task");
             const m = String(mode || '').trim() || 'countdown';
             let duration = parseInt(durationMin, 10);
             if (!Number.isFinite(duration) || duration <= 0) {
@@ -45557,7 +45583,7 @@ window.__setTomatoFloatState = function (payload) {
                 await startTimerFromTaskBlock(mockBlock, duration, m, options);
                 return true;
             } catch (e) {
-                try { showMiniToast('启动计时失败'); } catch (e2) {}
+                try { showMiniToast(__tt("timer.couldNotStartTheTimer")); } catch (e2) {}
                 return false;
             }
         },
@@ -45570,7 +45596,7 @@ window.__setTomatoFloatState = function (payload) {
         startCountdown: async (blockId, taskName, durationMin, options = null) => {
             const id = String(blockId || '').trim();
             if (!id) return false;
-            const name = String(taskName || '').trim() || '任务';
+            const name = String(taskName || '').trim() || __tt("timer.task");
             let duration = parseInt(durationMin, 10);
             if (!Number.isFinite(duration) || duration <= 0) {
                 try {
@@ -45586,19 +45612,19 @@ window.__setTomatoFloatState = function (payload) {
                 await switchToCountdownAndStartWithTask(duration, id, name, options);
                 return true;
             } catch (e) {
-                try { showMiniToast('启动番茄失败'); } catch (e2) {}
+                try { showMiniToast(__tt("timer.couldNotStartThePomodoro")); } catch (e2) {}
                 return false;
             }
         },
         startStopwatch: async (blockId, taskName, options = null) => {
             const id = String(blockId || '').trim();
             if (!id) return false;
-            const name = String(taskName || '').trim() || '任务';
+            const name = String(taskName || '').trim() || __tt("timer.task");
             try {
                 await switchToStopwatchAndStartWithTask(id, name, options);
                 return true;
             } catch (e) {
-                try { showMiniToast('启动专注正计时失败'); } catch (e2) {}
+                try { showMiniToast(__tt("timer.couldNotStartTheFocusStopwatch")); } catch (e2) {}
                 return false;
             }
         },
@@ -45941,7 +45967,7 @@ window.__setTomatoFloatState = function (payload) {
             if (response.ok && response.data?.code === 0) {
                 const blocks = response.data.data || [];
                 if (blocks.length > queryLimit) {
-                    if (throwOnError) throw new Error(`任务提醒数量超过 ${queryLimit} 条，无法完整读取`);
+                    if (throwOnError) throw new Error(__tt("timer.thereAreMoreThanTaskRemindersTheFullList", { queryLimit: queryLimit }));
                     blocks.length = queryLimit;
                 }
 
@@ -45956,7 +45982,7 @@ window.__setTomatoFloatState = function (payload) {
                         if (String(block?.type || '').trim().toLowerCase() === 'l') {
                             const target = await resolveTomatoTaskTarget(block.id);
                             if (!target) {
-                                if (throwOnError) throw new Error(`无法确定提醒列表类型: ${String(block?.id || 'unknown')}`);
+                                if (throwOnError) throw new Error(__tt("timer.unknownReminderListType", { value1: String(block?.id || 'unknown') }));
                                 continue;
                             }
                             if (target.kind === 'task') {
@@ -45973,7 +45999,7 @@ window.__setTomatoFloatState = function (payload) {
                                         LIMIT 1
                                     `);
                                     if (!taskRows) {
-                                        if (throwOnError) throw new Error(`无法读取任务提醒状态: ${canonicalId}`);
+                                        if (throwOnError) throw new Error(__tt("timer.couldNotReadTaskReminderState", { canonicalId: canonicalId }));
                                         continue;
                                     }
                                     if (__isCompletedReminderTaskBlockRow(taskRows[0], reminder)) continue;
@@ -46006,13 +46032,13 @@ window.__setTomatoFloatState = function (payload) {
                         reminders.push(reminder);
                     } catch (e) {
                         Logger.warn('解析提醒数据失败:', e);
-                        if (throwOnError) throw new Error(`任务提醒数据损坏: ${String(block?.id || 'unknown')}`);
+                        if (throwOnError) throw new Error(__tt("timer.damagedTaskReminderData", { value1: String(block?.id || 'unknown') }));
                     }
                 }
                 return reminders;
             } else {
                 Logger.warn('SQL查询返回错误:', response.data?.msg);
-                if (throwOnError) throw new Error(response.data?.msg || '任务提醒查询失败');
+                if (throwOnError) throw new Error(response.data?.msg || __tt("timer.taskReminderQueryFailed"));
             }
         } catch (e) {
             Logger.error('查询提醒块失败:', e);
@@ -46457,7 +46483,7 @@ window.__setTomatoFloatState = function (payload) {
                 element.textContent = '';
                 const msg = document.createElement('div');
                 msg.style.cssText = 'padding:12px;color:var(--b3-theme-error);font-size:12px;line-height:1.6;';
-                msg.textContent = '提醒面板挂载失败：' + String(e?.message || e);
+                msg.textContent = __tt("timer.couldNotMountTheReminderPanel") + String(e?.message || e);
                 element.appendChild(msg);
             } catch (e3) {}
             return false;
@@ -47168,7 +47194,7 @@ window.__setTomatoFloatState = function (payload) {
         __setReminderDockIcon(icon, 'alarm');
 
         const title = document.createElement('div');
-        title.textContent = '任务提醒';
+        title.textContent = __tt("plugin.taskReminder");
         title.className = 'tomato-reminder-dock-title-text';
 
         const pendingCount = document.createElement('span');
@@ -47186,7 +47212,7 @@ window.__setTomatoFloatState = function (payload) {
         const refreshBtn = document.createElement('button');
         refreshBtn.type = 'button';
         __setReminderDockIcon(refreshBtn, 'refresh');
-        refreshBtn.title = '刷新提醒列表';
+        refreshBtn.title = __tt("timer.refreshwarningslist");
         refreshBtn.className = 'tomato-reminder-refresh-btn tomato-reminder-dock-icon-btn';
         refreshBtn.onclick = async () => {
             try {
@@ -47194,9 +47220,9 @@ window.__setTomatoFloatState = function (payload) {
                 refreshBtn.style.opacity = '0.6';
                 __invalidateReminderDockCache();
                 await renderReminderDockList('time', true);
-                try { showMiniToast('提醒列表已刷新'); } catch (e) {}
+                try { showMiniToast(__tt("timer.warningslistrefreshed")); } catch (e) {}
             } catch (e) {
-                try { showMiniToast('刷新失败'); } catch (e2) {}
+                try { showMiniToast(__tt("timer.refreshfailed")); } catch (e2) {}
             } finally {
                 try {
                     refreshBtn.disabled = false;
@@ -47208,7 +47234,7 @@ window.__setTomatoFloatState = function (payload) {
         const settingsBtn = document.createElement('button');
         settingsBtn.type = 'button';
         __setReminderDockIcon(settingsBtn, 'settings');
-        settingsBtn.title = '提醒设置';
+        settingsBtn.title = __tt("timer.warningssettings");
         settingsBtn.className = 'tomato-reminder-settings-btn tomato-reminder-dock-icon-btn';
         settingsBtn.onclick = () => showReminderSettingsDialog();
 
@@ -47235,7 +47261,7 @@ window.__setTomatoFloatState = function (payload) {
                 const dom = __ensureReminderDockListDom();
                 if (!dom) return;
                 dom.list.textContent = '';
-                dom.empty.textContent = '加载失败：' + String(e?.message || e);
+                dom.empty.textContent = __tt("timer.couldNotLoad") + String(e?.message || e);
                 dom.empty.style.display = 'block';
                 dom.list.style.display = 'none';
             } catch (e3) {}
@@ -47546,7 +47572,7 @@ window.__setTomatoFloatState = function (payload) {
                 dom.sortBar.textContent = '';
                 const segments = document.createElement('div');
                 segments.className = 'tomato-reminder-dock-segments';
-                const viewOptions = [{ key: 'unfinished', label: '未完成' }, { key: 'completed', label: '已完成' }];
+                const viewOptions = [{ key: 'unfinished', label: __tt("timer.incomplete") }, { key: 'completed', label: __tt("timer.completed") }];
                 viewOptions.forEach(opt => {
                     const btn = document.createElement('button');
                     btn.type = 'button';
@@ -47574,7 +47600,7 @@ window.__setTomatoFloatState = function (payload) {
                 todayToggle.className = 'tomato-reminder-dock-today';
                 const todayIcon = __createReminderDockIcon('today');
                 const todayLabel = document.createElement('span');
-                todayLabel.textContent = '今天';
+                todayLabel.textContent = __tt("common.today");
                 if (todayIcon) todayToggle.appendChild(todayIcon);
                 todayToggle.appendChild(todayLabel);
                 todayToggle.onclick = () => {
@@ -47644,14 +47670,14 @@ window.__setTomatoFloatState = function (payload) {
         const formatShortDate = (dateKey) => {
             const parts = String(dateKey || '').split('-');
             if (parts.length !== 3) return String(dateKey || '');
-            return `${parseInt(parts[1], 10)}月${parseInt(parts[2], 10)}日`;
+            return __tt("date.monthDay", { value1: parseInt(parts[1], 10), value2: parseInt(parts[2], 10) });
         };
 
         const formatDockNextDateTime = (date) => {
             if (!(date instanceof Date) || isNaN(date.getTime())) return '';
             if (date.getFullYear() !== now.getFullYear()) return formatDateTimeKey(date);
             const minutes = String(date.getMinutes()).padStart(2, '0');
-            return `${date.getMonth() + 1}月${date.getDate()}日 ${date.getHours()}:${minutes}`;
+            return __tt("date.monthDayTime", { value1: date.getMonth() + 1, value2: date.getDate(), value3: date.getHours(), minutes: minutes });
         };
 
         const getTimeSubLabel = (entry) => {
@@ -47659,14 +47685,14 @@ window.__setTomatoFloatState = function (payload) {
             if (!(at instanceof Date) || isNaN(at.getTime())) return '';
             if (entry.kind === 'expired') {
                 const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-                return formatDateKey(at) === formatDateKey(yesterday) ? '昨天' : formatShortDate(formatDateKey(at));
+                return formatDateKey(at) === formatDateKey(yesterday) ? __tt("timer.yesterday2") : formatShortDate(formatDateKey(at));
             }
-            if (entry.groupKey === 'week') return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][at.getDay()];
+            if (entry.groupKey === 'week') return [__tt("timer.sunday"), __tt("timer.monday"), __tt("timer.tuesday"), __tt("timer.wednesday"), __tt("timer.thursday"), __tt("timer.friday"), __tt("timer.saturday")][at.getDay()];
             if (entry.groupKey === 'later') return formatShortDate(formatDateKey(at));
             const hour = at.getHours();
-            if (hour < 12) return '上午';
-            if (hour < 18) return '下午';
-            return '晚上';
+            if (hour < 12) return __tt("timer.morning");
+            if (hour < 18) return __tt("timer.afternoon");
+            return __tt("timer.evening");
         };
 
         const createBadge = (label, type = 'repeat') => {
@@ -47684,7 +47710,7 @@ window.__setTomatoFloatState = function (payload) {
             const followsTask = __getReminderRepeatMode(reminder) === REMINDER_REPEAT_MODE_FOLLOW_TASK;
             const followRule = __parseReminderTaskRepeatRule(reminder?.taskRepeatRule);
             if (followsTask && followRule?.enabled && followRule.type !== 'none') {
-                if (followRule.type === 'fsrs') return 'FSRS 间隔重复';
+                if (followRule.type === 'fsrs') return __tt("timer.fsrsSpacedRepetition");
                 return __getReminderIntervalLabel({
                     ...reminder,
                     trigger: followRule.trigger,
@@ -47725,7 +47751,7 @@ window.__setTomatoFloatState = function (payload) {
             mobileBtn.type = 'button';
             mobileBtn.className = 'tomato-reminder-type-badge tomato-reminder-device-badge';
             __setReminderDockIcon(mobileBtn, 'device');
-            mobileBtn.title = '查看手机端预约';
+            mobileBtn.title = __tt("timer.viewMobileScheduledReminders");
             body.appendChild(name);
             body.appendChild(meta);
 
@@ -47735,12 +47761,12 @@ window.__setTomatoFloatState = function (payload) {
             doneBtn.type = 'button';
             doneBtn.className = 'tomato-reminder-row-action is-done';
             __setReminderDockIcon(doneBtn, 'complete');
-            doneBtn.title = '完成';
+            doneBtn.title = __tt("timer.done");
             const moreBtn = document.createElement('button');
             moreBtn.type = 'button';
             moreBtn.className = 'tomato-reminder-row-action is-more';
             __setReminderDockIcon(moreBtn, 'more');
-            moreBtn.title = '更多操作';
+            moreBtn.title = __tt("timer.moreActions");
             actions.appendChild(doneBtn);
             actions.appendChild(moreBtn);
 
@@ -47763,10 +47789,10 @@ window.__setTomatoFloatState = function (payload) {
             item.classList.toggle('is-overdue', entry.kind === 'expired');
             refs.timeMain.textContent = timeKey;
             refs.timeSub.textContent = getTimeSubLabel(entry);
-            refs.name.textContent = reminder.blockName || reminder.blockContent || '未命名任务';
+            refs.name.textContent = reminder.blockName || reminder.blockContent || __tt("timer.untitledTask");
             refs.meta.textContent = '';
             if (repeatLabel) refs.meta.appendChild(createBadge(repeatLabel, 'repeat'));
-            if (followsTask) refs.meta.appendChild(createBadge('跟随', 'follow'));
+            if (followsTask) refs.meta.appendChild(createBadge(__tt("timer.followTask2"), 'follow'));
 
             const deviceSchedules = __getReminderAllDeviceScheduleEntries(reminder);
             if (deviceSchedules.length > 0) refs.meta.appendChild(refs.mobileBtn);
@@ -47777,15 +47803,15 @@ window.__setTomatoFloatState = function (payload) {
             const progressState = __normalizeReminderTaskRepeatState(followsTask ? reminder?.taskRepeatState : reminder?.repeatState);
             const progressLimit = followsTask ? followRule?.maxOccurrences : (reminder.trigger === 'complete' ? reminder.maxOccurrences : 0);
             const followProgress = followsTask && followRule?.trigger === 'checkin'
-                ? ` · 已打卡 ${progressState.checkinHistory.length} 次`
+                ? __tt("timer.checkInsCompleted", { length: progressState.checkinHistory.length })
                 : progressLimit > 0
-                ? ` · 已完成 ${Math.max(0, progressState.occurrenceCount - 1)}/${progressLimit}`
+                ? __tt("timer.completed2", { value1: Math.max(0, progressState.occurrenceCount - 1), progressLimit: progressLimit })
                 : '';
             const nextText = document.createElement('span');
             nextText.className = 'tomato-reminder-next-time';
             nextText.textContent = nextAt
-                ? `下次 ${formatDockNextDateTime(nextAt)}${followProgress}`
-                : (followsTask ? `跟随任务截止时间${followProgress}` : (reminder.trigger === 'complete' ? `本期完成后安排下一期${followProgress}` : (repeatLabel ? '等待下一次循环' : '单次提醒')));
+                ? __tt("timer.next", { value1: formatDockNextDateTime(nextAt), followProgress: followProgress })
+                : (followsTask ? __tt("timer.followTaskduetime", { followProgress: followProgress }) : (reminder.trigger === 'complete' ? __tt("timer.theNextOccurrenceIsScheduledAfterThisOneIs", { followProgress: followProgress }) : (repeatLabel ? __tt("timer.waitingForTheNextOccurrence") : __tt("timer.oneTimeReminder"))));
             nextText.title = nextText.textContent;
             refs.meta.appendChild(nextText);
 
@@ -47804,7 +47830,7 @@ window.__setTomatoFloatState = function (payload) {
             const deleteReminder = async () => {
                 const deleteScope = await __chooseReminderDeleteScope(reminder, dateKey, timeKey);
                 if (!deleteScope) return;
-                try { showMiniToast('正在删除...'); } catch (e) {}
+                try { showMiniToast(__tt("timer.deleting")); } catch (e) {}
                 const previousOpacity = item.style.opacity;
                 refs.doneBtn.disabled = true;
                 refs.moreBtn.disabled = true;
@@ -47814,7 +47840,7 @@ window.__setTomatoFloatState = function (payload) {
                     ? await __deleteReminderOccurrence(reminder.blockId, dateKey, timeKey, { occurrenceNumber: reminder.trigger === 'complete' ? __normalizeReminderTaskRepeatState(reminder.repeatState).occurrenceCount : null })
                     : await deleteBlockReminder(reminder.blockId);
                 if (success) {
-                    showMiniToast(deleteScope === 'current' ? '当前提醒已删除' : '提醒已删除');
+                    showMiniToast(deleteScope === 'current' ? __tt("timer.thisReminderHasBeenDeleted") : __tt("timer.reminderDeleted"));
                     __invalidateReminderDockCache();
                     renderReminderDockList('time', false);
                     return;
@@ -47823,13 +47849,13 @@ window.__setTomatoFloatState = function (payload) {
                 refs.moreBtn.disabled = false;
                 refs.mobileBtn.disabled = false;
                 item.style.opacity = previousOpacity || '';
-                showMiniToast('删除失败');
+                showMiniToast(__tt("timer.deleteFailed3"));
             };
             refs.moreBtn.onclick = (event) => {
                 try { event.preventDefault(); event.stopPropagation(); } catch (e) {}
                 __openReminderDockActionMenu(refs.moreBtn, [
-                    { label: '编辑提醒', icon: 'edit', run: editReminder },
-                    { label: '删除提醒', icon: 'delete', danger: true, run: deleteReminder },
+                    { label: __tt("timer.editwarnings"), icon: 'edit', run: editReminder },
+                    { label: __tt("timer.deletewarnings"), icon: 'delete', danger: true, run: deleteReminder },
                 ]);
             };
             refs.mobileBtn.onclick = (event) => {
@@ -47844,7 +47870,7 @@ window.__setTomatoFloatState = function (payload) {
                 refs.mobileBtn.disabled = true;
                 item.style.opacity = '0.62';
                 const ok = await __markReminderOccurrenceCompleted(reminder.blockId, dateKey, timeKey, { taskOccurrenceId: __getFollowTaskOccurrenceId(reminder), scheduleSignature: __getReminderScheduleSignature(reminder), occurrenceNumber: reminder.trigger === 'complete' ? __normalizeReminderTaskRepeatState(reminder.repeatState).occurrenceCount : null });
-                showMiniToast(ok ? '已标记完成' : '标记失败');
+                showMiniToast(ok ? __tt("timer.markedComplete") : __tt("timer.couldNotMarkComplete"));
                 if (!ok) {
                     refs.doneBtn.disabled = false;
                     refs.moreBtn.disabled = false;
@@ -47884,7 +47910,7 @@ window.__setTomatoFloatState = function (payload) {
             undoBtn.type = 'button';
             undoBtn.className = 'tomato-reminder-row-action';
             __setReminderDockIcon(undoBtn, 'undo');
-            undoBtn.title = '撤销完成';
+            undoBtn.title = __tt("timer.undodone");
             actions.appendChild(undoBtn);
 
             item.appendChild(timeRail);
@@ -47899,8 +47925,8 @@ window.__setTomatoFloatState = function (payload) {
             const refs = item.__dock;
             refs.timeMain.textContent = entry.timeKey;
             refs.timeSub.textContent = formatShortDate(entry.dateKey);
-            refs.name.textContent = reminder.blockName || reminder.blockContent || '未命名任务';
-            refs.info.textContent = '已完成';
+            refs.name.textContent = reminder.blockName || reminder.blockContent || __tt("timer.untitledTask");
+            refs.info.textContent = __tt("timer.completed");
             const editReminder = () => showReminderDialog(reminder.blockId, reminder.blockName, reminder, null, {
                 occurrenceDateKey: entry.dateKey,
                 occurrenceTimeKey: entry.timeKey,
@@ -47914,11 +47940,11 @@ window.__setTomatoFloatState = function (payload) {
                 editReminder();
             };
             refs.undoBtn.disabled = !__canUndoReminderCompletionEntry(reminder, entry);
-            refs.undoBtn.title = refs.undoBtn.disabled ? '后续期次已有完成记录，不能撤销较早期次' : '撤销完成';
+            refs.undoBtn.title = refs.undoBtn.disabled ? __tt("timer.aLaterOccurrenceHasAlreadyBeenCompletedAnEarlier") : __tt("timer.undodone");
             refs.undoBtn.onclick = async (event) => {
                 try { event.preventDefault(); event.stopPropagation(); } catch (e) {}
                 const ok = await __unmarkReminderOccurrenceCompleted(reminder.blockId, entry.dateKey, entry.timeKey, { occurrenceNumber: entry.occurrenceNumber, taskOccurrenceId: entry.taskOccurrenceId, completionId: entry.completionId });
-                showMiniToast(ok ? '已撤销' : '撤销失败');
+                showMiniToast(ok ? __tt("timer.undone") : __tt("timer.undofailed"));
                 __invalidateReminderDockCache();
                 renderReminderDockList('time', false);
             };
@@ -47964,7 +47990,7 @@ window.__setTomatoFloatState = function (payload) {
             }
             completedEntries.sort((a, b) => (b.completedAtMs || 0) - (a.completedAtMs || 0));
             if (completedEntries.length === 0) {
-                showEmpty('暂无已完成提醒');
+                showEmpty(__tt("timer.nonecompletedwarnings"));
                 return;
             }
             const showEntries = completedEntries.slice(0, 30);
@@ -47997,9 +48023,9 @@ window.__setTomatoFloatState = function (payload) {
                 groupedCompletedEntries.get(entry.groupKey).push(entry);
             }
             const completedGroupDefinitions = [
-                { key: 'completed-today', label: '今天', detail: formatShortDate(formatDateKey(completedTodayStart)) },
-                { key: 'completed-recent', label: '近7天', detail: `${formatShortDate(formatDateKey(completedRecentStart))}至${formatShortDate(formatDateKey(completedYesterday))}` },
-                { key: 'completed-older', label: '7天前', detail: '更早' },
+                { key: 'completed-today', label: __tt("common.today"), detail: formatShortDate(formatDateKey(completedTodayStart)) },
+                { key: 'completed-recent', label: __tt("timer.lastDays"), detail: __tt("date.range", { value1: formatShortDate(formatDateKey(completedRecentStart)), value2: formatShortDate(formatDateKey(completedYesterday)) }) },
+                { key: 'completed-older', label: __tt("timer.daysAgo"), detail: __tt("timer.earlier") },
             ];
             const frag = document.createDocumentFragment();
             for (const definition of completedGroupDefinitions) {
@@ -48082,7 +48108,7 @@ window.__setTomatoFloatState = function (payload) {
         entries.sort((a, b) => (a.at?.getTime?.() || 0) - (b.at?.getTime?.() || 0));
 
         if (entries.length === 0) {
-            showEmpty(reminderDockTodayOnly ? '今天暂无任务提醒' : '暂无任务提醒，右键块或数据库选择添加提醒');
+            showEmpty(reminderDockTodayOnly ? __tt("timer.todaynoTaskswarnings") : __tt("timer.noTaskRemindersYetRightClickABlockOr"));
             return;
         }
 
@@ -48102,19 +48128,19 @@ window.__setTomatoFloatState = function (payload) {
             if (!groupedEntries.has(entry.groupKey)) groupedEntries.set(entry.groupKey, []);
             groupedEntries.get(entry.groupKey).push(entry);
         }
-        const weekdayLabels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+        const weekdayLabels = [__tt("timer.sunday"), __tt("timer.monday"), __tt("timer.tuesday"), __tt("timer.wednesday"), __tt("timer.thursday"), __tt("timer.friday"), __tt("timer.saturday")];
         const futureYearDefinitions = Array.from(groupedEntries.keys())
             .filter(key => /^year-\d{4}$/.test(key))
             .map(key => parseInt(key.slice(5), 10))
             .filter(Number.isFinite)
             .sort((a, b) => a - b)
-            .map(year => ({ key: `year-${year}`, label: `${year}年`, detail: '全年' }));
+            .map(year => ({ key: `year-${year}`, label: __tt("date.year", { year: year }), detail: __tt("timer.fullYear") }));
         const groupDefinitions = [
-            { key: 'overdue', label: '已过期', detail: '需要处理' },
-            { key: 'today', label: '今天', detail: `${formatShortDate(formatDateKey(todayStart))} · ${weekdayLabels[todayStart.getDay()]}` },
-            { key: 'tomorrow', label: '明天', detail: `${formatShortDate(formatDateKey(tomorrowStart))} · ${weekdayLabels[tomorrowStart.getDay()]}` },
-            { key: 'week', label: '本周', detail: `到 ${formatShortDate(formatDateKey(new Date(nextWeekStart.getTime() - 86400000)))}` },
-            { key: 'later', label: '更晚', detail: '到12月31日' },
+            { key: 'overdue', label: __tt("timer.overdue"), detail: __tt("timer.needsAttention") },
+            { key: 'today', label: __tt("common.today"), detail: `${formatShortDate(formatDateKey(todayStart))} · ${weekdayLabels[todayStart.getDay()]}` },
+            { key: 'tomorrow', label: __tt("timer.tomorrow"), detail: `${formatShortDate(formatDateKey(tomorrowStart))} · ${weekdayLabels[tomorrowStart.getDay()]}` },
+            { key: 'week', label: __tt("timer.thisWeek"), detail: __tt("timer.through", { value1: formatShortDate(formatDateKey(new Date(nextWeekStart.getTime() - 86400000))) }) },
+            { key: 'later', label: __tt("timer.later"), detail: __tt("timer.throughDecember") },
             ...futureYearDefinitions,
         ];
         const frag = document.createDocumentFragment();
@@ -48183,7 +48209,7 @@ window.__setTomatoFloatState = function (payload) {
                 const dom = __ensureReminderDockListDom();
                 if (!dom) return;
                 dom.list.textContent = '';
-                dom.empty.textContent = '加载失败：' + String(e?.message || e);
+                dom.empty.textContent = __tt("timer.couldNotLoad") + String(e?.message || e);
                 dom.empty.style.display = 'block';
                 dom.list.style.display = 'none';
             } catch (e3) {}
@@ -48245,7 +48271,7 @@ window.__setTomatoFloatState = function (payload) {
         const reminderData = reminder && typeof reminder === 'object' ? { ...reminder } : {};
         const blockId = String(reminderData?.blockId || '').trim();
         if (!blockId) {
-            showMiniToast('未找到提醒块');
+            showMiniToast(__tt("timer.reminderBlockNotFound"));
             return;
         }
         document.getElementById('tomato-reminder-device-dialog')?.remove();
@@ -48264,7 +48290,7 @@ window.__setTomatoFloatState = function (payload) {
         };
 
         const title = document.createElement('div');
-        title.textContent = '当前设备预约';
+        title.textContent = __tt("timer.deviceReminders");
         title.style.cssText = 'font-size:18px;font-weight:600;margin-bottom:12px;text-align:center;';
         dialog.appendChild(title);
 
@@ -48276,15 +48302,15 @@ window.__setTomatoFloatState = function (payload) {
         btnRow.style.cssText = 'display:flex;gap:10px;margin-top:16px;';
         const refreshBtn = document.createElement('button');
         refreshBtn.type = 'button';
-        refreshBtn.textContent = '更新预约';
+        refreshBtn.textContent = __tt("timer.updateReminders");
         refreshBtn.style.cssText = 'flex:1;padding:10px 12px;border:none;border-radius:8px;background:var(--b3-theme-primary);color:#fff;cursor:pointer;font-size:14px;';
         const clearBtn = document.createElement('button');
         clearBtn.type = 'button';
-        clearBtn.textContent = '取消预约';
+        clearBtn.textContent = __tt("timer.cancelScheduledReminder");
         clearBtn.style.cssText = 'flex:1;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:8px;background:var(--b3-theme-surface);color:var(--b3-theme-on-surface);cursor:pointer;font-size:14px;';
         const closeBtn = document.createElement('button');
         closeBtn.type = 'button';
-        closeBtn.textContent = '关闭';
+        closeBtn.textContent = __tt("common.close");
         closeBtn.style.cssText = 'flex:1;padding:10px 12px;border:1px solid var(--b3-theme-surface-light);border-radius:8px;background:transparent;color:var(--b3-theme-on-background);cursor:pointer;font-size:14px;';
         btnRow.appendChild(refreshBtn);
         btnRow.appendChild(clearBtn);
@@ -48304,14 +48330,14 @@ window.__setTomatoFloatState = function (payload) {
             const latest = await getBlockReminder(blockId);
             const schedules = __getReminderAllDeviceScheduleEntries(latest || reminderData);
             if (schedules.length === 0) {
-                body.textContent = '当前没有已预约的提醒';
+                body.textContent = __tt("timer.noScheduledReminders");
                 return;
             }
             const lines = [];
             schedules.sort((a, b) => String(a.deviceId || '').localeCompare(String(b.deviceId || '')));
             for (const group of schedules) {
                 const clientLabel = __getReminderNotificationClientLabel(group?.deviceId, group?.schedule);
-                lines.push(`设备: ${String(group.deviceId || '').trim() || 'unknown'}（${clientLabel}）`);
+                lines.push(__tt("timer.device", { value1: String(group.deviceId || '').trim() || 'unknown', clientLabel: clientLabel }));
                 const sortedEntries = group.entries.slice().sort((a, b) => (Number(a?.atMs) || 0) - (Number(b?.atMs) || 0));
                 for (const entry of sortedEntries) {
                     const at = Number(entry?.atMs) || 0;
@@ -48334,9 +48360,9 @@ window.__setTomatoFloatState = function (payload) {
                 await renderDetails();
                 try { __invalidateReminderDockCache(); } catch (e) {}
                 try { refreshReminderDockPanel(); } catch (e) {}
-                showMiniToast(ok ? '已更新预约提醒' : '预约无需更新');
+                showMiniToast(ok ? __tt("timer.scheduledRemindersUpdated") : __tt("timer.noSchedulingChangesNeeded"));
             } catch (e) {
-                showMiniToast('更新预约失败');
+                showMiniToast(__tt("timer.updateRemindersfailed"));
             } finally {
                 setBusy(false);
             }
@@ -48350,9 +48376,9 @@ window.__setTomatoFloatState = function (payload) {
                 await renderDetails();
                 try { __invalidateReminderDockCache(); } catch (e) {}
                 try { refreshReminderDockPanel(); } catch (e) {}
-                showMiniToast(ok ? '已取消预约提醒' : '取消预约失败');
+                showMiniToast(ok ? __tt("timer.scheduledRemindersCancelled") : __tt("timer.couldNotCancelTheScheduledReminder"));
             } catch (e) {
-                showMiniToast('取消预约失败');
+                showMiniToast(__tt("timer.couldNotCancelTheScheduledReminder"));
             } finally {
                 setBusy(false);
             }
@@ -48363,7 +48389,7 @@ window.__setTomatoFloatState = function (payload) {
         backdrop.appendChild(dialog);
         document.body.appendChild(backdrop);
         renderDetails().catch(() => {
-            body.textContent = '加载预约信息失败';
+            body.textContent = __tt("timer.couldNotLoadSchedulingInformation");
         });
     }
     
@@ -48377,7 +48403,7 @@ window.__setTomatoFloatState = function (payload) {
         dialog.id = 'tomato-reminder-settings-dialog';
         dialog.style.cssText = 'background:var(--b3-theme-background);border:1px solid var(--b3-theme-surface-light);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.3);z-index:2147483648;padding:24px;width:90vw;max-width:420px;max-height:85vh;display:flex;flex-direction:column;color:var(--b3-theme-on-background);';
         const title = document.createElement('div');
-        title.textContent = '提醒设置';
+        title.textContent = __tt("timer.warningssettings");
         title.style.cssText = 'font-size:18px;font-weight:600;margin-bottom:20px;text-align:center;';
         dialog.appendChild(title);
         const content = document.createElement('div');
@@ -48398,14 +48424,14 @@ window.__setTomatoFloatState = function (payload) {
             row.appendChild(sw);
             return { row, sw };
         };
-        content.appendChild(createToggle('启用提醒功能', reminderSettings.enabled, (e) => { reminderSettings.enabled = e.target.checked; }).row);
-        content.appendChild(createToggle('自动从标题识别时间', reminderSettings.semanticTitleTimeEnabled, (e) => { reminderSettings.semanticTitleTimeEnabled = e.target.checked; }).row);
-        content.appendChild(createToggle('识别后自动添加提醒', reminderSettings.semanticTitleAutoSaveEnabled, (e) => { reminderSettings.semanticTitleAutoSaveEnabled = e.target.checked; }).row);
-        content.appendChild(createToggle('思源弹窗通知', reminderSettings.popupEnabled, (e) => { reminderSettings.popupEnabled = e.target.checked; }).row);
-        content.appendChild(createToggle('系统通知', reminderSettings.systemNotificationEnabled, (e) => { reminderSettings.systemNotificationEnabled = e.target.checked; if (e.target.checked && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission(); }).row);
-        const wechatToggle = createToggle('微信提醒', draftWechatEnabled, (e) => {
+        content.appendChild(createToggle(__tt("timer.enablewarningsfeature"), reminderSettings.enabled, (e) => { reminderSettings.enabled = e.target.checked; }).row);
+        content.appendChild(createToggle(__tt("timer.recognizeDatesAndTimesFromTitles"), reminderSettings.semanticTitleTimeEnabled, (e) => { reminderSettings.semanticTitleTimeEnabled = e.target.checked; }).row);
+        content.appendChild(createToggle(__tt("timer.automaticallyAddRemindersAfterRecognition"), reminderSettings.semanticTitleAutoSaveEnabled, (e) => { reminderSettings.semanticTitleAutoSaveEnabled = e.target.checked; }).row);
+        content.appendChild(createToggle(__tt("timer.siyuanDialogNotification"), reminderSettings.popupEnabled, (e) => { reminderSettings.popupEnabled = e.target.checked; }).row);
+        content.appendChild(createToggle(__tt("timer.systemNotification"), reminderSettings.systemNotificationEnabled, (e) => { reminderSettings.systemNotificationEnabled = e.target.checked; if (e.target.checked && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission(); }).row);
+        const wechatToggle = createToggle(__tt("timer.wechatReminders"), draftWechatEnabled, (e) => {
             if (e.target.checked && !draftWechatEnabled) {
-                const accepted = window.confirm('微信提醒会将任务标题和时间以明文发送到思源云端，并立即同步已有的未来提醒。是否继续？');
+                const accepted = window.confirm(__tt("timer.wechatRemindersSendTaskTitlesAndTimesAsPlain"));
                 if (!accepted) {
                     e.target.checked = false;
                     return;
@@ -48413,19 +48439,19 @@ window.__setTomatoFloatState = function (payload) {
             }
             draftWechatEnabled = !!e.target.checked;
         });
-        wechatToggle.row.title = '标题和时间将以明文发送到思源云端';
+        wechatToggle.row.title = __tt("timer.titlesAndTimesWillBeSentToSiyuanCloud");
         if (Number(globalThis?.siyuan?.config?.cloudRegion) !== 0) {
             wechatToggle.sw.disabled = true;
             wechatToggle.sw.style.cursor = 'not-allowed';
             wechatToggle.row.style.opacity = '0.55';
-            wechatToggle.row.title = '当前云端区域不支持微信提醒';
+            wechatToggle.row.title = __tt("timer.wechatRemindersAreNotSupportedInTheCurrentCloud");
         }
         content.appendChild(wechatToggle.row);
-        content.appendChild(createToggle('声音提醒', reminderSettings.audioEnabled, (e) => { reminderSettings.audioEnabled = e.target.checked; }).row);
+        content.appendChild(createToggle(__tt("timer.soundReminder"), reminderSettings.audioEnabled, (e) => { reminderSettings.audioEnabled = e.target.checked; }).row);
         const volumeSection = document.createElement('div');
         volumeSection.style.cssText = 'padding:12px 0;border-bottom:1px solid var(--b3-theme-surface-light);';
         const volumeLabel = document.createElement('div');
-        volumeLabel.textContent = '提醒音量: ' + Math.round((reminderSettings.reminderAudioVolume || 0.8) * 100) + '%';
+        volumeLabel.textContent = __tt("timer.reminderVolume") + Math.round((reminderSettings.reminderAudioVolume || 0.8) * 100) + '%';
         volumeLabel.style.cssText = 'font-size:14px;margin-bottom:10px;';
         volumeSection.appendChild(volumeLabel);
         const volumeSlider = document.createElement('input');
@@ -48434,23 +48460,23 @@ window.__setTomatoFloatState = function (payload) {
         volumeSlider.max = '100';
         volumeSlider.value = Math.round((reminderSettings.reminderAudioVolume || 0.8) * 100);
         volumeSlider.style.cssText = 'width:100%;cursor:pointer;';
-        volumeSlider.oninput = (e) => { const vol = parseInt(e.target.value) / 100; reminderSettings.reminderAudioVolume = vol; volumeLabel.textContent = '提醒音量: ' + e.target.value + '%'; };
+        volumeSlider.oninput = (e) => { const vol = parseInt(e.target.value) / 100; reminderSettings.reminderAudioVolume = vol; volumeLabel.textContent = __tt("timer.reminderVolume") + e.target.value + '%'; };
         volumeSection.appendChild(volumeSlider);
         const testBtn = document.createElement('button');
-        testBtn.textContent = '测试提醒';
+        testBtn.textContent = __tt("timer.testReminder");
         testBtn.style.cssText = 'margin-top:12px;padding:8px 16px;border:1px solid var(--b3-theme-primary);border-radius:6px;background:transparent;color:var(--b3-theme-primary);cursor:pointer;font-size:13px;width:100%;';
-        testBtn.onclick = () => { showToastDialog('测试提醒', '这是一条测试提醒消息', 'info', 5000); playReminderAudio(); };
+        testBtn.onclick = () => { showToastDialog(__tt("timer.testReminder"), __tt("timer.thisIsATestReminder"), 'info', 5000); playReminderAudio(); };
         volumeSection.appendChild(testBtn);
         content.appendChild(volumeSection);
         dialog.appendChild(content);
         const btnRow = document.createElement('div');
         btnRow.style.cssText = 'display:flex;gap:12px;margin-top:20px;';
         const cancelBtn = document.createElement('button');
-        cancelBtn.textContent = '取消';
+        cancelBtn.textContent = __tt("common.cancel");
         cancelBtn.style.cssText = 'flex:1;padding:12px;border:1px solid var(--b3-theme-surface-light);border-radius:8px;background:var(--b3-theme-surface);color:var(--b3-theme-on-surface);cursor:pointer;font-size:14px;';
         cancelBtn.onclick = () => { backdrop.remove(); dialog.remove(); };
         const saveBtn = document.createElement('button');
-        saveBtn.textContent = '保存';
+        saveBtn.textContent = __tt("common.save");
         saveBtn.style.cssText = 'flex:1;padding:12px;border:none;border-radius:8px;background:var(--b3-theme-primary);color:white;cursor:pointer;font-size:14px;font-weight:500;';
         saveBtn.onclick = async () => {
             const previousWechatEnabled = reminderSettings.wechatEnabled === true;
@@ -48462,7 +48488,7 @@ window.__setTomatoFloatState = function (payload) {
                     await __syncReminderDeviceSchedulesFromList(reminders);
                 } catch (e) {}
             }
-            showMiniToast('设置已保存');
+            showMiniToast(__tt("timer.settingsSaved"));
             backdrop.remove();
             dialog.remove();
             if (reminderSettings.enabled) startReminderCheck(); else stopReminderCheck();

@@ -1,4 +1,5 @@
 const { Plugin, Setting, openTab, openMobileFileById, platformUtils } = require("siyuan");
+const __tt = (key, params) => globalThis.__dockTomatoI18n.t(key, params);
 let tomatoStatsCore = null;
 let tomatoAppId = "";
 
@@ -21,6 +22,7 @@ let tomatoStatsStartupGeneration = 0;
 
 const DEFAULT_MAIN_SETTINGS = {
     remindersEnabled: true,
+    uiLanguage: "system",
 };
 
 const sanitizeMainSettings = (raw) => {
@@ -29,6 +31,7 @@ const sanitizeMainSettings = (raw) => {
         ? source.data
         : source;
     const next = { ...DEFAULT_MAIN_SETTINGS };
+    if (payload.uiLanguage === "en" || payload.uiLanguage === "zh-CN") next.uiLanguage = payload.uiLanguage;
     if (typeof payload.remindersEnabled === "boolean") next.remindersEnabled = payload.remindersEnabled;
     if (payload.reminderDockEnabled === false) next.remindersEnabled = false;
     return next;
@@ -236,13 +239,13 @@ const installTomatoHistoryWriter = (plugin, scope = "history") => {
     };
     const wait = (delayMs, signal) => new Promise((resolve, reject) => {
         if (signal?.aborted) {
-            reject(writerError("番茄历史写入已停止", "HISTORY_WRITER_DISPOSED"));
+            reject(writerError(__tt("plugin.pomodoroHistoryWritesHaveStopped"), "HISTORY_WRITER_DISPOSED"));
             return;
         }
         let timer = null;
         const onAbort = () => {
             if (timer !== null) clearTimeout(timer);
-            reject(writerError("番茄历史写入已停止", "HISTORY_WRITER_DISPOSED"));
+            reject(writerError(__tt("plugin.pomodoroHistoryWritesHaveStopped"), "HISTORY_WRITER_DISPOSED"));
         };
         timer = setTimeout(() => {
             signal?.removeEventListener?.("abort", onAbort);
@@ -253,7 +256,7 @@ const installTomatoHistoryWriter = (plugin, scope = "history") => {
     const callLease = async (action, payload = {}) => {
         const fn = plugin?.kernel?.rpc?.call?.dockTomatoHistoryWriteLease;
         if (typeof fn !== "function") {
-            const error = new Error("番茄历史写入内核不可用");
+            const error = new Error(__tt("plugin.thePomodoroHistoryWriterIsUnavailable"));
             error.code = "HISTORY_WRITER_UNAVAILABLE";
             throw error;
         }
@@ -264,7 +267,7 @@ const installTomatoHistoryWriter = (plugin, scope = "history") => {
                 Promise.resolve().then(() => fn({ action, scope, ...payload })),
                 new Promise((resolve, reject) => {
                     timer = setTimeout(() => {
-                        const error = new Error("番茄历史写入协调超时");
+                        const error = new Error(__tt("plugin.timedOutCoordinatingAHistoryWrite"));
                         error.code = "HISTORY_WRITER_TIMEOUT";
                         reject(error);
                     }, HISTORY_WRITE_RPC_TIMEOUT_MS);
@@ -274,7 +277,7 @@ const installTomatoHistoryWriter = (plugin, scope = "history") => {
             if (timer !== null) clearTimeout(timer);
         }
         if (!result || result.ok !== true) {
-            const error = new Error(String(result?.error?.message || "番茄历史写入协调失败"));
+            const error = new Error(String(result?.error?.message || __tt("plugin.couldNotCoordinateAHistoryWrite")));
             error.code = String(result?.error?.code || "HISTORY_WRITER_UNAVAILABLE");
             throw error;
         }
@@ -287,21 +290,21 @@ const installTomatoHistoryWriter = (plugin, scope = "history") => {
             if (result.acquired === true && result.token) {
                 if (disposed || signal?.aborted) {
                     void callLease("release", { token: result.token }).catch(() => {});
-                    throw writerError("番茄历史写入已停止", "HISTORY_WRITER_DISPOSED");
+                    throw writerError(__tt("plugin.pomodoroHistoryWritesHaveStopped"), "HISTORY_WRITER_DISPOSED");
                 }
                 return result;
             }
             await wait(Math.max(20, Math.min(500, Number(result.retryAfterMs) || 80)), signal);
         }
         throw writerError(
-            disposed || signal?.aborted ? "番茄历史写入已停止" : "等待番茄历史写入权限超时",
+            disposed || signal?.aborted ? __tt("plugin.pomodoroHistoryWritesHaveStopped") : __tt("plugin.timedOutWaitingForPermissionToWriteHistory"),
             disposed || signal?.aborted ? "HISTORY_WRITER_DISPOSED" : "HISTORY_WRITER_BUSY",
         );
     };
     const renew = async (state) => {
         if (state?.error) throw state.error;
         if ((!state?.localOnly && !state?.lease?.token) || disposed || state.controller.signal.aborted || currentRun !== state) {
-            throw writerError("番茄历史写入权限已失效", "HISTORY_WRITE_LEASE_LOST");
+            throw writerError(__tt("plugin.permissionToWriteHistoryHasExpired"), "HISTORY_WRITE_LEASE_LOST");
         }
         if (state.localOnly) return true;
         const result = await callLease("renew", {
@@ -309,7 +312,7 @@ const installTomatoHistoryWriter = (plugin, scope = "history") => {
             leaseMs: HISTORY_WRITE_LEASE_MS,
         });
         if (result.acquired !== true || result.token !== state.lease.token) {
-            throw writerError("番茄历史写入权限已失效", "HISTORY_WRITE_LEASE_LOST");
+            throw writerError(__tt("plugin.permissionToWriteHistoryHasExpired"), "HISTORY_WRITE_LEASE_LOST");
         }
         state.lease = result;
         return true;
@@ -317,8 +320,8 @@ const installTomatoHistoryWriter = (plugin, scope = "history") => {
     const bridge = {
         async run(operation) {
             if (typeof operation !== "function") throw new TypeError("history write operation must be a function");
-            if (disposed) throw writerError("番茄历史写入已停止", "HISTORY_WRITER_DISPOSED");
-            if (currentRun) throw writerError("番茄历史写入已在进行", "HISTORY_WRITER_BUSY");
+            if (disposed) throw writerError(__tt("plugin.pomodoroHistoryWritesHaveStopped"), "HISTORY_WRITER_DISPOSED");
+            if (currentRun) throw writerError(__tt("plugin.aHistoryWriteIsAlreadyInProgress"), "HISTORY_WRITER_BUSY");
             const runLocally = async () => {
                 const state = {
                     controller: new AbortController(),
@@ -485,7 +488,7 @@ const installTomatoStatsFacade = async (plugin, options = {}) => {
     let statsQuerySequence = 0;
     const assertStatsQueryActive = (control = {}) => {
         if (!control?.signal?.aborted) return;
-        const error = new Error("统计查询已取消");
+        const error = new Error(__tt("plugin.statisticsQueryCancelled"));
         error.code = "STATS_QUERY_ABORTED";
         throw error;
     };
@@ -499,7 +502,7 @@ const installTomatoStatsFacade = async (plugin, options = {}) => {
     };
     const restartKernelSession = async () => {
         const appID = String(plugin?.app?.appId || "").trim();
-        if (!appID) throw new Error("缺少当前窗口标识，无法安全重启番茄统计内核");
+        if (!appID) throw new Error(__tt("plugin.theCurrentWindowIdIsMissingTheStatisticsKernel"));
         const now = Date.now();
         const recentRecovery = readKernelRecoveryTime();
         if (recentRecovery && now >= recentRecovery && now - recentRecovery < kernelRecoveryCooldownMs) {
@@ -517,7 +520,7 @@ const installTomatoStatsFacade = async (plugin, options = {}) => {
             let payload = null;
             try { payload = await response.json(); } catch (e) {}
             if (!response.ok || !payload || Number(payload.code) !== 0) {
-                throw new Error(String(payload?.msg || payload?.message || `番茄统计内核重启失败 (${response.status})`));
+                throw new Error(String(payload?.msg || payload?.message || __tt("plugin.couldNotRestartTheStatisticsKernel", { status: response.status })));
             }
             return true;
         } catch (error) {
@@ -544,7 +547,7 @@ const installTomatoStatsFacade = async (plugin, options = {}) => {
             if (typeof fn !== "function") return null;
             const result = await fn(payload || {});
             if (!result || result.ok !== true) {
-                const error = new Error(String(result?.error?.message || "番茄统计内核调用失败"));
+                const error = new Error(String(result?.error?.message || __tt("plugin.statisticsKernelRequestFailed")));
                 error.code = String(result?.error?.code || "STATS_ERROR");
                 error.details = result?.error?.details || null;
                 throw error;
@@ -562,13 +565,13 @@ const installTomatoStatsFacade = async (plugin, options = {}) => {
                         const recovered = await invoke();
                         return recovered;
                     }
-                    failure = new Error("番茄统计内核会话已恢复，请重试刚才的操作");
+                    failure = new Error(__tt("plugin.theStatisticsKernelSessionHasRecoveredPleaseRetryThe"));
                 } catch (recoveryError) {
                     failure = recoveryError;
                 }
             }
             if (/^(?:STATS_|INVALID_RANGE|HISTORY_)/.test(String(failure?.code || ""))) throw failure;
-            const error = new Error(String(failure?.message || "番茄统计内核不可用"));
+            const error = new Error(String(failure?.message || __tt("plugin.thePomodoroStatisticsKernelIsUnavailable")));
             error.code = "HISTORY_SOURCE_UNAVAILABLE";
             error.details = { method };
             throw error;
@@ -581,7 +584,7 @@ const installTomatoStatsFacade = async (plugin, options = {}) => {
         try {
             meta = JSON.parse(metaRaw);
         } catch (cause) {
-            const error = new Error("番茄历史回退标记损坏");
+            const error = new Error(__tt("plugin.theHistoryFallbackMarkerIsDamaged"));
             error.code = "HISTORY_SOURCE_UNAVAILABLE";
             error.details = { stage: "fallback-marker" };
             throw error;
@@ -615,7 +618,7 @@ const installTomatoStatsFacade = async (plugin, options = {}) => {
     const loadLocalRecords = async (options, control = {}) => {
         assertStatsQueryActive(control);
         const loader = globalThis.__dockTomato?.history?.loadRange;
-        if (typeof loader !== "function") throw new Error("番茄历史接口尚未就绪");
+        if (typeof loader !== "function") throw new Error(__tt("plugin.theHistoryServiceIsNotReady"));
         const records = await loader(options?.from, options?.to);
         assertStatsQueryActive(control);
         return Array.isArray(records) ? records : [];
@@ -824,7 +827,7 @@ const initializeTomatoStats = async (plugin) => {
         const timeout = new Promise((resolve, reject) => {
             timer = setTimeout(() => {
                 try { controller?.abort?.(); } catch (e) {}
-                const error = new Error("番茄统计初始化超时");
+                const error = new Error(__tt("plugin.statisticsInitializationTimedOut"));
                 error.code = "STATS_STARTUP_TIMEOUT";
                 reject(error);
             }, TOMATO_STATS_STARTUP_TIMEOUT_MS);
@@ -1115,7 +1118,7 @@ module.exports = class TomatoTimerPlugin extends Plugin {
                     position: existingPlacement?.position || "RightBottom",
                     size: { width: 320, height: 360 },
                     icon: "iconClock",
-                    title: "任务提醒",
+                    title: __tt("plugin.taskReminder"),
                     index: Number.isFinite(existingPlacement?.index) ? existingPlacement.index : undefined,
                 },
                 data: { plugin: this },
@@ -1173,6 +1176,25 @@ module.exports = class TomatoTimerPlugin extends Plugin {
         return false;
     }
 
+    async initializeLanguage() {
+        const source = await fetchText("/api/file/getFile", { path: `/data/plugins/${PLUGIN_ID}/i18n/runtime.js` });
+        const script = document.createElement("script");
+        script.textContent = source;
+        document.head.appendChild(script);
+        script.remove();
+        const runtime = globalThis.__dockTomatoI18nRuntime;
+        if (!runtime) throw new Error("Unable to load Dock Tomato language runtime");
+        const preference = runtime.normalizePreference(globalThis.__dockTomatoMainSettings?.uiLanguage);
+        const hostLanguage = globalThis.siyuan?.config?.appearance?.lang || globalThis.siyuan?.config?.lang || "en";
+        const locale = preference === "system" ? runtime.normalizeLanguage(hostLanguage) : preference;
+        let messages = this.i18n || {};
+        if (messages.__locale !== locale) {
+            messages = JSON.parse(await fetchText("/api/file/getFile", { path: `/data/plugins/${PLUGIN_ID}/i18n/${locale}.json` }));
+        }
+        this.i18n = messages;
+        globalThis.__dockTomatoI18n = runtime.createI18n(messages, { locale, preference });
+    }
+
     async onload() {
         this._isUnloaded = false;
         tomatoAppId = String(this.app?.appId || "");
@@ -1208,6 +1230,14 @@ module.exports = class TomatoTimerPlugin extends Plugin {
         this._timerWriter = installTomatoHistoryWriter(this, "timer");
         this._accountingWriter = installTomatoHistoryWriter(this, "accounting");
         globalThis.__dockTomatoMainSettings = await loadMainSettings();
+        await this.initializeLanguage();
+        globalThis.__dockTomatoSetLanguage = async (value) => {
+            const uiLanguage = globalThis.__dockTomatoI18nRuntime.normalizePreference(value);
+            const next = { ...globalThis.__dockTomatoMainSettings, uiLanguage };
+            if (!await saveMainSettings(next)) throw new Error(__tt("settings.languageSaveFailed"));
+            globalThis.__dockTomatoMainSettings = next;
+            return uiLanguage;
+        };
         await loadTomatoScript();
         dispatchTomatoStatsAvailability(false);
         void initializeTomatoStats(this);
@@ -1225,9 +1255,9 @@ module.exports = class TomatoTimerPlugin extends Plugin {
         };
 
         this.setting.addItem({
-            title: "番茄钟设置",
-            description: "同步/音频/外观/任务块",
-            createActionElement: () => mkButton("打开设置", () => globalThis.__dockTomato?.openSettings?.()),
+            title: __tt("plugin.pomodorosettings"),
+            description: __tt("plugin.syncAudioAppearanceTaskBlocks"),
+            createActionElement: () => mkButton(__tt("plugin.opensettings"), () => globalThis.__dockTomato?.openSettings?.()),
         });
 
         const mkToggleRow = (label, checked, onChange) => {
@@ -1247,13 +1277,13 @@ module.exports = class TomatoTimerPlugin extends Plugin {
         };
 
         this.setting.addItem({
-            title: "任务提醒",
-            description: "开关将在下次重载插件后生效",
+            title: __tt("plugin.taskReminder"),
+            description: __tt("plugin.thisChangeTakesEffectAfterReloadingThePlugin"),
             createActionElement: () => {
                 const box = document.createElement("div");
                 box.style.cssText = "display:flex;flex-direction:column;";
                 const settings = globalThis.__dockTomatoMainSettings || { ...DEFAULT_MAIN_SETTINGS };
-                box.appendChild(mkToggleRow("启用任务提醒（Dock）", settings.remindersEnabled, async (e) => {
+                box.appendChild(mkToggleRow(__tt("plugin.enabletaskReminderDock"), settings.remindersEnabled, async (e) => {
                     settings.remindersEnabled = !!e.target.checked;
                     globalThis.__dockTomatoMainSettings = settings;
                     await saveMainSettings(settings);
@@ -1263,21 +1293,21 @@ module.exports = class TomatoTimerPlugin extends Plugin {
         });
 
         this.setting.addItem({
-            title: "专注时间范围",
-            description: "配置工作日/周末等专注时间段",
-            createActionElement: () => mkButton("打开时间范围设置", () => globalThis.__dockTomato?.openFocusSettings?.()),
+            title: __tt("plugin.focustimescope"),
+            description: __tt("plugin.setFocusPeriodsForWeekdaysWeekendsAndOtherSchedules"),
+            createActionElement: () => mkButton(__tt("plugin.opentimescopesettings"), () => globalThis.__dockTomato?.openFocusSettings?.()),
         });
 
         this.setting.addItem({
-            title: "时间轴设置",
-            description: "时间轴样式与显示范围",
-            createActionElement: () => mkButton("打开时间轴设置", () => globalThis.__dockTomato?.openTimelineSettings?.()),
+            title: __tt("plugin.timelinesettings"),
+            description: __tt("plugin.timelineAppearanceAndVisibleRange"),
+            createActionElement: () => mkButton(__tt("plugin.opentimelinesettings"), () => globalThis.__dockTomato?.openTimelineSettings?.()),
         });
 
         this.setting.addItem({
-            title: "历史统计",
-            description: "查看历史记录与统计",
-            createActionElement: () => mkButton("打开历史面板", () => globalThis.__dockTomato?.openHistory?.("summary")),
+            title: __tt("plugin.historyStatistics"),
+            description: __tt("plugin.viewPastSessionsAndStatistics"),
+            createActionElement: () => mkButton(__tt("plugin.openHistory"), () => globalThis.__dockTomato?.openHistory?.("summary")),
         });
 
         this._registerReminderDock("onload");
@@ -1350,6 +1380,8 @@ module.exports = class TomatoTimerPlugin extends Plugin {
         } catch (e) {
             console.error("[tomato] cleanup failed", e);
         } finally {
+            try { delete globalThis.__dockTomatoSetLanguage; } catch (e) {}
+            try { delete globalThis.__dockTomatoI18n; } catch (e) {}
             try { delete globalThis.__tomatoPluginApp; } catch (e) {}
             try { delete globalThis.__tomatoPluginInstance; } catch (e) {}
             try { delete globalThis.__tomatoPlatformUtils; } catch (e) {}

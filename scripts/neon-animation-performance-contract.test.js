@@ -1,5 +1,5 @@
 const assert = require('assert');
-const fs = require('fs');
+const fs = require('./i18n-source-fixture');
 const path = require('path');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'tomato.js'), 'utf8');

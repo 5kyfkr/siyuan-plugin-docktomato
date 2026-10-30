@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
+const vm = require('./i18n-vm-fixture');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'tomato.js'), 'utf8');
 const stateStart = source.indexOf('function getNotificationSchedulesMap');

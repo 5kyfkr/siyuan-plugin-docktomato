@@ -1,7 +1,13 @@
 (function (root, factory) {
     'use strict';
 
-    const core = factory();
+    let messages = root?.__dockTomatoI18n?.messages || root?.siyuan?.plugin?.i18n || {};
+    if (!messages.__locale && typeof require === 'function' && typeof document === 'undefined') {
+        try { messages = require('./i18n/en.json'); } catch (e) {}
+    }
+    const __tt = (key, params = {}) => String(messages[key] || key).replace(/\{([A-Za-z_$][\w$]*)\}/g,
+        (placeholder, name) => Object.prototype.hasOwnProperty.call(params, name) ? String(params[name] ?? '') : placeholder);
+    const core = factory(__tt);
     if (typeof module !== 'undefined' && module.exports && typeof document === 'undefined') module.exports = core;
     if (root && typeof document !== 'undefined') root.__dockTomatoStatsCore = core;
 
@@ -16,6 +22,25 @@
         const HISTORY_DIR = `${STORAGE_DIR}/history`;
         const HISTORY_INDEX_PATH = `${HISTORY_DIR}/history-index.json`;
         const SETTINGS_PATH = `${STORAGE_DIR}/tomato-settings.json`;
+        const languageCache = new Map();
+        let languageLoadedAt = 0;
+        async function refreshLanguage() {
+            if (Date.now() - languageLoadedAt < 5000) return;
+            languageLoadedAt = Date.now();
+            try {
+                const settings = await readJson(`${STORAGE_DIR}/tomato-main-settings.json`, true);
+                const preference = settings?.uiLanguage;
+                const hostLanguage = siyuanApi.plugin.i18n?.__locale || 'en';
+                const locale = preference === 'en' || preference === 'zh-CN' ? preference : hostLanguage;
+                if (messages.__locale === locale) return;
+                if (!languageCache.has(locale)) {
+                    const loaded = await readJson(`/data/plugins/${PLUGIN_ID}/i18n/${locale}.json`);
+                    if (loaded?.__locale !== locale) return;
+                    languageCache.set(locale, loaded);
+                }
+                messages = languageCache.get(locale);
+            } catch (e) {}
+        }
         const HISTORY_IO_TIMEOUT_MS = 5000;
         const HISTORY_TEXT_LIMIT = 32 * 1024 * 1024;
         const HISTORY_WRITE_LEASE_MIN_MS = 5000;
@@ -93,21 +118,21 @@
         }
 
         function historyTextLimitError(path) {
-            const error = new Error(`历史数据文件过大: ${path}`);
+            const error = new Error(__tt("kernel.historyFileIsTooLarge", { path: path }));
             error.code = path === SETTINGS_PATH ? 'STATS_SETTINGS_TOO_LARGE' : 'HISTORY_TEXT_LIMIT_EXCEEDED';
             error.details = { path, maxTextBytes: HISTORY_TEXT_LIMIT };
             return error;
         }
 
         function statsQueryExpiredError(deadlineAt = 0) {
-            const error = new Error('统计查询已超过执行期限');
+            const error = new Error(__tt("kernel.theStatisticsQueryExceededItsExecutionDeadline"));
             error.code = 'STATS_QUERY_EXPIRED';
             error.details = { deadlineAt: Math.max(0, Number(deadlineAt) || 0) };
             return error;
         }
 
         function statsQueryAbortedError(queryID = '') {
-            const error = new Error('统计查询已取消');
+            const error = new Error(__tt("plugin.statisticsQueryCancelled"));
             error.code = 'STATS_QUERY_ABORTED';
             error.details = { queryID: text(queryID) };
             return error;
@@ -131,7 +156,7 @@
                             try { controller?.abort?.(); } catch (e) {}
                             return;
                         }
-                        reject(historySourceError('历史数据读取超时', {
+                        reject(historySourceError(__tt("kernel.historyReadTimedOut"), {
                             path,
                             timeoutMs,
                         }));
@@ -152,7 +177,7 @@
                 ]);
             } catch (cause) {
                 if (text(cause?.code)) throw cause;
-                throw historySourceError('历史数据读取超时或失败', {
+                throw historySourceError(__tt("kernel.historyReadTimedOutOrFailed"), {
                     path,
                     timeoutMs,
                     cause: text(cause?.message),
@@ -207,7 +232,7 @@
                 });
                 if (response.status === 404 && optional) return null;
                 if (!response.ok) {
-                    throw historySourceError(`读取文件失败: ${path}`, { path, status: Number(response.status) || 0 });
+                    throw historySourceError(__tt("kernel.readingTheFileFailed", { path: path }), { path, status: Number(response.status) || 0 });
                 }
                 return responseTextLimited(response, path);
             }, control);
@@ -220,17 +245,17 @@
             try { parsed = JSON.parse(raw); }
             catch (cause) {
                 if (path === SETTINGS_PATH) {
-                    const error = new Error('番茄统计设置格式错误');
+                    const error = new Error(__tt("kernel.invalidPomodoroStatisticsSettings"));
                     error.code = 'STATS_SETTINGS_INVALID';
                     error.details = { path, cause: text(cause?.message) };
                     throw error;
                 }
-                throw historySourceError(`历史数据格式错误: ${path}`, { path, cause: text(cause?.message) });
+                throw historySourceError(__tt("kernel.invalidHistoryData", { path: path }), { path, cause: text(cause?.message) });
             }
             if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)
                 && Object.prototype.hasOwnProperty.call(parsed, 'code') && Number(parsed.code) !== 0) {
                 if (optional && isMissingFileMessage(parsed.msg || parsed.message)) return null;
-                throw historySourceError(`读取文件失败: ${path}`, {
+                throw historySourceError(__tt("kernel.readingTheFileFailed", { path: path }), {
                     path,
                     code: Number(parsed.code) || -1,
                     message: text(parsed.msg || parsed.message),
@@ -249,12 +274,12 @@
                 });
                 if (response.status === 404) return { code: 0, data: [] };
                 if (!response.ok) {
-                    throw historySourceError('读取历史目录失败', { path: HISTORY_DIR, status: Number(response.status) || 0 });
+                    throw historySourceError(__tt("kernel.couldNotReadTheHistoryFolder"), { path: HISTORY_DIR, status: Number(response.status) || 0 });
                 }
                 const raw = await responseTextLimited(response, HISTORY_DIR);
                 try { return JSON.parse(String(raw || '')); }
                 catch (cause) {
-                    throw historySourceError('历史目录响应格式错误', {
+                    throw historySourceError(__tt("kernel.invalidHistoryFolderResponse"), {
                         path: HISTORY_DIR,
                         cause: text(cause?.message),
                     });
@@ -262,7 +287,7 @@
             }, control);
             if (!payload || Number(payload.code) !== 0) {
                 if (isMissingFileMessage(payload?.msg || payload?.message)) return [];
-                throw historySourceError('读取历史目录失败', {
+                throw historySourceError(__tt("kernel.couldNotReadTheHistoryFolder"), {
                     path: HISTORY_DIR,
                     code: Number(payload?.code) || -1,
                     message: text(payload?.msg || payload?.message),
@@ -278,7 +303,7 @@
                 .filter((name) => /^(?:\d{4}|unknown)(?:-\d{1,20}-[0-9a-f]{8})?\.json$/.test(name))
                 .sort();
             if (names.some((name) => !/^(?:\d{4}|unknown)\.json$/.test(name))) {
-                throw historySourceError('历史索引缺失，无法确定权威分片版本', { path: HISTORY_DIR });
+                throw historySourceError(__tt("kernel.theHistoryIndexIsMissingTheCurrentShardVersion"), { path: HISTORY_DIR });
             }
             return names;
         }
@@ -313,7 +338,7 @@
             data: null,
             error: {
                 code: text(error?.code) || 'STATS_ERROR',
-                message: text(error?.message) || '统计失败',
+                message: text(error?.message) || __tt("kernel.statisticsFailed"),
                 details: error?.details || null,
             },
         });
@@ -368,6 +393,7 @@
         );
 
         async function runCancelableStatsQuery(payload, operation) {
+            await refreshLanguage();
             const source = payload && typeof payload === 'object' ? payload : {};
             const queryID = text(source.queryID);
             if (!queryID || typeof AbortController !== 'function') return operation(source);
@@ -442,6 +468,7 @@
         }
 
         siyuanApi.plugin.lifecycle.onload = async function () {
+            await refreshLanguage();
             await bindRpc();
         };
         siyuanApi.plugin.lifecycle.onrunning = function () {};
@@ -458,7 +485,7 @@
             historyRepository.clear();
         };
     }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (__tt) {
     'use strict';
 
     const CONTRACT_VERSION = 2;
@@ -512,7 +539,7 @@
         const fromMs = parseTime(options.from);
         const toMs = parseTime(options.to);
         if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) {
-            const error = new Error('from/to 必须构成有效时间范围');
+            const error = new Error(__tt("kernel.fromToMustFormAValidTimeRange"));
             error.code = 'INVALID_RANGE';
             throw error;
         }
@@ -546,7 +573,7 @@
         };
 
         const requireAdapter = (value, name) => {
-            if (typeof value !== 'function') throw makeError('HISTORY_SOURCE_UNAVAILABLE', `历史仓储缺少 ${name} 适配器`);
+            if (typeof value !== 'function') throw makeError('HISTORY_SOURCE_UNAVAILABLE', __tt("kernel.theHistoryRepositoryIsMissingTheAdapter", { name: name }));
             return value;
         };
 
@@ -619,14 +646,14 @@
 
         function assertQueryDeadline(options = {}, stage = '') {
             if (options?.signal?.aborted) {
-                throw makeError('STATS_QUERY_ABORTED', '统计查询已取消', {
+                throw makeError('STATS_QUERY_ABORTED', __tt("plugin.statisticsQueryCancelled"), {
                     queryID: text(options?.queryID),
                     stage: text(stage),
                 });
             }
             const deadlineAt = Math.max(0, Number(options?.deadlineAt) || 0);
             if (!deadlineAt || Date.now() < deadlineAt) return;
-            throw makeError('STATS_QUERY_EXPIRED', '统计查询已超过执行期限', {
+            throw makeError('STATS_QUERY_EXPIRED', __tt("kernel.theStatisticsQueryExceededItsExecutionDeadline"), {
                 deadlineAt,
                 stage: text(stage),
             });
@@ -643,15 +670,15 @@
             assertQueryDeadline(options, 'after-shard-read');
             const rawText = String(raw || '');
             if (rawText.length > MAX_SHARD_TEXT_LENGTH) {
-                throw makeError('HISTORY_SHARD_TOO_LARGE', `历史分片过大: ${name}`, {
+                throw makeError('HISTORY_SHARD_TOO_LARGE', __tt("kernel.historyShardIsTooLarge", { name: name }), {
                     maxShardTextLength: MAX_SHARD_TEXT_LENGTH,
                 });
             }
             if (expectedHash && hashText(rawText) !== expectedHash) {
-                throw makeError('HISTORY_REVISION_CHANGED', `历史分片校验失败: ${name}`);
+                throw makeError('HISTORY_REVISION_CHANGED', __tt("kernel.historyShardVerificationFailed", { name: name }));
             }
             const parsed = JSON.parse(rawText);
-            if (!Array.isArray(parsed)) throw makeError('HISTORY_SOURCE_UNAVAILABLE', `历史分片格式错误: ${name}`);
+            if (!Array.isArray(parsed)) throw makeError('HISTORY_SOURCE_UNAVAILABLE', __tt("kernel.invalidHistoryShard", { name: name }));
             retainCachedShard(cacheKey, parsed, rawText.length);
             return parsed;
         }
@@ -681,7 +708,7 @@
 
         function assertSourceEpoch(expectedEpoch) {
             if (sourceEpoch === expectedEpoch) return;
-            throw makeError('HISTORY_REVISION_CHANGED', '历史数据源正在切换');
+            throw makeError('HISTORY_REVISION_CHANGED', __tt("kernel.theHistorySourceIsChanging"));
         }
 
         async function scanOnce(options, createAggregator) {
@@ -689,11 +716,11 @@
             const expectedSourceEpoch = sourceEpoch;
             const aggregator = createAggregator();
             if (!aggregator || typeof aggregator.add !== 'function' || typeof aggregator.finish !== 'function') {
-                throw makeError('STATS_ERROR', '统计聚合器无效');
+                throw makeError('STATS_ERROR', __tt("kernel.invalidStatisticsAggregator"));
             }
             if (fallbackState.active) {
                 if (!Array.isArray(fallbackState.records)) {
-                    throw makeError('HISTORY_SOURCE_UNAVAILABLE', '前端历史后备尚未同步到统计内核');
+                    throw makeError('HISTORY_SOURCE_UNAVAILABLE', __tt("kernel.theFrontendHistoryFallbackHasNotReachedTheStatistics"));
                 }
                 const cacheKey = text(options?.__statsCacheKey)
                     ? `fallback\n${fallbackState.revision}\n${text(options.__statsCacheKey)}`
@@ -730,7 +757,7 @@
                     sum + Math.max(0, Number(meta?.count) || 0)
                 ), 0);
                 if (declaredRecordCount > MAX_SCANNED_RECORDS) {
-                    throw makeError('STATS_SCAN_LIMIT_EXCEEDED', `统计查询扫描超过 ${MAX_SCANNED_RECORDS} 条记录，请缩小时间范围`, {
+                    throw makeError('STATS_SCAN_LIMIT_EXCEEDED', __tt("kernel.theQueryScannedMoreThanRecordsChooseAShorter", { MAX_SCANNED_RECORDS: MAX_SCANNED_RECORDS }), {
                         maxScannedRecords: MAX_SCANNED_RECORDS,
                     });
                 }
@@ -746,7 +773,7 @@
                     assertSourceEpoch(expectedSourceEpoch);
                     recordCount += records.length;
                     if (recordCount > MAX_SCANNED_RECORDS) {
-                        throw makeError('STATS_SCAN_LIMIT_EXCEEDED', `统计查询扫描超过 ${MAX_SCANNED_RECORDS} 条记录，请缩小时间范围`, {
+                        throw makeError('STATS_SCAN_LIMIT_EXCEEDED', __tt("kernel.theQueryScannedMoreThanRecordsChooseAShorter", { MAX_SCANNED_RECORDS: MAX_SCANNED_RECORDS }), {
                             maxScannedRecords: MAX_SCANNED_RECORDS,
                         });
                     }
@@ -755,7 +782,7 @@
                 const secondIndex = await readJson(indexPath, true, options);
                 assertSourceEpoch(expectedSourceEpoch);
                 if (text(secondIndex?.revision) !== text(firstIndex.revision)) {
-                    throw makeError('HISTORY_REVISION_CHANGED', '历史记录正在更新');
+                    throw makeError('HISTORY_REVISION_CHANGED', __tt("kernel.historyupdating"));
                 }
                 const result = {
                     data: aggregator.finish(),
@@ -773,7 +800,7 @@
                     assertSourceEpoch(expectedSourceEpoch);
                     recordCount += records.length;
                     if (recordCount > MAX_SCANNED_RECORDS) {
-                        throw makeError('STATS_SCAN_LIMIT_EXCEEDED', `统计查询扫描超过 ${MAX_SCANNED_RECORDS} 条记录，请缩小时间范围`, {
+                        throw makeError('STATS_SCAN_LIMIT_EXCEEDED', __tt("kernel.theQueryScannedMoreThanRecordsChooseAShorter", { MAX_SCANNED_RECORDS: MAX_SCANNED_RECORDS }), {
                             maxScannedRecords: MAX_SCANNED_RECORDS,
                         });
                     }
@@ -786,7 +813,7 @@
                 assertSourceEpoch(expectedSourceEpoch);
                 if (Array.isArray(records) && records.length) {
                     if (records.length > MAX_SCANNED_RECORDS) {
-                        throw makeError('STATS_SCAN_LIMIT_EXCEEDED', `统计查询扫描超过 ${MAX_SCANNED_RECORDS} 条记录，请缩小时间范围`, {
+                        throw makeError('STATS_SCAN_LIMIT_EXCEEDED', __tt("kernel.theQueryScannedMoreThanRecordsChooseAShorter", { MAX_SCANNED_RECORDS: MAX_SCANNED_RECORDS }), {
                             maxScannedRecords: MAX_SCANNED_RECORDS,
                         });
                     }
@@ -798,7 +825,7 @@
         }
 
         async function scanWithRetry(options, createAggregator) {
-            if (typeof createAggregator !== 'function') throw makeError('STATS_ERROR', '缺少统计聚合器工厂');
+            if (typeof createAggregator !== 'function') throw makeError('STATS_ERROR', __tt("kernel.theStatisticsAggregatorFactoryIsMissing"));
             let lastError = null;
             for (let attempt = 0; attempt < 2; attempt += 1) {
                 try {
@@ -814,18 +841,18 @@
                     if (text(latestIndex?.revision) === expectedRevision) throw error;
                 }
             }
-            throw lastError || makeError('HISTORY_REVISION_CHANGED', '历史记录正在更新');
+            throw lastError || makeError('HISTORY_REVISION_CHANGED', __tt("kernel.historyupdating"));
         }
 
         function scan(options = {}, createAggregator) {
             if (options?.signal?.aborted) {
-                return Promise.reject(makeError('STATS_QUERY_ABORTED', '统计查询已取消', {
+                return Promise.reject(makeError('STATS_QUERY_ABORTED', __tt("plugin.statisticsQueryCancelled"), {
                     queryID: text(options?.queryID),
                     stage: 'scan-queued',
                 }));
             }
             if (pendingScans >= MAX_PENDING_HISTORY_SCANS) {
-                return Promise.reject(makeError('STATS_BUSY', '统计查询排队过多，请稍后重试', {
+                return Promise.reject(makeError('STATS_BUSY', __tt("kernel.tooManyStatisticsQueriesAreQueuedPleaseTryAgain"), {
                     maxPendingScans: MAX_PENDING_HISTORY_SCANS,
                 }));
             }
@@ -841,7 +868,7 @@
             const aborted = signal ? new Promise((resolve, reject) => {
                 abortHandler = () => {
                     releasePending();
-                    reject(makeError('STATS_QUERY_ABORTED', '统计查询已取消', {
+                    reject(makeError('STATS_QUERY_ABORTED', __tt("plugin.statisticsQueryCancelled"), {
                         queryID: text(options?.queryID),
                         stage: 'scan-queued',
                     }));
@@ -861,7 +888,7 @@
 
         function setFallback(active, records, revision = Date.now()) {
             if (active === true && Array.isArray(records) && records.length > MAX_SCANNED_RECORDS) {
-                throw makeError('STATS_SCAN_LIMIT_EXCEEDED', `历史后备包含超过 ${MAX_SCANNED_RECORDS} 条记录`, {
+                throw makeError('STATS_SCAN_LIMIT_EXCEEDED', __tt("kernel.theHistoryFallbackContainsMoreThanRecords", { MAX_SCANNED_RECORDS: MAX_SCANNED_RECORDS }), {
                     maxScannedRecords: MAX_SCANNED_RECORDS,
                 });
             }
@@ -1081,7 +1108,7 @@
         const checkTime = () => {
             const elapsedMs = Date.now() - startedAt;
             if (elapsedMs <= MAX_QUERY_DURATION_MS) return;
-            const error = new Error(`统计查询执行超过 ${MAX_QUERY_DURATION_MS} 毫秒，请缩小时间或统计范围`);
+            const error = new Error(__tt("kernel.theQueryExceededMillisecondsReduceTheTimeRangeOr", { MAX_QUERY_DURATION_MS: MAX_QUERY_DURATION_MS }));
             error.code = 'STATS_QUERY_TIMEOUT';
             error.details = { maxQueryDurationMs: MAX_QUERY_DURATION_MS, elapsedMs };
             throw error;
@@ -1090,7 +1117,7 @@
             scan() {
                 scannedRecords += 1;
                 if (scannedRecords > MAX_SCANNED_RECORDS) {
-                    const error = new Error(`统计查询扫描超过 ${MAX_SCANNED_RECORDS} 条记录，请缩小时间范围`);
+                    const error = new Error(__tt("kernel.theQueryScannedMoreThanRecordsChooseAShorter", { MAX_SCANNED_RECORDS: MAX_SCANNED_RECORDS }));
                     error.code = 'STATS_SCAN_LIMIT_EXCEEDED';
                     error.details = { maxScannedRecords: MAX_SCANNED_RECORDS };
                     throw error;
@@ -1100,7 +1127,7 @@
             },
             addSession(sessionCount) {
                 if (sessionCount <= MAX_UNIQUE_SESSIONS) return;
-                const error = new Error(`统计查询包含超过 ${MAX_UNIQUE_SESSIONS} 个会话，请缩小时间范围`);
+                const error = new Error(__tt("kernel.theQueryContainsMoreThanSessionsChooseAShorter", { MAX_UNIQUE_SESSIONS: MAX_UNIQUE_SESSIONS }));
                 error.code = 'STATS_SESSION_LIMIT_EXCEEDED';
                 error.details = { maxUniqueSessions: MAX_UNIQUE_SESSIONS };
                 throw error;
@@ -1121,7 +1148,7 @@
             if (!(next > cursor)) break;
             count += 1;
             if (count > MAX_BUCKET_COUNT) {
-                const error = new Error(`时间范围包含超过 ${MAX_BUCKET_COUNT} 个分桶，请缩小范围或使用更粗粒度`);
+                const error = new Error(__tt("kernel.theRangeContainsMoreThanBucketsShortenTheRange", { MAX_BUCKET_COUNT: MAX_BUCKET_COUNT }));
                 error.code = 'STATS_RANGE_TOO_LARGE';
                 error.details = { bucket, maxBucketCount: MAX_BUCKET_COUNT };
                 throw error;
@@ -1144,7 +1171,7 @@
     function consumeResultCells(budget, count = 1) {
         if (!budget) return;
         if (budget.count + count > MAX_RESULT_CELLS) {
-            const error = new Error(`统计结果包含超过 ${MAX_RESULT_CELLS} 个明细单元，请缩小时间或统计范围`);
+            const error = new Error(__tt("kernel.theResultContainsMoreThanDetailCellsReduceThe", { MAX_RESULT_CELLS: MAX_RESULT_CELLS }));
             error.code = 'STATS_RESULT_TOO_LARGE';
             error.details = { maxResultCells: MAX_RESULT_CELLS };
             throw error;
@@ -1310,7 +1337,7 @@
             const key = record.associationKey || '__unattributed';
             if (!associations.has(key)) {
                 if (associations.size >= MAX_ASSOCIATION_COUNT) {
-                    const error = new Error(`统计结果包含超过 ${MAX_ASSOCIATION_COUNT} 个任务关联，请缩小时间或任务范围`);
+                    const error = new Error(__tt("kernel.theResultContainsMoreThanTaskLinksReduceThe", { MAX_ASSOCIATION_COUNT: MAX_ASSOCIATION_COUNT }));
                     error.code = 'STATS_RESULT_TOO_LARGE';
                     error.details = { maxAssociationCount: MAX_ASSOCIATION_COUNT };
                     throw error;
@@ -1394,10 +1421,10 @@
     function routineDefinitions(options) {
         const groups = Array.isArray(options.routineGroups) ? options.routineGroups : [];
         const buttons = Array.isArray(options.routineButtons) ? options.routineButtons : [];
-        const groupNames = new Map(groups.map((group) => [text(group?.id), text(group?.name) || '分组']).filter(([id]) => id));
+        const groupNames = new Map(groups.map((group) => [text(group?.id), text(group?.name) || __tt("kernel.group")]).filter(([id]) => id));
         const metas = buttons.map((button, index) => ({
             id: text(button?.id),
-            name: text(button?.name || button?.label) || `按钮 ${index + 1}`,
+            name: text(button?.name || button?.label) || __tt("kernel.button", { value1: index + 1 }),
             icon: text(button?.icon),
             groupId: text(button?.groupId),
             blockId: text(button?.blockId || button?.taskBlockId),
@@ -1415,7 +1442,7 @@
         if (routine.id || routine.name || routine.blockId) {
             return {
                 ...routine,
-                name: routine.name || '已删除按钮',
+                name: routine.name || __tt("kernel.deletedButton"),
                 key: routine.id ? `routine:${routine.id}` : (routine.blockId ? `block:${routine.blockId}` : `name:${routine.name}`),
                 archived: true,
             };
@@ -1445,7 +1472,7 @@
                 }
                 intervals.splice(low, right - low, [mergedStart, mergedEnd]);
                 if (intervals.length > maxIntervals) {
-                    const error = new Error(`统计结果包含超过 ${MAX_RESULT_CELLS} 个明细单元，请缩小时间或统计范围`);
+                    const error = new Error(__tt("kernel.theResultContainsMoreThanDetailCellsReduceThe", { MAX_RESULT_CELLS: MAX_RESULT_CELLS }));
                     error.code = 'STATS_RESULT_TOO_LARGE';
                     error.details = { maxResultCells: MAX_RESULT_CELLS };
                     throw error;
@@ -1541,8 +1568,8 @@
             if (!isFocus && !isBreak) return;
             const groupId = routine ? (routine.groupId || '__ungrouped') : (isFocus ? '__other_focus' : '__other_break');
             const groupLabel = routine
-                ? (routine.groupId ? (definitions.groupNames.get(routine.groupId) || '分组') : '未分组')
-                : (isFocus ? '其他专注' : '其他休息');
+                ? (routine.groupId ? (definitions.groupNames.get(routine.groupId) || __tt("kernel.group")) : __tt("kernel.ungrouped"))
+                : (isFocus ? __tt("kernel.otherFocus") : __tt("kernel.otherBreaks"));
             addRoutineDuration(groups, groupId, groupLabel, routine, isFocus, allocation.durationSec);
             addToRoutineBuckets(record, allocation, groupId, groupLabel, routine, isFocus);
         };

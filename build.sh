@@ -26,6 +26,8 @@ cp -R "$PLUGIN_DIR"/. "$TEMP_DIR/"
 # 删除不需要的文件和目录
 rm -rf "$TEMP_DIR/.git"
 rm -rf "$TEMP_DIR/.github"
+rm -rf "$TEMP_DIR/.codex-tmp"
+rm -rf "$TEMP_DIR/docs"
 rm -f  "$TEMP_DIR/.impeccable.md"
 rm -rf "$TEMP_DIR/.playwright-cli"
 rm -rf "$TEMP_DIR/.vscode"

@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
+const vm = require('./i18n-vm-fixture');
 const test = require('node:test');
 const source = fs.readFileSync(process.env.TOMATO_TEST_SOURCE || path.resolve(__dirname, '../tomato.js'), 'utf8');
 const between = (a, b) => {

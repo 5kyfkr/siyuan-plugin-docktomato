@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.3.9更新内容
+
+- **新增：i18n 英语支持**
+  - 计时、时间轴、提醒、历史统计、音频、设置及桌面 / 移动端悬浮窗支持中英文界面
+  - 主设置新增“界面语言”，可选“跟随思源 / 简体中文 / English”，保存后点击“重新加载界面”生效；语言选择随插件设置同步，自定义名称和内容保持原样
+- 优化：设置页签支持横向滚动，改善小屏和英文长文案显示
+- 优化：补充英文文档与翻译维护说明，完善跨平台打包及语言资源校验
+
+### English
+
+- **Added: English interface (i18n)**
+  - English and Simplified Chinese across timers, the timeline, reminders, history and statistics, audio, settings, and desktop / mobile floating timers.
+  - Choose **Follow SiYuan / 简体中文 / English** under **General → Interface language**, then click **Reload interface**. The choice syncs with plugin settings; custom names and content are preserved.
+- Improved: Settings tabs scroll horizontally for small screens and longer English labels.
+- Improved: Expanded English documentation and translation guidance; improved cross-platform packaging and language resource checks.
+
+<details>
+<summary>历史版本更新 / Previous updates（点击展开 / click to expand）</summary>
+
 ## 2.3.8更新内容
 - 优化：文档顶栏、历史记录、统计及相关设置中的番茄图标统一使用新版 SVG 样式，替换 Emoji
 - 优化：块、文档及数据库菜单与时长选择弹窗统一计时、提醒图标，改善图标与文字对齐
@@ -658,6 +677,8 @@
 ## 1.0.0
 
 - 初始发布
+
+</details>
 
 
 

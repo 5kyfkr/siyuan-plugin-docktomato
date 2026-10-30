@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const vm = require('node:vm');
+const vm = require('./i18n-vm-fixture');
 const { createRuntime, attachFloatTimerControls, extract, deferred } = require('./timer-journal-queue.test');
 const call = (runtime, script) => vm.runInContext(script, runtime.context);
 const request = JSON.stringify({ context: { consumer: 'siyuan-checkin', itemId: 'read', itemUnit: '分钟', tomatoMode: 'minutes' } });

@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
+const vm = require('./i18n-vm-fixture');
 const source = fs.readFileSync(path.join(__dirname, '..', 'tomato.js'), 'utf8').replaceAll('\r\n', '\n');
 const start = source.indexOf('    function updateTimelineBar(');
 const end = source.indexOf('    const timelineHistoryCacheByDateKey', start);

@@ -1,9 +1,9 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
+const fs = require('./i18n-source-fixture');
 const path = require('node:path');
-const vm = require('node:vm');
+const vm = require('./i18n-vm-fixture');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'tomato.js'), 'utf8');
 const start = source.indexOf('function showExpiredRemindersNotification(expiredEntries)');
