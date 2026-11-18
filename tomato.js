@@ -6987,6 +6987,157 @@
         }
     }
 
+    function __tomatoHistoryAvailableParts(startMs, endMs, records, ignoreId = '') {
+        let parts = [{ start: startMs, end: endMs }];
+        const timer = SyncManager.getState()?.activeTimer;
+        const occupied = records.slice();
+        if (timer?.status === 'RUNNING' && Number(timer.segmentStartMs) > 0) occupied.push({
+            recordId: timer.openRecordId, start: new Date(timer.segmentStartMs).toISOString(), end: new Date().toISOString(),
+        });
+        for (const record of occupied) {
+            if (record.recordId === ignoreId || record.disposition === 'discarded') continue;
+            const start = toDateSafe(record.start)?.getTime?.(), end = toDateSafe(record.end)?.getTime?.();
+            if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+            parts = parts.flatMap(part => end <= part.start || start >= part.end ? [part] : [
+                ...(start > part.start ? [{ start: part.start, end: start }] : []),
+                ...(end < part.end ? [{ start: end, end: part.end }] : []),
+            ]);
+        }
+        return parts;
+    }
+
+    // Manual changes use the same serialized, revision-checked writer as timers.
+    // The receipt contains only this mutation; undo never replaces a history file.
+    function __tomatoHistoryReplaceInterval(records, record, previous = null) {
+        const startMs = toDateSafe(record.start).getTime(), endMs = toDateSafe(record.end).getTime();
+        const before = previous ? [cloneSyncState(previous)] : [], after = [];
+        const overlapping = records.filter(item => item.recordId !== previous?.recordId && item.disposition !== 'discarded'
+            && toDateSafe(item.start).getTime() < endMs && toDateSafe(item.end).getTime() > startMs);
+        for (const original of overlapping) {
+            const start = toDateSafe(original.start).getTime(), end = toDateSafe(original.end).getTime();
+            before.push(cloneSyncState(original));
+            const remaining = [
+                ...(start < startMs ? [{ start, end: startMs }] : []),
+                ...(end > endMs ? [{ start: endMs, end }] : []),
+            ].map((part, index) => {
+                const item = { ...original, recordId: index === 0 ? original.recordId : createTomatoUuid('record') };
+                updateHistoryRecordTimeFields(item, new Date(part.start), new Date(part.end));
+                return item;
+            });
+            // Retain a tombstone so a queued timer journal cannot reintroduce
+            // an original interval that has been completely covered.
+            if (!remaining.length) remaining.push({ ...original, disposition: 'discarded', tombstoneId: createTomatoUuid('tombstone') });
+            after.push(...remaining);
+        }
+        const changedIds = new Set(before.map(item => item.recordId));
+        const allowedOverlaps = cloneSyncState(records.filter(item => !changedIds.has(item.recordId) && item.disposition !== 'discarded'
+            && before.some(original => toDateSafe(item.start).getTime() < toDateSafe(original.end).getTime()
+                && toDateSafe(item.end).getTime() > toDateSafe(original.start).getTime())));
+        let retainedCount = 0;
+        for (const item of records) if (!changedIds.has(item.recordId)) records[retainedCount++] = item;
+        records.length = retainedCount;
+        for (const item of after) records.push(item);
+        records.push(record);
+        return { ok: true, records: cloneSyncState([record]), undo: { before, after: cloneSyncState([...after, record]), allowedOverlaps } };
+    }
+
+    async function __tomatoHistoryCreate(input = {}) {
+        const startMs = Date.parse(input.start), endMs = Date.parse(input.end);
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs || endMs > Date.now()) return { ok: false, error: 'INVALID_TIME' };
+        if (!['countdown', 'stopwatch', 'break'].includes(input.mode || 'countdown')) return { ok: false, error: 'INVALID_MODE' };
+        try {
+            let failure = 'OVERLAP', unchanged = null;
+            const result = await mutateHistoryRecords(records => {
+                unchanged = null;
+                const replacing = input.source === 'schedule';
+                const occupied = replacing ? records.filter(record => record.disposition === 'pending') : records;
+                const available = __tomatoHistoryAvailableParts(startMs, endMs, occupied);
+                if (available.reduce((sum, part) => sum + part.end - part.start, 0) !== endMs - startMs) {
+                    failure = replacing ? 'ACTIVE_RECORD' : 'OVERLAP'; return false;
+                }
+                const overlapping = replacing ? records.filter(record => record.disposition !== 'discarded'
+                    && toDateSafe(record.start)?.getTime?.() < endMs && toDateSafe(record.end)?.getTime?.() > startMs) : [];
+                const existing = overlapping[0];
+                if (overlapping.length === 1 && input.sourceScheduleId && existing.entrySource === 'schedule'
+                    && existing.sourceScheduleId === String(input.sourceScheduleId)
+                    && toDateSafe(existing.start)?.getTime?.() === startMs && toDateSafe(existing.end)?.getTime?.() === endMs
+                    && existing.mode === (input.mode || 'countdown')
+                    && String(existing.taskBlockId || '') === String(input.taskBlockId || '').trim()) {
+                    unchanged = cloneSyncState(existing); return false;
+                }
+                const record = {
+                    recordId: createTomatoUuid('record'), sessionId: createTomatoUuid('manual'),
+                    mode: input.mode || 'countdown', manual: true, isCompleted: false, wasReset: false,
+                    source: 'manual', sourceKind: 'manual', category: 'manual',
+                    entrySource: replacing ? 'schedule' : 'manual',
+                    sourceScheduleId: String(input.sourceScheduleId || ''),
+                    taskBlockId: String(input.taskBlockId || '').trim() || null,
+                    taskBlockName: String(input.taskBlockName || '').trim() || null,
+                    databaseBlockId: null, plannedDuration: null, distractionCount: 0,
+                };
+                updateHistoryRecordTimeFields(record, new Date(startMs), new Date(endMs));
+                normalizeHistoryRecords([record]);
+                failure = 'SAVE_FAILED';
+                if (replacing) return __tomatoHistoryReplaceInterval(records, record);
+                records.push(record);
+                return { ok: true, records: cloneSyncState([record]), undo: { before: [], after: cloneSyncState([record]) } };
+            });
+            if (unchanged) return { ok: true, records: [unchanged] };
+            if (!result) return { ok: false, error: failure };
+            await __tomatoHistoryRefreshUI();
+            return result;
+        } catch (error) { return { ok: false, error: 'SAVE_FAILED' }; }
+    }
+
+    async function __tomatoHistoryUpdate(recordKey, patch = {}) {
+        const startMs = Date.parse(patch.start), endMs = Date.parse(patch.end);
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs || endMs > Date.now()) return { ok: false, error: 'INVALID_TIME' };
+        try {
+            let failure = 'STALE_RECORD';
+            const result = await mutateHistoryRecords(records => {
+                const index = __tomatoFindHistoryRecordIndex(records, recordKey);
+                if (index < 0) return false;
+                const previous = records[index];
+                if (previous.disposition === 'discarded'
+                    || (recordKey.recordId && previous.recordId !== recordKey.recordId)
+                    || (recordKey.start && toDateSafe(previous.start)?.getTime?.() !== Date.parse(recordKey.start))
+                    || (recordKey.end && toDateSafe(previous.end)?.getTime?.() !== Date.parse(recordKey.end))) return false;
+                if (previous.disposition === 'pending' || previous.recordId === SyncManager.getState()?.activeTimer?.openRecordId) { failure = 'ACTIVE_RECORD'; return false; }
+                const occupied = records.filter(item => item.disposition === 'pending');
+                const available = __tomatoHistoryAvailableParts(startMs, endMs, occupied, previous.recordId);
+                if (available.reduce((sum,part)=>sum+part.end-part.start,0) !== endMs-startMs) { failure = 'ACTIVE_RECORD'; return false; }
+                const next = { ...previous };
+                updateHistoryRecordTimeFields(next, new Date(startMs), new Date(endMs));
+                failure = 'SAVE_FAILED';
+                return __tomatoHistoryReplaceInterval(records, next, previous);
+            });
+            if (!result) return { ok: false, error: failure };
+            await __tomatoHistoryRefreshUI();
+            return result;
+        } catch (error) { return { ok: false, error: 'SAVE_FAILED' }; }
+    }
+
+    async function __tomatoHistoryUndo(receipt) {
+        if (!Array.isArray(receipt?.before) || !Array.isArray(receipt?.after) || !receipt.after.length) return false;
+        try {
+            const result = await mutateHistoryRecords(records => {
+                if (receipt.after.some(expected => !records.some(record => record.recordId === expected.recordId
+                    && JSON.stringify(record) === JSON.stringify(expected)))) return false;
+                const changedIds = new Set(receipt.after.map(record => record.recordId));
+                const remaining = records.filter(record => !changedIds.has(record.recordId));
+                const conflicts = remaining.filter(record => !receipt.allowedOverlaps?.some(original => record.recordId === original.recordId && JSON.stringify(record) === JSON.stringify(original)));
+                if (receipt.before.some(record => __tomatoHistoryAvailableParts(toDateSafe(record.start)?.getTime?.(), toDateSafe(record.end)?.getTime?.(), conflicts)
+                    .reduce((sum, part) => sum + part.end - part.start, 0) !== toDateSafe(record.end)?.getTime?.() - toDateSafe(record.start)?.getTime?.())) return false;
+                records.length = 0;
+                for (const record of remaining) records.push(record);
+                for (const record of cloneSyncState(receipt.before)) records.push(record);
+                return true;
+            });
+            if (result) await __tomatoHistoryRefreshUI();
+            return !!result;
+        } catch (error) { return false; }
+    }
+
     async function __tomatoHistoryRefreshUI() {
         try { markTimelineHistoryDirty(); } catch (e) {}
         try { updateTimelineBar(true); } catch (e) {}
@@ -6996,9 +7147,13 @@
     try {
         if (globalThis.__dockTomato && typeof globalThis.__dockTomato === 'object') {
             globalThis.__dockTomato.history = {
+                supportsScheduleOverwrite: true,
                 loadAll: __tomatoHistoryLoadAll,
                 loadRange: __tomatoHistoryLoadRange,
                 updateTime: __tomatoHistoryUpdateTime,
+                create: __tomatoHistoryCreate,
+                update: __tomatoHistoryUpdate,
+                undo: __tomatoHistoryUndo,
                 delete: __tomatoHistoryDelete,
                 split: __tomatoHistorySplit,
                 refreshUI: __tomatoHistoryRefreshUI,

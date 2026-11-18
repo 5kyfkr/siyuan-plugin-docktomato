@@ -6,6 +6,16 @@ Dock Tomato is a Pomodoro timer and focus stopwatch for SiYuan. Start from the s
 
 ![Dock Tomato preview](preview.png)
 
+## 2.4.0 Release notes
+
+- **Added: Task Horizon vertical calendar timeline integration**
+  - View, add, and adjust timer records in the vertical calendar timeline. Link added records to tasks and undo additions or edits.
+  - Convert schedules into focus records. Conversions and time changes trim or split overlapping records, preserving uncovered portions.
+- Improved: Prevent duplicate conversions and keep undo from overwriting later changes; protect running timers and records being saved.
+
+<details>
+<summary>Previous updates (click to expand)</summary>
+
 ## 2.3.9 Release notes
 
 - **Added: English interface (i18n)**
@@ -13,9 +23,6 @@ Dock Tomato is a Pomodoro timer and focus stopwatch for SiYuan. Start from the s
   - Choose **Follow SiYuan / 简体中文 / English** under **General → Interface language**, then click **Reload interface**. The choice syncs with plugin settings; custom names and content are preserved.
 - Improved: Settings tabs scroll horizontally for small screens and longer English labels.
 - Improved: Expanded English documentation and translation guidance; improved cross-platform packaging and language resource checks.
-
-<details>
-<summary>Previous updates (click to expand)</summary>
 
 See the [Chinese release history](README_zh_CN.md) for 2.3.8 and earlier.
 

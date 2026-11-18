@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.4.0更新内容
+
+- **新增：适配任务管理器日历竖轴显示和修改**
+  - 支持在日历竖轴查看、补录计时记录及修改起止时间，补录时可关联任务，支持撤销补录和修改
+  - 日程可转为专注记录；转换或调整时间时自动裁剪、拆分重叠记录，保留未覆盖部分
+- 优化：防止重复转换及撤销覆盖后续改动，保护正在计时和待保存的记录
+
+### English
+
+- **Added: Task Horizon vertical calendar timeline integration**
+  - View, add, and adjust timer records in the vertical calendar timeline. Link added records to tasks and undo additions or edits.
+  - Convert schedules into focus records. Conversions and time changes trim or split overlapping records, preserving uncovered portions.
+- Improved: Prevent duplicate conversions and keep undo from overwriting later changes; protect running timers and records being saved.
+
+<details>
+<summary>历史版本更新 / Previous updates（点击展开 / click to expand）</summary>
+
 ## 2.3.9更新内容
 
 - **新增：i18n 英语支持**
@@ -15,9 +32,6 @@
   - Choose **Follow SiYuan / 简体中文 / English** under **General → Interface language**, then click **Reload interface**. The choice syncs with plugin settings; custom names and content are preserved.
 - Improved: Settings tabs scroll horizontally for small screens and longer English labels.
 - Improved: Expanded English documentation and translation guidance; improved cross-platform packaging and language resource checks.
-
-<details>
-<summary>历史版本更新 / Previous updates（点击展开 / click to expand）</summary>
 
 ## 2.3.8更新内容
 - 优化：文档顶栏、历史记录、统计及相关设置中的番茄图标统一使用新版 SVG 样式，替换 Emoji
