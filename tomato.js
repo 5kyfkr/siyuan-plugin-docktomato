@@ -7970,7 +7970,7 @@
 
                 const occurrenceDate = document.createElement('div');
                 occurrenceDate.className = 'tomy-expired-time-date';
-                occurrenceDate.textContent = entry.dateKey;
+                occurrenceDate.textContent = entry.dateKey === formatDateKey(new Date()) ? __tt("common.today") : entry.dateKey;
 
                 timeRail.appendChild(occurrenceTime);
                 timeRail.appendChild(occurrenceDate);
@@ -47875,8 +47875,10 @@ window.__setTomatoFloatState = function (payload) {
             const at = entry?.at;
             if (!(at instanceof Date) || isNaN(at.getTime())) return '';
             if (entry.kind === 'expired') {
+                const dateKey = formatDateKey(at);
+                if (dateKey === formatDateKey(now)) return __tt("common.today");
                 const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-                return formatDateKey(at) === formatDateKey(yesterday) ? __tt("timer.yesterday2") : formatShortDate(formatDateKey(at));
+                return dateKey === formatDateKey(yesterday) ? __tt("timer.yesterday2") : formatShortDate(dateKey);
             }
             if (entry.groupKey === 'week') return [__tt("timer.sunday"), __tt("timer.monday"), __tt("timer.tuesday"), __tt("timer.wednesday"), __tt("timer.thursday"), __tt("timer.friday"), __tt("timer.saturday")][at.getDay()];
             if (entry.groupKey === 'later') return formatShortDate(formatDateKey(at));

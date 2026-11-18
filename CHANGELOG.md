@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.4.2更新内容
+
+- 优化：已过期提醒弹窗及提醒面板中，当天的提醒日期统一显示“今天”
+
+### English
+
+- Improved: Overdue reminders dated today show “Today” in the notification popup and reminder dock.
+
+<details>
+<summary>历史版本更新 / Previous updates（点击展开 / click to expand）</summary>
+
 ## 2.4.1更新内容
 
 - **优化：任务管理器关联功能**
@@ -13,9 +24,6 @@
   - Edit timer record types, change or remove task links in the calendar, and undo changes. Statistics reflect the updated type and task.
   - Refresh linked views after record changes; preserve neighboring records when only the type or task changes, and prevent stale edits from overwriting updated task links.
 - Fixed: Time zone offsets causing incorrect month grouping or labels in monthly statistics.
-
-<details>
-<summary>历史版本更新 / Previous updates（点击展开 / click to expand）</summary>
 
 ## 2.4.0更新内容
 

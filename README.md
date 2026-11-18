@@ -6,15 +6,19 @@ Dock Tomato is a Pomodoro timer and focus stopwatch for SiYuan. Start from the s
 
 ![Dock Tomato preview](preview.png)
 
+## 2.4.2 Release notes
+
+- Improved: Overdue reminders dated today show “Today” in the notification popup and reminder dock.
+
+<details>
+<summary>Previous updates (click to expand)</summary>
+
 ## 2.4.1 Release notes
 
 - **Improved: Task Horizon integration**
   - Edit timer record types, change or remove task links in the calendar, and undo changes. Statistics reflect the updated type and task.
   - Refresh linked views after record changes; preserve neighboring records when only the type or task changes, and prevent stale edits from overwriting updated task links.
 - Fixed: Time zone offsets causing incorrect month grouping or labels in monthly statistics.
-
-<details>
-<summary>Previous updates (click to expand)</summary>
 
 ## 2.4.0 Release notes
 

@@ -24,7 +24,8 @@ assert.match(block, /\.tomy-expired-list \{[\s\S]*?grid-column: 1 \/ -1;/, 'the 
 assert.match(block, /\.tomy-expired-item \{[\s\S]*?padding: 4px 0;[\s\S]*?grid-template-columns: 70px minmax\(0, 1fr\) 26px;[\s\S]*?gap: 8px;/, 'the expired item must follow the Dock time-rail, task, action layout');
 assert.match(block, /\.tomy-expired-item-name \{[\s\S]*?font-size: 14px;/, 'the task name must remain prominent in the compact layout');
 assert.match(block, /\.tomy-notification-close \{[\s\S]*?position: absolute;/, 'the close action must not reserve an empty column beside every reminder');
-assert.match(block, /occurrenceTime\.textContent = entry\.timeKey;[\s\S]*?occurrenceDate\.textContent = entry\.dateKey;/, 'each expired reminder must visibly render its concrete occurrence date and time');
+assert.match(block, /occurrenceDate\.textContent = entry\.dateKey === formatDateKey\(new Date\(\)\)/, 'expired reminder display must compare its date with today');
+assert.match(block, /\? ['"]今天['"] : entry\.dateKey;/, 'today must use the localized label while other dates remain concrete');
 assert.match(block, /__setReminderDockIcon\(notificationIcon, 'alarm'\)/, 'the notification header must reuse the Dock alarm icon language');
 assert.match(block, /completeBtn\.onclick = async \(event\) => \{[\s\S]*?event\.stopPropagation\(\)[\s\S]*?stopAutoClose\(\)/, 'completion must not bubble into notification dismissal and must stop the timer');
 assert.match(block, /__markReminderOccurrenceCompleted\(entry\.blockId, entry\.dateKey, entry\.timeKey,[\s\S]*?docktomato-expired-notification/, 'completion must preserve and submit the exact reminder occurrence identity');
@@ -137,10 +138,15 @@ class FakeElement {
     });
     vm.runInContext(`${block}\nthis.showExpired = showExpiredRemindersNotification;`, context);
 
+    const now = new Date();
+    const todayAt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 5);
+    const yesterdayAt = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 10, 30);
+    const todayKey = context.formatDateKey(todayAt);
+    const yesterdayKey = context.formatDateKey(yesterdayAt);
     const longTaskName = '提醒已过期通知增加具体发生时间及完成按钮'.repeat(8) + ' https://example.com/a/very/long/unbroken/path';
     context.showExpired([
-        { reminder: { blockId: 'task-a', blockName: longTaskName }, at: new Date(2026, 7, 16, 9, 5) },
-        { reminder: { blockId: 'task-b', blockName: '任务 B' }, at: new Date(2026, 7, 16, 10, 30) },
+        { reminder: { blockId: 'task-a', blockName: longTaskName }, at: todayAt },
+        { reminder: { blockId: 'task-b', blockName: '任务 B' }, at: yesterdayAt },
     ]);
     const notification = body.querySelector('.tomy-expired-notification');
     assert.ok(notification, 'expired notification must be mounted');
@@ -148,7 +154,8 @@ class FakeElement {
     assert.equal(list.querySelectorAll('.tomy-expired-item').length, 2, 'all pending reminders must remain visible');
     assert.equal(list.querySelector('.tomy-expired-item-name').textContent, longTaskName, 'long CJK and URL task names must not be truncated in JavaScript');
     assert.equal(list.querySelector('.tomy-expired-time-main').textContent, '09:05', 'the concrete occurrence time must be visible in the time rail');
-    assert.equal(list.querySelector('.tomy-expired-time-date').textContent, '2026-08-16', 'the concrete occurrence date must be visible in the time rail');
+    assert.equal(list.querySelector('.tomy-expired-time-date').textContent, context.__tt('common.today'), 'an occurrence dated today must use the localized today label');
+    assert.equal(list.querySelectorAll('.tomy-expired-time-date')[1].textContent, yesterdayKey, 'non-today occurrences must retain their concrete date');
 
     let stopped = false;
     const firstButton = list.querySelector('.tomy-expired-complete');
@@ -161,7 +168,7 @@ class FakeElement {
     shouldComplete = true;
     await firstButton.onclick({ stopPropagation() {} });
     assert.equal(list.querySelectorAll('.tomy-expired-item').length, 1, 'a successful completion must remove only its reminder');
-    assert.deepEqual(completionCalls[1].slice(0, 3), ['task-a', '2026-08-16', '09:05']);
+    assert.deepEqual(completionCalls[1].slice(0, 3), ['task-a', todayKey, '09:05']);
     assert.ok(body.querySelector('.tomy-expired-notification'), 'the notification must stay open while reminders remain');
 
     const remainingButton = list.querySelector('.tomy-expired-complete');

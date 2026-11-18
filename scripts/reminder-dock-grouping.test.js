@@ -62,6 +62,24 @@ assert.match(renderBlock, /__createReminderDockIcon\('chevron', 'tomato-reminder
 assert.doesNotMatch(renderBlock, /textContent\s*=\s*['"](?:↻|⚙|✓|•••|⌄|▯|↶)['"]/,
     'dock controls must not fall back to font-dependent Unicode glyphs');
 
+const labelStart = renderBlock.indexOf('const getTimeSubLabel = (entry) => {');
+const labelEnd = renderBlock.indexOf('\n        const createBadge', labelStart);
+assert.ok(labelStart >= 0 && labelEnd > labelStart, 'dock reminder date label helper must remain extractable');
+const labelContext = vm.createContext({
+    Date,
+    now: new Date(2026, 7, 17, 12),
+    formatDateKey: value => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`,
+    formatShortDate: value => `short:${value}`,
+    __tt: key => key === 'common.today' ? '今天' : key === 'timer.yesterday2' ? '昨天' : key,
+});
+vm.runInContext(`${renderBlock.slice(labelStart, labelEnd)}\nthis.getTimeSubLabel = getTimeSubLabel;`, labelContext);
+assert.equal(labelContext.getTimeSubLabel({ kind: 'expired', at: new Date(2026, 7, 17, 9) }), '今天',
+    'expired reminders dated today must use the localized today label');
+assert.equal(labelContext.getTimeSubLabel({ kind: 'expired', at: new Date(2026, 7, 16, 9) }), '昨天',
+    'yesterday reminders must keep their existing relative label');
+assert.equal(labelContext.getTimeSubLabel({ kind: 'expired', at: new Date(2026, 7, 15, 9) }), 'short:2026-08-15',
+    'older expired reminders must keep their concrete short date');
+
 const styleStart = source.indexOf('function ensureReminderDockStyles');
 const styleEnd = source.indexOf('\n    let __reminderDockActionMenu', styleStart);
 const styleBlock = source.slice(styleStart, styleEnd);
