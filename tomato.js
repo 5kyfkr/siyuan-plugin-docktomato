@@ -6447,7 +6447,12 @@
         await cleanupHistoryShardFiles({ shards }, currentIndex);
         invalidateHistoryStoreCache();
         try { void Promise.resolve(globalThis.__dockTomato?.stats?.syncFallback?.([], false, revision)).catch(() => {}); } catch (e) {}
+        notifyHistoryRecordsChanged('file');
         return true;
+    }
+
+    function notifyHistoryRecordsChanged(source) {
+        try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source, mutation: true } })); } catch (e) {}
     }
 
     function queueHistoryOperation(operation) {
@@ -6487,7 +6492,7 @@
             }
             localStorage.removeItem(HISTORY_LOCAL_STORAGE_KEY);
             localStorage.removeItem(HISTORY_LOCAL_FALLBACK_META_KEY);
-            try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'file' } })); } catch (e) {}
+            notifyHistoryRecordsChanged('file');
             return true;
         } catch (fileError) {
             if (isHistoryWriteCoordinationError(fileError)) throw fileError;
@@ -6511,7 +6516,7 @@
                 }));
                 invalidateHistoryStoreCache();
                 try { void Promise.resolve(globalThis.__dockTomato?.stats?.syncFallback?.(records, true, fallbackRevision)).catch(() => {}); } catch (e) {}
-                try { window.dispatchEvent(new CustomEvent('tomato:history-updated', { detail: { source: 'localStorage' } })); } catch (e) {}
+                notifyHistoryRecordsChanged('localStorage');
                 return true;
             } catch (localError) {
                 Logger.error('保存到localStorage也失败:', localError);
@@ -7092,6 +7097,7 @@
     async function __tomatoHistoryUpdate(recordKey, patch = {}) {
         const startMs = Date.parse(patch.start), endMs = Date.parse(patch.end);
         if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs || endMs > Date.now()) return { ok: false, error: 'INVALID_TIME' };
+        if (patch.mode !== undefined && !['countdown', 'stopwatch', 'break', 'stopwatch-break'].includes(patch.mode)) return { ok: false, error: 'INVALID_MODE' };
         try {
             let failure = 'STALE_RECORD';
             const result = await mutateHistoryRecords(records => {
@@ -7101,14 +7107,45 @@
                 if (previous.disposition === 'discarded'
                     || (recordKey.recordId && previous.recordId !== recordKey.recordId)
                     || (recordKey.start && toDateSafe(previous.start)?.getTime?.() !== Date.parse(recordKey.start))
-                    || (recordKey.end && toDateSafe(previous.end)?.getTime?.() !== Date.parse(recordKey.end))) return false;
+                    || (recordKey.end && toDateSafe(previous.end)?.getTime?.() !== Date.parse(recordKey.end))
+                    || (recordKey.mode && previous.mode !== recordKey.mode)
+                    || (Object.hasOwn(recordKey, 'taskBlockId') && String(previous.taskBlockId || previous.taskId || previous.blockId || '') !== String(recordKey.taskBlockId || ''))
+                    || (recordKey.associationVersion && previous.associationVersion !== recordKey.associationVersion)) return false;
                 if (previous.disposition === 'pending' || previous.recordId === SyncManager.getState()?.activeTimer?.openRecordId) { failure = 'ACTIVE_RECORD'; return false; }
                 const occupied = records.filter(item => item.disposition === 'pending');
                 const available = __tomatoHistoryAvailableParts(startMs, endMs, occupied, previous.recordId);
                 if (available.reduce((sum,part)=>sum+part.end-part.start,0) !== endMs-startMs) { failure = 'ACTIVE_RECORD'; return false; }
                 const next = { ...previous };
                 updateHistoryRecordTimeFields(next, new Date(startMs), new Date(endMs));
+                if (patch.mode !== undefined && patch.mode !== previous.mode) {
+                    next.mode = patch.mode;
+                    next.phase = ['break', 'stopwatch-break'].includes(next.mode) ? 'break' : 'focus';
+                    next.timerMode = ['stopwatch', 'stopwatch-break'].includes(next.mode) ? 'stopwatch' : 'countdown';
+                    next.plannedDurationSec = next.timerMode === 'countdown' ? next.durationSec : null;
+                    next.plannedDuration = next.plannedDurationSec == null ? null : next.plannedDurationSec / 60;
+                }
+                if (Object.hasOwn(patch, 'taskBlockId')) {
+                    next.taskBlockId = String(patch.taskBlockId || '').trim() || null;
+                    next.taskBlockName = next.taskBlockId ? String(patch.taskBlockName || '').trim() || null : null;
+                    if (next.taskBlockId !== (previous.taskBlockId || previous.databaseBlockId || previous.blockId || previous.taskId || previous.routineButtonBlockId || null)) {
+                        // Old aliases must not keep the previous task in statistics.
+                        for (const key of ['databaseBlockId', 'blockId', 'taskId', 'routineButtonBlockId']) {
+                            if (Object.hasOwn(next, key)) next[key] = null;
+                        }
+                        next.attrHostId = next.taskBlockId;
+                        next.associationVersion = createTomatoUuid('assoc');
+                    }
+                }
+                normalizeHistoryRecords([next]);
                 failure = 'SAVE_FAILED';
+                if (startMs === toDateSafe(previous.start).getTime() && endMs === toDateSafe(previous.end).getTime()) {
+                    records[index] = next;
+                    return { ok: true, records: cloneSyncState([next]), undo: {
+                        before: cloneSyncState([previous]), after: cloneSyncState([next]),
+                        allowedOverlaps: cloneSyncState(records.filter(item => item.recordId !== next.recordId
+                            && toDateSafe(item.start).getTime() < endMs && toDateSafe(item.end).getTime() > startMs)),
+                    } };
+                }
                 return __tomatoHistoryReplaceInterval(records, next, previous);
             });
             if (!result) return { ok: false, error: failure };
@@ -7148,6 +7185,7 @@
         if (globalThis.__dockTomato && typeof globalThis.__dockTomato === 'object') {
             globalThis.__dockTomato.history = {
                 supportsScheduleOverwrite: true,
+                supportsRecordMetadataEdit: true,
                 loadAll: __tomatoHistoryLoadAll,
                 loadRange: __tomatoHistoryLoadRange,
                 updateTime: __tomatoHistoryUpdateTime,
@@ -21088,8 +21126,8 @@
     }
 
     function formatMonth(dateStr) {
-        const date = new Date(dateStr);
-        return __tt("date.yearMonth", { value1: date.getFullYear(), value2: (date.getMonth() + 1).toString().padStart(2, '0') });
+        const [year, month] = String(dateStr).split('-');
+        return __tt("date.yearMonth", { value1: year, value2: month });
     }
 
     function formatWeek(startDateStr, endDateStr) {
@@ -21160,9 +21198,7 @@ function calculateWeeklyStats(dailyStatsArray) {
         const monthlyStats = {};
         
         dailyStatsArray.forEach(day => {
-            const dateStr = day.date;
-            const date = new Date(dateStr);
-            const monthStart = getMonthStartDate(date).toISOString().split('T')[0];
+            const monthStart = `${day.date.slice(0, 7)}-01`;
             
             if (!monthlyStats[monthStart]) {
                 monthlyStats[monthStart] = {

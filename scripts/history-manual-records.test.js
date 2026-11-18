@@ -173,6 +173,52 @@ const record = (id, start, end, extra = {}) => {
     assert.equal(visible().length,3);
     assert.equal(await context.__tomatoHistoryUndo(yearEdit.undo),true);
     assert.deepEqual(records.slice().sort((a,b)=>a.recordId.localeCompare(b.recordId)),beforeYearEdit.slice().sort((a,b)=>a.recordId.localeCompare(b.recordId)));
+    {
+        records = [
+            record('metadata', '10:00', '11:00', { databaseBlockId: 'old-db', taskId: 'old-alias', blockId: 'old-block' }),
+            record('overlapping', '10:15', '10:45'),
+        ];
+        const beforeMetadata = clone(records);
+        const changed = await context.__tomatoHistoryUpdate(clone(records[0]), input('10:00', '11:00', { mode: 'stopwatch', taskBlockId: 'new-task', taskBlockName: 'New task' }));
+        assert.equal(changed.ok, true);
+        assert.deepEqual(records.find(item => item.recordId === 'overlapping'), beforeMetadata[1], 'metadata-only edits do not split overlapping records');
+        const edited = records.find(item => item.recordId === 'metadata');
+        assert.equal(edited.mode, 'stopwatch');
+        assert.equal(edited.phase, 'focus');
+        assert.equal(edited.timerMode, 'stopwatch');
+        assert.equal(edited.taskBlockId, 'new-task');
+        assert.equal(edited.databaseBlockId, null);
+        assert.equal(edited.blockId, null);
+        assert.equal(edited.taskId, null);
+        const stats = require('../kernel.js');
+        const totals = stats.queryFocus([edited], { from: time('09:00'), to: time('12:00'), bucket: 'day' });
+        assert.equal(totals.totals.stopwatchSec, 3600, 'statistics use the edited mode');
+        assert.equal(totals.totals.countdownSec, 0);
+        assert.deepEqual(totals.associations[0].candidateIds, ['new-task'], 'statistics no longer include the old task aliases');
+        assert.equal((await context.__tomatoHistoryUpdate(beforeMetadata[0], input('10:00', '11:00', { mode: 'break' }))).error, 'STALE_RECORD', 'stale metadata cannot overwrite a newer edit');
+        assert.equal(await context.__tomatoHistoryUndo(changed.undo), true);
+        assert.deepEqual(records.slice().sort((a,b)=>a.recordId.localeCompare(b.recordId)), beforeMetadata.slice().sort((a,b)=>a.recordId.localeCompare(b.recordId)));
+        for (const mode of ['countdown', 'stopwatch', 'break', 'stopwatch-break']) {
+            const result = await context.__tomatoHistoryUpdate(clone(records.find(item => item.recordId === 'metadata')), input('10:00', '11:00', { mode, taskBlockId: '' }));
+            assert.equal(result.ok, true);
+            const item = records.find(item => item.recordId === 'metadata');
+            assert.equal(item.mode, mode);
+            assert.equal(item.phase, mode.includes('break') ? 'break' : 'focus');
+            assert.equal(item.timerMode, mode.startsWith('stopwatch') ? 'stopwatch' : 'countdown');
+            assert.equal(item.taskBlockId, null);
+            assert.equal(item.taskBlockName, null);
+            const aggregate = stats.queryFocus([item], { from: time('09:00'), to: time('12:00'), bucket: 'day' });
+            assert.equal(aggregate.totals.focusSec, mode.includes('break') ? 0 : 3600);
+        }
+        const current = clone(records.find(item => item.recordId === 'metadata'));
+        assert.equal((await context.__tomatoHistoryUpdate(current, input('10:00', '11:00', { mode: 'invalid' }))).error, 'INVALID_MODE');
+        assert.deepEqual(clone(records.find(item => item.recordId === 'metadata')), current, 'invalid mode changes are atomic');
+        records = [record('db-only', '10:00', '11:00', { taskBlockId: null, databaseBlockId: 'old-db' })];
+        const detached = await context.__tomatoHistoryUpdate(clone(records[0]), input('10:00', '11:00', { taskBlockId: '' }));
+        assert.equal(detached.ok, true);
+        assert.equal(records[0].databaseBlockId, null, 'explicit unlink also clears database-only associations');
+
+    }
     assert.ok(refreshes >= 5);
     console.log('manual history create/update/undo tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

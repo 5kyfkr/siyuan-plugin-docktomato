@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.4.1更新内容
+
+- **优化：任务管理器关联功能**
+  - 日历中支持修改计时记录类型、重新关联或取消关联任务，并可撤销；统计同步采用修改后的类型与任务
+  - 记录变更后及时刷新联动视图；仅修改类型或任务时保留相邻记录，避免旧编辑覆盖最新关联
+- 修复：月度统计因时区偏移导致月份归属或标签错误的问题
+
+### English
+
+- **Improved: Task Horizon integration**
+  - Edit timer record types, change or remove task links in the calendar, and undo changes. Statistics reflect the updated type and task.
+  - Refresh linked views after record changes; preserve neighboring records when only the type or task changes, and prevent stale edits from overwriting updated task links.
+- Fixed: Time zone offsets causing incorrect month grouping or labels in monthly statistics.
+
+<details>
+<summary>历史版本更新 / Previous updates（点击展开 / click to expand）</summary>
+
 ## 2.4.0更新内容
 
 - **新增：适配任务管理器日历竖轴显示和修改**
@@ -13,9 +30,6 @@
   - View, add, and adjust timer records in the vertical calendar timeline. Link added records to tasks and undo additions or edits.
   - Convert schedules into focus records. Conversions and time changes trim or split overlapping records, preserving uncovered portions.
 - Improved: Prevent duplicate conversions and keep undo from overwriting later changes; protect running timers and records being saved.
-
-<details>
-<summary>历史版本更新 / Previous updates（点击展开 / click to expand）</summary>
 
 ## 2.3.9更新内容
 

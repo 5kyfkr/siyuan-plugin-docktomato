@@ -153,10 +153,11 @@ const readPaths = [];
 let failShardWrites = false;
 let failIndexWrites = false;
 let failCleanup = false;
+const historyEvents = [];
 const historyContext = vm.createContext({
     TimerJournal: { queuedHistory: () => [] },
     Array,
-    CustomEvent: class CustomEvent {},
+    CustomEvent: class CustomEvent { constructor(type, options) { this.type = type; this.detail = options?.detail; } },
     Date,
     JSON,
     Map,
@@ -276,7 +277,7 @@ const historyContext = vm.createContext({
     }),
     safeJsonParse: (value) => { try { return JSON.parse(value); } catch { return null; } },
     toDateSafe: (value) => new Date(value),
-    window: { dispatchEvent: () => {} },
+    window: { dispatchEvent: event => historyEvents.push(event) },
 });
 vm.runInContext(`${source.slice(historyStart, historyEnd)}\nthis.store = { HistoryRepository, migrateLegacyHistoryToYearShards, loadHistoryRecords, loadHistoryRangeRecords, getHistoryStoreSummary, mutateHistoryRecords, retainHistoryShard, prepareHistoryShardRead, historyShardCacheRecordCount, historyShardCacheByteCount, invalidateHistoryStoreCache, cleanupHistoryShardFiles };`, historyContext);
 
@@ -515,6 +516,34 @@ vm.runInContext(`${source.slice(historyStart, historyEnd)}\nthis.store = { Histo
         'migration must reject oversized fallback metadata before parsing the payload');
     storage.delete('history-meta');
     storage.delete('history');
+    // Exercise real immutable shards, normalization, receipts and commit notifications.
+    historyContext.createTomatoUuid = prefix => prefix + Math.random().toString(36).slice(2);
+    historyContext.SyncManager = { getState: () => ({}) };
+    vm.runInContext(source.slice(source.indexOf('    function __tomatoFindHistoryRecordIndex('), source.indexOf('    async function __tomatoHistoryRefreshUI(')) + '\nasync function __tomatoHistoryRefreshUI() {}', historyContext);
+    let eventCount = historyEvents.length;
+    const created = await historyContext.__tomatoHistoryCreate({ start: '2026-11-17T10:00:00Z', end: '2026-11-17T11:00:00Z', taskBlockId: 'completed-task' });
+    assert.equal(created.ok, true);
+    assert.equal(historyEvents.length, ++eventCount, 'full history commit publishes exactly one change');
+    assert.equal(historyEvents.at(-1).detail.mutation, true);
+    const editedMetadata = await historyContext.__tomatoHistoryUpdate(created.records[0], {
+        start: created.records[0].start, end: created.records[0].end, mode: 'break', taskBlockId: 'relinked-task', taskBlockName: 'Relinked task',
+    });
+    assert.equal(editedMetadata.ok, true);
+    assert.equal(historyEvents.length, ++eventCount);
+    assert.equal(await historyContext.__tomatoHistoryUndo(editedMetadata.undo), true, 'metadata undo survives normalization and persisted JSON');
+    assert.equal(historyEvents.length, ++eventCount);
+    assert.equal(await historyContext.__tomatoHistoryUndo(created.undo), true, 'immediate undo survives a persisted JSON round trip');
+    assert.equal(historyEvents.length, ++eventCount, 'undo publishes a change');
+    const second = await historyContext.__tomatoHistoryCreate({ start: '2026-11-17T10:00:00Z', end: '2026-11-17T11:00:00Z' });
+    assert.equal(second.ok, true);
+    ++eventCount;
+    assert.equal(await historyContext.__tomatoHistoryDelete(second.records[0]), true);
+    assert.equal(historyEvents.length, ++eventCount, 'single-year delete publishes exactly one change');
+    assert.equal((await historyContext.store.loadHistoryRecords({ force: true })).some(record => record.recordId === second.records[0].recordId), false);
+    assert.equal(await historyContext.replaceAllHistoryRecords([]), true);
+    assert.equal(historyEvents.length, ++eventCount, 'clear-all publishes a change');
+    assert.equal((await historyContext.store.loadHistoryRecords({ force: true })).length, 0);
+    assert.equal(historyEvents.length, eventCount, 'ordinary reads do not emit mutation events');
     console.log('history year sharding behavior tests passed');
 })().catch((error) => {
     process.nextTick(() => { throw error; });
