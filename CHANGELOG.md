@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.4.3更新内容
+
+- **新增反向关联任务功能**
+  - 在番茄钟菜单打开“关联任务”，按任务名或文档名搜索任务管理器中的任务。计时中也可更换或清除关联。
+- **新增拖拽关联任务**
+  - 将任务管理器里的单个任务拖到底栏番茄钟，即可关联或更换任务，拖拽时会显示操作提示。
+- 优化关联的多端同步及计时结束时的记录归属。
+
+### English
+
+- **New task search and linking**
+  - Open **Link task** from the timer menu and search Task Horizon by task or document name. You can change or clear the link while the timer is running.
+- **New drag-and-drop task linking**
+  - Drag a single task from Task Horizon onto the status bar timer to link it or replace the current link. A prompt shows what the drop will do.
+- Improved cross-device syncing of task links and how timer records are assigned when a session ends.
+
+<details>
+<summary>历史版本更新 / Previous updates（点击展开 / click to expand）</summary>
+
 ## 2.4.2更新内容
 
 - 优化：已过期提醒弹窗及提醒面板中，当天的提醒日期统一显示“今天”
@@ -7,9 +26,6 @@
 ### English
 
 - Improved: Overdue reminders dated today show “Today” in the notification popup and reminder dock.
-
-<details>
-<summary>历史版本更新 / Previous updates（点击展开 / click to expand）</summary>
 
 ## 2.4.1更新内容
 

@@ -236,10 +236,70 @@ async function testFloatTimerHistory() {
     }
 }
 
+async function testTaskAssociation() {
+    const attach = (runtime) => {
+        Object.assign(runtime.context, {
+            isTaskAssociationSyncEnabled: () => runtime.context.userSettings.sync.syncTaskAssociation,
+            getEffectiveTimerActivity: () => ({ running: true, paused: false }),
+            __sanitizeTaskAssociationName: value => String(value || ''),
+            __resolveTaskAssociationName: async (_id, name) => name,
+            localAssociationChangedAtMs: 0, focusRestoreSource: '', lastCompletedAssociationFocusSnapshot: null,
+            activeRoutineButtonIndex: null, activeRoutineButtonBlockId: null,
+            clearRoutineButtonRunningHighlight() {}, updateTaskBlockIcon() {}, updateTaskBlockTooltip() {},
+            clearTaskBlockHighlight() {}, stopHighlightKeepAlive() {}, highlightTaskBlock() {}, startHighlightKeepAlive() {}, updateDisplay() {},
+            TIMER_LOCAL_ASSOCIATION_KEY: 'local-association',
+            __taskHorizonOnTomatoAssociationChanged: detail => runtime.context.associationEvents.push(detail),
+            associationEvents: [],
+        });
+        runtime.context.localStorage.removeItem = key => runtime.storage.local.delete(key);
+        vm.runInContext([
+            extract('    function captureTaskAssociationTimerSnapshot(', '    function showTaskAssociationPicker('),
+            extract('    function __matchesTaskAssociationTimerSnapshot(', '    async function rollbackFailedTimerStart('),
+            extract('    async function commitTimerState(', '    // ✅ 修复版本：更新任务块'),
+            'this.relink = changeTaskAssociationFromMenu; this.getLink = () => getEffectiveTaskAssociation(syncState);',
+        ].join('\n'), runtime.context);
+    };
+    const runtime = createRuntime();
+    const endMs = attachEndRecorder(runtime, 'countdown', 6 * 60000);
+    attach(runtime);
+    assert.equal(await runtime.context.relink('task-a', 'Task A'), true);
+    runtime.controls.failWrite = true;
+    assert.equal(await runtime.context.relink('task-b', 'Task B'), false);
+    assert.equal(runtime.context.getLink().taskBlockId, 'task-a');
+    assert.equal(runtime.context.associationEvents.length, 1, 'a failed write does not announce a new association');
+    runtime.controls.failWrite = false;
+    assert.equal(await runtime.context.relink('task-b', 'Task B', { active: true, sessionId: 'old-session' }), false);
+    assert.equal(runtime.context.associationEvents.length, 1);
+    const gate = deferred();
+    runtime.context.__tomatoEnsureDir = () => gate.promise;
+    const relink = runtime.context.relink('task-b', 'Task B');
+    const end = runtime.context.endRecord(false, false, { endTimeMs: endMs, isCompleted: true });
+    gate.resolve(true);
+    assert.equal(await relink, true);
+    assert.equal(await end, true);
+    const record = runtime.api.journal.queuedHistory()[0];
+    assert.equal(record.taskBlockId, 'task-b', 'completion uses the successfully submitted association');
+    assert.equal(record.attrHostId, 'task-b');
+    assert.equal(record.durationMs, 6 * 60000);
+    assert.equal(runtime.context.associationEvents.at(-1).prevTaskBlockId, 'task-a');
+
+    const local = createRuntime();
+    local.context.userSettings.sync.syncTaskAssociation = false;
+    attachEndRecorder(local, 'stopwatch', 6 * 60000);
+    attach(local);
+    assert.equal(await local.context.relink('task-local', 'Local task'), true);
+    assert.equal(local.context.getLink().taskBlockId, 'task-local');
+    assert.equal(local.api.manager.getState().integrationEnvelope.taskAssociation, null);
+    assert.equal(await local.context.relink(null, null), true);
+    assert.equal(local.context.getLink(), null);
+    assert.equal(local.context.associationEvents.at(-1).prevTaskBlockId, 'task-local');
+}
+
 module.exports = { createRuntime, attachFloatTimerControls, attachEndRecorder, extract, deferred };
 
 if (require.main === module) (async () => {
     await testFloatTimerHistory();
+    await testTaskAssociation();
     const runtime = createRuntime();
     await runtime.start('start-a');
     const operationDraft = draft('record-a');

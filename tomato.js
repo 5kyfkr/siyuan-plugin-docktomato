@@ -131,7 +131,8 @@
 #tomy-tomato-context-menu button:focus-visible, #tomy-tomato-context-menu summary:focus-visible, #tomy-tomato-context-menu input:focus-visible { outline:2px solid var(--b3-theme-primary); outline-offset:1px; }
 #tomy-tomato-context-menu [hidden] { display:none !important; }
 #tomy-tomato-context-menu .tomato-menu-scroll { min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:7px 9px; scrollbar-width:thin; }
-#tomy-tomato-context-menu .tomato-menu-task { display:flex; align-items:center; flex-shrink:0; gap:5px; margin:0 9px; padding:5px 0; border-bottom:1px solid var(--tomato-ui-divider); }
+#tomy-tomato-context-menu .tomato-menu-association { flex-shrink:0; margin:0 4px; padding-bottom:3px; border-bottom:1px solid var(--tomato-ui-divider); }
+#tomy-tomato-context-menu .tomato-menu-task { display:flex; align-items:center; gap:5px; padding:5px; }
 #tomy-tomato-context-menu .tomato-menu-task-name { display:flex; align-items:center; gap:6px; flex:1; min-width:0; border:0; padding:0; background:transparent; font-size:11px; color:var(--b3-theme-on-surface-light); text-align:left; }
 #tomy-tomato-context-menu .tomato-menu-task-name span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #tomy-tomato-context-menu .tomato-menu-task-name .tomato-ui-icon { width:12px; height:12px; }
@@ -165,6 +166,60 @@
 #tomy-tomato-context-menu[data-mobile=true] .tomato-menu-item { min-height:34px; }
 #tomy-tomato-context-menu[data-mobile=true] .tomato-menu-preset, #tomy-tomato-context-menu[data-mobile=true] .tomato-menu-control { height:32px; }
 #tomy-tomato-context-menu[data-mobile=true] .tomato-menu-stopwatch, #tomy-tomato-context-menu[data-mobile=true] .tomato-menu-mute { min-height:30px; }
+[data-tomato-task-drop]:not([data-tomato-task-drop=""]) {
+    outline:1px solid var(--b3-theme-primary); border-radius:4px;
+    background:color-mix(in oklab, var(--b3-theme-primary) 10%, var(--b3-theme-surface));
+}
+[data-tomato-task-drop]:not([data-tomato-task-drop=""])::before {
+    content:attr(data-tomato-task-drop); position:fixed; bottom:36px; left:50%; transform:translateX(-50%);
+    z-index:2147483000; pointer-events:none; padding:4px 8px; border-radius:4px;
+    background:var(--b3-theme-surface); color:var(--b3-theme-on-background);
+    box-shadow:0 2px 8px rgba(0,0,0,.15); font-size:12px; white-space:nowrap;
+}
+#tomy-task-block-tooltip .tomato-task-tooltip-actions {
+    display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px; align-self:flex-start;
+}
+#tomy-task-block-tooltip .tomato-task-tooltip-actions > button {
+    padding:2px 9px; border:0; border-radius:4px;
+    font:inherit; font-weight:500; line-height:18px; white-space:nowrap; cursor:pointer;
+    color:var(--b3-theme-on-background);
+    background:color-mix(in oklab, var(--b3-theme-on-background) 4%, var(--b3-theme-surface));
+}
+#tomy-task-block-tooltip .tomato-task-tooltip-actions > button:hover {
+    background:color-mix(in oklab, var(--b3-theme-on-background) 8%, var(--b3-theme-surface));
+}
+#tomy-task-block-tooltip .tomato-task-tooltip-actions > button:focus-visible {
+    outline:2px solid var(--b3-theme-primary); outline-offset:1px;
+}
+#tomy-task-block-tooltip #tomy-tooltip-delete-btn {
+    color:#bd352a;
+    background:color-mix(in oklab, var(--b3-theme-error) 6%, var(--b3-theme-surface));
+}
+#tomy-task-block-tooltip #tomy-tooltip-delete-btn:hover {
+    background:color-mix(in oklab, var(--b3-theme-error) 10%, var(--b3-theme-surface));
+}
+:root[data-theme-mode="dark"] #tomy-task-block-tooltip #tomy-tooltip-delete-btn {
+    color:#ff9387;
+}
+#tomy-task-association-picker { position:fixed; inset:0; z-index:2147483647; display:flex; align-items:center; justify-content:center; padding:12px; background:rgba(0,0,0,.24); }
+#tomy-task-association-picker .tomato-association-dialog { display:flex; flex-direction:column; width:min(360px,100%); max-height:min(460px,100%); overflow:hidden; border:1px solid var(--b3-theme-surface-light); border-radius:7px; background:var(--b3-theme-background); color:var(--b3-theme-on-background); box-shadow:0 8px 24px rgba(0,0,0,.2); }
+#tomy-task-association-picker .tomato-association-header { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--b3-theme-surface-light); }
+#tomy-task-association-picker .tomato-association-title { flex:1; min-width:0; font-size:13px; font-weight:600; }
+#tomy-task-association-picker .tomato-association-close { display:flex; align-items:center; justify-content:center; flex:0 0 26px; width:26px; height:26px; padding:4px; border:0; border-radius:4px; background:transparent; color:var(--b3-theme-on-surface-light); cursor:pointer; }
+#tomy-task-association-picker .tomato-association-close .tomato-ui-icon { width:14px; height:14px; }
+#tomy-task-association-picker .tomato-association-current { overflow:hidden; padding:8px 12px 0; color:var(--b3-theme-on-surface-light); font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+#tomy-task-association-picker .tomato-association-result[aria-current=true] { color:var(--b3-theme-primary); }
+#tomy-task-association-picker .tomato-association-search-wrap { padding:10px 12px 6px; }
+#tomy-task-association-picker .tomato-association-search { box-sizing:border-box; width:100%; height:34px; padding:0 9px; border:1px solid var(--b3-theme-surface-light); border-radius:4px; background:var(--b3-theme-background); color:var(--b3-theme-on-background); font:inherit; font-size:12px; }
+#tomy-task-association-picker .tomato-association-search:focus-visible { outline:2px solid var(--b3-theme-primary); outline-offset:1px; }
+#tomy-task-association-picker .tomato-association-clear { margin:3px 12px 5px; padding:6px 8px; border:0; border-radius:4px; background:transparent; color:var(--b3-theme-on-surface-light); font:inherit; font-size:12px; text-align:left; cursor:pointer; }
+#tomy-task-association-picker .tomato-association-results { min-height:40px; max-height:260px; overflow:auto; padding:0 6px 8px; overscroll-behavior:contain; }
+#tomy-task-association-picker .tomato-association-result { display:flex; flex-direction:column; gap:2px; width:100%; min-height:42px; padding:7px 8px; border:0; border-radius:4px; background:transparent; color:var(--b3-theme-on-background); font:inherit; text-align:left; cursor:pointer; }
+#tomy-task-association-picker .tomato-association-result-title { overflow:hidden; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+#tomy-task-association-picker .tomato-association-result-doc { overflow:hidden; font-size:10px; color:var(--b3-theme-on-surface-light); text-overflow:ellipsis; white-space:nowrap; }
+#tomy-task-association-picker .tomato-association-status { padding:10px 8px; color:var(--b3-theme-on-surface-light); font-size:12px; text-align:center; }
+#tomy-task-association-picker button:hover:not(:disabled) { background:var(--b3-theme-surface); }
+#tomy-task-association-picker button:focus-visible { outline:2px solid var(--b3-theme-primary); outline-offset:-2px; }
 #tomy-tomato-toast.tomato-end-dialog { box-sizing:border-box; display:flex; flex-direction:column; padding:0; width:320px; min-width:0; max-width:calc(100vw - 32px); max-height:85vh; border:1px solid var(--b3-theme-surface-light); border-radius:9px; background:var(--b3-theme-background); color:var(--b3-theme-on-background); text-align:left; box-shadow:0 6px 20px rgba(0,0,0,.25); }
 #tomy-tomato-toast.tomato-end-dialog [hidden] { display:none !important; }
 #tomy-tomato-toast .tomato-end-heading { display:flex; align-items:flex-start; gap:11px; padding:18px 18px 0; flex-shrink:0; }
@@ -259,6 +314,221 @@
             runTimerMenuAction(action, keepOpen);
         };
         return button;
+    }
+
+    let taskAssociationPickerAbort = null;
+
+    function closeTaskAssociationPicker() {
+        taskAssociationPickerAbort?.abort();
+        taskAssociationPickerAbort = null;
+        document.getElementById('tomy-task-association-picker')?.remove();
+    }
+
+    function captureTaskAssociationTimerSnapshot() {
+        const activity = getEffectiveTimerActivity();
+        return {
+            active: !!(activity.running || activity.paused),
+            sessionId: String(syncState?.activeTimer?.sessionId || syncState?.activeTimer?.focusSessionId || currentSessionId || ''),
+        };
+    }
+
+    async function changeTaskAssociationFromMenu(taskId, taskName, expectedTimer = captureTaskAssociationTimerSnapshot()) {
+        if (changeTaskAssociationFromMenu.pending) return false;
+        const operation = setTaskAssociation(taskId, taskName, null, {
+            resolveContext: false,
+            expectedTimer,
+            actionSource: 'timer-context-menu',
+        });
+        changeTaskAssociationFromMenu.pending = operation;
+        try { return await operation; }
+        finally { delete changeTaskAssociationFromMenu.pending; }
+    }
+
+    function showTaskAssociationPicker() {
+        const bridge = globalThis?.['siyuan-plugin-task-horizon']?.aiBridge;
+        if (!bridge || typeof bridge.searchTasks !== 'function') {
+            showMiniToast(__tt('timer.taskSearchUnavailable'));
+            return false;
+        }
+
+        ensureTimerSurfaceStyles();
+        ensureTimerUiIconStyles();
+        closeTimerContextMenu();
+        closeTaskAssociationPicker();
+        const expectedTimer = captureTaskAssociationTimerSnapshot();
+        const overlay = document.createElement('div');
+        overlay.id = 'tomy-task-association-picker';
+        overlay.setAttribute('role', 'presentation');
+        const dialog = document.createElement('section');
+        dialog.className = 'tomato-association-dialog';
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-labelledby', 'tomy-task-association-title');
+
+        const header = document.createElement('div');
+        header.className = 'tomato-association-header';
+        const title = document.createElement('div');
+        title.id = 'tomy-task-association-title';
+        title.className = 'tomato-association-title';
+        title.textContent = currentTaskBlockId || currentDatabaseBlockId ? __tt('timer.replacelinkedTask') : __tt('timer.associateTask');
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'tomato-association-close';
+        close.setAttribute('aria-label', __tt('common.close'));
+        setTimerUiIcon(close, 'close');
+        header.append(title, close);
+
+        const searchWrap = document.createElement('div');
+        searchWrap.className = 'tomato-association-search-wrap';
+        const input = document.createElement('input');
+        input.type = 'search';
+        input.className = 'tomato-association-search';
+        input.placeholder = __tt('timer.searchTasks');
+        input.setAttribute('aria-label', __tt('timer.searchTasks'));
+        input.autocomplete = 'off';
+        const currentTask = document.createElement('div');
+        currentTask.className = 'tomato-association-current';
+        currentTask.textContent = getTimerTaskTextForDisplay();
+        currentTask.title = currentTask.textContent;
+        searchWrap.appendChild(input);
+
+        const clear = document.createElement('button');
+        clear.type = 'button';
+        clear.className = 'tomato-association-clear';
+        clear.textContent = __tt('timer.clearlinkedTask');
+        clear.hidden = !(currentTaskBlockId || currentDatabaseBlockId);
+
+        const results = document.createElement('div');
+        results.className = 'tomato-association-results';
+        dialog.append(header, currentTask, searchWrap, clear, results);
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+
+        const abort = new AbortController();
+        taskAssociationPickerAbort = abort;
+        let searchSequence = 0;
+        let searchTimer = null;
+        const closePicker = () => closeTaskAssociationPicker();
+        const showStatus = (message) => {
+            const status = document.createElement('div');
+            status.className = 'tomato-association-status';
+            status.setAttribute('role', 'status');
+            status.textContent = message;
+            results.replaceChildren(status);
+        };
+        const setBusy = (busy) => {
+            dialog.dataset.busy = String(busy);
+            input.disabled = busy;
+            clear.disabled = busy;
+            results.querySelectorAll('button').forEach((button) => { button.disabled = busy; });
+        };
+        const applyAssociation = async (taskId, taskName) => {
+            if (changeTaskAssociationFromMenu.pending) return;
+            if (!__matchesTaskAssociationTimerSnapshot(expectedTimer)) {
+                showStatus(__tt('timer.timerChangedDuringTaskSearch'));
+                return;
+            }
+            setBusy(true);
+            ++searchSequence;
+            if (searchTimer) window.clearTimeout(searchTimer);
+            let success = false;
+            try { success = await changeTaskAssociationFromMenu(taskId, taskName, expectedTimer); }
+            catch (error) { Logger.warn('保存任务关联失败:', error); }
+            if (!success) {
+                if (overlay.isConnected) {
+                    setBusy(false);
+                    showStatus(__matchesTaskAssociationTimerSnapshot(expectedTimer)
+                        ? __tt('timer.taskAssociationNotSaved')
+                        : __tt('timer.timerChangedDuringTaskSearch'));
+                    input.focus();
+                }
+                return;
+            }
+            if (overlay.isConnected) closePicker();
+            showMiniToast(__tt('timer.taskAssociationUpdated'));
+        };
+        const renderResults = async () => {
+            const sequence = ++searchSequence;
+            const query = input.value.trim();
+            showStatus(__tt('timer.loadingTasks'));
+            try {
+                const tasks = await bridge.searchTasks(query, { limit: 10 });
+                if (!overlay.isConnected || sequence !== searchSequence) return;
+                if (!Array.isArray(tasks) || !tasks.length) {
+                    showStatus(__tt('timer.noTasksFound'));
+                    return;
+                }
+                results.replaceChildren();
+                tasks.forEach((task) => {
+                    const id = String(task?.id || '').trim();
+                    const taskName = String(task?.title || '').trim();
+                    if (!id || !taskName) return;
+                    const option = document.createElement('button');
+                    option.type = 'button';
+                    option.className = 'tomato-association-result';
+                    if (id === currentTaskBlockId) option.setAttribute('aria-current', 'true');
+                    const taskTitle = document.createElement('span');
+                    taskTitle.className = 'tomato-association-result-title';
+                    taskTitle.textContent = taskName;
+                    const docName = String(task?.docName || '').trim();
+                    option.title = docName ? taskName + ' · ' + docName : taskName;
+                    option.appendChild(taskTitle);
+                    if (docName) {
+                        const doc = document.createElement('span');
+                        doc.className = 'tomato-association-result-doc';
+                        doc.textContent = docName;
+                        option.appendChild(doc);
+                    }
+                    option.addEventListener('click', () => { void applyAssociation(id, taskName); }, { signal: abort.signal });
+                    results.appendChild(option);
+                });
+                if (!results.querySelector('button')) showStatus(__tt('timer.noTasksFound'));
+            } catch (error) {
+                if (overlay.isConnected && sequence === searchSequence) showStatus(__tt('timer.taskSearchUnavailable'));
+            }
+        };
+
+        close.addEventListener('click', closePicker, { signal: abort.signal });
+        clear.addEventListener('click', () => { void applyAssociation(null, null); }, { signal: abort.signal });
+        overlay.addEventListener('pointerdown', (event) => {
+            if (event.target === overlay) closePicker();
+        }, { signal: abort.signal });
+        const scheduleSearch = (event) => {
+            if (event.isComposing || input.disabled) return;
+            ++searchSequence;
+            showStatus(__tt('timer.loadingTasks'));
+            if (searchTimer) window.clearTimeout(searchTimer);
+            searchTimer = window.setTimeout(() => { void renderResults(); }, 120);
+        };
+        input.addEventListener('input', scheduleSearch, { signal: abort.signal });
+        input.addEventListener('compositionend', scheduleSearch, { signal: abort.signal });
+        dialog.addEventListener('keydown', (event) => {
+            if (event.isComposing) return;
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                closePicker();
+            } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                const options = Array.from(results.querySelectorAll('button:not(:disabled)'));
+                const index = options.indexOf(document.activeElement);
+                if (!options.length || (index < 0 && event.target !== input)) return;
+                event.preventDefault();
+                const step = event.key === 'ArrowDown' ? 1 : -1;
+                options[index < 0 && step < 0 ? options.length - 1 : (index + step + options.length) % options.length].focus();
+            } else if (event.key === 'Tab') {
+                const controls = Array.from(dialog.querySelectorAll('input:not(:disabled), button:not(:disabled):not([hidden])'));
+                const edge = event.shiftKey ? controls[0] : controls.at(-1);
+                if (event.target !== edge) return;
+                event.preventDefault();
+                (event.shiftKey ? controls.at(-1) : controls[0])?.focus();
+            }
+        }, { signal: abort.signal });
+        abort.signal.addEventListener('abort', () => {
+            if (searchTimer) window.clearTimeout(searchTimer);
+        }, { once: true });
+        input.focus();
+        void renderResults();
+        return true;
     }
 
     function refreshTimerContextMenu() {
@@ -1700,11 +1970,11 @@
         } catch (e) { return null; }
     }
 
-    function setLocalTaskAssociationSidecar(value) {
+    function setLocalTaskAssociationSidecar(value, { strict = false } = {}) {
         try {
             if (!value) localStorage.removeItem(TIMER_LOCAL_ASSOCIATION_KEY);
             else localStorage.setItem(TIMER_LOCAL_ASSOCIATION_KEY, JSON.stringify(value));
-        } catch (e) {}
+        } catch (error) { if (strict) throw error; }
         return value || null;
     }
 
@@ -3094,6 +3364,15 @@
                 if (syncState.databaseBlockId !== undefined) {
                     currentDatabaseBlockId = syncState.databaseBlockId;
                 }
+            }
+        }
+
+        if (!isTaskAssociationSyncEnabled() && syncState.activeTimer) {
+            const association = getEffectiveTaskAssociation(syncState);
+            if (association) {
+                currentTaskBlockId = association.taskBlockId;
+                currentTaskBlockName = association.taskBlockName;
+                currentDatabaseBlockId = association.databaseBlockId;
             }
         }
 
@@ -18893,6 +19172,7 @@
     }
 
     async function recordEndTime(isReset = false, isStopwatch = false, options = null) {
+        const pendingAssociation = typeof changeTaskAssociationFromMenu === 'function' && changeTaskAssociationFromMenu.pending;
         const externalPause = options?.externalPause || null;
         if (externalPause) assertDockTomatoFocusSession(syncState, externalPause.sessionId, externalPause.epoch);
         const isCompleted = options?.isCompleted === true;
@@ -18923,8 +19203,8 @@
         const hasPreBreakStateAtEnd = preBreakState !== null;
         const currentDistractionCountAtEnd = currentDistractionCount;
         const lastSavedDistractionCountAtEnd = lastSavedDistractionCount;
-        const routineMetaAtEnd = getActiveRoutineButtonRecordMeta();
-        const routineButtonHighlightColorAtEnd = routineButtonHighlightColor;
+        let routineMetaAtEnd = getActiveRoutineButtonRecordMeta();
+        let routineButtonHighlightColorAtEnd = routineButtonHighlightColor;
         const hideShortRecordsAtEnd = userSettings?.hideShortRecords !== false;
         const initialRemainingSecondsAtEnd = getInitialRemainingAtStart();
         let syncStateAtEnd = syncState && typeof syncState === 'object' ? cloneSyncState(syncState) : null;
@@ -19134,7 +19414,15 @@
             // Resolve the association against the active focus binding. This
             // prevents a local sidecar from being applied to a remote session
             // or to a later association version after a break/lease transfer.
-            const associationAtEnd = getEffectiveTaskAssociation(syncStateAtEnd) || null;
+            // The timer inputs above are captured before waiting for a submitted task change.
+            const associationSaved = pendingAssociation && await pendingAssociation.catch(() => false);
+            const associationState = associationSaved && v2TimerSnapshot?.sessionId
+                && syncState?.activeTimer?.sessionId === v2TimerSnapshot.sessionId ? syncState : syncStateAtEnd;
+            if (associationSaved && associationState === syncState) {
+                routineMetaAtEnd = getActiveRoutineButtonRecordMeta();
+                routineButtonHighlightColorAtEnd = routineButtonHighlightColor;
+            }
+            const associationAtEnd = getEffectiveTaskAssociation(associationState) || null;
             const useValidatedV2Association = Number(syncStateAtEnd?.stateSchemaVersion || 0) >= TOMATO_STATE_SCHEMA_VERSION
                 && !!v2TimerAtEnd;
             const assocTaskBlockId = useValidatedV2Association
@@ -19428,13 +19716,7 @@
      * 当用户手动清除关联时调用，确保这笔计时与任务/数据库块无关
      */
     async function clearCurrentRecordAssociation() {
-        lastCompletedAssociationFocusSnapshot = null;
-        focusRestoreSource = '';
-        if (!currentStartTimestamp && !stopwatchStartTimestamp) {
-            Logger.info('🔍 没有正在进行的计时，无需清除关联');
-            return;
-        }
-        await setTaskAssociation(null, null, null);
+        if (!await changeTaskAssociationFromMenu(null, null)) showMiniToast(__tt('timer.taskAssociationNotSaved'));
     }
 
     function __sanitizeTaskAssociationName(name) {
@@ -19478,124 +19760,141 @@
         return rawName;
     }
 
-    async function setTaskAssociation(taskBlockId, taskBlockName, databaseBlockId, options = {}) {
-        const persist = options?.persist !== false;
-        const resolveContext = options?.resolveContext !== false;
-        const confirm = options?.confirm !== false;
-        const prevTaskBlockId = currentTaskBlockId;
-        const prevTaskBlockName = currentTaskBlockName;
-        const prevDatabaseBlockId = currentDatabaseBlockId;
-        const previousAssociation = syncState?.integrationEnvelope?.taskAssociation;
-        localAssociationChangedAtMs = Date.now();
-        const requestedTaskBlockId = String(taskBlockId || '').trim() || null;
-        let taskContext = null;
-        if (resolveContext && (requestedTaskBlockId || databaseBlockId)) {
-            try { taskContext = await resolveTomatoAttrContext(requestedTaskBlockId || databaseBlockId); } catch (e) {}
-        }
-        // 关联、历史记录和属性结算必须使用同一个内层任务 ID。
-        const resolvedTaskBlockId = requestedTaskBlockId && taskContext?.kind === 'task'
-            ? (taskContext.taskId || requestedTaskBlockId)
-            : requestedTaskBlockId;
-        const fallbackTaskBlockName = __sanitizeTaskAssociationName(taskBlockName) || String(taskBlockName || '').trim() || null;
-        const resolvedTaskBlockName = resolvedTaskBlockId
-            ? (await __resolveTaskAssociationName(resolvedTaskBlockId, resolvedTaskBlockId === requestedTaskBlockId ? taskBlockName : null) || fallbackTaskBlockName)
-            : null;
-        if (resolvedTaskBlockId || databaseBlockId) {
-            lastCompletedAssociationFocusSnapshot = null;
-        }
-        currentTaskBlockId = resolvedTaskBlockId;
-        currentTaskBlockName = resolvedTaskBlockName || null;
-        currentDatabaseBlockId = databaseBlockId || null;
-        let v2Association = null;
-        if (resolvedTaskBlockId || currentDatabaseBlockId) {
-            const attrHostId = taskContext?.attrHostId || resolvedTaskBlockId || currentDatabaseBlockId;
-            const sameAssociation = previousAssociation
-                && String(previousAssociation.taskBlockId || '') === String(resolvedTaskBlockId || '')
-                && String(previousAssociation.taskBlockName || '') === String(currentTaskBlockName || '')
-                && String(previousAssociation.databaseBlockId || '') === String(currentDatabaseBlockId || '');
-            v2Association = buildTaskAssociationSnapshot({
-                taskBlockId: resolvedTaskBlockId,
-                taskBlockName: currentTaskBlockName,
-                databaseBlockId: currentDatabaseBlockId,
-                attrHostId,
-                source: focusRestoreSource || 'manual',
-                sourceKind: focusRestoreSource || 'manual',
-                associationVersion: sameAssociation ? previousAssociation.associationVersion : null,
-            });
-        }
-        
-        // 🔧 修复：清除关联时，同时清除日常按钮的状态，恢复默认图标
-        if (!resolvedTaskBlockId) {
-            activeRoutineButtonIndex = null;
-            activeRoutineButtonBlockId = null;
-            clearRoutineButtonRunningHighlight(false);
-        }
-        
-        updateTaskBlockIcon();
-        try { updateTaskBlockTooltip(); } catch (e) {}
+    function __matchesTaskAssociationTimerSnapshot(expected, candidate = syncState) {
+        const activity = candidate === syncState ? getEffectiveTimerActivity() : null;
+        const active = activity ? !!(activity.running || activity.paused)
+            : ['RUNNING', 'PAUSED'].includes(candidate?.activeTimer?.status || candidate?.status);
+        const sessionId = String(candidate?.activeTimer?.sessionId
+            || candidate?.activeTimer?.focusSessionId || (candidate === syncState ? currentSessionId : '') || '');
+        return active === expected.active && (!active || sessionId === expected.sessionId);
+    }
 
-        if (syncState) {
-            if (!syncState.integrationEnvelope || typeof syncState.integrationEnvelope !== 'object') syncState.integrationEnvelope = {};
-            if (isTaskAssociationSyncEnabled()) {
-                syncState.taskBlockId = currentTaskBlockId;
-                syncState.taskBlockName = currentTaskBlockName;
-                syncState.databaseBlockId = currentDatabaseBlockId;
-                syncState.integrationEnvelope.taskAssociation = v2Association;
+    async function setTaskAssociation(taskBlockId, taskBlockName, databaseBlockId, options = {}) {
+        const requestedId = String(taskBlockId || '').trim() || null;
+        let context = null;
+        if (options.resolveContext !== false && (requestedId || databaseBlockId)) {
+            try { context = await resolveTomatoAttrContext(requestedId || databaseBlockId); } catch (e) {}
+        }
+        // Association, history and accounting share the inner task ID.
+        const taskId = requestedId && context?.kind === 'task' ? context.taskId || requestedId : requestedId;
+        const name = taskId
+            ? (await __resolveTaskAssociationName(taskId, taskId === requestedId ? taskBlockName : null)
+                || __sanitizeTaskAssociationName(taskBlockName) || null)
+            : null;
+        const databaseId = databaseBlockId || null;
+        const expected = options.expectedTimer;
+        const fromMenu = options.actionSource === 'timer-context-menu';
+        const validate = (state) => {
+            if (expected && !__matchesTaskAssociationTimerSnapshot(expected, state)) throw new Error('STALE_TIMER_ASSOCIATION');
+            if (fromMenu && __tomatoDestroyed) throw new Error('TIMER_WRITER_DISPOSED');
+        };
+        const previous = {
+            taskBlockId: currentTaskBlockId,
+            taskBlockName: currentTaskBlockName,
+            databaseBlockId: currentDatabaseBlockId,
+        };
+        const previousAssociation = fromMenu ? getEffectiveTaskAssociation() : syncState?.integrationEnvelope?.taskAssociation;
+        const source = (fromMenu && taskId ? 'task-horizon' : focusRestoreSource) || 'manual';
+        const sameAssociation = previousAssociation?.taskBlockId === taskId
+            && previousAssociation?.taskBlockName === name && previousAssociation?.databaseBlockId === databaseId;
+        const association = taskId || databaseId ? buildTaskAssociationSnapshot({
+            taskBlockId: taskId, taskBlockName: name, databaseBlockId: databaseId,
+            attrHostId: context?.attrHostId || taskId || databaseId,
+            source, sourceKind: source,
+            associationVersion: sameAssociation ? previousAssociation.associationVersion : null,
+        }) : null;
+        const syncAssociation = isTaskAssociationSyncEnabled();
+        const resetRoutine = fromMenu && (taskId !== previous.taskBlockId || databaseId !== previous.databaseBlockId);
+        const writeAssociation = (state) => {
+            state.taskBlockId = syncAssociation ? taskId : null;
+            state.taskBlockName = syncAssociation ? name : null;
+            state.databaseBlockId = syncAssociation ? databaseId : null;
+            state.integrationEnvelope ||= {};
+            state.integrationEnvelope.taskAssociation = syncAssociation ? association : null;
+            if (fromMenu && state.continuation) state.continuation.taskSnapshot = syncAssociation ? association : null;
+            if (resetRoutine) {
+                state.integrationEnvelope.routineButton = null;
+                for (const field of ['routineButtonId', 'routineButtonBlockId', 'routineButtonName', 'routineButtonColor']) state[field] = null;
+            }
+            return state;
+        };
+        const shouldCommit = options.persist !== false && syncAssociation
+            && (fromMenu || (isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal));
+        try {
+            validate(syncState);
+            if (shouldCommit) {
+                await commitTimerState(writeAssociation, 'association', { confirm: options.confirm !== false, validate });
             } else {
-                syncState.taskBlockId = null;
-                syncState.taskBlockName = null;
-                syncState.databaseBlockId = null;
-                syncState.integrationEnvelope.taskAssociation = null;
-                const bindingId = syncState.activeTimer?.phase === 'break'
-                    ? (syncState.activeTimer?.parentSessionId || syncState.continuation?.focusSessionId)
-                    : syncState.activeTimer?.sessionId;
-                setLocalTaskAssociationSidecar(v2Association && bindingId ? {
-                    localOwnerDeviceId: SYNC_DEVICE_ID,
-                    boundSessionId: bindingId,
-                    associationVersion: v2Association.associationVersion,
-                    association: v2Association,
-                } : null);
+                if (!syncAssociation && syncState) {
+                    const timer = syncState.activeTimer;
+                    const bindingId = timer?.phase === 'break'
+                        ? (timer.parentSessionId || syncState.continuation?.focusSessionId)
+                        : timer?.sessionId;
+                    setLocalTaskAssociationSidecar(association && bindingId ? {
+                        localOwnerDeviceId: SYNC_DEVICE_ID,
+                        boundSessionId: bindingId,
+                        associationVersion: association.associationVersion,
+                        association,
+                    } : null, { strict: fromMenu });
+                }
+                if (syncState) writeAssociation(syncState);
+            }
+        } catch (error) {
+            if (error?.message !== 'STALE_TIMER_ASSOCIATION') Logger.warn('保存任务关联失败:', error);
+            return false;
+        }
+        
+        localAssociationChangedAtMs = Date.now();
+        currentTaskBlockId = taskId;
+        currentTaskBlockName = name;
+        currentDatabaseBlockId = databaseId;
+        if (taskId || databaseId || fromMenu) lastCompletedAssociationFocusSnapshot = null;
+        if (fromMenu) {
+            focusRestoreSource = taskId ? source : '';
+            if (expected?.active) {
+                segmentTaskBlockId = taskId;
+                segmentTaskBlockName = name;
+                segmentDatabaseBlockId = databaseId;
             }
         }
-
-        if (persist && isTaskAssociationSyncEnabled() && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.updateLocal) {
-            try {
-                const associationTaskBlockId = currentTaskBlockId;
-                const associationTaskBlockName = currentTaskBlockName;
-                const associationDatabaseBlockId = currentDatabaseBlockId;
-                const associationValue = v2Association;
-                await commitTimerState((state) => {
-                    const next = cloneSyncState(state);
-                    next.taskBlockId = associationTaskBlockId;
-                    next.taskBlockName = associationTaskBlockName;
-                    next.databaseBlockId = associationDatabaseBlockId;
-                    if (!next.integrationEnvelope || typeof next.integrationEnvelope !== 'object') next.integrationEnvelope = {};
-                    next.integrationEnvelope.taskAssociation = associationValue;
-                    return next;
-                }, 'association', { confirm });
-            } catch (e) {}
+        if (!taskId || resetRoutine) {
+            activeRoutineButtonIndex = null;
+            activeRoutineButtonBlockId = null;
+            if (resetRoutine) routineButtonHighlightColor = null;
+            clearRoutineButtonRunningHighlight(false);
+        }
+        try { updateTaskBlockIcon(); updateTaskBlockTooltip(); } catch (e) {}
+        if (fromMenu) {
+            const activeFocus = expected?.active && (timerMode === 'countdown' || timerMode === 'stopwatch');
+            clearTaskBlockHighlight();
+            stopHighlightKeepAlive();
+            if (taskId && activeFocus) {
+                highlightTaskBlock(taskId);
+                startHighlightKeepAlive();
+            }
+            try { updateDisplay(); } catch (e) { Logger.warn('刷新计时界面失败:', e); }
         }
 
-        const associationChanged = String(prevTaskBlockId || '') !== String(currentTaskBlockId || '')
-            || String(prevDatabaseBlockId || '') !== String(currentDatabaseBlockId || '');
-        if (associationChanged) {
-            const detail = {
-                taskBlockId: currentTaskBlockId,
-                taskBlockName: currentTaskBlockName,
-                databaseBlockId: currentDatabaseBlockId,
-                prevTaskBlockId,
-                prevTaskBlockName,
-                prevDatabaseBlockId,
-                source: v2Association?.source || focusRestoreSource || 'manual',
-                sourceKind: v2Association?.sourceKind || focusRestoreSource || 'manual',
-            };
-            try { globalThis.__taskHorizonOnTomatoAssociationChanged?.(detail); } catch (e) {}
-            try { window.dispatchEvent(new CustomEvent('tomato:association-changed', { detail })); } catch (e) {}
-        }
+        notifyTimerTaskAssociationChanged(previous, source, options.actionSource,
+            expected?.active === true && (timerMode === 'countdown' || timerMode === 'stopwatch'));
+        return true;
+    }
 
-        if ((prevTaskBlockId || prevDatabaseBlockId) && !currentTaskBlockId && !currentDatabaseBlockId) {
-            try { globalThis.__taskHorizonOnTomatoAssociationCleared?.({ prevTaskBlockId, prevDatabaseBlockId }); } catch (e) {}
-            try { window.dispatchEvent(new CustomEvent('tomato:association-cleared', { detail: { prevTaskBlockId, prevDatabaseBlockId } })); } catch (e) {}
+    function notifyTimerTaskAssociationChanged(previous, source, actionSource = '', activeTimer = false) {
+        if (previous.taskBlockId === currentTaskBlockId && previous.taskBlockName === currentTaskBlockName
+            && previous.databaseBlockId === currentDatabaseBlockId) return;
+        const detail = {
+            taskBlockId: currentTaskBlockId, taskBlockName: currentTaskBlockName, databaseBlockId: currentDatabaseBlockId,
+            prevTaskBlockId: previous.taskBlockId, prevTaskBlockName: previous.taskBlockName,
+            prevDatabaseBlockId: previous.databaseBlockId,
+            source, sourceKind: source, actionSource, activeTimer,
+        };
+        try { globalThis.__taskHorizonOnTomatoAssociationChanged?.(detail); } catch (e) {}
+        try { window.dispatchEvent(new CustomEvent('tomato:association-changed', { detail })); } catch (e) {}
+        if ((previous.taskBlockId || previous.databaseBlockId) && !currentTaskBlockId && !currentDatabaseBlockId) {
+            const cleared = { prevTaskBlockId: previous.taskBlockId, prevDatabaseBlockId: previous.databaseBlockId };
+            try { globalThis.__taskHorizonOnTomatoAssociationCleared?.(cleared); } catch (e) {}
+            try { window.dispatchEvent(new CustomEvent('tomato:association-cleared', { detail: cleared })); } catch (e) {}
         }
     }
 
@@ -19743,11 +20042,10 @@
         await requireTimerPersistence(pendingRecordSave, 'switch-to-countdown-with-task');
         syncState.mode = 'countdown';
 
-        if (!associationAlreadySet) {
-            await setTaskAssociation(taskBlockId, taskBlockName, currentDatabaseBlockId, { confirm });
-        }
-
         try {
+            if (!associationAlreadySet && !await setTaskAssociation(taskBlockId, taskBlockName, currentDatabaseBlockId, { confirm })) {
+                throw new Error('TASK_ASSOCIATION_NOT_SAVED');
+            }
             await startTimer({ confirm });
         } catch (e) {
             Logger.error('startTimer失败:', e);
@@ -19851,11 +20149,10 @@
         await requireTimerPersistence(pendingRecordSave, 'switch-to-stopwatch-with-task');
         syncState.mode = 'stopwatch';
 
-        if (!associationAlreadySet) {
-            await setTaskAssociation(taskBlockId, taskBlockName, currentDatabaseBlockId, { confirm });
-        }
-
         try {
+            if (!associationAlreadySet && !await setTaskAssociation(taskBlockId, taskBlockName, currentDatabaseBlockId, { confirm })) {
+                throw new Error('TASK_ASSOCIATION_NOT_SAVED');
+            }
             await startTimer({ confirm });
         } catch (e) {
             Logger.error('startTimer失败:', e);
@@ -20786,8 +21083,8 @@
         menu.dataset.anchorX = String(x);
         menu.dataset.anchorY = String(y);
         menu.style.cssText = 'position:fixed;top:0;left:0;opacity:0;visibility:hidden;z-index:2147483647;pointer-events:auto;';
-        const scroll = document.createElement('div');
-        scroll.className = 'tomato-menu-scroll';
+        const associationGroup = document.createElement('div');
+        associationGroup.className = 'tomato-menu-association';
         if (currentTaskBlockName || currentTaskBlockId || currentDatabaseBlockId) {
             const taskRow = document.createElement('div');
             taskRow.className = 'tomato-menu-task';
@@ -20805,20 +21102,25 @@
             task.append(taskIcon, name);
             taskRow.appendChild(task);
             if (isMobileDevice() && (currentTaskBlockId || currentDatabaseBlockId)) {
-                const clear = createTimerMenuItem('', 'close', async () => {
-                    await clearCurrentRecordAssociation();
-                    await setTaskAssociation(null, null, null);
-                    document.querySelectorAll('.tomato-task-highlight, .tomato-db-row-highlight').forEach(node => node.classList.remove('tomato-task-highlight', 'tomato-db-row-highlight'));
-                    updateTaskBlockIcon();
-                    updateDisplay();
-                });
+                const clear = createTimerMenuItem('', 'close', clearCurrentRecordAssociation);
                 clear.classList.add('tomato-menu-clear');
                 clear.title = __tt("timer.clearlinkedTask");
                 clear.setAttribute('aria-label', clear.title);
                 taskRow.appendChild(clear);
             }
-            menu.appendChild(taskRow);
+            associationGroup.appendChild(taskRow);
         }
+        const associationItem = createTimerMenuItem(
+            currentTaskBlockId || currentDatabaseBlockId ? __tt('timer.replacelinkedTask') : __tt('timer.associateTask'),
+            'association',
+            showTaskAssociationPicker,
+        );
+        associationItem.setAttribute('aria-haspopup', 'dialog');
+        associationGroup.appendChild(associationItem);
+        menu.appendChild(associationGroup);
+
+        const scroll = document.createElement('div');
+        scroll.className = 'tomato-menu-scroll';
         menu.appendChild(scroll);
         if (!document.getElementById('tomato-duration-slider-style')) {
             const durationSliderStyle = document.createElement('style');
@@ -27369,6 +27671,17 @@ function calculateWeeklyStats(dailyStatsArray) {
         }
 
         template.push({ label: __tt("timer.pomodoro"), iconName: 'tomato', enabled: false });
+        template.push({
+            label: currentTaskBlockId || currentDatabaseBlockId ? __tt('timer.replacelinkedTask') : __tt('timer.associateTask'),
+            iconName: 'association',
+            click: () => runAction(() => {
+                const owner = getDesktopFloatWindowElectronSupport().currentWindow;
+                if (owner?.isMinimized?.()) owner.restore();
+                owner?.show?.();
+                owner?.focus?.();
+                showTaskAssociationPicker();
+            }),
+        });
         if (currentTaskBlockName || currentDatabaseBlockId) {
             template.push({
                 label: __tt("timer.linked", { value1: getTimerTaskTextForDisplay() }),
@@ -27380,14 +27693,7 @@ function calculateWeeklyStats(dailyStatsArray) {
             template.push({
                 label: __tt("timer.clearlinkedTask"),
                 iconName: 'close',
-                click: () => runAction(async () => {
-                    await clearCurrentRecordAssociation();
-                    await setTaskAssociation(null, null, null);
-                    document.querySelectorAll('.tomato-task-highlight').forEach(el => el.classList.remove('tomato-task-highlight'));
-                    document.querySelectorAll('.tomato-db-row-highlight').forEach(el => el.classList.remove('tomato-db-row-highlight'));
-                    updateTaskBlockIcon();
-                    updateDisplay();
-                })
+                click: () => runAction(clearCurrentRecordAssociation)
             });
         }
         if (timerMode === 'countdown' && (isRunning || isTimerPaused)) {
@@ -30137,17 +30443,17 @@ window.__setTomatoFloatState = function (payload) {
         let taskBlockTooltip = document.getElementById('tomy-task-block-tooltip');
         if (taskBlockTooltip) return taskBlockTooltip;
 
+        ensureTimerSurfaceStyles();
         taskBlockTooltip = document.createElement('div');
         taskBlockTooltip.id = 'tomy-task-block-tooltip';
         taskBlockTooltip.innerHTML = `
             <div style="padding: 8px 12px; background: var(--b3-theme-surface); border-radius: 6px;
                  box-shadow: 0 2px 8px rgba(0,0,0,0.15); font-size: 12px; width: 150px;
                  display: flex; flex-direction: column; gap: 6px;">
-                <button id="tomy-tooltip-delete-btn" style="
-                    padding: 2px 8px; font-size: 11px; align-self: flex-start;
-                    background: var(--b3-theme-error); color: white;
-                    border: none; border-radius: 3px; cursor: pointer;
-                ">${__tt("timer.clear2")}</button>
+                <div class="tomato-task-tooltip-actions">
+                    <button type="button" id="tomy-tooltip-change-btn" aria-haspopup="dialog">${__tt("timer.changeLinkedTaskShort")}</button>
+                    <button type="button" id="tomy-tooltip-delete-btn">${__tt("timer.clear2")}</button>
+                </div>
                 <span id="tomy-tooltip-task-name" style="
                     word-break: break-word;
                     line-height: 1.3;
@@ -30191,6 +30497,81 @@ window.__setTomatoFloatState = function (payload) {
         taskBlockTooltip.style.top = `${Math.round(top)}px`;
     }
 
+    let statusBarTaskDropTarget = null;
+
+    function resolveStatusBarTaskDropTarget(target) {
+        const widget = target?.closest?.('[data-tomato-task-drop]');
+        return widget?.isConnected && !widget.hidden && !__tomatoDestroyed ? widget : null;
+    }
+
+    function previewStatusBarTaskDrop(target) {
+        const widget = resolveStatusBarTaskDropTarget(target);
+        if (widget === statusBarTaskDropTarget) return;
+        statusBarTaskDropTarget?.setAttribute('data-tomato-task-drop', '');
+        statusBarTaskDropTarget = widget;
+        if (widget) {
+            widget.setAttribute('data-tomato-task-drop', __tt(currentTaskBlockId || currentDatabaseBlockId
+                ? 'timer.dropToReplaceTask' : 'timer.dropToLinkTask'));
+        }
+    }
+
+    async function dropTaskOnStatusBar(target, payload) {
+        if (!resolveStatusBarTaskDropTarget(target)) return false;
+        previewStatusBarTaskDrop(null);
+        if (!__tomatoTimerReady) {
+            showMiniToast(__tt('timer.timerStateIsBeingRestoredPleaseTryAgainShortly'));
+            return true;
+        }
+        const id = String(payload?.taskId || '').trim();
+        const ids = payload?.taskIds ?? [id];
+        if (!Array.isArray(ids) || ids.length !== 1) {
+            showMiniToast(__tt('timer.dropOneTask'));
+        } else if (!id || ids[0] !== id) {
+            showMiniToast(__tt('timer.taskAssociationNotSaved'));
+        } else if (id !== currentTaskBlockId || currentDatabaseBlockId) {
+            let saved = false;
+            try { saved = await changeTaskAssociationFromMenu(id, payload.title); }
+            catch (error) { Logger.warn('Failed to link dragged task:', error); }
+            showMiniToast(__tt(saved ? 'timer.taskAssociationUpdated' : 'timer.taskAssociationNotSaved'));
+        }
+        return true;
+    }
+
+    function bindStatusBarTaskDrop(widget) {
+        EventManager.removeByContext('status-bar-task-drop');
+        EventManager.add(window, 'dragend', () => previewStatusBarTaskDrop(null), { capture: true }, 'status-bar-task-drop');
+        const taskIdType = 'application/x-tm-task-id';
+        widget.setAttribute('data-tomato-task-drop', '');
+        widget.addEventListener('dragover', (event) => {
+            if (!event.dataTransfer?.types.includes(taskIdType)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'link';
+            previewStatusBarTaskDrop(widget);
+        });
+        widget.addEventListener('dragleave', (event) => {
+            if (!widget.contains(event.relatedTarget) && statusBarTaskDropTarget === widget) previewStatusBarTaskDrop(null);
+        });
+        widget.addEventListener('drop', (event) => {
+            const transfer = event.dataTransfer;
+            if (!transfer?.types.includes(taskIdType)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const taskId = transfer.getData(taskIdType).trim();
+            let taskIds, title;
+            try {
+                const rawIds = transfer.getData('application/x-tm-task-ids');
+                if (rawIds) taskIds = JSON.parse(rawIds);
+                const rawTask = transfer.getData('application/x-tm-task');
+                if (rawTask) title = JSON.parse(rawTask)?.title;
+            } catch (error) {
+                previewStatusBarTaskDrop(null);
+                showMiniToast(__tt('timer.taskAssociationNotSaved'));
+                return;
+            }
+            void dropTaskOnStatusBar(widget, { taskId, taskIds, title });
+        });
+    }
+
     function createWidget(statusBar) {
         if (container?.parentNode === statusBar) return;
         if (container?.parentNode) container.remove();
@@ -30209,6 +30590,8 @@ window.__setTomatoFloatState = function (payload) {
             pointer-events: auto;
             position: relative;
         `;
+
+        bindStatusBarTaskDrop(container);
 
         // 任务块关联图标（默认隐藏）
         const taskBlockIcon = document.createElement('span');
@@ -30250,17 +30633,14 @@ window.__setTomatoFloatState = function (payload) {
 
         // 删除按钮事件
         const deleteBtn = taskBlockTooltip.querySelector('#tomy-tooltip-delete-btn');
-        deleteBtn.onclick = async (e) => {
-            e.stopPropagation();
-            // 先清除当前记录中的关联
-            await clearCurrentRecordAssociation();
-            await setTaskAssociation(null, null, null);
-            clearTaskBlockHighlight();
-            stopHighlightKeepAlive(); // 停止保持高亮的定时器
-            taskBlockTooltip.style.display = 'none';
-            taskBlockIcon.style.display = 'none';
-            // 更新显示
-            updateDisplay();
+        deleteBtn.onclick = (event) => {
+            event.stopPropagation();
+            void clearCurrentRecordAssociation();
+        };
+        const changeBtn = taskBlockTooltip.querySelector('#tomy-tooltip-change-btn');
+        changeBtn.onclick = (event) => {
+            event.stopPropagation();
+            if (showTaskAssociationPicker()) taskBlockTooltip.style.display = 'none';
         };
 
         timeDisplay = document.createElement('span');
@@ -32746,7 +33126,8 @@ window.__setTomatoFloatState = function (payload) {
         }
         const confirm = options?.confirm !== false;
         const result = await TransitionExecutor.execute(
-            { transitionId: createTomatoUuid(prefix), deferNetwork: options?.deferNetwork !== false, allowLeaseTransfer: true, confirm },
+            { transitionId: createTomatoUuid(prefix), deferNetwork: options?.deferNetwork !== false,
+                allowLeaseTransfer: true, confirm, validate: options?.validate },
             (latestState) => {
                 if (isMutator) {
                     const next = nextStateOrMutator(cloneSyncState(latestState || syncState || {}));
@@ -39191,6 +39572,11 @@ window.__setTomatoFloatState = function (payload) {
                     const nextSig = buildSyncSignature(newState);
                     const runtimeStateChanged = buildTimerRuntimeSignature(syncState) !== buildTimerRuntimeSignature(newState);
                     const isStateFromOtherDevice = !!(newState?.lastModifiedDevice && newState.lastModifiedDevice !== SYNC_DEVICE_ID);
+                    const associationFromSyncChanged = isStateFromOtherDevice && isTaskAssociationSyncEnabled()
+                        && Number(newState.lastModifiedTime || 0) >= localAssociationChangedAtMs
+                        && (currentTaskBlockId !== (newState.taskBlockId || null)
+                            || currentTaskBlockName !== (newState.taskBlockName || null)
+                            || currentDatabaseBlockId !== (newState.databaseBlockId || null));
                     const runtimeNeedsRecovery = isStateFromOtherDevice
                         ? newState?.status === 'RUNNING'
                             ? (!isRunning || !timerId)
@@ -39228,6 +39614,7 @@ window.__setTomatoFloatState = function (payload) {
                         && !shouldHandleEndDialogClose
                         && !expiredTimerSnapshot
                         && !runtimeStateChanged
+                        && !associationFromSyncChanged
                         && !runtimeNeedsRecovery) {
                         Logger.debug('🔄 handleStateChange: 状态更新过于频繁，跳过');
                         return;
@@ -39257,6 +39644,30 @@ window.__setTomatoFloatState = function (payload) {
                         try { applyEndDialogCloseFromSync(newState); } catch (e) {}
                         syncState = newState;
                         return;
+                    }
+
+                    const previousStartTime = syncState?.startTime;
+                    if (associationFromSyncChanged) {
+                        const previous = { taskBlockId: currentTaskBlockId, taskBlockName: currentTaskBlockName, databaseBlockId: currentDatabaseBlockId };
+                        syncState = newState;
+                        currentTaskBlockId = newState.taskBlockId || null;
+                        currentTaskBlockName = newState.taskBlockName || null;
+                        currentDatabaseBlockId = newState.databaseBlockId || null;
+                        const source = newState.integrationEnvelope?.taskAssociation?.source || 'manual';
+                        setFocusRestoreSource(source);
+                        lastCompletedAssociationFocusSnapshot = null;
+                        try {
+                            clearTaskBlockHighlight();
+                            stopHighlightKeepAlive();
+                            updateTaskBlockIcon();
+                            updateTaskBlockTooltip();
+                            if (currentTaskBlockId && newState.activeTimer?.phase === 'focus' && ['RUNNING', 'PAUSED'].includes(newState.status)) {
+                                highlightTaskBlock(currentTaskBlockId);
+                                startHighlightKeepAlive();
+                            }
+                        } catch (e) {}
+                        notifyTimerTaskAssociationChanged(previous, source, 'sync',
+                            newState.activeTimer?.phase === 'focus' && ['RUNNING', 'PAUSED'].includes(newState.status));
                     }
 
                     if (expiredTimerSnapshot) {
@@ -39302,9 +39713,9 @@ window.__setTomatoFloatState = function (payload) {
 
                 if (localIsRunning && remoteIsRunning) {
                     // 🔧 v9.0 修复：如果远端开始时间不同，说明是重置后重新开始，需要同步新的开始时间
-                    if (syncState.startTime !== newState.startTime) {
+                    if (previousStartTime !== newState.startTime) {
                         Logger.info('🔄 SyncManager: 远端重新开始计时，同步新的开始时间');
-                        Logger.info('🔄 旧开始时间:', syncState.startTime, '新开始时间:', newState.startTime);
+                        Logger.info('🔄 旧开始时间:', previousStartTime, '新开始时间:', newState.startTime);
                         
                         // 停止本地计时器
                         if (timerId) {
@@ -39358,6 +39769,7 @@ window.__setTomatoFloatState = function (payload) {
                     syncState = newState;
                     syncActiveRoutineButtonFromState(newState);
                     updateRoutineButtonRunningHighlight(true);
+                    if (associationFromSyncChanged) updateDisplay();
                     if (!timerId) startLocalTimerLoop();
                     return;
                 }
@@ -40133,6 +40545,8 @@ window.__setTomatoFloatState = function (payload) {
         try { document.getElementById('tomato-settings-dialog')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-breadcrumb-btn')?.remove(); } catch (e) {}
         try { closeTimerContextMenu(); } catch (e) {}
+        try { closeTaskAssociationPicker(); } catch (e) {}
+        previewStatusBarTaskDrop(null);
         try { closeBackgroundPlaylistDialog(); } catch (e) {}
         try { document.getElementById('tomato-timer-surface-style')?.remove(); } catch (e) {}
         try { document.getElementById('tomato-task-submenu')?.remove(); } catch (e) {}
@@ -45851,12 +46265,15 @@ window.__setTomatoFloatState = function (payload) {
             eventVersion: 2,
         }),
         getState: () => cloneSyncState(prepareCanonicalStateForSync(syncState)),
+        getTaskAssociation: () => cloneSyncState(getEffectiveTaskAssociation()),
+        previewStatusBarTaskDrop,
+        dropTaskOnStatusBar,
         getActiveFocusSnapshot: () => {
             const state = prepareCanonicalStateForSync(syncState);
             return {
                 ...getActiveTimerFocusSnapshot(),
-                source: state.integrationEnvelope?.taskAssociation?.source || 'manual',
-                sourceKind: state.integrationEnvelope?.taskAssociation?.sourceKind || 'manual',
+                source: getEffectiveTaskAssociation(state)?.source || 'manual',
+                sourceKind: getEffectiveTaskAssociation(state)?.sourceKind || 'manual',
                 sessionId: state.activeTimer?.sessionId || state.continuation?.focusSessionId || null,
             };
         },
