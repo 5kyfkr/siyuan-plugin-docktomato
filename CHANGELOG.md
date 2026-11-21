@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.4.4更新内容
+
+- 优化：关联任务搜索会过滤已完成任务，并显示最多10条未完成任务
+
+### English
+
+- Improved: Task search now filters out completed tasks and shows up to 10 unfinished matches.
+
+<details>
+<summary>历史版本更新 / Previous updates（点击展开 / click to expand）</summary>
+
 ## 2.4.3更新内容
 
 - **新增反向关联任务功能**
@@ -15,9 +26,6 @@
 - **New drag-and-drop task linking**
   - Drag a single task from Task Horizon onto the status bar timer to link it or replace the current link. A prompt shows what the drop will do.
 - Improved cross-device syncing of task links and how timer records are assigned when a session ends.
-
-<details>
-<summary>历史版本更新 / Previous updates（点击展开 / click to expand）</summary>
 
 ## 2.4.2更新内容
 

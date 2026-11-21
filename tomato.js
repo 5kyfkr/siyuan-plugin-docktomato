@@ -452,14 +452,16 @@
             const query = input.value.trim();
             showStatus(__tt('timer.loadingTasks'));
             try {
-                const tasks = await bridge.searchTasks(query, { limit: 10 });
+                // Search returns at most 20; over-fetch so completed tasks do not shrink the 10 visible results.
+                const tasks = await bridge.searchTasks(query, { limit: 20 });
                 if (!overlay.isConnected || sequence !== searchSequence) return;
-                if (!Array.isArray(tasks) || !tasks.length) {
+                const availableTasks = Array.isArray(tasks) ? tasks.filter(task => task?.done !== true).slice(0, 10) : [];
+                if (!availableTasks.length) {
                     showStatus(__tt('timer.noTasksFound'));
                     return;
                 }
                 results.replaceChildren();
-                tasks.forEach((task) => {
+                availableTasks.forEach((task) => {
                     const id = String(task?.id || '').trim();
                     const taskName = String(task?.title || '').trim();
                     if (!id || !taskName) return;

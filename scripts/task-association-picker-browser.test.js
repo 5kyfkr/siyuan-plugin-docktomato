@@ -40,9 +40,15 @@ runtime = runtime.slice(0, end) + `
                 window.__dockTomatoI18n = __dockTomatoI18nRuntime.createI18n(messages, { preference: 'en' });
                 window.siyuan = { config: { appearance: { lang: 'en' }, system: { container: width === 320 ? 'android' : 'windows' } } };
                 window.fetch = async () => ({ ok: true, text: async () => '', json: async () => ({ code: 0, data: [] }) });
-                const items = [{ id: 'a', title: 'Prepare release', docName: 'Project notebook' }, { id: 'b', title: 'Review issues', docName: 'Inbox' }];
-                window['siyuan-plugin-task-horizon'] = { aiBridge: { async searchTasks(query) {
-                    return items.filter(item => (item.title + ' ' + item.docName).toLowerCase().includes(query.toLowerCase()));
+                const items = [
+                    { id: 'a', title: 'Prepare release', docName: 'Project notebook', done: true },
+                    ...Array.from({ length: 4 }, (_, index) => ({ id: `done-${index}`, title: `Completed task ${index}`, docName: 'Archive', done: true })),
+                    { id: 'b', title: 'Review issues', docName: 'Inbox', done: false },
+                    { id: 'c', title: 'Plan migration', docName: 'Roadmap', done: false },
+                    ...Array.from({ length: 13 }, (_, index) => ({ id: `open-${index}`, title: `Open task ${index}`, docName: 'Inbox', done: false })),
+                ];
+                window['siyuan-plugin-task-horizon'] = { aiBridge: { async searchTasks(query, options = {}) {
+                    return items.filter(item => (item.title + ' ' + item.docName).toLowerCase().includes(query.toLowerCase())).slice(0, options.limit || 10);
                 } } };
             }, { messages: require('../i18n/en.json'), width });
             await page.addScriptTag({ content: '(function(){const MutationObserver = class { observe() {} disconnect() {} };' + runtime + '})();' });
@@ -50,17 +56,22 @@ runtime = runtime.slice(0, end) + `
             await page.getByRole('button', { name: 'Link task', exact: true }).click();
             const dialog = page.getByRole('dialog');
             const input = dialog.getByRole('searchbox');
+            await dialog.locator('.tomato-association-result').first().waitFor();
+            assert.equal(await dialog.locator('.tomato-association-result').count(), 10, 'hidden completed tasks do not reduce the visible result limit');
             await input.fill('project notebook');
-            const option = dialog.getByRole('button', { name: 'Prepare release Project notebook' });
+            await dialog.getByText('No matching tasks', { exact: true }).waitFor();
+            assert.equal(await dialog.locator('.tomato-association-result').count(), 0, 'completed tasks are hidden from the tomato picker');
+            await input.fill('Inbox');
+            const option = dialog.getByRole('button', { name: 'Review issues Inbox', exact: true });
             await option.waitFor();
-            assert.equal(await dialog.locator('.tomato-association-result').count(), 1);
+            assert.equal(await dialog.locator('.tomato-association-result').count(), 10, 'matching unfinished tasks are capped at 10 visible results');
             const bounds = await dialog.boundingBox();
             assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width + 1);
             await input.press('ArrowDown');
             assert.ok(await option.evaluate(el => el === document.activeElement));
             await option.press('Enter');
             await dialog.waitFor({ state: 'detached' });
-            assert.equal(await page.evaluate(() => menuTest.linked()), 'a');
+            assert.equal(await page.evaluate(() => menuTest.linked()), 'b');
             await page.evaluate(() => menuTest.open());
             const menu = page.locator('#tomy-tomato-context-menu');
             const changeTask = menu.getByRole('button', { name: 'Change linked task', exact: true });
@@ -82,11 +93,11 @@ runtime = runtime.slice(0, end) + `
             await page.evaluate(() => { window.failAssociation = true; });
             await dialog.getByRole('button', { name: 'Clear task link' }).click();
             await dialog.getByText('Task link was not saved. Try again.').waitFor();
-            assert.equal(await page.evaluate(() => menuTest.linked()), 'a');
+            assert.equal(await page.evaluate(() => menuTest.linked()), 'b');
             await page.evaluate(() => { window.failAssociation = false; menuTest.start(); });
             await dialog.getByRole('button', { name: 'Clear task link' }).click();
             await dialog.getByText('The timer changed. Reopen task linking to continue.').waitFor();
-            assert.equal(await page.evaluate(() => menuTest.linked()), 'a');
+            assert.equal(await page.evaluate(() => menuTest.linked()), 'b');
             await input.press('Escape');
             await dialog.waitFor({ state: 'detached' });
             if (width === 1100) {
@@ -96,7 +107,7 @@ runtime = runtime.slice(0, end) + `
                 const taskName = tooltip.locator('#tomy-tooltip-task-name');
                 await icon.hover();
                 await tooltip.waitFor();
-                assert.match(await taskName.innerText(), /Prepare release/);
+                assert.equal((await taskName.innerText()).trim(), 'Review issues');
                 const clear = tooltip.getByRole('button', { name: 'Clear', exact: true });
                 const change = tooltip.getByRole('button', { name: 'Change', exact: true });
                 assert.equal(await change.count(), 1, 'the linked task tooltip has a change button');
@@ -107,12 +118,12 @@ runtime = runtime.slice(0, end) + `
                 await change.click();
                 await tooltip.waitFor({ state: 'hidden' });
                 await page.getByRole('dialog', { name: 'Change linked task' }).waitFor();
-                await input.fill('Inbox');
-                await dialog.getByRole('button', { name: 'Review issues Inbox' }).click();
+                await input.fill('Roadmap');
+                await dialog.getByRole('button', { name: 'Plan migration Roadmap', exact: true }).click();
                 await dialog.waitFor({ state: 'detached' });
-                assert.equal(await page.evaluate(() => menuTest.linked()), 'b');
+                assert.equal(await page.evaluate(() => menuTest.linked()), 'c');
                 await icon.hover();
-                assert.match(await taskName.innerText(), /Review issues/);
+                assert.match(await taskName.innerText(), /Plan migration/);
                 await page.mouse.move(20, 20);
             }
             await page.evaluate(() => menuTest.open());

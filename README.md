@@ -6,6 +6,13 @@ Dock Tomato is a Pomodoro timer and focus stopwatch for SiYuan. Start from the s
 
 ![Dock Tomato preview](preview.png)
 
+## 2.4.4 Release notes
+
+- Improved: Task search now filters out completed tasks and shows up to 10 unfinished matches.
+
+<details>
+<summary>Previous updates (click to expand)</summary>
+
 ## 2.4.3 Release notes
 
 - **New task search and linking**
@@ -13,9 +20,6 @@ Dock Tomato is a Pomodoro timer and focus stopwatch for SiYuan. Start from the s
 - **New drag-and-drop task linking**
   - Drag a single task from Task Horizon onto the status bar timer to link it or replace the current link. A prompt shows what the drop will do.
 - Improved cross-device syncing of task links and how timer records are assigned when a session ends.
-
-<details>
-<summary>Previous updates (click to expand)</summary>
 
 ## 2.4.2 Release notes
 
