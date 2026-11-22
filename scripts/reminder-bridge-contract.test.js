@@ -44,8 +44,8 @@ const refreshEnd = source.indexOf('\n    // 手动触发检查', refreshStart);
 const refreshBlock = source.slice(refreshStart, refreshEnd);
 assert.match(refreshBlock, /__syncReminderDeviceSchedule\(/, 'task date changes must reconcile device notifications');
 assert.match(refreshBlock, /scheduleWechatReminderReconcile\(/, 'task date changes must reconcile WeChat reminders');
-assert.match(refreshBlock, /refreshReminderDockPanel\(options\?\.forceRefresh === true\)/,
-    'local task context changes must refresh immediately without forcing cloud sync and a fixed delay');
+assert.match(refreshBlock, /refreshReminderDockPanel\(options\?\.forceRefresh !== false\)/,
+    'local task context changes must force an authoritative Dock refresh without forcing cloud sync');
 assert.ok(refreshBlock.indexOf('__invalidateReminderDockCache()') < refreshBlock.indexOf('refreshReminderDockPanel('),
     'task date changes must invalidate the Dock data cache before rendering');
 
@@ -88,7 +88,7 @@ const deleteEnd = source.indexOf('\n    async function queryAllReminderBlocks', 
 assert.ok(deleteStart >= 0 && deleteEnd > deleteStart, 'reminder deletion block must remain extractable');
 const deleteBlock = source.slice(deleteStart, deleteEnd);
 assert.match(deleteBlock, /__clearFollowTaskReminderDraft\(reminderId, existingReminder\)/, 'all reminder deletion paths must enter follow-task cleanup');
-assert.ok(deleteBlock.indexOf('__clearFollowTaskReminderDraft(') < deleteBlock.indexOf("'/api/attr/setBlockAttrs'"), 'the ownership-safe detach must run before removing the reminder record');
+assert.ok(deleteBlock.indexOf('__clearFollowTaskReminderDraft(') < deleteBlock.indexOf('persistReminderAttrsAndVerify(resolvedReminder, clearAttrs)'), 'the ownership-safe detach must run before the verified reminder-record removal');
 
 (async () => {
     let followClearCalls = 0;

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.4.5更新内容
+
+- **优化：番茄钟提醒保存**
+  - 提醒写入改为串行处理，并在事务落盘后回读校验，减少连续修改或多端同步时的覆盖和保存失败
+  - 跟随任务提醒同步最新任务日期上下文，保持提醒计划与任务状态一致
+
+### English
+
+- **Improved: Timer reminder saving**
+  - Reminder writes are serialized and verified after the transaction is flushed, reducing lost updates and save failures during rapid edits or device sync.
+  - Follow-task reminders refresh their task-date context so reminder schedules stay aligned with task state.
+
 ## 2.4.4更新内容
 
 - 优化：关联任务搜索会过滤已完成任务，并显示最多10条未完成任务

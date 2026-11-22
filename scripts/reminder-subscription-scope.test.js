@@ -49,12 +49,14 @@ test('reminder SQL restricts source documents before its row limit', async () =>
     const queries = [];
     const context = vm.createContext({
         TASK_START_DATE_ATTR: 'start', TASK_COMPLETION_TIME_ATTR: 'end', TASK_REPEAT_RULE_ATTR: 'repeat', TASK_REPEAT_STATE_ATTR: 'state',
+        __getTaskCompletionTimeAttrKeys: () => ['custom-due-date', 'end'],
         Logger: { warn() {} },
         postJSON: async (endpoint, body) => { queries.push(body.stmt); return { ok: true, data: { code: 0, data: [] } }; },
     });
     vm.runInContext(source.slice(from, to), context);
     await context.queryAllReminderBlocks(false, { docIds: ["doc'quoted"], limit: 1, throwOnError: true });
     assert.match(queries[0], /AND b\.root_id IN \('doc''quoted'\)[\s\S]*ORDER BY[\s\S]*LIMIT 2/);
+    assert.match(queries[0], /name = 'custom-due-date'/, 'task reminder rows must query the configured due-date attribute');
     await context.queryAllReminderBlocks(false, { docIds: [] });
     assert.equal(queries.length, 1);
 });

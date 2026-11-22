@@ -135,4 +135,76 @@ assert.match(dialogBlock, /__saveReminderDraft\(/, 'dialog saves must use the sh
 assert.match(source, /const __saveReminderDraft[\s\S]*?__applyFollowTaskReminderDraft\([\s\S]*?saveBlockReminder\(/, 'the save coordinator must update canonical task fields before reminder persistence');
 assert.match(source, /b\.markdown[\s\S]*?blockMarkdown: block\.markdown/, 'reminder queries must provide markdown for parent-only title extraction');
 
+const contextPatchStart = source.indexOf('const __buildFollowTaskReminderContextPatch =');
+const contextPatchEnd = source.indexOf('\n    async function __refreshReminderAfterTaskContextChanged', contextPatchStart);
+assert.ok(contextPatchStart >= 0 && contextPatchEnd > contextPatchStart, 'follow reminder task context patch builder must remain extractable');
+vm.runInContext(`${source.slice(contextPatchStart, contextPatchEnd)}\nthis.buildTaskContextPatch = __buildFollowTaskReminderContextPatch;`, context);
+const oldDueReminder = {
+    repeatMode: 'followTaskRepeat',
+    startDate: '2026-11-25',
+    taskStartDate: '2026-11-24',
+    taskCompletionTime: '2026-11-25',
+    taskRepeatRule: null,
+    taskRepeatState: null,
+};
+const dueDatePatch = context.buildTaskContextPatch(oldDueReminder, {
+    taskStartDate: '2026-11-24',
+    taskCompletionTime: '2026-11-26',
+    taskRepeatRule: null,
+    taskRepeatState: {},
+});
+assert.equal(dueDatePatch.startDate, '2026-11-26', 'a follow reminder snapshot must move with the task deadline');
+assert.equal(dueDatePatch.taskCompletionTime, '2026-11-26');
+assert.equal(context.buildTaskContextPatch({ ...oldDueReminder, ...dueDatePatch }, {
+    taskStartDate: '2026-11-24',
+    taskCompletionTime: '2026-11-26',
+    taskRepeatRule: null,
+    taskRepeatState: {},
+}), null, 'an already current follow reminder must not be rewritten again');
+
+const refreshContextStart = source.indexOf('async function __refreshReminderAfterTaskContextChanged');
+const refreshContextEnd = source.indexOf('\n    // 手动触发检查', refreshContextStart);
+const refreshContextSource = source.slice(refreshContextStart, refreshContextEnd);
+assert.match(refreshContextSource, /__buildFollowTaskReminderContextPatch[\s\S]*saveBlockReminder\(/,
+    'task context changes must persist a stale follow reminder snapshot');
+assert.match(refreshContextSource, /refreshReminderDockPanel\(options\?\.forceRefresh !== false\)/,
+    'task context changes must force the Dock to render the authoritative follow date');
+
+const taskDateAttrStart = source.indexOf('const __getTaskCompletionTimeAttrKeys =');
+const taskDateAttrEnd = source.indexOf('\n    const __reminderOccurrenceKey', taskDateAttrStart);
+assert.ok(taskDateAttrStart >= 0 && taskDateAttrEnd > taskDateAttrStart, 'configurable task deadline attribute adapter must remain extractable');
+const storage = new Map([
+    ['tm_task_meta_attr_keys', JSON.stringify({ completionTime: 'custom-deadline' })],
+    ['tm_task_meta_attr_key_aliases', JSON.stringify({ completionTime: ['custom-old-deadline'] })],
+]);
+const taskDateAttrContext = vm.createContext({
+    JSON,
+    Map,
+    String,
+    Object,
+    Array,
+    TASK_COMPLETION_TIME_ATTR: 'custom-completion-time',
+    __normalizeReminderDateKey: normalizeDateKey,
+    localStorage: { getItem: key => storage.get(key) ?? null },
+});
+vm.runInContext(`${source.slice(taskDateAttrStart, taskDateAttrEnd)}\nthis.keys = __getTaskCompletionTimeAttrKeys; this.value = __getTaskCompletionTimeAttrValue;`, taskDateAttrContext);
+assert.deepEqual(Array.from(taskDateAttrContext.keys()), ['custom-deadline', 'custom-old-deadline', 'custom-completion-time']);
+assert.equal(taskDateAttrContext.value({
+    'custom-deadline': '2026-11-26',
+    'custom-completion-time': '2026-11-25',
+}), '2026-11-26', 'configured deadline value must take precedence over a stale legacy alias');
+assert.equal(taskDateAttrContext.value({
+    'custom-deadline': '',
+    'custom-completion-time': '2026-11-25',
+}), '', 'an explicitly cleared configured deadline must not fall back to a stale legacy value');
+storage.delete('tm_task_meta_attr_keys');
+storage.delete('tm_task_meta_attr_key_aliases');
+assert.deepEqual(Array.from(taskDateAttrContext.keys()), ['custom-completion-time'], 'standalone Tomato must retain the SiYuan default attribute');
+assert.match(source.slice(source.indexOf('function installReminderTaskAttrSync'), source.indexOf('function uninstallReminderTaskAttrSync')),
+    /const completionAttrKeys = __getTaskCompletionTimeAttrKeys\(\)[\s\S]*\.\.\.completionAttrKeys/,
+    'custom Task Horizon deadline attribute changes must trigger Tomato refresh');
+assert.match(source.slice(source.indexOf('async function queryAllReminderBlocks'), source.indexOf('const __getReminderDockMeta')),
+    /COALESCE\(\$\{taskCompletionTimeAttrSql\}, ''\) as task_completion_time/,
+    'Dock reminder queries must read the configured task deadline attribute');
+
 console.log('reminder follow field stability tests passed');

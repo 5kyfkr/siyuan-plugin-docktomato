@@ -6,6 +6,12 @@ Dock Tomato is a Pomodoro timer and focus stopwatch for SiYuan. Start from the s
 
 ![Dock Tomato preview](preview.png)
 
+## 2.4.5 Release notes
+
+- **Improved: Timer reminder saving**
+  - Reminder writes are serialized and verified after the transaction is flushed, reducing lost updates and save failures during rapid edits or device sync.
+  - Follow-task reminders refresh their task-date context so reminder schedules stay aligned with task state.
+
 ## 2.4.4 Release notes
 
 - Improved: Task search now filters out completed tasks and shows up to 10 unfinished matches.

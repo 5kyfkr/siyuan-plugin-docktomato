@@ -184,6 +184,7 @@ const kernelBlock = source.slice(kernelStart, kernelEnd);
         Array,
         TASK_START_DATE_ATTR: 'custom-start-date',
         TASK_COMPLETION_TIME_ATTR: 'custom-completion-time',
+        __getTaskCompletionTimeAttrKeys: () => ['custom-completion-time'],
         TASK_REPEAT_RULE_ATTR: 'custom-task-repeat-rule',
         TASK_REPEAT_STATE_ATTR: 'custom-task-repeat-state',
         Logger: { warn() {}, error() {} },

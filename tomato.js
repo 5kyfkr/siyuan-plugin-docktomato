@@ -32001,7 +32001,7 @@ window.__setTomatoFloatState = function (payload) {
     const TOMATO_TASK_DURATION_APPLIED_LIMIT = 80;
     const __tomatoTaskAttrMigrationChecks = new Set();
     const __tomatoTaskAttrMigrationPromises = new Map();
-    const __tomatoTaskAttrWriteTails = new Map();
+    const __tomatoAttrWriteTails = new Map();
 
     function normalizeTomatoTaskDurationAppliedKeys(value) {
         const raw = String(value ?? '').trim();
@@ -32217,17 +32217,21 @@ window.__setTomatoFloatState = function (payload) {
         return await readCanonicalTomatoTaskAttrs(ctx);
     }
 
-    function withTomatoTaskAttrLock(taskId, callback) {
-        const id = String(taskId || '').trim();
+    function withTomatoAttrWriteLock(attrHostId, callback) {
+        const id = String(attrHostId || '').trim();
         if (!id || typeof callback !== 'function') return Promise.resolve(false);
-        const previous = __tomatoTaskAttrWriteTails.get(id) || Promise.resolve();
+        const previous = __tomatoAttrWriteTails.get(id) || Promise.resolve();
         const run = previous.then(callback, callback);
         let tail = null;
         tail = run.finally(() => {
-            if (__tomatoTaskAttrWriteTails.get(id) === tail) __tomatoTaskAttrWriteTails.delete(id);
+            if (__tomatoAttrWriteTails.get(id) === tail) __tomatoAttrWriteTails.delete(id);
         });
-        __tomatoTaskAttrWriteTails.set(id, tail);
+        __tomatoAttrWriteTails.set(id, tail);
         return tail;
+    }
+
+    function withTomatoTaskAttrLock(taskId, callback) {
+        return withTomatoAttrWriteLock(taskId, callback);
     }
 
     function dispatchTomatoTaskAttrUpdated(context, attrKey, value, extra = {}) {
@@ -40793,6 +40797,32 @@ window.__setTomatoFloatState = function (payload) {
     const TASK_REPEAT_STATE_ATTR = 'custom-task-repeat-state';
     const TASK_START_DATE_ATTR = 'custom-start-date';
     const TASK_COMPLETION_TIME_ATTR = 'custom-completion-time';
+    const __getTaskCompletionTimeAttrKeys = () => {
+        const keys = [];
+        const add = (value) => {
+            const key = String(value || '').trim();
+            if (/^custom-[a-zA-Z0-9_-]+$/.test(key) && !keys.includes(key)) keys.push(key);
+        };
+        try {
+            const configured = JSON.parse(localStorage.getItem('tm_task_meta_attr_keys') || '{}');
+            add(configured?.completionTime);
+        } catch (e) {}
+        try {
+            const aliases = JSON.parse(localStorage.getItem('tm_task_meta_attr_key_aliases') || '{}');
+            (Array.isArray(aliases?.completionTime) ? aliases.completionTime : []).forEach(add);
+        } catch (e) {}
+        add(TASK_COMPLETION_TIME_ATTR);
+        return keys;
+    };
+    const __getTaskCompletionTimeAttrValue = (attrs) => {
+        const map = attrs && typeof attrs === 'object' && !Array.isArray(attrs) ? attrs : {};
+        for (const key of __getTaskCompletionTimeAttrKeys()) {
+            if (Object.prototype.hasOwnProperty.call(map, key)) {
+                return __normalizeReminderDateKey(map[key] || '');
+            }
+        }
+        return '';
+    };
     
     const __reminderOccurrenceKey = (dateKey, timeKey) => `${String(dateKey || '').trim()} ${String(timeKey || '').trim()}`.trim();
 
@@ -45766,11 +45796,12 @@ window.__setTomatoFloatState = function (payload) {
                 const databaseFlushed = ev?.detail?.databaseFlushed === true;
                 if (!taskId) return;
                 const isReminderAttr = attrKey === 'custom-tomato-reminder';
+                const completionAttrKeys = __getTaskCompletionTimeAttrKeys();
                 if (!isReminderAttr && ![
                     TASK_START_DATE_ATTR,
-                    TASK_COMPLETION_TIME_ATTR,
                     TASK_REPEAT_RULE_ATTR,
                     TASK_REPEAT_STATE_ATTR,
+                    ...completionAttrKeys,
                 ].includes(attrKey)) return;
                 const prevTimer = __reminderTaskAttrSyncTimers.get(taskId);
                 if (prevTimer) {
@@ -45779,11 +45810,14 @@ window.__setTomatoFloatState = function (payload) {
                 const timer = setTimeout(async () => {
                     __reminderTaskAttrSyncTimers.delete(taskId);
                     try {
-                        if (!databaseFlushed) await flushReminderTransaction();
+                        if (!databaseFlushed) {
+                            await flushReminderTransaction();
+                        }
                         await __refreshReminderAfterTaskContextChanged(taskId, {
                             reason: isReminderAttr && eventSource === 'task-horizon-agent-reminder'
                                 ? 'agent-reminder'
                                 : (isReminderAttr ? 'reminder-attr-updated' : 'task-context-updated'),
+                            forceRefresh: !isReminderAttr,
                         });
                     } catch (e) {}
                 }, 180);
@@ -45810,13 +45844,65 @@ window.__setTomatoFloatState = function (payload) {
         __reminderTaskAttrSyncTimers.clear();
     }
 
+    const __buildFollowTaskReminderContextPatch = (storedInput, taskContextInput) => {
+        const stored = storedInput && typeof storedInput === 'object' && !Array.isArray(storedInput) ? storedInput : {};
+        const taskContext = taskContextInput && typeof taskContextInput === 'object' ? taskContextInput : {};
+        if (__getReminderRepeatMode(stored) !== REMINDER_REPEAT_MODE_FOLLOW_TASK) return null;
+        const parsedRule = __parseReminderTaskRepeatRule(taskContext.taskRepeatRule || '');
+        const taskRepeatRule = parsedRule?.enabled ? parsedRule : null;
+        const taskStartDate = __normalizeReminderDateKey(taskContext.taskStartDate || '');
+        const taskCompletionTime = __normalizeReminderDateKey(taskContext.taskCompletionTime || '');
+        const taskRepeatState = taskRepeatRule
+            ? __normalizeReminderTaskRepeatState(taskContext.taskRepeatState)
+            : null;
+        const startDate = taskRepeatRule?.trigger === 'checkin'
+            ? __normalizeReminderDateKey(taskRepeatRule.anchorDate || stored.startDate || '')
+            : (taskCompletionTime || __normalizeReminderDateKey(stored.startDate || ''));
+        const storedRule = __parseReminderTaskRepeatRule(stored.taskRepeatRule || '');
+        const storedState = taskRepeatRule
+            ? __normalizeReminderTaskRepeatState(stored.taskRepeatState)
+            : null;
+        const changed = __normalizeReminderDateKey(stored.taskStartDate || '') !== taskStartDate
+            || __normalizeReminderDateKey(stored.taskCompletionTime || '') !== taskCompletionTime
+            || JSON.stringify(storedRule) !== JSON.stringify(taskRepeatRule)
+            || JSON.stringify(storedState) !== JSON.stringify(taskRepeatState)
+            || __normalizeReminderDateKey(stored.startDate || '') !== startDate;
+        if (!changed) return null;
+        return { taskStartDate, taskCompletionTime, taskRepeatRule, taskRepeatState, startDate };
+    };
+
     async function __refreshReminderAfterTaskContextChanged(blockId, options = {}) {
         const id = String(blockId || '').trim();
         if (!id) return { ok: false, hasReminder: false, code: 'INVALID_ARGUMENT' };
-        // A saved task change is ready to render; notification I/O must not delay it.
         try { __invalidateReminderDockCache(); } catch (e) {}
-        try { refreshReminderDockPanel(options?.forceRefresh === true); } catch (e) {}
+        try { refreshReminderDockPanel(options?.forceRefresh !== false); } catch (e) {}
         try { updateReminderBadge(); } catch (e) {}
+        try {
+            const resolved = await resolveReminderBlockAttrContext(id);
+            const reminderBlockId = String(resolved?.reminderBlockId || id).trim();
+            const attrs = reminderBlockId ? await getReminderAttrsForWrite(reminderBlockId) : null;
+            const reminderRaw = String(attrs?.['custom-tomato-reminder'] || '').trim();
+            const liveTaskContext = attrs ? await __getReminderTaskContext(reminderBlockId, attrs) : null;
+            if (attrs && reminderRaw) {
+                const stored = JSON.parse(reminderRaw);
+                const contextPatch = __buildFollowTaskReminderContextPatch(stored, liveTaskContext);
+                if (contextPatch) {
+                    const saved = await saveBlockReminder(reminderBlockId, {
+                        ...stored,
+                        ...contextPatch,
+                        updatedAt: new Date().toISOString(),
+                    }, {
+                        skipReminderScheduleSync: true,
+                        skipTaskAttrUpdatedEvent: true,
+                        skipWechatReconcile: true,
+                    });
+                    if (!saved) Logger.warn('跟随任务提醒未能更新任务日期快照:', reminderBlockId);
+                }
+            }
+        } catch (e) {
+            try { Logger.warn('刷新任务上下文中的提醒数据失败:', e?.message || String(e)); } catch (e2) {}
+        }
+
         const reminder = await getBlockReminder(id);
         if (reminder) {
             try { await __syncReminderDeviceSchedule(reminder.blockId || id, reminder, { silent: true }); } catch (e) {}
@@ -46103,7 +46189,7 @@ window.__setTomatoFloatState = function (payload) {
         const map = (attrs && typeof attrs === 'object' && !Array.isArray(attrs)) ? attrs : {};
         return {
             taskStartDate: __normalizeReminderDateKey(map[TASK_START_DATE_ATTR] || ''),
-            taskCompletionTime: __normalizeReminderDateKey(map[TASK_COMPLETION_TIME_ATTR] || ''),
+            taskCompletionTime: __getTaskCompletionTimeAttrValue(map),
             taskRepeatRule: __parseReminderTaskRepeatRule(map[TASK_REPEAT_RULE_ATTR] || '') || null,
             taskRepeatState: __normalizeReminderTaskRepeatState(map[TASK_REPEAT_STATE_ATTR] || ''),
         };
@@ -46336,10 +46422,35 @@ window.__setTomatoFloatState = function (payload) {
     async function flushReminderTransaction() {
         try {
             const response = await postJSON('/api/sqlite/flushTransaction', {});
-            return !!response?.ok;
+            return !!(response?.ok && response.data?.code === 0);
         } catch (e) {
             return false;
         }
+    }
+
+    async function getReminderAttrsForWrite(blockId) {
+        try {
+            const id = String(blockId || '').trim();
+            if (!id) return null;
+            const response = await postJSON('/api/attr/getBlockAttrs', { id });
+            const attrs = response?.data?.data;
+            if (!response?.ok || response.data?.code !== 0 || !attrs || typeof attrs !== 'object' || Array.isArray(attrs)) return null;
+            return attrs;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    async function persistReminderAttrsAndVerify(resolvedReminder, attrs) {
+        const resolved = resolvedReminder && typeof resolvedReminder === 'object' ? resolvedReminder : null;
+        const blockId = String(resolved?.reminderBlockId || '').trim();
+        const payload = attrs && typeof attrs === 'object' ? attrs : {};
+        if (!blockId || !Object.keys(payload).length) return false;
+        if (!await writeTomatoAttrContextAttrs(resolved.attrContext, payload, { dispatch: false })) return false;
+        if (!await flushReminderTransaction()) return false;
+        const persisted = await getReminderAttrsForWrite(blockId);
+        if (!persisted) return false;
+        return Object.entries(payload).every(([key, value]) => String(persisted[key] ?? '') === String(value ?? ''));
     }
 
     async function saveBlockReminder(blockId, reminderData, options = {}) {
@@ -46350,104 +46461,100 @@ window.__setTomatoFloatState = function (payload) {
             const attrContext = resolvedReminder.attrContext;
             const reminderBlockId = String(resolvedReminder.reminderBlockId || requestedReminderBlockId).trim();
             if (!reminderBlockId) return false;
-            const currentAttrs = resolvedReminder.attrs || {};
-            const taskContext = await __getReminderTaskContext(reminderBlockId, currentAttrs);
-            let currentReminder = null;
-            let scheduleRecordToRetain = null;
-            try {
-                const currentRaw = currentAttrs['custom-tomato-reminder'];
-                if (currentRaw) currentReminder = __sanitizeReminderData(JSON.parse(currentRaw), { blockId: reminderBlockId, ...taskContext });
-            } catch (e) {}
-            let reminderToSave = reminderData;
-            if (reminderData && typeof reminderData === 'object') {
-                reminderToSave = __sanitizeReminderData({
-                    ...(currentReminder && typeof currentReminder === 'object' ? currentReminder : {}),
-                    ...reminderData,
-                    blockId: reminderBlockId,
-                }, {
-                    blockId: reminderBlockId,
-                    blockContent: currentReminder?.blockContent,
-                    blockType: currentReminder?.blockType,
-                    rootId: currentReminder?.rootId,
-                    ...taskContext,
-                });
-                __reconcileReminderCompletionDraft(currentReminder, reminderToSave);
-                __advanceReminderCompletionCycle(reminderToSave, __getReminderCompletionDateKey(reminderToSave));
-                if (currentReminder && __getReminderScheduleSignature(currentReminder) !== __getReminderScheduleSignature(reminderToSave)) {
-                    reminderToSave.scheduleUpdatedAt = new Date().toISOString();
-                }
-                // 编辑提醒时，如果属性里暂时没带上当前设备预约，就从本地预约注册表补回，
-                // 这样修改时间时仍能先取消本设备旧预约，再创建新预约。
-                const currentDeviceSchedule = __getReminderDeviceSchedule(reminderToSave);
-                const registrySchedule = __getReminderCurrentDeviceRegistrySchedule(reminderBlockId);
-                if (__hasValidReminderDeviceScheduleEntries(registrySchedule) && !__hasValidReminderDeviceScheduleEntries(currentDeviceSchedule)) {
-                    __setReminderDeviceSchedule(reminderToSave, {
-                        ...(currentDeviceSchedule && typeof currentDeviceSchedule === 'object' ? currentDeviceSchedule : {}),
-                        ...registrySchedule,
-                        entries: Array.isArray(registrySchedule.entries) ? registrySchedule.entries.slice() : [],
-                    });
-                }
-                if (currentReminder
-                    && __getReminderDevicePlanMutationSignature(currentReminder) !== __getReminderDevicePlanMutationSignature(reminderToSave)) {
-                    scheduleRecordToRetain = {
-                        reminder: currentReminder,
-                        sourcePlanKey: __getReminderDevicePlanMutationSignature(currentReminder),
-                    };
-                }
-            }
-            if (!options?.skipReminderScheduleSync && reminderToSave) {
-                try { await __reconcileReminderDeviceSchedule(reminderToSave, { silent: true }); } catch (e) {}
-            }
-            // 添加提醒时，同时设置书签属性为⏰
-            const attrs = {
-                'custom-tomato-reminder': JSON.stringify(reminderToSave),
-                'bookmark': '⏰'
-            };
-            const saved = resolvedReminder.kind === 'task'
-                ? await withTomatoTaskAttrLock(attrContext.taskId, () => writeCanonicalTomatoTaskAttrs(attrContext, attrs, { dispatch: false }))
-                : await (async () => {
-                    const setRes = await postJSON('/api/attr/setBlockAttrs', { id: reminderBlockId, attrs });
-                    return !!(setRes.ok && setRes.data?.code === 0);
-                })();
-            if (saved) {
-                if (scheduleRecordToRetain) {
-                    try {
-                        await __retainReminderDeviceScheduleRecords(
-                            reminderBlockId,
-                            scheduleRecordToRetain.reminder,
-                            'reminder-edited',
-                            { sourcePlanKey: scheduleRecordToRetain.sourcePlanKey }
-                        );
-                    } catch (e) {}
-                }
-                await flushReminderTransaction();
-                if (!options?.skipTaskAttrUpdatedEvent) {
-                    dispatchTomatoTaskAttrUpdated(attrContext, 'bookmark', '⏰', { databaseFlushed: true });
-                    dispatchTomatoTaskAttrUpdated(
-                        attrContext,
-                        'custom-tomato-reminder',
-                        attrs['custom-tomato-reminder'],
-                        { ...(options?.taskAttrEventExtra || {}), databaseFlushed: true }
-                    );
-                }
-                try { refreshReminderDockPanel(); } catch (e) {}
-                try { await updateReminderBadge(); } catch (e) {}
+            const saveResult = await withTomatoAttrWriteLock(reminderBlockId, async () => {
+                const currentAttrs = await getReminderAttrsForWrite(reminderBlockId);
+                if (!currentAttrs) return null;
+                const taskContext = await __getReminderTaskContext(reminderBlockId, currentAttrs);
+                let currentReminder = null;
+                let scheduleRecordToRetain = null;
                 try {
-                    if (!options?.skipSiyuanSync) __scheduleReminderSiyuanSync();
+                    const currentRaw = currentAttrs['custom-tomato-reminder'];
+                    if (currentRaw) currentReminder = __sanitizeReminderData(JSON.parse(currentRaw), { blockId: reminderBlockId, ...taskContext });
                 } catch (e) {}
-                if (!options?.skipWechatReconcile) {
-                    try { scheduleWechatReminderReconcile('save'); } catch (e) {}
+                let reminderToSave = reminderData;
+                if (reminderData && typeof reminderData === 'object') {
+                    reminderToSave = __sanitizeReminderData({
+                        ...(currentReminder && typeof currentReminder === 'object' ? currentReminder : {}),
+                        ...reminderData,
+                        blockId: reminderBlockId,
+                    }, {
+                        blockId: reminderBlockId,
+                        blockContent: currentReminder?.blockContent,
+                        blockType: currentReminder?.blockType,
+                        rootId: currentReminder?.rootId,
+                        ...taskContext,
+                    });
+                    __reconcileReminderCompletionDraft(currentReminder, reminderToSave);
+                    __advanceReminderCompletionCycle(reminderToSave, __getReminderCompletionDateKey(reminderToSave));
+                    if (currentReminder && __getReminderScheduleSignature(currentReminder) !== __getReminderScheduleSignature(reminderToSave)) {
+                        reminderToSave.scheduleUpdatedAt = new Date().toISOString();
+                    }
+                    const currentDeviceSchedule = __getReminderDeviceSchedule(reminderToSave);
+                    const registrySchedule = __getReminderCurrentDeviceRegistrySchedule(reminderBlockId);
+                    if (__hasValidReminderDeviceScheduleEntries(registrySchedule) && !__hasValidReminderDeviceScheduleEntries(currentDeviceSchedule)) {
+                        __setReminderDeviceSchedule(reminderToSave, {
+                            ...(currentDeviceSchedule && typeof currentDeviceSchedule === 'object' ? currentDeviceSchedule : {}),
+                            ...registrySchedule,
+                            entries: Array.isArray(registrySchedule.entries) ? registrySchedule.entries.slice() : [],
+                        });
+                    }
+                    if (currentReminder
+                        && __getReminderDevicePlanMutationSignature(currentReminder) !== __getReminderDevicePlanMutationSignature(reminderToSave)) {
+                        scheduleRecordToRetain = {
+                            reminder: currentReminder,
+                            sourcePlanKey: __getReminderDevicePlanMutationSignature(currentReminder),
+                        };
+                    }
                 }
-                if (!options?.skipReminderUpdatedEvent) {
-                    try {
-                        window.dispatchEvent(new CustomEvent('tomato-reminder-updated', {
-                            detail: { action: 'save', blockId: reminderBlockId },
-                        }));
-                    } catch (e) {}
+                if (!options?.skipReminderScheduleSync && reminderToSave) {
+                    try { await __reconcileReminderDeviceSchedule(reminderToSave, { silent: true }); } catch (e) {}
                 }
-                return true;
+                const attrs = {
+                    'custom-tomato-reminder': JSON.stringify(reminderToSave),
+                    'bookmark': '⏰'
+                };
+                if (!await persistReminderAttrsAndVerify(resolvedReminder, attrs)) return null;
+                return { attrs, scheduleRecordToRetain };
+            });
+            if (!saveResult) return false;
+            if (saveResult.scheduleRecordToRetain) {
+                try {
+                    await __retainReminderDeviceScheduleRecords(
+                        reminderBlockId,
+                        saveResult.scheduleRecordToRetain.reminder,
+                        'reminder-edited',
+                        { sourcePlanKey: saveResult.scheduleRecordToRetain.sourcePlanKey }
+                    );
+                } catch (e) {}
             }
-        } catch (e) {}
+            if (!options?.skipTaskAttrUpdatedEvent) {
+                dispatchTomatoTaskAttrUpdated(attrContext, 'bookmark', '⏰', { databaseFlushed: true });
+                dispatchTomatoTaskAttrUpdated(
+                    attrContext,
+                    'custom-tomato-reminder',
+                    saveResult.attrs['custom-tomato-reminder'],
+                    { ...(options?.taskAttrEventExtra || {}), databaseFlushed: true }
+                );
+            }
+            try { refreshReminderDockPanel(); } catch (e) {}
+            try { await updateReminderBadge(); } catch (e) {}
+            try {
+                if (!options?.skipSiyuanSync) __scheduleReminderSiyuanSync();
+            } catch (e) {}
+            if (!options?.skipWechatReconcile) {
+                try { scheduleWechatReminderReconcile('save'); } catch (e) {}
+            }
+            if (!options?.skipReminderUpdatedEvent) {
+                try {
+                    window.dispatchEvent(new CustomEvent('tomato-reminder-updated', {
+                        detail: { action: 'save', blockId: reminderBlockId },
+                    }));
+                } catch (e) {}
+            }
+            return true;
+        } catch (e) {
+            try { Logger.warn('保存提醒失败:', e?.message || String(e)); } catch (e2) {}
+        }
         return false;
     }
     async function getBlockReminder(blockId, options = {}) {
@@ -46479,12 +46586,7 @@ window.__setTomatoFloatState = function (payload) {
                 'custom-tomato-reminder': '',
                 'bookmark': ''
             };
-            const deleted = resolvedReminder.kind === 'task'
-                ? await withTomatoTaskAttrLock(attrContext.taskId, () => writeCanonicalTomatoTaskAttrs(attrContext, clearAttrs, { dispatch: false }))
-                : await (async () => {
-                    const setRes = await postJSON('/api/attr/setBlockAttrs', { id: reminderId, attrs: clearAttrs });
-                    return !!(setRes.ok && setRes.data?.code === 0);
-                })();
+            const deleted = await withTomatoAttrWriteLock(reminderId, () => persistReminderAttrsAndVerify(resolvedReminder, clearAttrs));
             if (deleted) {
                 if (existingReminder) {
                     try {
@@ -46506,7 +46608,6 @@ window.__setTomatoFloatState = function (payload) {
                         __saveReminderDeviceScheduleRegistry(registry);
                     }
                 } catch (e) {}
-                await flushReminderTransaction();
                 dispatchTomatoTaskAttrUpdated(attrContext, 'bookmark', '', { databaseFlushed: true });
                 dispatchTomatoTaskAttrUpdated(attrContext, 'custom-tomato-reminder', '', { databaseFlushed: true });
                 try {
@@ -46539,6 +46640,9 @@ window.__setTomatoFloatState = function (payload) {
         const scopeDocIds = Array.isArray(queryOptions.docIds) ? queryOptions.docIds.map(id => String(id || '').trim()).filter(Boolean) : null;
         if (scopeDocIds && !scopeDocIds.length) return [];
         const documentScopeSql = scopeDocIds ? `AND b.root_id IN (${scopeDocIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})` : '';
+        const taskCompletionTimeAttrSql = __getTaskCompletionTimeAttrKeys()
+            .map((key) => `(SELECT value FROM attributes WHERE block_id = b.id AND name = '${key.replace(/'/g, "''")}' LIMIT 1)`)
+            .join(', ');
         try {
             // 主动触发同步并等待，确保读取到云端最新数据
             if (forceRefresh && isSyncEnabled() && typeof SyncManager !== 'undefined' && SyncManager.triggerSiyuanSync) {
@@ -46559,7 +46663,7 @@ window.__setTomatoFloatState = function (payload) {
                     b.root_id,
                     a.value as reminder_data,
                     (SELECT value FROM attributes WHERE block_id = b.id AND name = '${TASK_START_DATE_ATTR}' LIMIT 1) as task_start_date,
-                    (SELECT value FROM attributes WHERE block_id = b.id AND name = '${TASK_COMPLETION_TIME_ATTR}' LIMIT 1) as task_completion_time,
+                    COALESCE(${taskCompletionTimeAttrSql}, '') as task_completion_time,
                     (SELECT value FROM attributes WHERE block_id = b.id AND name = '${TASK_REPEAT_RULE_ATTR}' LIMIT 1) as task_repeat_rule,
                     (SELECT value FROM attributes WHERE block_id = b.id AND name = '${TASK_REPEAT_STATE_ATTR}' LIMIT 1) as task_repeat_state
                 FROM blocks b

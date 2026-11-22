@@ -51,6 +51,7 @@ test('completion and undo paint committed check-ins even while SQL still has the
         TASK_COMPLETION_TIME_ATTR: 'custom-task-completion-time',
         TASK_REPEAT_RULE_ATTR: 'custom-task-repeat-rule',
         TASK_REPEAT_STATE_ATTR: 'custom-task-repeat-state',
+        __getTaskCompletionTimeAttrKeys: () => ['custom-task-completion-time'],
         Logger: { warn() {}, error() {} },
         isSyncEnabled: () => true,
         SyncManager: { triggerSiyuanSync: () => { calls.push('cloud-sync'); } },
@@ -145,6 +146,8 @@ test('task changes request a repaint before reading and syncing device notificat
     const context = vm.createContext({
         getBlockReminder: () => { calls.push('read'); return read.promise; },
         __syncReminderDeviceSchedule: () => { calls.push('notifications'); return notifications.promise; },
+        resolveReminderBlockAttrContext: async () => null,
+        __normalizeReminderDateKey: value => String(value || ''),
         __invalidateReminderDockCache: () => calls.push('invalidate'),
         refreshReminderDockPanel: () => calls.push('paint'),
         updateReminderBadge: () => calls.push('badge'),
